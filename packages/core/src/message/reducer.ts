@@ -341,6 +341,8 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
     }
     case "retry.scheduled":
       return edit(event.data.messageId, "assistant", (message) => {
+        if (message.status !== "running" && message.status !== "failed")
+          fail("invalid_transition", `step ${message.id} is ${message.status} and cannot be retried`)
         if (event.data.attempt <= message.attempt)
           fail("invalid_transition", `attempt ${message.attempt} of step ${message.id} has already run`)
         return {

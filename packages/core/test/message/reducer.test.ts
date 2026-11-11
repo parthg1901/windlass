@@ -659,6 +659,16 @@ describe("retries", () => {
     expect(log.assistant("a2")).toMatchObject({ status: "completed", attempt: 2, lastRetry: null })
   })
 
+  test("a completed or refused step cannot be retried", () => {
+    const completed = inStep()
+    completed.apply(stepEnded("a1"))
+    const retry = event("retry.scheduled", { messageId: m("a1"), attempt: 2, delayMs: 0, error: rateLimit })
+    expect(completed.reject(retry)).toBe("invalid_transition")
+    const refused = inStep()
+    refused.apply(event("step.refused", { messageId: m("a1"), message: "no", excludeFromSeq: 6, usage: null }))
+    expect(refused.reject(retry)).toBe("invalid_transition")
+  })
+
   test("a retry must move the attempt forward and name an assistant message", () => {
     const log = inStep()
     log.apply(event("retry.scheduled", { messageId: m("a1"), attempt: 3, delayMs: 0, error: rateLimit }))
