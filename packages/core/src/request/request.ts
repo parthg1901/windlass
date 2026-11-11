@@ -5,20 +5,29 @@
  * A request is also viewable as an ordered list of blocks (`requestBlocks`).
  * Blocks are what the request ledger hashes, and the order is the order in
  * which a change invalidates the provider's prompt cache: parameters, then
- * each tool, then the instructions, then each input item.
+ * each tool, then the instructions, then each input item. Everything in a
+ * request except `toolChoice` is in exactly one block.
  */
 import { type BlobRef, type Content } from "../content.ts"
 import type { Json } from "../json.ts"
 import type { ToolSpec } from "../tool/tool.ts"
 
-/** Settings of the call that are not content. Any difference here is reported as a `params` change. */
+/**
+ * Settings of the call that are part of the provider's cached prefix. Any
+ * difference here is reported as a `params` change.
+ */
 export interface RequestParams {
   readonly model: string
   /** Provider-interpreted effort level such as `"low"` or `"high"`; `null` uses the model's default. */
   readonly reasoningEffort: string | null
-  /** `none` forbids tool calls for this call while keeping the tool list (and the cache prefix) unchanged. */
-  readonly toolChoice: "auto" | "none"
+  /** Provider-interpreted output verbosity such as `"low"`; `null` uses the model's default. */
+  readonly textVerbosity: string | null
   readonly parallelToolCalls: boolean
+  /**
+   * Stable opaque key that routes a session's requests to the same prompt
+   * cache. The same for every request of a session; never contains user data.
+   */
+  readonly cacheKey: string | null
 }
 
 /**
@@ -58,6 +67,14 @@ export interface ModelRequest {
   /** The frozen baseline instructions (the system prompt). */
   readonly instructions: string
   readonly input: readonly InputItem[]
+  /**
+   * Whether the model may call tools in this call. `none` is used for the
+   * final call when the step limit is reached; the tool list stays, so the
+   * prefix does not change. This is the one field that is not a block: it is
+   * not part of the provider's cached prefix and may differ between
+   * consecutive requests without counting as a change.
+   */
+  readonly toolChoice: "auto" | "none"
 }
 
 export type RequestBlock =
@@ -79,24 +96,4 @@ export function requestBlocks(request: ModelRequest): RequestBlock[] {
     { kind: "instructions", text: request.instructions },
     ...request.input.map((item): RequestBlock => ({ kind: "input", item })),
   ]
-}
-
-/**
- * The inverse of `requestBlocks`. Throws when the list is not one `params`
- * block, then tools, then one `instructions` block, then input items.
- */
-export function requestFromBlocks(blocks: readonly RequestBlock[]): ModelRequest {
-  const order = blocks.map((block) => BLOCK_KINDS.indexOf(block.kind))
-  if (order.some((rank, index) => index > 0 && rank < order[index - 1]!))
-    throw new Error("request blocks are out of order; expected params, tools, instructions, input")
-  const params = blocks.filter((block) => block.kind === "params")
-  const instructions = blocks.filter((block) => block.kind === "instructions")
-  if (params.length !== 1 || instructions.length !== 1)
-    throw new Error("a request has exactly one params block and exactly one instructions block")
-  return {
-    params: params[0]!.params,
-    tools: blocks.filter((block) => block.kind === "tool").map((block) => block.tool),
-    instructions: instructions[0]!.text,
-    input: blocks.filter((block) => block.kind === "input").map((block) => block.item),
-  }
 }

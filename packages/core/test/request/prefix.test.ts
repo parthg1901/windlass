@@ -4,9 +4,7 @@ import { comparePrefix, hashBlock, hashRequest } from "../../src/request/prefix.
 import {
   type InputItem,
   type ModelRequest,
-  type RequestBlock,
   requestBlocks,
-  requestFromBlocks,
 } from "../../src/request/request.ts"
 import { type ToolSpec, sortTools } from "../../src/tool/tool.ts"
 
@@ -33,10 +31,17 @@ const call = (callId: string, input: string): InputItem => ({
 const result = (callId: string, output: string): InputItem => ({ type: "tool_result", callId, output, attachments: [] })
 
 const base: ModelRequest = {
-  params: { model: "gpt-test", reasoningEffort: "medium", toolChoice: "auto", parallelToolCalls: true },
+  params: {
+    model: "gpt-test",
+    reasoningEffort: "medium",
+    textVerbosity: null,
+    parallelToolCalls: true,
+    cacheKey: "ses_1",
+  },
   tools: [read, shell],
   instructions: "You are a coding agent.",
   input: [user("fix the bug"), call("call_1", '{"path":"a.ts"}'), result("call_1", "const a = 1")],
+  toolChoice: "auto",
 }
 
 const compare = (previous: ModelRequest, next: ModelRequest) => comparePrefix(hashRequest(previous), hashRequest(next))
@@ -54,24 +59,22 @@ describe("requestBlocks", () => {
     ])
   })
 
-  test("loses nothing: the request can be rebuilt from its blocks", () => {
-    expect(requestFromBlocks(requestBlocks(base))).toEqual(base)
-    const empty: ModelRequest = { ...base, tools: [], input: [] }
-    expect(requestFromBlocks(requestBlocks(empty))).toEqual(empty)
-  })
-
-  test("covers every field of the request", () => {
-    // If a field is added to ModelRequest without a block, this fails and the
+  test("puts every field of the request in a block, except toolChoice", () => {
+    // If a field is added to ModelRequest without a block, this fails; the
     // field would otherwise be sent without being hashed.
-    expect(Object.keys(base).sort()).toEqual(["input", "instructions", "params", "tools"])
+    expect(Object.keys(base).sort()).toEqual(["input", "instructions", "params", "toolChoice", "tools"])
+    const blocks = requestBlocks(base)
+    expect(blocks[0]).toEqual({ kind: "params", params: base.params })
+    expect(blocks.slice(1, 3)).toEqual(base.tools.map((tool) => ({ kind: "tool", tool })))
+    expect(blocks[3]).toEqual({ kind: "instructions", text: base.instructions })
+    expect(blocks.slice(4)).toEqual(base.input.map((item) => ({ kind: "input", item })))
   })
 
-  test("rejects block lists that are not a request", () => {
-    const blocks = requestBlocks(base)
-    const withoutParams = blocks.slice(1)
-    const twoInstructions: RequestBlock[] = [...blocks.slice(0, 4), { kind: "instructions", text: "again" }]
-    const toolAfterInput: RequestBlock[] = [...blocks, { kind: "tool", tool: grep }]
-    for (const bad of [withoutParams, twoInstructions, toolAfterInput, []]) expect(() => requestFromBlocks(bad)).toThrow()
+  test("a request without tools or input is two blocks", () => {
+    expect(requestBlocks({ ...base, tools: [], input: [] }).map((block) => block.kind)).toEqual([
+      "params",
+      "instructions",
+    ])
   })
 })
 
@@ -168,7 +171,8 @@ describe("comparePrefix", () => {
       { ...base.params, model: "gpt-other" },
       { ...base.params, reasoningEffort: "high" },
       { ...base.params, reasoningEffort: null },
-      { ...base.params, toolChoice: "none" as const },
+      { ...base.params, textVerbosity: "low" },
+      { ...base.params, cacheKey: "ses_2" },
       { ...base.params, parallelToolCalls: false },
     ])
       expect(compare(base, { ...base, params })).toMatchObject({
@@ -177,6 +181,11 @@ describe("comparePrefix", () => {
         kind: "params",
         change: "changed",
       })
+  })
+
+  test("toolChoice is not part of the prefix", () => {
+    const next: ModelRequest = { ...base, toolChoice: "none", input: [...base.input, user("wrap up")] }
+    expect(compare(base, next)).toEqual({ extension: true, appended: 1 })
   })
 
   test("changed instructions are reported as instructions", () => {
