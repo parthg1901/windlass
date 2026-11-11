@@ -3,14 +3,17 @@ import { describe, expect, test } from "bun:test"
 import { type Content, text } from "../../src/content.ts"
 import { event } from "../../src/event/durable.ts"
 import type { MessageId, SessionId } from "../../src/id.ts"
+import { selectModelHistory } from "../../src/message/history.ts"
 import type { AssistantMessage, Projection } from "../../src/message/message.ts"
 import { reduce } from "../../src/message/reducer.ts"
+import { checkPrefix } from "../../src/request/build-break.ts"
 import {
   RequestBuildError,
   buildCompactionRequest,
   buildRequest,
   buildRequestFromHistory,
   renderMessage,
+  requestParams,
 } from "../../src/request/build.ts"
 import { canonicalJson } from "../../src/request/canonical.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
@@ -23,6 +26,7 @@ import {
   OPTIONS,
   PARAMS,
   READ,
+  SETTINGS,
   SHELL,
   Script,
   called,
@@ -61,21 +65,40 @@ describe("baseline", () => {
 
   test("a request cannot be built before the first baseline", () => {
     const s = new Script()
-    s.apply(event("session.created", { cwd: "/repo", title: null, lineage: null }))
+    s.apply(event("session.created", { cwd: "/repo", title: null, lineage: null, settings: SETTINGS }))
     expect(() => s.request()).toThrow(RequestBuildError)
     expect(() => s.request()).toThrow("no baseline.set")
   })
 
   test("params carry exactly the five cache-relevant fields", () => {
-    const loose = { ...PARAMS, temperature: 0.2 }
-    const request = prompted().request({ params: loose, toolChoice: "none" })
+    const loose = { toolChoice: "none" as const, temperature: 0.2, model: "gpt-smuggled" }
+    const request = prompted().request(loose)
     expect(request.params).toEqual(PARAMS)
     expect(request.toolChoice).toBe("none")
   })
 
+  test("the model and the reasoning effort come from the session's stored settings", () => {
+    const s = prompted()
+    expect(s.request().params).toMatchObject({ model: SETTINGS.model, reasoningEffort: SETTINGS.reasoningEffort })
+    s.settings({ model: "gpt-other", reasoningEffort: null })
+    expect(s.request().params).toEqual({ ...PARAMS, model: "gpt-other", reasoningEffort: null })
+    expect(requestParams(selectModelHistory(s.projection))).toEqual(s.request().params)
+  })
+
+  test("the cache key is the root session's ID unless the harness sets another, and the other call options are harness constants", () => {
+    const s = prompted()
+    expect(s.request().params.cacheKey).toBe(s.sessionId)
+    expect(s.request({ toolChoice: "auto", cacheKey: null }).params.cacheKey).toBeNull()
+    expect(s.request({ toolChoice: "auto", textVerbosity: "low", parallelToolCalls: false }).params).toEqual({
+      ...PARAMS,
+      textVerbosity: "low",
+      parallelToolCalls: false,
+    })
+  })
+
   test("toolChoice is not part of the prefix", () => {
     const s = prompted()
-    const comparison = comparePrefix(s.hashes(), s.hashes({ params: PARAMS, toolChoice: "none" }))
+    const comparison = comparePrefix(s.hashes(), s.hashes({ toolChoice: "none" }))
     expect(comparison).toEqual({ extension: true, appended: 0 })
   })
 })
@@ -107,10 +130,19 @@ describe("what a change is reported as", () => {
     expect(comparison).toMatchObject({ extension: false, kind: "instructions", index: 3 })
   })
 
-  test("a changed model is a params change", () => {
-    const s = prompted()
-    const other = s.hashes({ params: { ...PARAMS, model: "gpt-other" }, toolChoice: "auto" })
-    expect(comparePrefix(s.hashes(), other)).toMatchObject({ extension: false, kind: "params", index: 0 })
+  test("a changed model or reasoning effort is a params change, and the stored event explains it", () => {
+    for (const change of [{ model: "gpt-other" }, { reasoningEffort: "high" }, { reasoningEffort: null }]) {
+      const s = prompted()
+      const previous = s.hashes()
+      const from = s.events.length
+      s.settings(change)
+      expect(comparePrefix(previous, s.hashes())).toMatchObject({ extension: false, kind: "params", index: 0 })
+      expect(checkPrefix(previous, s.hashes(), s.events.slice(from))).toMatchObject({
+        status: "expected_break",
+        causes: ["settings"],
+        comparison: { kind: "params", index: 0 },
+      })
+    }
   })
 
   test("a rewritten tool output would be an input change", () => {
@@ -352,9 +384,10 @@ describe("reasoning", () => {
         { call: "call_1", output: "ok", providerData: { id: "fc_1" } },
       ],
     })
-    const other = { params: { ...PARAMS, model: "gpt-other" }, toolChoice: "auto" as const }
-    expect(s.input(other).slice(1)).toEqual([said("Reading."), called("call_1"), result("call_1", "ok")])
-    expect(s.input().slice(1)).toEqual([
+    const mine = s.input()
+    s.settings({ model: "gpt-other" })
+    expect(s.input().slice(1)).toEqual([said("Reading."), called("call_1"), result("call_1", "ok")])
+    expect(mine.slice(1)).toEqual([
       thought("plan"),
       said("Reading.", { id: "msg_1" }),
       called("call_1", undefined, undefined, { id: "fc_1" }),
@@ -509,7 +542,7 @@ describe("compaction", () => {
     const s = prompted()
     s.step({ parts: [{ call: "call_1" }] })
     const step = s.request()
-    const compaction = buildCompactionRequest(s.projection, PARAMS, "Summarise the conversation so far.")
+    const compaction = buildCompactionRequest(s.projection, "Summarise the conversation so far.")
     expect(comparePrefix(hashRequest(step), hashRequest(compaction))).toEqual({ extension: true, appended: 1 })
     expect(compaction.input.at(-1)).toEqual(developer("Summarise the conversation so far."))
     expect(compaction.tools).toEqual(step.tools)
@@ -558,7 +591,15 @@ describe("the builder as a function", () => {
   test("buildRequestFromHistory takes the model's view directly", () => {
     const s = prompted()
     s.step({ parts: [{ text: "One." }] })
-    const direct = buildRequestFromHistory({ baseline: s.projection.baseline, messages: s.projection.messages }, OPTIONS)
+    const direct = buildRequestFromHistory(
+      {
+        rootId: s.sessionId,
+        settings: s.projection.session.settings,
+        baseline: s.projection.baseline,
+        messages: s.projection.messages,
+      },
+      OPTIONS,
+    )
     expect(canonicalJson(direct)).toBe(canonicalJson(s.request()))
   })
 
@@ -572,12 +613,15 @@ describe("the builder as a function", () => {
         cwd: "/repo",
         title: null,
         lineage: { kind: "fork", parentSessionId: parent.sessionId, throughSeq: parent.seq },
+        settings: SETTINGS,
       }),
       sessionId: "ses_fork" as SessionId,
       seq: parent.seq + 1,
       time: 0,
     })
     expect(canonicalJson(buildRequest(fork, OPTIONS))).toBe(canonicalJson(parent.request()))
+    // The fork keeps its root's cache key, so that request reads the parent's cached prefix.
+    expect(fork.session).toMatchObject({ id: "ses_fork", rootId: parent.sessionId })
   })
 
   test("the golden request: every kind of message in one session, block by block", () => {

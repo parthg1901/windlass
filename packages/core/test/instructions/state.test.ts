@@ -22,7 +22,7 @@ import {
 } from "../../src/instructions/state.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import { comparePrefix } from "../../src/request/prefix.ts"
-import { READ, SHELL, Script, developer } from "../request/session.ts"
+import { READ, SETTINGS, SHELL, Script, developer } from "../request/session.ts"
 
 const userFile = agentsSource("/home/u/.config/light-harness/AGENTS.md", "Be brief.")
 const rootFile = agentsSource("/repo/AGENTS.md", "Use bun.")
@@ -281,7 +281,7 @@ describe("prepareInstructions", () => {
 
   test("sets the baseline when the session has none", () => {
     const s = new Script()
-    s.apply({ type: "session.created", v: 1, data: { cwd: "/repo", title: null, lineage: null } })
+    s.apply({ type: "session.created", v: 1, data: { cwd: "/repo", title: null, lineage: null, settings: SETTINGS } })
     const events = prepareInstructions(s.projection, input(initial))
     expect(events).toEqual([{ type: "baseline.set", v: 1, data: buildBaseline({ tools, sources: initial }) }])
     s.apply(...events)

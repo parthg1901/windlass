@@ -58,6 +58,17 @@ export const lineage = variant("kind", {
 })
 export type Lineage = Infer<typeof lineage>
 
+/**
+ * The model settings a session's requests are sent with. They are part of the
+ * provider's cached prefix (the request's `params` block), so they are stored
+ * in the log: set when the session is created and changed only by
+ * `settings.changed`, at a step boundary.
+ * - `model`: the model every step of the session calls.
+ * - `reasoningEffort`: provider-interpreted effort such as `"low"` or `"high"`; `null` is the model's default.
+ */
+export const sessionSettings = object({ model: nonEmptyString, reasoningEffort: nullable(nonEmptyString) })
+export type SessionSettings = Infer<typeof sessionSettings>
+
 export const finishReason = oneOf(["stop", "tool_calls", "length"])
 
 /**
@@ -134,9 +145,22 @@ export const durableEvents = {
   /**
    * A session exists. Always the first event of a session's own log. For a
    * fork, `lineage` names the parent and the last inherited `seq`, and this
-   * event's `seq` is `throughSeq + 1`.
+   * event's `seq` is `throughSeq + 1`. `settings` is the model and reasoning
+   * effort the session starts with; a fork states its own, which may be the
+   * parent's.
    */
-  "session.created": define(1, object({ cwd: nonEmptyString, title: nullable(string), lineage: nullable(lineage) })),
+  "session.created": define(
+    1,
+    object({ cwd: nonEmptyString, title: nullable(string), lineage: nullable(lineage), settings: sessionSettings }),
+  ),
+  /**
+   * The session's model or reasoning effort changed, from here on. Accepted
+   * only at a step boundary, with or without a running execution, and only if
+   * something actually changes. The next request's `params` block differs
+   * from the previous request's: a legitimate break of the cached prefix,
+   * which `checkPrefix` is told about through this event.
+   */
+  "settings.changed": define(1, sessionSettings),
   /** The session's title was set. */
   "session.renamed": define(1, object({ title: string })),
   /** The session was hidden from the default list. Nothing is deleted. */
@@ -244,7 +268,9 @@ export const durableEvents = {
    * A model call began under assistant message `messageId`. `attempt` counts
    * within the step's single retry budget: a retry before any durable output
    * keeps the same message, while a retry after output starts a new message
-   * with the next `attempt` (retry rule 2).
+   * with the next `attempt` (retry rule 2). `model` is the model that is
+   * called, which is always the session's current `settings.model`; it is
+   * repeated here so that a reader of the event stream needs no projection.
    */
   "step.started": define(1, object({ messageId, attempt: integer(1), model: nonEmptyString })),
   /** The model call completed. Every tool call of the step was settled before this. */

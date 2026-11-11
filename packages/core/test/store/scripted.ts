@@ -18,13 +18,17 @@ const c = (id: string) => id as CallId
 const x = (id: string) => id as ExecutionId
 export const usage = { inputTokens: 1200, cachedInputTokens: 1024, outputTokens: 80, reasoningTokens: 16 }
 
+const settings = { model: "gpt-test", reasoningEffort: "medium" }
 export const created = (cwd = "/work/demo", title: string | null = null) =>
-  event("session.created", { cwd, title, lineage: null })
+  event("session.created", { cwd, title, lineage: null, settings })
+export const settingsChanged = (model: string, reasoningEffort: string | null = "medium") =>
+  event("settings.changed", { model, reasoningEffort })
 export const forked = (parent: SessionId, throughSeq: number) =>
   event("session.created", {
     cwd: "/work/demo",
     title: null,
     lineage: { kind: "fork", parentSessionId: parent, throughSeq },
+    settings,
   })
 export const baselineSet = (instructions = "You are a coding agent working in /work/demo.") =>
   event("baseline.set", {
@@ -54,8 +58,8 @@ export const interruptRequested = (id: string, reason: "user" | "shutdown") =>
   event("execution.interrupt_requested", { executionId: x(id), reason })
 export const executionInterrupted = (id: string, reason: "user" | "shutdown") =>
   event("execution.interrupted", { executionId: x(id), reason })
-export const stepStarted = (id: string, attempt = 1) =>
-  event("step.started", { messageId: m(id), attempt, model: "gpt-test" })
+export const stepStarted = (id: string, attempt = 1, model = "gpt-test") =>
+  event("step.started", { messageId: m(id), attempt, model })
 export const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
   event("step.ended", { messageId: m(id), finish, usage })
 export const stepFailed = (id: string, error: Extract<NewEvent, { type: "step.failed" }>["data"]["error"]) =>

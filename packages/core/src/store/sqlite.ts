@@ -219,6 +219,8 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     if (row === null) throw new StoreError("session_not_found", `session ${id} does not exist`)
     const session = decodeJson(sessionState, row.state, `session ${id} state`)
     const history = {
+      rootId: session.rootId,
+      settings: session.settings,
       baseline: row.baseline === null ? null : decodeJson(baseline, row.baseline, `session ${id} baseline`),
     }
     const compaction = session.compaction

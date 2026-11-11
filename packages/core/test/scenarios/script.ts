@@ -109,7 +109,11 @@ export const usage = { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 
 
 // ---------------------------------------------------------------- session and inbox
 
-export const created = () => event("session.created", { cwd: "/repo", title: null, lineage: null })
+export const created = () =>
+  event("session.created", { cwd: "/repo", title: null, lineage: null, settings: { model: MODEL, reasoningEffort: "medium" } })
+/** The user picks another model or reasoning effort. Takes effect at the next step. */
+export const settingsChanged = (model: string, reasoningEffort: string | null = "medium") =>
+  event("settings.changed", { model, reasoningEffort })
 export const baseline = () =>
   event("baseline.set", {
     instructions: "You are a coding agent.",
@@ -176,7 +180,7 @@ export const opening = (prompt = "Fix the failing test.") => [
 
 // ---------------------------------------------------------------- steps
 
-export const stepStarted = (id: string, attempt = 1) => event("step.started", { messageId: m(id), attempt, model: MODEL })
+export const stepStarted = (id: string, attempt = 1, model = MODEL) => event("step.started", { messageId: m(id), attempt, model })
 export const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
   event("step.ended", { messageId: m(id), finish, usage })
 export const stepFailed = (id: string, error: StepError) => event("step.failed", { messageId: m(id), error, usage: null })
@@ -338,7 +342,9 @@ export function describeEvent(item: NewEvent): string {
     case "instruction.appended":
       return `instruction.appended ${d.messageId} source=${d.source} ${quote(d.text)}`
     case "step.started":
-      return `step.started ${d.messageId} attempt=${d.attempt}`
+      return `step.started ${d.messageId} attempt=${d.attempt}${d.model === MODEL ? "" : ` model=${d.model}`}`
+    case "settings.changed":
+      return `settings.changed model=${d.model} reasoningEffort=${d.reasoningEffort}`
     case "step.ended":
       return `step.ended ${d.messageId} finish=${d.finish}`
     case "step.failed":

@@ -1,11 +1,16 @@
 /**
  * Pure views over a projection: what the model sees, and what an append changed.
  */
-import type { MessageId } from "../id.ts"
+import type { SessionSettings } from "../event/durable.ts"
+import type { MessageId, SessionId } from "../id.ts"
 import type { Baseline, InboxItem, Message, Projection, SessionState } from "./message.ts"
 
 /** What the request builder needs to build the next request. */
 export interface ModelHistory {
+  /** The root of the session's fork chain (`session.rootId`): the prompt-cache key of its requests. */
+  readonly rootId: SessionId
+  /** The model and reasoning effort in force, from `session.created` and `settings.changed`. */
+  readonly settings: SessionSettings
   /** The frozen instructions and tool list, or `null` before the first `baseline.set`. */
   readonly baseline: Baseline | null
   /** Model-visible messages in request order. */
@@ -34,10 +39,11 @@ export function selectModelHistory(projection: Projection): ModelHistory {
       message.kind !== "compaction" &&
       (compaction === null || message.seq >= compaction.keepFromSeq),
   )
-  if (compaction === null) return { baseline: projection.baseline, messages: visible }
+  const session = { rootId: projection.session.rootId, settings: projection.session.settings, baseline: projection.baseline }
+  if (compaction === null) return { ...session, messages: visible }
   const checkpoint = projection.messages.find((message) => message.id === compaction.messageId)
   if (checkpoint === undefined) throw new Error(`compaction message ${compaction.messageId} is missing`)
-  return { baseline: projection.baseline, messages: [checkpoint, ...visible] }
+  return { ...session, messages: [checkpoint, ...visible] }
 }
 
 /** The rows an append has to write. */

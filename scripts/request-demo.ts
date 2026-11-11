@@ -2,8 +2,8 @@
  * A walk through the request builder: a short scripted session is folded
  * through the real reducer, and after each step the request the model would be
  * sent is printed block by block with its hashes, next to the prefix check the
- * runtime ledger runs. It ends with two breaks: one the harness must never
- * cause, and one it is allowed.
+ * runtime ledger runs. It ends with three breaks: one the harness must never
+ * cause, and two it is allowed (a compaction and a settings change).
  *
  *   bun scripts/request-demo.ts
  *
@@ -19,7 +19,7 @@ import { reduce } from "../packages/core/src/message/reducer.ts"
 import { type PrefixVerdict, checkPrefix } from "../packages/core/src/request/build-break.ts"
 import { buildRequest } from "../packages/core/src/request/build.ts"
 import { type BlockHash, hashRequest } from "../packages/core/src/request/prefix.ts"
-import { type RequestBlock, type RequestParams, requestBlocks } from "../packages/core/src/request/request.ts"
+import { type RequestBlock, requestBlocks } from "../packages/core/src/request/request.ts"
 import type { ToolSpec } from "../packages/core/src/tool/tool.ts"
 
 // ---- a session log in memory ----
@@ -27,7 +27,7 @@ import type { ToolSpec } from "../packages/core/src/tool/tool.ts"
 const sessionId = "ses_demo" as SessionId
 const m = (id: string) => id as MessageId
 const c = (id: string) => id as CallId
-const execution = "exe_1" as ExecutionId
+const x = (id: string) => id as ExecutionId
 const usage = { inputTokens: 1800, cachedInputTokens: 1536, outputTokens: 120, reasoningTokens: 40 }
 
 let state: Projection | null = null
@@ -72,13 +72,8 @@ function prepare() {
 
 // ---- printing ----
 
-const params: RequestParams = {
-  model: "gpt-demo",
-  reasoningEffort: "medium",
-  textVerbosity: null,
-  parallelToolCalls: true,
-  cacheKey: sessionId,
-}
+/** The model and effort the session is created with. Every request takes its `params` block from the log. */
+const settings = { model: "gpt-demo", reasoningEffort: "medium" }
 
 const clip = (value: string, width = 64) => {
   const line = value.replaceAll("\n", " / ")
@@ -125,7 +120,7 @@ let previous: BlockHash[] | null = null
 
 /** Builds and prints the request for the next step, with the ledger's prefix check against the last request sent. */
 function show(heading: string, from: Projection) {
-  const request = buildRequest(from, { params, toolChoice: "auto" })
+  const request = buildRequest(from, { toolChoice: "auto" })
   const blocks = requestBlocks(request)
   const hashes = hashRequest(request)
   const verdict = checkPrefix(previous, hashes, since)
@@ -161,7 +156,7 @@ console.log("A request is a list of blocks: params, each tool, the instructions,
 console.log("The provider's cache reads a request cheaply only if it is the previous request plus appended blocks.")
 console.log("Marks: = unchanged   + appended   ! the first block that differs   ~ after it, so no longer cached")
 
-append(event("session.created", { cwd: "/work/weather-cli", title: null, lineage: null }))
+append(event("session.created", { cwd: "/work/weather-cli", title: null, lineage: null, settings }))
 prepare()
 append(
   event("inbox.enqueued", {
@@ -170,13 +165,13 @@ append(
     delivery: "steer",
     content: text("The forecast command prints temperatures in Kelvin. Fix it."),
   }),
-  event("execution.started", { executionId: execution }),
+  event("execution.started", { executionId: x("exe_1") }),
   event("inbox.delivered", { messageId: m("usr_1") }),
 )
 send("the first prompt")
 
 append(
-  event("step.started", { messageId: m("ast_1"), attempt: 1, model: params.model }),
+  event("step.started", { messageId: m("ast_1"), attempt: 1, model: settings.model }),
   event("reasoning.ended", { messageId: m("ast_1"), text: "Find where the unit is chosen.", providerData: { id: "rs_1", encrypted_content: "gAAAAB…" } }),
   event("tool.called", { messageId: m("ast_1"), callId: c("call_1"), name: "read", input: '{"path":"src/forecast.ts"}', providerData: null }),
   event("tool.called", { messageId: m("ast_1"), callId: c("call_2"), name: "read", input: '{"path":"src/units.ts"}', providerData: null }),
@@ -191,7 +186,7 @@ send("after step 1 (reasoning, two parallel reads)")
 
 append(
   event("inbox.enqueued", { messageId: m("usr_2"), origin: null, delivery: "steer", content: text("Round to one decimal place.") }),
-  event("step.started", { messageId: m("ast_2"), attempt: 1, model: params.model }),
+  event("step.started", { messageId: m("ast_2"), attempt: 1, model: settings.model }),
   event("tool.called", { messageId: m("ast_2"), callId: c("call_1"), name: "edit", input: '{"path":"src/forecast.ts"}', providerData: null }),
   event("tool.started", { messageId: m("ast_2"), callId: c("call_1"), effect: "write" }),
   event("tool.settled", { messageId: m("ast_2"), callId: c("call_1"), outcome: "success", output: "Edited src/forecast.ts (1 replacement).", truncation: null, attachments: [], display: null }),
@@ -204,15 +199,17 @@ prepare()
 send("after step 2 (an edit; the provider reused call_1), a steering message, and midnight")
 
 append(
-  event("step.started", { messageId: m("ast_3"), attempt: 1, model: params.model }),
+  event("step.started", { messageId: m("ast_3"), attempt: 1, model: settings.model }),
   event("text.ended", { messageId: m("ast_3"), text: "I will now run the", providerData: null }),
   event("tool.called", { messageId: m("ast_3"), callId: c("call_3"), name: "shell", input: '{"command":"bun test"}', providerData: null }),
+  // The user presses stop: the request is durable first, then the call is settled, the step closed and the model told.
+  event("execution.interrupt_requested", { executionId: x("exe_1"), reason: "user" }),
   event("tool.settled", { messageId: m("ast_3"), callId: c("call_3"), outcome: "not_started", output: "This call was not started: the response was interrupted.", truncation: null, attachments: [], display: null }),
   event("step.failed", { messageId: m("ast_3"), error: { kind: "interrupted", reason: "user" }, usage: null }),
-  event("execution.interrupted", { executionId: execution, reason: "user" }),
   event("synthetic.appended", { messageId: m("syn_1"), origin: "interrupt", content: text("Your previous response was interrupted by the user.") }),
+  event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }),
   event("inbox.enqueued", { messageId: m("usr_3"), origin: null, delivery: "steer", content: text("Don't run the tests yet, show me the diff.") }),
-  event("execution.started", { executionId: execution }),
+  event("execution.started", { executionId: x("exe_2") }),
   event("inbox.delivered", { messageId: m("usr_3") }),
 )
 prepare()
@@ -254,13 +251,17 @@ prepare()
 const compacted = send("after a compaction that kept the last prompt")
 
 append(
-  event("step.started", { messageId: m("ast_4"), attempt: 1, model: params.model }),
+  event("step.started", { messageId: m("ast_4"), attempt: 1, model: settings.model }),
   event("text.ended", { messageId: m("ast_4"), text: "Here is the diff: …", providerData: null }),
   event("step.ended", { messageId: m("ast_4"), finish: "stop", usage }),
 )
 prepare()
 const resumed = send("the step after the compaction")
 
+console.log("\nAnother allowed break: the user raises the reasoning effort, so the params block, the first of every request, changes.")
+append(event("settings.changed", { ...settings, reasoningEffort: "high" }))
+const switched = send("after the settings change")
+
 console.log(
-  `\nSummary: ${sent} requests sent. Tampered history: ${tampered.status}. Compaction: ${compacted.status}. After it: ${resumed.status}.`,
+  `\nSummary: ${sent} requests sent. Tampered history: ${tampered.status}. Compaction: ${compacted.status}. After it: ${resumed.status}. Settings change: ${switched.status}.`,
 )

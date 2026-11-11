@@ -12,7 +12,13 @@ const usage = { inputTokens: 10, cachedInputTokens: 4, outputTokens: 3, reasonin
 
 /** One valid example of every durable event type. Adding an event type without adding it here fails to compile. */
 const examples: { [T in EventType]: NewEvent<T> } = {
-  "session.created": event("session.created", { cwd: "/repo", title: null, lineage: null }),
+  "session.created": event("session.created", {
+    cwd: "/repo",
+    title: null,
+    lineage: null,
+    settings: { model: "gpt-test", reasoningEffort: "high" },
+  }),
+  "settings.changed": event("settings.changed", { model: "gpt-other", reasoningEffort: null }),
   "session.renamed": event("session.renamed", { title: "Fix the bug" }),
   "session.archived": event("session.archived", {}),
   "session.unarchived": event("session.unarchived", {}),
@@ -127,10 +133,10 @@ describe("durable event schema", () => {
   })
 
   test("stored data is canonical JSON", () => {
-    const a = event("session.created", { cwd: "/repo", title: null, lineage: null })
-    const b = event("session.created", { lineage: null, title: null, cwd: "/repo" })
+    const a = event("session.created", { cwd: "/repo", title: null, lineage: null, settings: { model: "m", reasoningEffort: null } })
+    const b = event("session.created", { settings: { reasoningEffort: null, model: "m" }, lineage: null, title: null, cwd: "/repo" })
     expect(encodeEventData(a)).toBe(encodeEventData(b))
-    expect(encodeEventData(a)).toBe('{"cwd":"/repo","lineage":null,"title":null}')
+    expect(encodeEventData(a)).toBe('{"cwd":"/repo","lineage":null,"settings":{"model":"m","reasoningEffort":null},"title":null}')
   })
 })
 

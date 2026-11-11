@@ -3,7 +3,15 @@
  * the real reducer, so a script can only describe logs the store would accept.
  */
 import { type BlobRef, text } from "../../src/content.ts"
-import { type EventData, type NewEvent, type StepError, type StoredEvent, type ToolOutcome, event } from "../../src/event/durable.ts"
+import {
+  type EventData,
+  type NewEvent,
+  type SessionSettings,
+  type StepError,
+  type StoredEvent,
+  type ToolOutcome,
+  event,
+} from "../../src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
 import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import type { Json } from "../../src/json.ts"
@@ -25,7 +33,10 @@ export const PARAMS: RequestParams = {
   cacheKey: "ses_1",
 }
 
-export const OPTIONS: BuildOptions = { params: PARAMS, toolChoice: "auto" }
+/** The settings every scripted session is created with; with the defaults of `BuildOptions` they give `PARAMS`. */
+export const SETTINGS: SessionSettings = { model: PARAMS.model, reasoningEffort: PARAMS.reasoningEffort }
+
+export const OPTIONS: BuildOptions = { toolChoice: "auto" }
 
 export const READ: ToolSpec = {
   name: "read",
@@ -80,6 +91,7 @@ export interface StepSpec {
   readonly id?: string
   readonly parts?: readonly PartSpec[]
   readonly attempt?: number
+  /** Defaults to `MODEL`. When it differs from the session's current model, `settings.changed` is written first. */
   readonly model?: string
   /** Retries scheduled before any output; they continue under the same message. */
   readonly retriesBeforeOutput?: number
@@ -140,8 +152,19 @@ export class Script {
 
   /** `session.created` and the first `baseline.set`. */
   open(baseline: EventData<"baseline.set"> = BASELINE): this {
-    this.apply(event("session.created", { cwd: "/repo", title: null, lineage: null }), event("baseline.set", baseline))
+    this.apply(
+      event("session.created", { cwd: "/repo", title: null, lineage: null, settings: SETTINGS }),
+      event("baseline.set", baseline),
+    )
     return this
+  }
+
+  /** The user picks another model or reasoning effort, at a step boundary. Does nothing when nothing changes. */
+  settings(change: Partial<SessionSettings>) {
+    const current = this.projection.session.settings
+    const next = { ...current, ...change }
+    if (next.model !== current.model || next.reasoningEffort !== current.reasoningEffort)
+      this.apply(event("settings.changed", next))
   }
 
   /** Makes sure an execution holds the claim. */
@@ -234,6 +257,8 @@ export class Script {
     this.claim()
     const messageId = (spec.id ?? this.id("ast")) as MessageId
     const parts = spec.parts ?? []
+    // A step always calls the session's model, so a step on another model is preceded by the settings change.
+    this.settings({ model: spec.model ?? MODEL })
     this.apply(event("step.started", { messageId, attempt: spec.attempt ?? 1, model: spec.model ?? MODEL }))
     for (let retry = 1; retry <= (spec.retriesBeforeOutput ?? 0); retry++) this.retry(messageId, (spec.attempt ?? 1) + retry)
     for (const part of parts) {

@@ -97,6 +97,19 @@ const scenarios: Record<string, () => Script> = {
     s.release()
     return s
   },
+  "the user switches the model and the reasoning effort between steps and between turns": () => {
+    const s = new Script().open()
+    s.user("go")
+    s.step({ parts: [{ reasoning: "plan" }, { call: "call_1" }] })
+    s.settings({ reasoningEffort: "high" })
+    s.step({ parts: [{ reasoning: "more" }, { text: "Done." }] })
+    s.release()
+    s.settings({ model: "gpt-other", reasoningEffort: null })
+    s.user("again")
+    s.step({ model: "gpt-other", parts: [{ reasoning: "theirs" }, { text: "Done again." }] })
+    s.release()
+    return s
+  },
   "instruction changes in the middle of a session": () => {
     const s = new Script().open()
     s.user("go")
@@ -221,7 +234,11 @@ function randomSession(seed: number): Script {
     const made = calls(["success", "success", "error"])
     return [...opening(), ...(made.length > 0 ? made : [{ call: "call_1" }])]
   }
+  // The model in force; a step on another model writes `settings.changed` first (see `Script.step`).
+  let model: string | undefined
   const between = () => {
+    if (chance(0.06)) model = pick([undefined, "gpt-other"])
+    if (chance(0.05)) s.settings({ reasoningEffort: pick(["low", "medium", "high", null]) })
     if (chance(0.2)) s.instruction(pick(["date", "environment", "agents:/repo/AGENTS.md"]), `changed ${below(1000)}`)
     if (chance(0.15)) s.background("background-command", `command ${below(1000)} finished`)
     if (chance(0.1)) s.harness("check", `check ${below(1000)} failed`)
@@ -241,29 +258,31 @@ function randomSession(seed: number): Script {
     let open = true
     for (let step = 0, steps = below(4); open && step < steps; step++) {
       const kind = pick(["tools", "tools", "tools", "steered", "retried", "continued", "interrupted", "refused", "blank"])
-      if (kind === "tools") s.step({ parts: toolParts() })
+      if (kind === "tools") s.step({ model, parts: toolParts() })
       if (kind === "steered") {
         // One steer is withdrawn before the boundary; the other is delivered there.
         const withdrawn = s.enqueue("to be cancelled")
         const steers: MessageId[] = []
-        s.step({ parts: toolParts(), during: () => steers.push(s.enqueue(`steer ${below(1000)}`)) })
+        s.step({ model, parts: toolParts(), during: () => steers.push(s.enqueue(`steer ${below(1000)}`)) })
         s.cancel(withdrawn)
         s.deliver(steers[0]!)
       }
-      if (kind === "retried") s.step({ retriesBeforeOutput: 1 + below(2), parts: toolParts() })
+      if (kind === "retried") s.step({ model, retriesBeforeOutput: 1 + below(2), parts: toolParts() })
       if (kind === "continued") {
         const end = pick(["provider_error", "crashed"] as const)
         const failed = s.step({
+          model,
           parts: [...opening(), ...calls(["success", "error", "effect_unknown"]), ...(chance(0.4) ? [{ reasoning: "cut" }] : [])],
           end,
         })
         // Only a provider failure is retried; after a crash the model is told and the turn carries on with a fresh step.
         if (end === "provider_error") s.retry(failed, 2)
         else s.harness("interrupt", INTERRUPT)
-        s.step({ attempt: end === "provider_error" ? 2 : 1, parts: toolParts() })
+        s.step({ model, attempt: end === "provider_error" ? 2 : 1, parts: toolParts() })
       }
       if (kind === "interrupted") {
         s.step({
+          model,
           parts: [...opening(), ...calls(["success", "not_started", "effect_unknown", "error"]), ...(chance(0.4) ? [{ reasoning: "cut" }] : [])],
           end: "interrupted",
         })
@@ -272,19 +291,19 @@ function randomSession(seed: number): Script {
         open = false
       }
       if (kind === "refused") {
-        s.step({ parts: chance(0.5) ? [{ text: "I" }] : [], end: { refusedFrom: Math.max(prompt, s.floor) } })
+        s.step({ model, parts: chance(0.5) ? [{ text: "I" }] : [], end: { refusedFrom: Math.max(prompt, s.floor) } })
         s.failExecution()
         open = false
       }
       // A completed response with nothing in it but reasoning, which earns the empty-response nudge.
       if (kind === "blank") {
-        s.step({ parts: [{ reasoning: "hm" }, ...(chance(0.5) ? [{ text: "" }] : [])] })
+        s.step({ model, parts: [{ reasoning: "hm" }, ...(chance(0.5) ? [{ text: "" }] : [])] })
         s.harness("empty-response", "You returned nothing.")
       }
       if (open) between()
     }
     if (open) {
-      s.step({ parts: [...opening(), { text: `answer ${turn}` }], end: pick(["stop", "stop", "length"]) })
+      s.step({ model, parts: [...opening(), { text: `answer ${turn}` }], end: pick(["stop", "stop", "length"]) })
       s.release()
     }
     if (chance(0.15)) {
@@ -337,7 +356,13 @@ function walk(events: readonly StoredEvent[]) {
 for (const [, script] of sessions) walk(script.events)
 
 /** The events after which a request may stop extending the one before. `baseline.set` is only ever legal after a compaction. */
-const MAY_BREAK: readonly EventType[] = ["compaction.ended", "history.reverted", "step.refused", "baseline.set"]
+const MAY_BREAK: readonly EventType[] = [
+  "compaction.ended",
+  "history.reverted",
+  "step.refused",
+  "baseline.set",
+  "settings.changed",
+]
 
 /**
  * The requests the step loop sends, as the ledger records them: one per
@@ -385,6 +410,7 @@ describe("the request is an append-only log", () => {
       "tool.settled",
       "compaction.ended",
       "history.reverted",
+      "settings.changed",
     ]
     expect(expected.filter((type) => !seen.has(type))).toEqual([])
     expect(sessions.reduce((total, [, script]) => total + script.events.length, 0)).toBeGreaterThan(10_000)
@@ -431,10 +457,10 @@ describe("the request is an append-only log", () => {
     const causes = new Set<PrefixBreakCause>(
       verdicts.flatMap(({ verdict }) => (verdict.status === "expected_break" ? verdict.causes : [])),
     )
-    expect([...causes].sort()).toEqual(["compaction", "refusal", "revert"])
+    expect([...causes].sort()).toEqual(["compaction", "refusal", "revert", "settings"])
   })
 
-  test("the only events at which the request ever breaks are compaction, revert, refusal and the baseline set after a compaction", () => {
+  test("the only events at which the request ever breaks are compaction, revert, refusal, a settings change and the baseline set after a compaction", () => {
     const breaks = new Set<EventType>()
     const strayBaselines: string[] = []
     for (const [name, script] of sessions) {
@@ -448,7 +474,13 @@ describe("the request is an append-only log", () => {
         if (step.event.type === "baseline.set") compactedSinceBaseline = false
       }
     }
-    expect([...breaks].sort()).toEqual(["baseline.set", "compaction.ended", "history.reverted", "step.refused"])
+    expect([...breaks].sort()).toEqual([
+      "baseline.set",
+      "compaction.ended",
+      "history.reverted",
+      "settings.changed",
+      "step.refused",
+    ])
     expect(strayBaselines).toEqual([])
   })
 
@@ -468,9 +500,26 @@ describe("the request is an append-only log", () => {
     expect(broken.map((verdict) => (verdict.status === "expected_break" ? verdict.causes : verdict.status))).toEqual([[cause]])
   })
 
-  test("sessions without a compaction, revert or refusal never break", () => {
+  test("a settings change breaks the prefix at the params block, once per change that a request follows", () => {
+    let previous: BlockHash[] | null = null
+    const name = "the user switches the model and the reasoning effort between steps and between turns"
+    const verdicts = sent(scenarios[name]!().events).map((request) => {
+      const verdict = checkPrefix(previous, request.blocks, request.since)
+      previous = request.blocks
+      return verdict
+    })
+    const broken = verdicts.filter((verdict) => verdict.status !== "extension" && verdict.status !== "first")
+    expect(broken).toMatchObject([
+      { status: "expected_break", causes: ["settings"], comparison: { kind: "params", index: 0 } },
+      { status: "expected_break", causes: ["settings"], comparison: { kind: "params", index: 0 } },
+    ])
+  })
+
+  test("sessions without a compaction, revert, refusal or settings change never break", () => {
     const quiet = sessions.filter(([, script]) =>
-      script.events.every((event) => !["compaction.ended", "history.reverted", "step.refused"].includes(event.type)),
+      script.events.every(
+        (event) => !["compaction.ended", "history.reverted", "step.refused", "settings.changed"].includes(event.type),
+      ),
     )
     expect(quiet.length).toBeGreaterThan(20)
     const broken = quiet.filter(([, script]) =>

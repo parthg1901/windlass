@@ -33,7 +33,12 @@ const seqOf = (id: string) => store.readMessages(sessionId).find((message) => me
 const screenshot = store.putBlob(new TextEncoder().encode("\x89PNG not really an image"), "image/png")
 
 append(
-  event("session.created", { cwd: "/work/weather-cli", title: "Fix the forecast bug", lineage: null }),
+  event("session.created", {
+    cwd: "/work/weather-cli",
+    title: "Fix the forecast bug",
+    lineage: null,
+    settings: { model: "gpt-test", reasoningEffort: "medium" },
+  }),
   event("baseline.set", {
     instructions: "You are a coding agent working in /work/weather-cli.",
     tools: [
@@ -129,8 +134,15 @@ append(
   event("execution.started", { executionId: x("exe_2") }),
   event("inbox.delivered", { messageId: m("msg_u2") }),
   event("step.started", { messageId: m("msg_a3"), attempt: 1, model: "gpt-test" }),
+  // The cancel is durable before anything stops; then the visible text is flushed, the step closed and the model told.
+  event("execution.interrupt_requested", { executionId: x("exe_2"), reason: "user" }),
   event("text.ended", { messageId: m("msg_a3"), text: "Sure, starting with", providerData: null }),
   event("step.failed", { messageId: m("msg_a3"), error: { kind: "interrupted", reason: "user" }, usage: null }),
+  event("synthetic.appended", {
+    messageId: m("msg_s1"),
+    origin: "interrupt",
+    content: [{ type: "text", text: "The user stopped the previous response before it finished." }],
+  }),
   event("execution.interrupted", { executionId: x("exe_2"), reason: "user" }),
 )
 append(event("history.reverted", { fromSeq: seqOf("msg_u2") }))

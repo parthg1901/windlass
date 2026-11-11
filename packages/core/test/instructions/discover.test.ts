@@ -13,7 +13,7 @@ import { agentsKey, renderUpdate } from "../../src/instructions/source.ts"
 import { instructionState, knownAgentsFiles, prepareInstructions } from "../../src/instructions/state.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import { comparePrefix } from "../../src/request/prefix.ts"
-import { READ, SHELL, Script, developer } from "../request/session.ts"
+import { READ, SETTINGS, SHELL, Script, developer } from "../request/session.ts"
 
 let tree: string
 
@@ -183,7 +183,7 @@ describe("discovery, detection and the request together", () => {
     let now = new Date(2026, 10, 11, 9, 0)
     let next = 0
     const s = new Script()
-    s.apply({ type: "session.created", v: 1, data: { cwd, title: null, lineage: null } })
+    s.apply({ type: "session.created", v: 1, data: { cwd, title: null, lineage: null, settings: SETTINGS } })
 
     /** What the step loop does at each step boundary. Returns the texts it appended. */
     const prepare = (directories: readonly string[] = []) => {

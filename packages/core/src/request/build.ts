@@ -1,5 +1,5 @@
 /**
- * The request builder: projected session state + request parameters -> `ModelRequest`.
+ * The request builder: projected session state -> `ModelRequest`.
  *
  * SINGLE-OWNER FILE. This is the only code that decides what the model sees.
  *
@@ -21,9 +21,13 @@
  *
  * The only events after which the next request may not extend the previous
  * one are `compaction.ended` (with the `baseline.set` that follows it),
- * `history.reverted` and `step.refused`; see `build-break.ts`. A caller that
- * changes `params` (another model, another effort) changes the first block and
- * owns that break.
+ * `history.reverted`, `step.refused` and `settings.changed`; see
+ * `build-break.ts`.
+ *
+ * The `params` block comes from stored state too: `model` and
+ * `reasoningEffort` are the session's settings (`session.created`,
+ * `settings.changed`) and the cache key is the root session's ID. A caller cannot
+ * pass another model, so the first block changes only when the log says so.
  *
  * Nothing is repaired here. The log settles every tool call before its step
  * ends, so a closed message is rendered as stored; state that the reducer
@@ -94,9 +98,36 @@ import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { AssistantMessage, Message, Projection } from "../message/message.ts"
 import type { InputItem, ModelRequest, RequestParams } from "./request.ts"
 
-export interface BuildOptions {
-  readonly params: RequestParams
+/**
+ * Call settings that are not stored per session, because they are the same
+ * for every request a build of the harness sends. Changing one changes the
+ * `params` block of every session, so they are constants, not knobs.
+ */
+export interface CallOptions {
+  /** Provider-interpreted output verbosity. Defaults to `null`, the model's default. */
+  readonly textVerbosity?: string | null
+  /** Defaults to `true`. */
+  readonly parallelToolCalls?: boolean
+  /**
+   * The prompt-cache routing key. Defaults to the ID of the root of the
+   * session's fork chain, so a fork shares its parent's cached prefix; `null` sends none.
+   */
+  readonly cacheKey?: string | null
+}
+
+export interface BuildOptions extends CallOptions {
   readonly toolChoice: ModelRequest["toolChoice"]
+}
+
+/** The `params` block of a session's next request: its stored settings plus the harness-wide call options. */
+export function requestParams(history: Pick<ModelHistory, "rootId" | "settings">, options: CallOptions = {}): RequestParams {
+  return {
+    model: history.settings.model,
+    reasoningEffort: history.settings.reasoningEffort,
+    textVerbosity: options.textVerbosity ?? null,
+    parallelToolCalls: options.parallelToolCalls ?? true,
+    cacheKey: options.cacheKey === undefined ? history.rootId : options.cacheKey,
+  }
 }
 
 export type RequestBuildErrorCode =
@@ -127,16 +158,10 @@ export function buildRequest(projection: Projection, options: BuildOptions): Mod
 export function buildRequestFromHistory(history: ModelHistory, options: BuildOptions): ModelRequest {
   const baseline = history.baseline
   if (baseline === null) throw new RequestBuildError("no_baseline", "the session has no baseline.set event yet")
-  const context = { model: options.params.model, baselineSeq: baseline.seq }
+  const context = { model: history.settings.model, baselineSeq: baseline.seq }
   return {
-    // Copied field by field so that an extra property on the caller's object never reaches a block hash.
-    params: {
-      model: options.params.model,
-      reasoningEffort: options.params.reasoningEffort,
-      textVerbosity: options.params.textVerbosity,
-      parallelToolCalls: options.params.parallelToolCalls,
-      cacheKey: options.params.cacheKey,
-    },
+    // Built field by field so that an extra property on the caller's object never reaches a block hash.
+    params: requestParams(history, options),
     tools: baseline.tools,
     instructions: baseline.instructions,
     input: history.messages.flatMap((message) => renderMessage(message, context)),
@@ -149,8 +174,8 @@ export function buildRequestFromHistory(history: ModelHistory, options: BuildOpt
  * with tools kept and tool calls switched off. Because it extends the step
  * request, summarising reads the history from the cache.
  */
-export function buildCompactionRequest(projection: Projection, params: RequestParams, prompt: string): ModelRequest {
-  const request = buildRequest(projection, { params, toolChoice: "none" })
+export function buildCompactionRequest(projection: Projection, prompt: string, options: CallOptions = {}): ModelRequest {
+  const request = buildRequest(projection, { ...options, toolChoice: "none" })
   return { ...request, input: [...request.input, { type: "message", role: "developer", content: text(prompt) }] }
 }
 

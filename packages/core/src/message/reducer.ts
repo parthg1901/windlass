@@ -23,6 +23,8 @@
  * - Once an interrupt is requested the execution only winds down and ends as
  *   interrupted for that reason. A step that was cut short (interrupted or
  *   crashed) is followed at once by the interrupt marker.
+ * - A step calls the model the session's settings name; settings change only
+ *   at a step boundary.
  * - Revert and refusal ranges never reach back past the latest compaction.
  *
  * Structure is shared: parts of the state an event does not touch are returned
@@ -99,8 +101,10 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     cwd: event.data.cwd,
     title: event.data.title,
     lineage: event.data.lineage,
+    rootId: event.data.lineage === null || state === null ? event.sessionId : state.session.rootId,
     archived: false,
     createdAt: event.time,
+    settings: event.data.settings,
     execution: null,
     open: null,
     compaction: null,
@@ -149,6 +153,7 @@ const SCOPE = {
   "inbox.enqueued": "session",
   "inbox.delivery_changed": "session",
   "inbox.cancelled": "session",
+  "settings.changed": "session",
   "text.ended": "wind_down",
   "tool.settled": "wind_down",
   "step.failed": "wind_down",
@@ -301,6 +306,14 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       return session({ archived: true })
     case "session.unarchived":
       return session({ archived: false })
+    case "settings.changed": {
+      // A request in flight was built from the settings it started with.
+      atBoundary()
+      const current = state.session.settings
+      if (current.model === event.data.model && current.reasoningEffort === event.data.reasoningEffort)
+        fail("invalid_transition", "the settings are unchanged")
+      return session({ settings: event.data })
+    }
 
     case "baseline.set": {
       atBoundary()
@@ -449,6 +462,11 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     case "step.started": {
       const current = claimed()
       based()
+      if (event.data.model !== state.session.settings.model)
+        fail(
+          "invalid_transition",
+          `the session's model is ${state.session.settings.model} (settings.changed comes before a step on another model)`,
+        )
       if (event.data.attempt !== current.nextAttempt)
         fail(
           "invalid_transition",

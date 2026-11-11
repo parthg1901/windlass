@@ -35,7 +35,7 @@ import { type InstructionSource, agentsPath, fingerprint, renderRemoval, renderU
 export type InstructionState = ReadonlyMap<string, string | null>
 
 /** What the model currently knows about each instruction source. */
-export function instructionState(history: ModelHistory): InstructionState {
+export function instructionState(history: Pick<ModelHistory, "baseline" | "messages">): InstructionState {
   const state = new Map<string, string | null>()
   const baseline = history.baseline
   if (baseline === null) return state

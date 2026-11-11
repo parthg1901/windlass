@@ -17,12 +17,21 @@ function points() {
 }
 
 describe("prefixBreakCauses", () => {
-  test("names compaction, revert and refusal, once each, in the order they first occur", () => {
+  test("names compaction, revert, refusal and a settings change, once each, in the order they first occur", () => {
     expect(
       prefixBreakCauses(
-        events("step.started", "step.refused", "history.reverted", "compaction.ended", "baseline.set", "step.refused"),
+        events(
+          "step.started",
+          "step.refused",
+          "history.reverted",
+          "settings.changed",
+          "compaction.ended",
+          "baseline.set",
+          "step.refused",
+          "settings.changed",
+        ),
       ),
-    ).toEqual(["refusal", "revert", "compaction"])
+    ).toEqual(["refusal", "revert", "settings", "compaction"])
   })
 
   test("no other event is a cause", () => {
@@ -37,6 +46,7 @@ describe("prefixBreakCauses", () => {
           "retry.scheduled",
           "compaction.started",
           "compaction.failed",
+          "execution.interrupt_requested",
           "execution.interrupted",
           "tool.settled",
         ),

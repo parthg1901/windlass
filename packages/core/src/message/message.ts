@@ -7,7 +7,15 @@
  * also read back from SQLite JSON.
  */
 import { blobRef, content } from "../content.ts"
-import { delivery, finishReason, instructionFingerprint, lineage, stepError, toolOutcome } from "../event/durable.ts"
+import {
+  delivery,
+  finishReason,
+  instructionFingerprint,
+  lineage,
+  sessionSettings,
+  stepError,
+  toolOutcome,
+} from "../event/durable.ts"
 import { callId, executionId, messageId, sessionId } from "../id.ts"
 import { interruptReason } from "../interrupt.ts"
 import { providerError } from "../provider/error.ts"
@@ -210,8 +218,20 @@ export const sessionState = object({
   cwd: nonEmptyString,
   title: nullable(string),
   lineage: nullable(lineage),
+  /**
+   * The first session of the fork chain this session belongs to: its own ID
+   * for a root session, the parent's `rootId` for a fork. Requests use it as
+   * the prompt-cache key, so a fork's first request is its parent's request
+   * at the fork point and reads the same cached prefix.
+   */
+  rootId: sessionId,
   archived: boolean,
   createdAt: integer(0),
+  /**
+   * The model and reasoning effort in force: the request builder takes the
+   * `params` of the next request from here, never from its caller.
+   */
+  settings: sessionSettings,
   /**
    * The crash-recovery claim. `null` when idle. `running` while a process
    * works on the session (after a crash it stays `running` until recovery).

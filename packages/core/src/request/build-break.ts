@@ -11,10 +11,13 @@
  * - `compaction.ended`: history now starts at the checkpoint (and the
  *   `baseline.set` that follows may change the instructions and tools);
  * - `history.reverted`: the user rewound, so sent messages are gone;
- * - `step.refused`: the refused range is excluded so it is not sent again.
+ * - `step.refused`: the refused range is excluded so it is not sent again;
+ * - `settings.changed`: the user chose another model or reasoning effort, so
+ *   the `params` block, the first of every request, differs.
  *
- * Anything else that changes an already-sent block is a bug in the harness,
- * except a `params` block the caller changed on purpose (another model or effort).
+ * Anything else that changes an already-sent block is a bug in the harness.
+ * The request builder takes `model` and `reasoningEffort` from the session's
+ * stored settings, so there is no way to change them without the event.
  */
 import type { EventType } from "../event/durable.ts"
 import { type BlockHash, type PrefixComparison, comparePrefix } from "./prefix.ts"
@@ -23,6 +26,7 @@ export const PREFIX_BREAK_CAUSES = {
   "compaction.ended": "compaction",
   "history.reverted": "revert",
   "step.refused": "refusal",
+  "settings.changed": "settings",
 } as const satisfies Partial<Record<EventType, string>>
 
 export type PrefixBreakCause = (typeof PREFIX_BREAK_CAUSES)[keyof typeof PREFIX_BREAK_CAUSES]

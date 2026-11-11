@@ -82,7 +82,10 @@ class Log {
   }
 }
 
-const created = event("session.created", { cwd: "/repo", title: null, lineage: null })
+const settings = { model: "gpt-test", reasoningEffort: "medium" }
+const created = event("session.created", { cwd: "/repo", title: null, lineage: null, settings })
+const settingsChanged = (model: string, reasoningEffort: string | null = "medium") =>
+  event("settings.changed", { model, reasoningEffort })
 const baselineSet = event("baseline.set", {
   instructions: "You are a coding agent.",
   tools: [{ name: "read", description: "Read a file", inputSchema: { type: "object" } }],
@@ -100,8 +103,8 @@ const interruptRequested = (reason: "user" | "shutdown" = "user", id = "exe_1") 
 const executionInterrupted = (reason: "user" | "shutdown" = "user", id = "exe_1") =>
   event("execution.interrupted", { executionId: x(id), reason })
 const stepCrashed = (id: string) => event("step.failed", { messageId: m(id), error: { kind: "crashed" }, usage: null })
-const stepStarted = (id: string, attempt = 1) =>
-  event("step.started", { messageId: m(id), attempt, model: "gpt-test" })
+const stepStarted = (id: string, attempt = 1, model = "gpt-test") =>
+  event("step.started", { messageId: m(id), attempt, model })
 const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
   event("step.ended", { messageId: m(id), finish, usage })
 const stepInterrupted = (id: string, reason: "user" | "shutdown" = "user") =>
@@ -186,8 +189,10 @@ describe("session lifecycle", () => {
         cwd: "/repo",
         title: null,
         lineage: null,
+        rootId: "ses_1" as SessionId,
         archived: false,
         createdAt: 10,
+        settings,
         execution: null,
         open: null,
         compaction: null,
@@ -833,11 +838,65 @@ describe("interrupts", () => {
         cwd: "/repo",
         title: null,
         lineage: { kind: "fork", parentSessionId: "ses_1" as SessionId, throughSeq: parent.seq },
+        settings,
       }),
       enqueue("u2"),
       executionStarted("exe_2"),
     )
     expect(fork.reject(deliver("u2"))).toBe("accepted")
+  })
+})
+
+describe("session settings", () => {
+  test("a session starts with the settings it was created with, and a fork states its own", () => {
+    const parent = finishedTurn()
+    expect(parent.state!.session.settings).toEqual(settings)
+    const fork = new Log("ses_2" as SessionId, parent.state)
+    fork.apply(
+      event("session.created", {
+        cwd: "/repo",
+        title: null,
+        lineage: { kind: "fork", parentSessionId: "ses_1" as SessionId, throughSeq: parent.seq },
+        settings: { model: "gpt-fork", reasoningEffort: null },
+      }),
+    )
+    expect(fork.state!.session).toMatchObject({ rootId: "ses_1", settings: { model: "gpt-fork", reasoningEffort: null } })
+    expect(parent.state!.session.settings).toEqual(settings)
+  })
+
+  test("a change replaces the settings, whether the session is idle or between steps", () => {
+    const idle = finishedTurn()
+    idle.apply(settingsChanged("gpt-other", null))
+    expect(idle.state!.session.settings).toEqual({ model: "gpt-other", reasoningEffort: null })
+    const working = inStep()
+    working.apply(stepEnded("a1", "tool_calls"), settingsChanged("gpt-test", "high"))
+    expect(working.state!.session.settings).toEqual({ model: "gpt-test", reasoningEffort: "high" })
+    expect(working.state!.session.execution).toMatchObject({ status: "running" })
+  })
+
+  test("settings change only at a step boundary, and only when something changes", () => {
+    const step = inStep()
+    expect(step.reject(settingsChanged("gpt-other"))).toBe("invalid_transition")
+    const compaction = running()
+    compaction.apply(compactionStarted("c1"))
+    expect(compaction.reject(settingsChanged("gpt-other"))).toBe("invalid_transition")
+    expect(running().reject(settingsChanged("gpt-test", "medium"))).toBe("invalid_transition")
+    expect(running().reject(settingsChanged("gpt-test", "low"))).toBe("accepted")
+  })
+
+  test("a step calls the session's model and no other", () => {
+    const log = running()
+    expect(log.reject(stepStarted("a1", 1, "gpt-other"))).toBe("invalid_transition")
+    log.apply(settingsChanged("gpt-other"))
+    expect(log.reject(stepStarted("a1", 1, "gpt-test"))).toBe("invalid_transition")
+    log.apply(stepStarted("a1", 1, "gpt-other"))
+    expect(log.assistant("a1").model).toBe("gpt-other")
+  })
+
+  test("the user may change settings while an interrupt winds down between steps", () => {
+    const log = inStep()
+    log.apply(stepEnded("a1", "tool_calls"), interruptRequested("user"))
+    expect(log.reject(settingsChanged("gpt-other"))).toBe("accepted")
   })
 })
 
@@ -1318,6 +1377,7 @@ describe("fork", () => {
       cwd: "/repo",
       title: "Fork",
       lineage: { kind: "fork", parentSessionId: "ses_1" as SessionId, throughSeq },
+      settings,
     })
 
   test("a fork continues the parent's history at the next seq", () => {
@@ -1381,8 +1441,10 @@ describe("fork", () => {
         cwd: "/repo",
         title: null,
         lineage: { kind: "fork", parentSessionId: "ses_2" as SessionId, throughSeq: child.seq },
+        settings,
       }),
     )
+    expect(grandchild.state!.session).toMatchObject({ id: "ses_3", rootId: "ses_1", settings })
     expect(ids(grandchild.state!.messages)).toEqual(["u1", "a1", "a2", "u2"])
     expect(grandchild.seq).toBe(child.seq + 1)
   })
