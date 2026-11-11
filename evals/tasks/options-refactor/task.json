@@ -1,0 +1,8 @@
+{
+  "id": "options-refactor",
+  "title": "Change a function's signature and update its callers across seven files, keeping the tests green",
+  "prompt": "People keep mixing up formatMoney's currency and locale arguments. Change it to formatMoney(amount, { currency, locale }), with locale defaulting to \"en-US\" when it's left out, and update every caller. Callers that pass \"en-US\" explicitly can just drop it. The tests have to keep passing, and don't change them.",
+  "tags": ["refactor", "multi-file", "signature-change", "unit-test"],
+  "timeoutSeconds": 420,
+  "maxSteps": 20
+}

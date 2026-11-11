@@ -1,0 +1,23 @@
+import { expect, test } from "bun:test"
+import { invoice } from "./invoice.ts"
+
+test("a small order has no discount line", () => {
+  const result = invoice([{ label: "Mug", amount: 12.5 }])
+  expect(result.lines).toHaveLength(1)
+  expect(result.total).toBe(12.5)
+})
+
+test("an order of exactly 100 shows the discount and its total", () => {
+  const result = invoice([
+    { label: "Kettle", amount: 60 },
+    { label: "Teapot", amount: 40 },
+  ])
+  expect(result.lines.at(-1)).toEqual({ label: "Bulk discount (10%)", amount: -10 })
+  expect(result.total).toBe(90)
+})
+
+test("a large order", () => {
+  const result = invoice([{ label: "Espresso machine", amount: 300 }])
+  expect(result.lines.at(-1)?.amount).toBe(-30)
+  expect(result.total).toBe(270)
+})

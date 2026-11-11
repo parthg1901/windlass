@@ -1,0 +1,7 @@
+import { expect, test } from "bun:test"
+import { profileLine } from "./profile.ts"
+
+test("profile lines", () => {
+  expect(profileLine("u1")).toBe("Ada (core)")
+  expect(profileLine("nope")).toBe("unknown user")
+})

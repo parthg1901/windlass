@@ -1,0 +1,8 @@
+{
+  "id": "project-checks",
+  "title": "Fix a threshold whose obvious fix leaves another test failing; the project declares its check",
+  "prompt": "Orders of exactly 100.00 should get the 10% bulk discount, the threshold is meant to be inclusive. Right now a 100.00 order gets nothing. Can you fix that?",
+  "tags": ["fix", "project-config", "checks", "unit-test"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

@@ -1,0 +1,15 @@
+import { expect, test } from "bun:test"
+import { bulkDiscount } from "./discount.ts"
+
+test("no discount below the threshold", () => {
+  expect(bulkDiscount(99.99)).toBe(0)
+  expect(bulkDiscount(20)).toBe(0)
+})
+
+test("the threshold itself gets the discount", () => {
+  expect(bulkDiscount(100)).toBe(10)
+})
+
+test("above the threshold", () => {
+  expect(bulkDiscount(250)).toBe(25)
+})

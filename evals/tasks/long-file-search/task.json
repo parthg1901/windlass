@@ -1,0 +1,9 @@
+{
+  "id": "long-file-search",
+  "title": "Fix one command in a source file far too long to read whole",
+  "prompt": "bun cli.ts archive-invoice prints ok, but the record it prints afterwards still says archived: false. Can you fix it? Keep the change small, please, src/commands.ts is huge and I review the diff by hand.",
+  "tags": ["fix", "large-file", "search"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15,
+  "setup": ["bun", "gen.ts"]
+}

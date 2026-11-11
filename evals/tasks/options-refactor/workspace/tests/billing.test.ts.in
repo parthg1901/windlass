@@ -1,0 +1,47 @@
+import { expect, test } from "bun:test"
+import { cartBadge } from "../src/cart.ts"
+import { invoiceEmail } from "../src/email.ts"
+import { invoiceLines, invoiceTotal } from "../src/invoice.ts"
+import { receipt } from "../src/receipt.ts"
+import { refundNote } from "../src/refund.ts"
+import { regionReport } from "../src/report.ts"
+
+const ana = { name: "Ana", email: "ana@example.test", locale: "de-DE", currency: "EUR" }
+const bo = { name: "Bo", email: "bo@example.test", locale: "en-GB", currency: "GBP" }
+const items = [
+  { label: "Notebook", price: 4.5, quantity: 2 },
+  { label: "Pen", price: 1.25, quantity: 4 },
+]
+const money = (amount: number, currency: string, locale: string) => new Intl.NumberFormat(locale, { style: "currency", currency }).format(amount)
+
+test("invoice lines and total use the customer's currency and locale", () => {
+  expect(invoiceLines(ana, items)).toEqual([`2 x Notebook: ${money(9, "EUR", "de-DE")}`, `4 x Pen: ${money(5, "EUR", "de-DE")}`])
+  expect(invoiceTotal(bo, items)).toBe(`Total: ${money(14, "GBP", "en-GB")}`)
+})
+
+test("receipts show change only when there is some", () => {
+  expect(receipt(bo, 20, 0)).toBe(`Paid ${money(20, "GBP", "en-GB")}`)
+  expect(receipt(ana, 20, 6)).toBe(`Paid ${money(20, "EUR", "de-DE")}\nChange ${money(6, "EUR", "de-DE")}`)
+})
+
+test("refund notes are in US English", () => {
+  expect(refundNote(ana, 9, "damaged")).toBe(`Refund of ${money(9, "EUR", "en-US")} to Ana: damaged`)
+})
+
+test("the region report is in euros, German style", () => {
+  expect(regionReport([{ region: "north", amount: 1000 }, { region: "east", amount: 2.5 }, { region: "north", amount: 0.5 }])).toEqual([
+    `east: ${money(2.5, "EUR", "de-DE")}`,
+    `north: ${money(1000.5, "EUR", "de-DE")}`,
+  ])
+})
+
+test("the email includes the lines, the total and the amount due", () => {
+  const email = invoiceEmail(bo, items, 14)
+  expect(email).toContain(`Total: ${money(14, "GBP", "en-GB")}`)
+  expect(email).toContain(`Please pay ${money(14, "GBP", "en-GB")} within 14 days.`)
+})
+
+test("the cart badge", () => {
+  expect(cartBadge(items)).toBe(`6 items · ${money(14, "USD", "en-US")}`)
+  expect(cartBadge([items[0]!].map((item) => ({ ...item, quantity: 1 })))).toBe(`1 item · ${money(4.5, "USD", "en-US")}`)
+})
