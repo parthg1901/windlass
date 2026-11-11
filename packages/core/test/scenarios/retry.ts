@@ -61,10 +61,10 @@ export const retryAfterPartialText: Scenario = {
     {
       label: "attempt 1 fails after output",
       events: [...opening(), stepStarted("a1"), say("a1", "Let me look at the")],
-      gaps: [
+      rejects: [
         {
-          gap: "G1",
           event: retryScheduled("a1", 2, serverError),
+          code: "invalid_transition",
           why: "after durable output the retry may not continue under the same message",
         },
       ],
@@ -72,10 +72,10 @@ export const retryAfterPartialText: Scenario = {
     {
       label: "the message fails and a retry is scheduled",
       events: [stepProviderFailed("a1", serverError), retryScheduled("a1", 2, serverError)],
-      gaps: [
+      rejects: [
         {
-          gap: "G4",
           event: stepStarted("a2", 1),
+          code: "invalid_transition",
           why: "the retry continues the step's attempt budget, so it must carry the scheduled attempt 2",
         },
       ],
@@ -97,10 +97,10 @@ export const retryAfterPartialText: Scenario = {
         history: ["u1", "a1", "a2"],
         execution: null,
       },
-      gaps: [
+      rejects: [
         {
-          gap: "G3",
           event: retryScheduled("a1", 3, serverError),
+          code: "invalid_transition",
           why: "a1 is no longer the latest step; only the latest step can be retried",
         },
       ],
@@ -173,7 +173,9 @@ const nonRetryable = (
       {
         label: "the call is rejected",
         events: [...opening(), stepStarted("a1"), stepProviderFailed("a1", error)],
-        gaps: [{ gap: "G2", event: retryScheduled("a1", 2, error), why: `${kind} is not retryable` }],
+        rejects: [
+          { event: retryScheduled("a1", 2, error), code: "invalid_transition", why: `${kind} is not retryable` },
+        ],
       },
       {
         label: "the execution fails",

@@ -332,10 +332,10 @@ export const duringRetryDelay: Scenario = {
         ui: [{ id: "u1" }, { id: "a1", status: "failed", attempt: 2, error: "interrupted:user", text: "" }, { id: "s1" }],
         history: ["u1", "a1", "s1"],
       },
-      gaps: [
+      rejects: [
         {
-          gap: "G2",
           event: retryScheduled("a1", 3, rateLimited),
+          code: "invalid_transition",
           why: "a step that the user interrupted is not retried",
         },
       ],

@@ -130,8 +130,11 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
     if (state.session.open !== null)
       fail("invalid_transition", `${state.session.open.kind} ${state.session.open.messageId} is still open`)
   }
+  /** The execution that holds a running claim. */
   const claimed = () => {
-    if (state.session.execution?.status !== "running") fail("invalid_transition", "no execution is running")
+    const current = state.session.execution
+    if (current === null || current.status !== "running") return fail("invalid_transition", "no execution is running")
+    return current
   }
   const unused = (id: MessageId) => {
     if (state.messages.some((message) => message.id === id) || state.inbox.some((item) => item.messageId === id))
@@ -277,7 +280,7 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
         fail("invalid_transition", `execution ${state.session.execution.id} already holds the claim`)
       atBoundary()
       return session({
-        execution: { id: event.data.executionId, status: "running", resumes: 0, startedSeq: event.seq },
+        execution: { id: event.data.executionId, status: "running", resumes: 0, startedSeq: event.seq, nextAttempt: 1 },
       })
     }
     case "execution.resumed": {
@@ -296,7 +299,14 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
     }
 
     case "step.started": {
-      claimed()
+      const current = claimed()
+      if (event.data.attempt !== current.nextAttempt)
+        fail(
+          "invalid_transition",
+          current.nextAttempt === 1
+            ? "a step that is not a scheduled retry starts at attempt 1"
+            : `the scheduled retry must start as attempt ${current.nextAttempt}`,
+        )
       const started = add({
         kind: "assistant",
         id: event.data.messageId,
@@ -312,7 +322,14 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
         lastRetry: null,
         endedAt: null,
       })
-      return { ...started, session: { ...started.session, open: { kind: "step", messageId: event.data.messageId } } }
+      return {
+        ...started,
+        session: {
+          ...started.session,
+          execution: { ...current, nextAttempt: 1 },
+          open: { kind: "step", messageId: event.data.messageId },
+        },
+      }
     }
     case "step.ended":
       return close(event.data.messageId, (message) => ({
@@ -339,24 +356,40 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       })
       return { ...closed, messages: exclude(closed.messages, event.data.excludeFromSeq, "refused") }
     }
-    case "retry.scheduled":
-      return edit(event.data.messageId, "assistant", (message) => {
-        if (message.status !== "running" && message.status !== "failed")
+    case "retry.scheduled": {
+      const current = claimed()
+      const error = event.data.error
+      if (!error.retryable) fail("invalid_transition", `a ${error.kind} error is never retried unchanged`)
+      const open = state.session.open
+      if (open?.kind === "compaction") fail("invalid_transition", `compaction ${open.messageId} is still open`)
+      // One attempt budget per logical step: only the step in progress can be retried.
+      const target =
+        open?.messageId ??
+        state.messages.findLast((message) => message.kind === "assistant" && message.seq > current.startedSeq)?.id
+      const retried = edit(event.data.messageId, "assistant", (message) => {
+        if (message.id !== target)
+          fail("invalid_transition", `step ${message.id} is not the step in progress, so it cannot be retried`)
+        if (message.status === "completed" || message.status === "refused")
           fail("invalid_transition", `step ${message.id} is ${message.status} and cannot be retried`)
-        if (event.data.attempt <= message.attempt)
-          fail("invalid_transition", `attempt ${message.attempt} of step ${message.id} has already run`)
+        // Before durable output the retry is transparent; after it the message must fail first (retry rule 2).
+        if (message.status === "running" && message.parts.length > 0)
+          fail("invalid_transition", `step ${message.id} has durable output: it fails first and the retry runs under a new message`)
+        if (message.status === "failed" && !(message.error?.kind === "provider" && message.error.error.retryable))
+          fail("invalid_transition", `step ${message.id} did not fail with a retryable provider error`)
+        if (message.status === "failed" && current.nextAttempt !== 1)
+          fail("invalid_transition", `attempt ${current.nextAttempt} of step ${message.id} is already scheduled`)
+        if (event.data.attempt !== message.attempt + 1)
+          fail("invalid_transition", `the attempt after ${message.attempt} of step ${message.id} is ${message.attempt + 1}`)
         return {
           ...message,
           // Before output the retry continues under this message; after a failure it runs under a new one.
           attempt: message.status === "running" ? event.data.attempt : message.attempt,
-          lastRetry: {
-            attempt: event.data.attempt,
-            delayMs: event.data.delayMs,
-            error: event.data.error,
-            time: event.time,
-          },
+          lastRetry: { attempt: event.data.attempt, delayMs: event.data.delayMs, error, time: event.time },
         }
       })
+      if (open !== null) return retried
+      return { ...retried, session: { ...retried.session, execution: { ...current, nextAttempt: event.data.attempt } } }
+    }
 
     case "text.ended":
       return step(event.data.messageId, (message) => ({

@@ -250,12 +250,14 @@ function randomSession(seed: number): Script {
       }
       if (kind === "retried") s.step({ retriesBeforeOutput: 1 + below(2), parts: toolParts() })
       if (kind === "continued") {
+        const end = pick(["provider_error", "crashed"] as const)
         const failed = s.step({
           parts: [...opening(), ...calls(["success", "error", "effect_unknown"]), ...(chance(0.4) ? [{ reasoning: "cut" }] : [])],
-          end: pick(["provider_error", "crashed"]),
+          end,
         })
-        s.retry(failed, 2)
-        s.step({ attempt: 2, parts: toolParts() })
+        // Only a provider failure is retried; after a crash the turn carries on with a fresh step.
+        if (end === "provider_error") s.retry(failed, 2)
+        s.step({ attempt: end === "provider_error" ? 2 : 1, parts: toolParts() })
       }
       if (kind === "interrupted") {
         s.step({

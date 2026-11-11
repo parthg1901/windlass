@@ -14,7 +14,7 @@ import {
   sessionState,
 } from "../../src/message/message.ts"
 import { ReduceError, type ReduceErrorCode, reduce, reduceAll } from "../../src/message/reducer.ts"
-import { makeProviderError } from "../../src/provider/error.ts"
+import { type ProviderError, makeProviderError } from "../../src/provider/error.ts"
 import type { ToolEffect } from "../../src/tool/tool.ts"
 
 const m = (id: string) => id as MessageId
@@ -312,7 +312,7 @@ describe("execution claim", () => {
   test("started takes the claim and succeeded releases it", () => {
     const log = new Log()
     log.apply(created, executionStarted())
-    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 0, startedSeq: 2 })
+    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 0, startedSeq: 2, nextAttempt: 1 })
     expect(log.reject(executionStarted("exe_2"))).toBe("invalid_transition")
     expect(log.apply(executionSucceeded()).session.execution).toBeNull()
     expect(log.reject(executionSucceeded())).toBe("not_found")
@@ -345,7 +345,7 @@ describe("execution claim", () => {
     log.apply(created, executionStarted())
     log.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
     log.apply(event("execution.resumed", { executionId: x("exe_1") }))
-    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 1, startedSeq: 2 })
+    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 1, startedSeq: 2, nextAttempt: 1 })
     // After a crash the claim is still "running"; recovery resumes it again.
     log.apply(event("execution.resumed", { executionId: x("exe_1") }))
     expect(log.state!.session.execution).toMatchObject({ status: "running", resumes: 2 })
@@ -688,18 +688,117 @@ describe("retries", () => {
     expect(refused.reject(retry)).toBe("invalid_transition")
   })
 
-  test("a retry must move the attempt forward and name an assistant message", () => {
+  const retry = (id: string, attempt: number, error: ProviderError = rateLimit) =>
+    event("retry.scheduled", { messageId: m(id), attempt, delayMs: 0, error })
+  const providerFailed = (id: string, error: ProviderError) =>
+    event("step.failed", { messageId: m(id), error: { kind: "provider", error }, usage: null })
+  const serverError = makeProviderError("provider_internal", "server error", { status: 500 })
+
+  test("a retry carries the next attempt and names an assistant message", () => {
     const log = inStep()
-    log.apply(event("retry.scheduled", { messageId: m("a1"), attempt: 3, delayMs: 0, error: rateLimit }))
-    expect(log.reject(event("retry.scheduled", { messageId: m("a1"), attempt: 3, delayMs: 0, error: rateLimit }))).toBe(
-      "invalid_transition",
+    expect(log.reject(retry("a1", 3))).toBe("invalid_transition")
+    expect(log.reject(retry("a1", 1 + 1))).toBe("accepted")
+    log.apply(retry("a1", 2))
+    expect(log.reject(retry("a1", 2))).toBe("invalid_transition")
+    expect(log.reject(retry("a1", 4))).toBe("invalid_transition")
+    expect(log.reject(retry("u1", 2))).toBe("invalid_transition")
+    expect(log.reject(retry("zz", 2))).toBe("not_found")
+  })
+
+  test("after durable output of any kind the retry cannot stay under the same message", () => {
+    for (const output of [textEnded("a1", "partial"), reasoningEnded("a1", "thinking"), called("a1", "call_1")]) {
+      const log = inStep()
+      log.apply(output)
+      expect(log.reject(retry("a1", 2))).toBe("invalid_transition")
+    }
+  })
+
+  test("only retryable provider errors are retried", () => {
+    for (const kind of ["auth", "usage_limit", "content_policy", "invalid_request", "context_overflow"] as const) {
+      const error = makeProviderError(kind, "no")
+      expect(inStep().reject(retry("a1", 2, error))).toBe("invalid_transition")
+      if (kind === "content_policy") continue
+      const failed = inStep()
+      failed.apply(providerFailed("a1", error))
+      // Neither with the step's own error nor dressed up as a retryable one.
+      expect(failed.reject(retry("a1", 2, error))).toBe("invalid_transition")
+      expect(failed.reject(retry("a1", 2))).toBe("invalid_transition")
+    }
+    for (const kind of ["rate_limit", "provider_internal", "transport", "incomplete_stream"] as const) {
+      const error = makeProviderError(kind, "try again")
+      expect(inStep().reject(retry("a1", 2, error))).toBe("accepted")
+      const failed = inStep()
+      failed.apply(textEnded("a1", "partial"), providerFailed("a1", error))
+      expect(failed.reject(retry("a1", 2, error))).toBe("accepted")
+    }
+  })
+
+  test("a step that crashed or failed inside the harness is not retried", () => {
+    for (const error of [{ kind: "crashed" }, { kind: "internal", message: "bug" }] as const) {
+      const log = inStep()
+      log.apply(event("step.failed", { messageId: m("a1"), error, usage: null }))
+      expect(log.reject(retry("a1", 2))).toBe("invalid_transition")
+    }
+  })
+
+  test("only the step in progress can be retried", () => {
+    const log = inStep()
+    log.apply(textEnded("a1", "partial"), providerFailed("a1", serverError), retry("a1", 2, serverError))
+    // The retry is scheduled once; the new message takes over the budget.
+    expect(log.reject(retry("a1", 3, serverError))).toBe("invalid_transition")
+    log.apply(stepStarted("a2", 2))
+    expect(log.reject(retry("a1", 3, serverError))).toBe("invalid_transition")
+    expect(log.reject(retry("a2", 3, serverError))).toBe("accepted")
+    log.apply(textEnded("a2", "partial again"), providerFailed("a2", serverError))
+    expect(log.reject(retry("a1", 3, serverError))).toBe("invalid_transition")
+    log.apply(retry("a2", 3, serverError), stepStarted("a3", 3), stepEnded("a3"))
+    expect(log.reject(retry("a2", 4, serverError))).toBe("invalid_transition")
+    expect(log.reject(retry("a3", 4, serverError))).toBe("invalid_transition")
+  })
+
+  test("a failed step of an earlier execution cannot be retried", () => {
+    const log = inStep()
+    log.apply(
+      textEnded("a1", "partial"),
+      providerFailed("a1", serverError),
+      event("execution.failed", { executionId: x("exe_1"), message: "gave up" }),
     )
-    expect(log.reject(event("retry.scheduled", { messageId: m("u1"), attempt: 2, delayMs: 0, error: rateLimit }))).toBe(
-      "invalid_transition",
-    )
-    expect(log.reject(event("retry.scheduled", { messageId: m("zz"), attempt: 2, delayMs: 0, error: rateLimit }))).toBe(
-      "not_found",
-    )
+    expect(log.reject(retry("a1", 2, serverError))).toBe("invalid_transition")
+    log.apply(enqueue("u2"), executionStarted("exe_2"))
+    expect(log.reject(retry("a1", 2, serverError))).toBe("invalid_transition")
+  })
+
+  test("a retry cannot be scheduled while a compaction is open", () => {
+    const log = inStep()
+    log.apply(textEnded("a1", "partial"), providerFailed("a1", serverError), compactionStarted("c1"))
+    expect(log.reject(retry("a1", 2, serverError))).toBe("invalid_transition")
+  })
+
+  test("the attempt of a new step is the scheduled retry's, and 1 otherwise", () => {
+    const log = running()
+    expect(log.reject(stepStarted("a1", 2))).toBe("invalid_transition")
+    log.apply(stepStarted("a1"), textEnded("a1", "partial"), providerFailed("a1", serverError))
+    expect(log.reject(stepStarted("a2", 2))).toBe("invalid_transition")
+    log.apply(retry("a1", 2, serverError))
+    expect(log.state!.session.execution).toMatchObject({ nextAttempt: 2 })
+    expect(log.reject(stepStarted("a2", 1))).toBe("invalid_transition")
+    expect(log.reject(stepStarted("a2", 3))).toBe("invalid_transition")
+    log.apply(stepStarted("a2", 2))
+    expect(log.state!.session.execution).toMatchObject({ nextAttempt: 1 })
+    log.apply(stepEnded("a2", "tool_calls"))
+    expect(log.reject(stepStarted("a3", 2))).toBe("invalid_transition")
+    expect(log.reject(stepStarted("a3", 1))).toBe("accepted")
+  })
+
+  test("a scheduled retry survives a crash resume, and ends with the execution", () => {
+    const log = inStep()
+    log.apply(textEnded("a1", "partial"), providerFailed("a1", serverError), retry("a1", 2, serverError))
+    log.apply(event("execution.resumed", { executionId: x("exe_1") }))
+    expect(log.reject(stepStarted("a2", 1))).toBe("invalid_transition")
+    expect(log.reject(stepStarted("a2", 2))).toBe("accepted")
+    log.apply(event("execution.failed", { executionId: x("exe_1") , message: "gave up" }), enqueue("u2"), executionStarted("exe_2"))
+    expect(log.reject(stepStarted("a2", 2))).toBe("invalid_transition")
+    expect(log.reject(stepStarted("a2", 1))).toBe("accepted")
   })
 })
 

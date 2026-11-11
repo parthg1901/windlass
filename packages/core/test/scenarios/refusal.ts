@@ -51,8 +51,8 @@ export const refusedTurn: Scenario = {
           code: "invalid_transition",
           why: "a refusal is recorded as step.refused, so that it leaves model history",
         },
+        { event: retryScheduled("a3", 2, policy), code: "invalid_transition", why: "a refusal is never retried" },
       ],
-      gaps: [{ gap: "G2", event: retryScheduled("a3", 2, policy), why: "a refusal is never retried" }],
     },
     {
       label: "the refusal is recorded and the execution fails",

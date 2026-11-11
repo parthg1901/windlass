@@ -198,7 +198,18 @@ export const sessionState = object({
    * `suspended` after a shutdown interruption: the claim is kept for the next start.
    */
   execution: nullable(
-    object({ id: executionId, status: oneOf(["running", "suspended"]), resumes: integer(0), startedSeq: integer(1) }),
+    object({
+      id: executionId,
+      status: oneOf(["running", "suspended"]),
+      resumes: integer(0),
+      startedSeq: integer(1),
+      /**
+       * The `attempt` the next `step.started` must carry. 1, except after a
+       * failed message was given a retry: then it is that retry's attempt, so
+       * the new message continues the logical step's one attempt budget.
+       */
+      nextAttempt: integer(1),
+    }),
   ),
   /** The step or compaction that has started and not yet reached its terminal event. */
   open: nullable(object({ kind: oneOf(["step", "compaction"]), messageId })),
