@@ -1,9 +1,11 @@
 /**
  * Crash recovery: the process dies with the claim held. At the next start the
  * log shows `execution` still `running`. Recovery, before anything else:
- * settles every orphaned call durably (cancel rule 4), closes the open step
- * as `crashed`, appends the interrupt marker, and records `execution.resumed`
- * (the durable resume count) — or, at the resume cap, `execution.failed`.
+ * settles every orphaned call durably (cancel rule 4) from the effect class
+ * its start recorded, closes the open step as `crashed`, appends the interrupt
+ * marker, and records `execution.resumed` (which counts the crash) or, at the
+ * resume cap, `execution.failed`. If an interrupt had been requested before the
+ * process died, recovery finishes that interrupt instead and resumes nothing.
  */
 import {
   CRASH_EFFECT_UNKNOWN,
@@ -13,21 +15,24 @@ import {
   type Scenario,
   called,
   executionFailed,
+  executionInterrupted,
   executionResumed,
   executionSucceeded,
   interruptMarker,
+  interruptRequested,
   opening,
   ran,
   say,
   settled,
   stepCrashed,
   stepEnded,
+  stepInterrupted,
   stepStarted,
   toolStarted,
   toolStartedAs,
 } from "./script.ts"
 
-const crashedClaim = { execution: { status: "running" as const, resumes: 0 } }
+const crashedClaim = { execution: { status: "running" as const, crashResumes: 0 } }
 
 export const crashWhileStreaming: Scenario = {
   title: "The process dies while the model is streaming",
@@ -45,13 +50,26 @@ export const crashWhileStreaming: Scenario = {
           code: "invalid_transition",
           why: "recovery closes the crashed step before it records the resume",
         },
+        {
+          event: stepInterrupted("a1", "user"),
+          code: "invalid_transition",
+          why: "nobody requested an interrupt; a step cut off by a crash is closed as crashed",
+        },
       ],
     },
     {
-      label: "at next start-up",
-      events: [stepCrashed("a1"), interruptMarker("s1", "crash"), executionResumed()],
+      label: "at next start-up: the step is closed",
+      events: [stepCrashed("a1")],
+      rejects: [
+        { event: executionResumed(), code: "invalid_transition", why: "the interrupt marker follows a crashed step before anything else" },
+        { event: stepStarted("a2"), code: "invalid_transition", why: "the model is told its response was cut short before the next step" },
+      ],
+    },
+    {
+      label: "the model is told and the resume is recorded",
+      events: [interruptMarker("s1", "crash"), executionResumed()],
       expect: {
-        execution: { status: "running", resumes: 1 },
+        execution: { status: "running", crashResumes: 1 },
         open: null,
         ui: [{ id: "u1" }, { id: "a1", status: "failed", error: "crashed", text: "Reading the test first." }, { id: "s1", origin: "interrupt" }],
         history: ["u1", "a1", "s1"],
@@ -94,7 +112,7 @@ export const crashWhileReadRuns: Scenario = {
       expect: {
         ui: [{ id: "u1" }, { id: "a1", status: "failed", error: "crashed", calls: ["call_1 read error"] }, { id: "s1" }],
         history: ["u1", "a1", "s1"],
-        execution: { status: "running", resumes: 1 },
+        execution: { status: "running", crashResumes: 1 },
       },
     },
     {
@@ -146,7 +164,7 @@ export const crashWhileSideEffectRuns: Scenario = {
           { id: "s1" },
         ],
         history: ["u1", "a1", "s1"],
-        execution: { status: "running", resumes: 1 },
+        execution: { status: "running", crashResumes: 1 },
       },
     },
     {
@@ -199,7 +217,7 @@ export const crashOfToolTheRegistryLost: Scenario = {
       expect: {
         ui: [{ id: "u1" }, { id: "a1", status: "failed", error: "crashed", calls: ["call_1 fetch effect_unknown"] }, { id: "s1" }],
         history: ["u1", "a1", "s1"],
-        execution: { status: "running", resumes: 1 },
+        execution: { status: "running", crashResumes: 1 },
       },
     },
   ],
@@ -232,8 +250,56 @@ export const crashAfterToolBeforeResult: Scenario = {
       expect: {
         ui: [{ id: "u1" }, { id: "a1", status: "failed", calls: ["call_1 write effect_unknown"] }, { id: "s1" }],
         history: ["u1", "a1", "s1"],
-        execution: { status: "running", resumes: 1 },
+        execution: { status: "running", crashResumes: 1 },
       },
+    },
+  ],
+}
+
+export const crashDuringUserCancel: Scenario = {
+  title: "The process dies in the middle of a user cancel",
+  description:
+    "The user pressed stop while a shell command was running. The cancel was made durable at once; the shell was sent SIGTERM and the process died before it had stopped. Without the durable request the log would look like an ordinary crash and the next start would carry on with work the user had stopped. With it, recovery finishes the cancel: the orphaned call is settled from its recorded effect class, the step closes as interrupted for `user`, the model is told, and the claim is released. Nothing is resumed.",
+  provider: "step 1 finishes with a shell call; the user cancels while it runs; the process is killed during the shell's grace period",
+  phases: [
+    {
+      label: "the cancel is requested, then the process dies",
+      events: [
+        ...opening("Run the migration."),
+        stepStarted("a1"),
+        called("a1", "call_1", "shell", '{"command":"bun run migrate"}'),
+        toolStarted("a1", "call_1", "shell"),
+        interruptRequested("user"),
+      ],
+      expect: { execution: { status: "running", crashResumes: 0, interrupting: "user" }, open: "a1" },
+      rejects: [
+        { event: stepCrashed("a1"), code: "invalid_transition", why: "the user's cancel is durable, so the step ends as interrupted, not as crashed" },
+        { event: executionResumed(), code: "invalid_transition", why: "a cancelled execution is never resumed" },
+        { event: executionFailed("crashed"), code: "invalid_transition", why: "the execution ends as interrupted, which is what the user asked for" },
+      ],
+    },
+    {
+      label: "at next start-up the cancel is finished",
+      events: [
+        settled("a1", "call_1", "effect_unknown", CRASH_EFFECT_UNKNOWN),
+        stepInterrupted("a1", "user"),
+        interruptMarker("s1", "user"),
+      ],
+      rejects: [
+        { event: executionResumed(), code: "invalid_transition", why: "even with the step closed, the only way out is execution.interrupted for user" },
+        { event: stepStarted("a2"), code: "invalid_transition", why: "no work continues after a cancel" },
+      ],
+    },
+    {
+      label: "the claim is released",
+      events: [executionInterrupted("user")],
+      expect: {
+        execution: null,
+        open: null,
+        ui: [{ id: "u1" }, { id: "a1", status: "failed", error: "interrupted:user", calls: ["call_1 shell effect_unknown"] }, { id: "s1" }],
+        history: ["u1", "a1", "s1"],
+      },
+      rejects: [{ event: executionResumed(), code: "not_found", why: "the claim is gone; the session is idle until the user prompts again" }],
     },
   ],
 }
@@ -298,7 +364,7 @@ export const resumeCap: Scenario = {
         ]).flat(),
         stepStarted(`a${RESUME_CAP + 1}`),
       ],
-      expect: { execution: { status: "running", resumes: RESUME_CAP }, open: `a${RESUME_CAP + 1}` },
+      expect: { execution: { status: "running", crashResumes: RESUME_CAP }, open: `a${RESUME_CAP + 1}` },
     },
     {
       label: "the next start-up gives up",
@@ -322,6 +388,7 @@ export const crashScenarios = [
   crashWhileSideEffectRuns,
   crashOfToolTheRegistryLost,
   crashAfterToolBeforeResult,
+  crashDuringUserCancel,
   crashBetweenSteps,
   crashBeforeRelease,
   resumeCap,

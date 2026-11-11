@@ -173,8 +173,8 @@ describe("user and harness messages", () => {
   test("the interrupt marker is a harness message that follows the interrupted output", () => {
     const s = prompted()
     s.step({ parts: [{ text: "I will start with" }], end: "interrupted" })
-    s.interruptExecution()
     s.harness("interrupt", "Your previous response was interrupted by the user.")
+    s.interruptExecution()
     s.user("do something else")
     expect(s.input()).toEqual([
       user("fix the bug"),
@@ -588,8 +588,8 @@ describe("the builder as a function", () => {
     s.step({ parts: [{ call: "call_1", name: "shell", input: '{"command":"bun test"}', outcome: "error", output: "1 fail" }] })
     s.background("background-command", "Command 1 finished.")
     s.step({ parts: [{ text: "Almost" }], end: "interrupted" })
-    s.interruptExecution()
     s.harness("interrupt", "Your previous response was interrupted by the user.")
+    s.interruptExecution()
     s.user("carry on")
     s.step({ parts: [{ text: "Fixed." }] })
     s.release()

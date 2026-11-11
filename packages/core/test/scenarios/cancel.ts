@@ -1,11 +1,14 @@
 /**
  * Cancel by the user at each moment of a turn.
  *
- * Every scenario ends the same way (cancel rules 3, 4 and 6): visible partial
- * text is kept; every recorded call is settled exactly once; the open step, if
- * any, gets exactly one terminal event, `step.failed` with
- * `interrupted:user`; the interrupt marker follows it; and
- * `execution.interrupted` with reason `user` releases the claim.
+ * Every scenario runs the same way (cancel rules 2, 3, 4 and 6): the cancel is
+ * made durable at once with `execution.interrupt_requested`, before anything
+ * is stopped; visible partial text is kept; every recorded call is settled
+ * exactly once; the open step, if any, gets exactly one terminal event,
+ * `step.failed` with `interrupted:user`; the interrupt marker follows it; and
+ * `execution.interrupted` with reason `user` releases the claim. Between the
+ * request and the release the reducer accepts nothing that would carry the
+ * work on.
  */
 import {
   EFFECT_UNKNOWN,
@@ -13,19 +16,25 @@ import {
   NOT_STARTED,
   type Scenario,
   called,
+  executionFailed,
   executionInterrupted,
   executionResumed,
   executionSucceeded,
   interruptMarker,
+  interruptRequested,
   opening,
   rateLimited,
   ran,
   retryScheduled,
   say,
   settled,
+  serverError,
+  stepCrashed,
   stepEnded,
   stepInterrupted,
+  stepProviderFailed,
   stepStarted,
+  synthetic,
   think,
   toolStarted,
 } from "./script.ts"
@@ -42,22 +51,48 @@ export const whileTextStreams: Scenario = {
     {
       label: "the model is streaming",
       events: [...opening(), stepStarted("a1"), think("a1", "Read the test first.")],
-      expect: { open: "a1", execution: { status: "running", resumes: 0 } },
+      expect: { open: "a1", execution: { status: "running", crashResumes: 0 } },
     },
     {
-      label: "the user cancels: flush the visible text and close the step",
-      events: [say("a1", "Let me lo"), stepInterrupted("a1", "user")],
-      gaps: [
-        {
-          gap: "G5",
-          event: stepStarted("a2"),
-          why: "an interrupted step must be followed by the marker and execution.interrupted, not by another step",
-        },
+      label: "the user cancels: the request is durable before anything stops",
+      events: [interruptRequested("user")],
+      expect: { open: "a1", execution: { status: "running", crashResumes: 0, interrupting: "user" } },
+      rejects: [
+        { event: think("a1", "One more thought."), code: "invalid_transition", why: "no new model output is recorded after the cancel, only the visible partial text" },
+        { event: called("a1", "call_1", "read", "{}"), code: "invalid_transition", why: "no tool call is recorded after the cancel" },
+        { event: stepEnded("a1"), code: "invalid_transition", why: "a step that was open when the cancel arrived ends as interrupted, not as completed" },
+        { event: stepProviderFailed("a1", serverError), code: "invalid_transition", why: "the step ends as interrupted even if the provider failed at the same moment" },
+        { event: stepCrashed("a1"), code: "invalid_transition", why: "the cancel is durable, so recovery closes the step as interrupted, not as crashed" },
+        { event: stepInterrupted("a1", "shutdown"), code: "invalid_transition", why: "the step is interrupted for the reason that was requested" },
+        { event: interruptRequested("shutdown"), code: "invalid_transition", why: "the first interrupt wins, as it does on the abort token" },
       ],
     },
     {
-      label: "tell the model and release the claim",
-      events: [interruptMarker("s1", "user"), executionInterrupted("user")],
+      label: "flush the visible text and close the step",
+      events: [say("a1", "Let me lo"), stepInterrupted("a1", "user")],
+      rejects: [
+        {
+          event: stepStarted("a2"),
+          code: "invalid_transition",
+          why: "an interrupted step must be followed by the marker and execution.interrupted, not by another step",
+        },
+        { event: executionInterrupted("user"), code: "invalid_transition", why: "the interrupt marker comes first: the model must be told its response was cut short" },
+        { event: synthetic("s1", "empty_response", "Continue."), code: "invalid_transition", why: "the only harness message while winding down is the interrupt marker" },
+        { event: executionSucceeded(), code: "invalid_transition", why: "an interrupted execution does not succeed" },
+        { event: executionFailed("gave up"), code: "invalid_transition", why: "an interrupted execution ends as interrupted, not as failed" },
+      ],
+    },
+    {
+      label: "tell the model",
+      events: [interruptMarker("s1", "user")],
+      rejects: [
+        { event: executionInterrupted("shutdown"), code: "invalid_transition", why: "the user cancelled, so the claim is released, not kept for the next start" },
+        { event: stepStarted("a2"), code: "invalid_transition", why: "the marker does not end the interrupt; only execution.interrupted does" },
+      ],
+    },
+    {
+      label: "release the claim",
+      events: [executionInterrupted("user")],
       expect: {
         ...released,
         ui: [
@@ -97,13 +132,14 @@ export const whileToolArgumentsStream: Scenario = {
         {
           event: stepInterrupted("a1", "user"),
           code: "invalid_transition",
-          why: "the step cannot end while call_1 is unsettled: settle every recorded call first",
+          why: "a step ends as interrupted only after the interrupt was requested, and only once call_1 is settled",
         },
       ],
     },
     {
       label: "the user cancels",
       events: [
+        interruptRequested("user"),
         settled("a1", "call_1", "not_started", NOT_STARTED),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
@@ -141,6 +177,7 @@ export const whileOneToolRuns: Scenario = {
     {
       label: "the user cancels; the shell returns its output so far",
       events: [
+        interruptRequested("user"),
         settled("a1", "call_1", "error", "Stopped by the user after 4 s. Output so far:\n12 pass\n"),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
@@ -184,6 +221,7 @@ export const whileParallelToolsRunOneDone: Scenario = {
     {
       label: "the user cancels",
       events: [
+        interruptRequested("user"),
         settled("a1", "call_2", "error", "Stopped by the user after 2 s. Output so far:\n3 pass\n"),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
@@ -223,6 +261,7 @@ export const beforeSideEffectReports: Scenario = {
     {
       label: "the user cancels",
       events: [
+        interruptRequested("user"),
         settled("a1", "call_1", "effect_unknown", EFFECT_UNKNOWN),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
@@ -257,6 +296,7 @@ export const beforeReadReports: Scenario = {
     {
       label: "the user cancels",
       events: [
+        interruptRequested("user"),
         settled("a1", "call_1", "error", INTERRUPTED_READ),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
@@ -285,25 +325,28 @@ export const betweenSteps: Scenario = {
         ...ran("a1", "call_1", "read", '{"path":"a.ts"}', "export const a = 1"),
         stepEnded("a1", "tool_calls"),
       ],
-      expect: { open: null, execution: { status: "running", resumes: 0 } },
+      expect: { open: null, execution: { status: "running", crashResumes: 0 } },
       rejects: [
         {
           event: stepInterrupted("a1", "user"),
           code: "invalid_transition",
           why: "a1 already has its terminal event; a step ends exactly once",
         },
-      ],
-      gaps: [
         {
-          gap: "G6",
+          event: executionInterrupted("user"),
+          code: "invalid_transition",
+          why: "an execution ends as interrupted only after the interrupt was requested",
+        },
+        {
           event: executionSucceeded(),
+          code: "invalid_transition",
           why: "the model never saw call_1's result, so the execution did not run to completion",
         },
       ],
     },
     {
       label: "the user cancels",
-      events: [interruptMarker("s1", "user"), executionInterrupted("user")],
+      events: [interruptRequested("user"), interruptMarker("s1", "user"), executionInterrupted("user")],
       expect: {
         ...released,
         ui: [{ id: "u1" }, { id: "a1", status: "completed", calls: ["call_1 read success"] }, { id: "s1" }],
@@ -325,7 +368,14 @@ export const duringRetryDelay: Scenario = {
       expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", status: "running", attempt: 2 }] },
     },
     {
-      label: "the user cancels",
+      label: "the user cancels during the delay",
+      events: [interruptRequested("user")],
+      rejects: [
+        { event: retryScheduled("a1", 3, rateLimited), code: "invalid_transition", why: "nothing is retried once the user cancelled" },
+      ],
+    },
+    {
+      label: "the step closes as interrupted",
       events: [stepInterrupted("a1", "user"), interruptMarker("s1", "user"), executionInterrupted("user")],
       expect: {
         ...released,

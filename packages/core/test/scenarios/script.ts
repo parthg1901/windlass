@@ -9,7 +9,7 @@
  * Nothing here runs a loop. These are the target the loop is built against.
  */
 import { text } from "../../src/content.ts"
-import { type NewEvent, type StepError, type ToolOutcome, event } from "../../src/event/durable.ts"
+import { type NewEvent, type StepError, type ToolOutcome, HARNESS_ORIGIN, event } from "../../src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
 import type { InterruptReason } from "../../src/interrupt.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
@@ -35,25 +35,13 @@ export interface Phase {
   readonly events: readonly NewEvent[]
   /** What must hold once this phase is folded. The last phase always has one. */
   readonly expect?: Expect
-  /** Events the loop must not write at the end of this phase; the reducer rejects them today. */
+  /** Events the loop must not write at the end of this phase. The reducer rejects each with the given code. */
   readonly rejects?: readonly Rejection[]
-  /**
-   * Events the loop must not write at the end of this phase that the reducer
-   * still accepts. Each names a gap in docs/step-loop-scenarios.md.
-   */
-  readonly gaps?: readonly GapProbe[]
 }
 
 export interface Rejection {
   readonly event: NewEvent
   readonly code: ReduceErrorCode
-  readonly why: string
-}
-
-export interface GapProbe {
-  /** The gap's number in docs/step-loop-scenarios.md, e.g. "G1". */
-  readonly gap: string
-  readonly event: NewEvent
   readonly why: string
 }
 
@@ -63,7 +51,12 @@ export interface Expect {
   /** IDs of the messages `selectModelHistory` returns, in request order. */
   readonly history?: readonly string[]
   /** The execution claim: `null` when released. */
-  readonly execution?: null | { readonly status: "running" | "suspended"; readonly resumes: number }
+  readonly execution?: null | {
+    readonly status: "running" | "suspended"
+    readonly crashResumes: number
+    /** The reason of a requested interrupt that has not completed. Defaults to `null`. */
+    readonly interrupting?: InterruptReason
+  }
   /** The open step or compaction, by message ID, or `null` at a boundary. */
   readonly open?: string | null
   /** Inbox items still waiting, by message ID. */
@@ -138,10 +131,18 @@ export const synthetic = (id: string, origin: string, value: string) =>
 export const interruptMarker = (id: string, why: InterruptReason | "crash") =>
   synthetic(
     id,
-    "interrupt",
+    HARNESS_ORIGIN.interrupt,
     why === "user"
       ? "The user stopped the previous response before it finished."
       : "The previous response was cut short when the harness restarted.",
+  )
+
+/** The note after a model call failed with partial text already durable, so the retry continues instead of starting over. */
+export const continuationNote = (id: string) =>
+  synthetic(
+    id,
+    HARNESS_ORIGIN.continuation,
+    "Your previous response was cut off by a provider error. Continue exactly where it stopped; do not repeat what you already wrote.",
   )
 
 // ---------------------------------------------------------------- execution
@@ -151,6 +152,9 @@ export const executionResumed = (id = "exe_1") => event("execution.resumed", { e
 export const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id) })
 export const executionFailed = (message: string, id = "exe_1") =>
   event("execution.failed", { executionId: x(id), message })
+/** The cancel or the shutdown signal arrives: durable before anything is stopped. */
+export const interruptRequested = (reason: InterruptReason, id = "exe_1") =>
+  event("execution.interrupt_requested", { executionId: x(id), reason })
 export const executionInterrupted = (reason: InterruptReason, id = "exe_1") =>
   event("execution.interrupted", { executionId: x(id), reason })
 
@@ -351,8 +355,9 @@ export function describeEvent(item: NewEvent): string {
       return `tool.settled ${d.messageId}/${d.callId} ${d.outcome} ${quote(d.output)}`
     case "execution.failed":
       return `execution.failed ${d.executionId} ${quote(d.message)}`
+    case "execution.interrupt_requested":
     case "execution.interrupted":
-      return `execution.interrupted ${d.executionId} ${d.reason}`
+      return `${item.type} ${d.executionId} ${d.reason}`
     default: {
       const id = d.executionId ?? d.messageId
       return id === undefined ? item.type : `${item.type} ${id}`

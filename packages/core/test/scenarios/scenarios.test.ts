@@ -1,13 +1,13 @@
 /**
- * Folds every step-loop scenario through the real reducer and checks what a UI
- * and the model would see after each phase. See docs/step-loop-scenarios.md.
+ * Folds every step-loop scenario through the real reducer, checks what a UI
+ * and the model would see after each phase, and checks that the reducer
+ * rejects every wrong move listed with a phase. See docs/step-loop-scenarios.md.
  */
 import { describe, expect, test } from "bun:test"
 import type { NewEvent } from "../../src/event/durable.ts"
 import type { Projection } from "../../src/message/message.ts"
 import { ReduceError, reduce } from "../../src/message/reducer.ts"
-import { families, todoScenarios } from "./index.ts"
-import { loopViolations } from "./loop-rules.ts"
+import { families } from "./index.ts"
 import { type Expect, allEvents, fold, historyIds, position, view } from "./script.ts"
 
 for (const [family, scenarios] of Object.entries(families)) {
@@ -21,33 +21,28 @@ for (const [family, scenarios] of Object.entries(families)) {
           for (const phase of scenario.phases) {
             state = fold(state, phase.events)
             if (phase.expect !== undefined) check(state, phase.expect, phase.label)
-            for (const rejection of phase.rejects ?? [])
-              expect(attempt(state, rejection.event), `${phase.label}: ${rejection.why}`).toBe(rejection.code)
           }
         })
 
-        test("follows the loop's ordering rules", () => {
-          expect(loopViolations(allEvents(scenario))).toEqual([])
+        const rejections = scenario.phases.flatMap((phase, index) =>
+          (phase.rejects ?? []).map((rejection) => ({
+            ...rejection,
+            label: phase.label,
+            prefix: scenario.phases.slice(0, index + 1).flatMap((earlier) => earlier.events),
+          })),
+        )
+        for (const rejection of rejections)
+          test(`after "${rejection.label}" the reducer rejects ${rejection.event.type}: ${rejection.why}`, () => {
+            expect(attempt(fold(null, rejection.prefix), rejection.event)).toBe(rejection.code)
+          })
+
+        test("settles every recorded call exactly once", () => {
           expect(settlements(allEvents(scenario))).toEqual({ unsettled: [], twice: [] })
         })
-
-        const probes = scenario.phases.flatMap((phase, index) =>
-          (phase.gaps ?? []).map((probe) => ({ ...probe, prefix: scenario.phases.slice(0, index + 1).flatMap((p) => p.events) })),
-        )
-        for (const probe of probes)
-          test(`${probe.gap} is still open: the reducer accepts ${probe.event.type} (${probe.why})`, () => {
-            // When this fails the reducer has closed the gap: move the probe to `rejects`.
-            expect(attempt(fold(null, probe.prefix), probe.event)).toBe("accepted")
-            expect(loopViolations([...probe.prefix, probe.event]).length).toBeGreaterThan(0)
-          })
       })
     }
   })
 }
-
-describe("not expressible today", () => {
-  for (const todo of todoScenarios) test.todo(`${todo.gap}: ${todo.title}`)
-})
 
 function check(state: Projection, expected: Expect, label: string) {
   if (expected.ui !== undefined) {
@@ -60,9 +55,13 @@ function check(state: Projection, expected: Expect, label: string) {
     expect(
       state.session.execution === null
         ? null
-        : { status: state.session.execution.status, resumes: state.session.execution.resumes },
+        : {
+            status: state.session.execution.status,
+            crashResumes: state.session.execution.crashResumes,
+            interrupting: state.session.execution.interrupting,
+          },
       label,
-    ).toEqual(expected.execution)
+    ).toEqual(expected.execution === null ? null : { interrupting: null, ...expected.execution })
   if (expected.open !== undefined) expect((state.session.open?.messageId as string | undefined) ?? null, label).toBe(expected.open)
   if (expected.inbox !== undefined) expect(state.inbox.map((item) => item.messageId as string), label).toEqual([...expected.inbox])
 }

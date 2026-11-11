@@ -9,6 +9,7 @@
 import { blobRef, content } from "../content.ts"
 import { delivery, finishReason, lineage, stepError, toolOutcome } from "../event/durable.ts"
 import { callId, executionId, messageId, sessionId } from "../id.ts"
+import { interruptReason } from "../interrupt.ts"
 import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
 import { type ToolEffect, toolEffect, toolSpec, truncation } from "../tool/tool.ts"
@@ -201,7 +202,12 @@ export const sessionState = object({
     object({
       id: executionId,
       status: oneOf(["running", "suspended"]),
-      resumes: integer(0),
+      /**
+       * How many times recovery took this execution up again after a crash.
+       * A resume after a clean shutdown is not counted, so a long turn that
+       * spans several restarts never reaches the crash-resume cap by itself.
+       */
+      crashResumes: integer(0),
       startedSeq: integer(1),
       /**
        * The `attempt` the next `step.started` must carry. 1, except after a
@@ -209,6 +215,13 @@ export const sessionState = object({
        * the new message continues the logical step's one attempt budget.
        */
       nextAttempt: integer(1),
+      /**
+       * Set by `execution.interrupt_requested` and cleared by the
+       * `execution.interrupted` that completes it. While it is set the
+       * execution only winds down, and it can end only as interrupted for
+       * this reason, also when recovery finds it after a crash.
+       */
+      interrupting: nullable(interruptReason),
     }),
   ),
   /** The step or compaction that has started and not yet reached its terminal event. */

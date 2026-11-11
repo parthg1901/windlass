@@ -29,7 +29,9 @@ export const plainAnswer: Scenario = {
     {
       label: "the prompt is admitted and the claim taken",
       events: [created(), enqueue("u1", "What does this repo do?"), executionStarted()],
-      gaps: [{ gap: "G10", event: stepStarted("a1"), why: "a step needs the frozen baseline its request is built from" }],
+      rejects: [
+        { event: stepStarted("a1"), code: "invalid_transition", why: "a step needs the frozen baseline its request is built from" },
+      ],
     },
     {
       label: "the baseline is frozen, the prompt delivered, the model answers",
@@ -52,10 +54,10 @@ export const plainAnswer: Scenario = {
         open: null,
         inbox: [],
       },
-      gaps: [
+      rejects: [
         {
-          gap: "G12",
           event: interruptMarker("s1", "user"),
+          code: "invalid_transition",
           why: "history grows only under a running claim, as inbox.delivered already requires",
         },
       ],

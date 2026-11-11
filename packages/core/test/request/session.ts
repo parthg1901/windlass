@@ -66,11 +66,11 @@ export type StepEnd =
   | "stop"
   | "tool_calls"
   | "length"
-  /** `step.failed` with a user interruption. */
+  /** `execution.interrupt_requested` by the user, then `step.failed` as interrupted. The marker must follow. */
   | "interrupted"
   /** `step.failed` with a retryable provider error. */
   | "provider_error"
-  /** `step.failed` recorded by crash recovery. */
+  /** `step.failed` recorded by crash recovery. The marker must follow. */
   | "crashed"
   /** `step.refused`, excluding history from this `seq`. */
   | { readonly refusedFrom: number }
@@ -156,11 +156,22 @@ export class Script {
     if (execution !== null) this.apply(event("execution.succeeded", { executionId: execution.id }))
   }
 
-  /** Ends the execution after the user interrupted it. */
-  interruptExecution(reason: "user" | "shutdown" = "user") {
+  /** Records that an interrupt was asked for, unless one already was. From here the execution only winds down. */
+  requestInterrupt(reason: "user" | "shutdown" = "user") {
     const execution = this.projection.session.execution
     if (execution === null) throw new Error("no execution to interrupt")
-    this.apply(event("execution.interrupted", { executionId: execution.id, reason }))
+    if (execution.interrupting === null)
+      this.apply(event("execution.interrupt_requested", { executionId: execution.id, reason }))
+  }
+
+  /**
+   * Ends the execution as interrupted, requesting the interrupt first when
+   * the script has not. After an interrupted step the marker (`harness`)
+   * comes before this.
+   */
+  interruptExecution(reason: "user" | "shutdown" = "user") {
+    this.requestInterrupt(reason)
+    this.apply(event("execution.interrupted", { executionId: this.projection.session.execution!.id, reason }))
   }
 
   /** Ends the execution because it gave up. */
@@ -175,6 +186,11 @@ export class Script {
     const messageId = this.id(origin === null ? "usr" : "syn")
     this.apply(event("inbox.enqueued", { messageId, origin, delivery, content: text(value) }))
     return messageId
+  }
+
+  /** Withdraws an admitted item before it is delivered. */
+  cancel(messageId: MessageId) {
+    this.apply(event("inbox.cancelled", { messageId }))
   }
 
   /** Delivers an admitted item at a step boundary. Returns the `seq` of the message. */
@@ -196,16 +212,18 @@ export class Script {
 
   /** A harness message appended directly, such as the interrupt marker. */
   harness(origin: string, value: string): number {
+    this.claim()
     this.apply(event("synthetic.appended", { messageId: this.id("syn"), origin, content: text(value) }))
     return this.seq
   }
 
   instruction(source: string, value: string): number {
+    this.claim()
     this.apply(event("instruction.appended", { messageId: this.id("ins"), source, text: value }))
     return this.seq
   }
 
-  /** One model call, from `step.started` to its terminal event. Calls are settled in reverse order. */
+  /** One model call, from `step.started` to its terminal event. Calls start in order and settle in reverse order. */
   step(spec: StepSpec = {}): MessageId {
     this.claim()
     const messageId = (spec.id ?? this.id("ast")) as MessageId
@@ -236,24 +254,27 @@ export class Script {
     }
     spec.during?.()
     const calls = parts.filter((part): part is CallSpec => "call" in part)
-    for (const call of calls.toReversed()) {
-      const outcome = call.outcome ?? "success"
-      const callId = call.call as CallId
+    const outcomeOf = (call: CallSpec) => call.outcome ?? "success"
+    for (const call of calls) {
       // The effect class the loop would record. Only a call that started with a side effect can end `effect_unknown`.
-      const effect = (call.name ?? "read") === "read" && outcome !== "effect_unknown" ? "read" : "exec"
-      if (call.started ?? outcome !== "not_started") this.apply(event("tool.started", { messageId, callId, effect }))
+      const effect = (call.name ?? "read") === "read" && outcomeOf(call) !== "effect_unknown" ? "read" : "exec"
+      if (call.started ?? outcomeOf(call) !== "not_started")
+        this.apply(event("tool.started", { messageId, callId: call.call as CallId, effect }))
+    }
+    // A cancel is durable before anything is stopped or settled, and nothing starts after it.
+    if (spec.end === "interrupted") this.requestInterrupt("user")
+    for (const call of calls.toReversed())
       this.apply(
         event("tool.settled", {
           messageId,
-          callId,
-          outcome,
-          output: call.output ?? `${outcome} ${call.call}`,
+          callId: call.call as CallId,
+          outcome: outcomeOf(call),
+          output: call.output ?? `${outcomeOf(call)} ${call.call}`,
           truncation: null,
           attachments: [...(call.attachments ?? [])],
           display: null,
         }),
       )
-    }
     this.apply(terminal(messageId, spec.end ?? (calls.length > 0 ? "tool_calls" : "stop")))
     return messageId
   }

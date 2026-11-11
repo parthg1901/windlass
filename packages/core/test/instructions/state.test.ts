@@ -55,9 +55,10 @@ function ids() {
 const state = (s: Script) => instructionState(selectModelHistory(s.projection))
 const detect = (s: Script, sources: readonly InstructionSource[]) => detectInstructionChanges(state(s), sources, ids())
 
-/** Detects, appends what was detected, and returns the appended events. */
+/** Detects, appends what was detected under a running execution (as the loop does), and returns the appended events. */
 function sync(s: Script, sources: readonly InstructionSource[]) {
   const events = detect(s, sources)
+  s.claim()
   s.apply(...events)
   return events
 }
@@ -279,6 +280,7 @@ describe("prepareInstructions", () => {
       newMessageId: ids(),
     })
     expect(events.map((event) => event.type)).toEqual(["instruction.appended"])
+    s.claim()
     s.apply(...events)
     expect(s.projection.baseline).toBe(baseline)
     expect(comparePrefix(before, s.hashes())).toEqual({ extension: true, appended: 1 })

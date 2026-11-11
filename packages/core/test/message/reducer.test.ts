@@ -92,6 +92,13 @@ const enqueue = (id: string, value = "hello", delivery: "steer" | "queue" = "ste
 const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
 const executionStarted = (id = "exe_1") => event("execution.started", { executionId: x(id) })
 const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id) })
+const executionResumed = (id = "exe_1") => event("execution.resumed", { executionId: x(id) })
+const executionFailed = (id = "exe_1") => event("execution.failed", { executionId: x(id), message: "gave up" })
+const interruptRequested = (reason: "user" | "shutdown" = "user", id = "exe_1") =>
+  event("execution.interrupt_requested", { executionId: x(id), reason })
+const executionInterrupted = (reason: "user" | "shutdown" = "user", id = "exe_1") =>
+  event("execution.interrupted", { executionId: x(id), reason })
+const stepCrashed = (id: string) => event("step.failed", { messageId: m(id), error: { kind: "crashed" }, usage: null })
 const stepStarted = (id: string, attempt = 1) =>
   event("step.started", { messageId: m(id), attempt, model: "gpt-test" })
 const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
@@ -246,20 +253,27 @@ describe("inbox", () => {
   test("delivery turns the item into a message at the delivery seq and empties the inbox row", () => {
     const log = new Log()
     log.apply(created, enqueue("u1", "first", "queue"), enqueue("s1", "build finished", "steer", "shell"))
-    const state = log.apply(executionStarted(), deliver("s1"), deliver("u1"))
+    const state = log.apply(
+      executionStarted(),
+      baselineSet,
+      deliver("s1"),
+      stepStarted("a1"),
+      stepEnded("a1"),
+      deliver("u1"),
+    )
     expect(state.inbox).toEqual([])
-    expect(state.messages).toEqual([
+    expect(state.messages.filter((message) => message.kind !== "assistant")).toEqual([
       {
         kind: "synthetic",
         id: m("s1"),
-        seq: 5,
-        time: 50,
+        seq: 6,
+        time: 60,
         excluded: null,
         origin: "shell",
         content: text("build finished"),
         delivery: "steer",
       },
-      { kind: "user", id: m("u1"), seq: 6, time: 60, excluded: null, content: text("first"), delivery: "queue" },
+      { kind: "user", id: m("u1"), seq: 9, time: 90, excluded: null, content: text("first"), delivery: "queue" },
     ])
   })
 
@@ -312,7 +326,14 @@ describe("execution claim", () => {
   test("started takes the claim and succeeded releases it", () => {
     const log = new Log()
     log.apply(created, executionStarted())
-    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 0, startedSeq: 2, nextAttempt: 1 })
+    expect(log.state!.session.execution).toEqual({
+      id: x("exe_1"),
+      status: "running",
+      crashResumes: 0,
+      startedSeq: 2,
+      nextAttempt: 1,
+      interrupting: null,
+    })
     expect(log.reject(executionStarted("exe_2"))).toBe("invalid_transition")
     expect(log.apply(executionSucceeded()).session.execution).toBeNull()
     expect(log.reject(executionSucceeded())).toBe("not_found")
@@ -322,52 +343,68 @@ describe("execution claim", () => {
     const log = new Log()
     log.apply(created, executionStarted())
     expect(log.reject(executionSucceeded("exe_other"))).toBe("not_found")
-    expect(log.reject(event("execution.interrupted", { executionId: x("exe_other"), reason: "user" }))).toBe("not_found")
+    expect(log.reject(interruptRequested("user", "exe_other"))).toBe("not_found")
+    log.apply(interruptRequested("user"))
+    expect(log.reject(executionInterrupted("user", "exe_other"))).toBe("not_found")
   })
 
   test("a user interrupt releases the claim; a shutdown keeps it suspended", () => {
     const user = new Log()
-    user.apply(created, executionStarted())
-    user.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }))
+    user.apply(created, executionStarted(), interruptRequested("user"), executionInterrupted("user"))
     expect(user.state!.session.execution).toBeNull()
 
     const shutdown = new Log()
-    shutdown.apply(created, executionStarted())
-    shutdown.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
-    expect(shutdown.state!.session.execution).toMatchObject({ status: "suspended", resumes: 0 })
+    shutdown.apply(created, executionStarted(), interruptRequested("shutdown"), executionInterrupted("shutdown"))
+    expect(shutdown.state!.session.execution).toMatchObject({ status: "suspended", crashResumes: 0, interrupting: null })
     expect(shutdown.reject(executionStarted("exe_2"))).toBe("invalid_transition")
     expect(shutdown.reject(stepStarted("a1"))).toBe("invalid_transition")
     expect(shutdown.reject(executionSucceeded())).toBe("invalid_transition")
+    expect(shutdown.reject(interruptRequested("user"))).toBe("invalid_transition")
   })
 
-  test("resuming counts attempts durably, and a suspended execution can be failed", () => {
+  test("only a resume after a crash counts toward the crash-resume cap", () => {
     const log = new Log()
     log.apply(created, executionStarted())
-    log.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
-    log.apply(event("execution.resumed", { executionId: x("exe_1") }))
-    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 1, startedSeq: 2, nextAttempt: 1 })
-    // After a crash the claim is still "running"; recovery resumes it again.
-    log.apply(event("execution.resumed", { executionId: x("exe_1") }))
-    expect(log.state!.session.execution).toMatchObject({ status: "running", resumes: 2 })
-    log.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
-    log.apply(event("execution.failed", { executionId: x("exe_1"), message: "resume attempts exhausted" }))
+    // A clean shutdown suspends the claim; resuming it is not a crash.
+    log.apply(interruptRequested("shutdown"), executionInterrupted("shutdown"), executionResumed())
+    expect(log.state!.session.execution).toEqual({
+      id: x("exe_1"),
+      status: "running",
+      crashResumes: 0,
+      startedSeq: 2,
+      nextAttempt: 1,
+      interrupting: null,
+    })
+    log.apply(interruptRequested("shutdown"), executionInterrupted("shutdown"), executionResumed())
+    expect(log.state!.session.execution).toMatchObject({ status: "running", crashResumes: 0 })
+    // After a crash the claim is still "running"; recovery resuming it is counted.
+    log.apply(executionResumed())
+    expect(log.state!.session.execution).toMatchObject({ status: "running", crashResumes: 1 })
+    log.apply(executionResumed())
+    expect(log.state!.session.execution).toMatchObject({ status: "running", crashResumes: 2 })
+  })
+
+  test("a suspended execution can be failed instead of resumed", () => {
+    const log = new Log()
+    log.apply(created, executionStarted(), interruptRequested("shutdown"), executionInterrupted("shutdown"))
+    log.apply(executionFailed())
     expect(log.state!.session.execution).toBeNull()
   })
 
   test("an execution cannot end while a step is open", () => {
     const log = inStep()
     expect(log.reject(executionSucceeded())).toBe("invalid_transition")
-    expect(log.reject(event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }))).toBe(
-      "invalid_transition",
-    )
-    expect(log.reject(event("execution.resumed", { executionId: x("exe_1") }))).toBe("invalid_transition")
+    expect(log.reject(executionInterrupted("user"))).toBe("invalid_transition")
+    expect(log.reject(executionResumed())).toBe("invalid_transition")
+    log.apply(interruptRequested("user"))
+    expect(log.reject(executionInterrupted("user"))).toBe("invalid_transition")
   })
 })
 
 describe("steps", () => {
   test("a step needs a claim and a boundary", () => {
     const log = new Log()
-    log.apply(created)
+    log.apply(created, baselineSet)
     expect(log.reject(stepStarted("a1"))).toBe("invalid_transition")
     log.apply(executionStarted(), stepStarted("a1"))
     expect(log.state!.session.open).toEqual({ kind: "step", messageId: m("a1") })
@@ -441,7 +478,7 @@ describe("steps", () => {
     expect(log.reject(event("step.refused", { messageId: m("a1"), message: "no", excludeFromSeq: 6, usage: null }))).toBe(
       "invalid_transition",
     )
-    log.apply(settled("a1", "call_2", "not_started", "Not started: the step was interrupted."))
+    log.apply(interruptRequested("user"), settled("a1", "call_2", "not_started", "Not started: the step was interrupted."))
     expect(log.reject(stepInterrupted("a1"))).toBe("accepted")
   })
 
@@ -615,12 +652,14 @@ describe("cancel and recovery", () => {
       called("a1", "call_1"),
       called("a1", "call_2"),
       started("a1", "call_1"),
-      // The user cancels here: the visible partial text is flushed, calls are settled.
+      // The user cancels here: the request is durable, the visible partial text is flushed, calls are settled.
+      interruptRequested("user"),
+      textEnded("a1", "Running the"),
       settled("a1", "call_1", "error", "Interrupted. Output so far: ..."),
       settled("a1", "call_2", "not_started", "Not started: the step was interrupted."),
       stepInterrupted("a1"),
       synthetic("s1"),
-      event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }),
+      executionInterrupted("user"),
     )
     expect(log.assistant("a1")).toMatchObject({ status: "failed", error: { kind: "interrupted", reason: "user" } })
     expect(log.state!.session).toMatchObject({ execution: null, open: null })
@@ -633,16 +672,279 @@ describe("cancel and recovery", () => {
     log.apply(called("a1", "call_1"), called("a1", "call_2"), started("a1", "call_1"))
     // The process dies. At the next start the claim is still running and the step is open.
     expect(log.state!.session).toMatchObject({ execution: { status: "running" }, open: { messageId: m("a1") } })
-    expect(log.reject(event("execution.resumed", { executionId: x("exe_1") }))).toBe("invalid_transition")
+    expect(log.reject(executionResumed())).toBe("invalid_transition")
     log.apply(
       settled("a1", "call_1", "effect_unknown", "Started before a crash; outcome unknown."),
       settled("a1", "call_2", "not_started", "Not started."),
-      event("step.failed", { messageId: m("a1"), error: { kind: "crashed" }, usage: null }),
-      event("execution.resumed", { executionId: x("exe_1") }),
+      stepCrashed("a1"),
     )
+    // The model is told before anything else happens.
+    expect(log.reject(executionResumed())).toBe("invalid_transition")
+    log.apply(synthetic("s1"), executionResumed())
     expect(log.assistant("a1")).toMatchObject({ status: "failed", error: { kind: "crashed" } })
-    expect(log.state!.session.execution).toMatchObject({ status: "running", resumes: 1 })
+    expect(log.state!.session.execution).toMatchObject({ status: "running", crashResumes: 1 })
     expect(log.reject(stepStarted("a2"))).toBe("accepted")
+  })
+})
+
+describe("interrupts", () => {
+  /** Every event the loop could write at this point that would carry the work on. */
+  const work = (open: boolean): NewEvent[] => [
+    ...(open
+      ? [reasoningEnded("a1", "more"), called("a1", "call_9"), started("a1", "call_1"), stepEnded("a1")]
+      : [stepStarted("a2"), compactionStarted("c1"), deliver("u2"), instruction("i1"), synthetic("s9", "check")]),
+    event("retry.scheduled", {
+      messageId: m("a1"),
+      attempt: 2,
+      delayMs: 0,
+      error: makeProviderError("rate_limit", "slow down"),
+    }),
+    executionSucceeded(),
+    executionFailed(),
+    executionResumed(),
+    interruptRequested("user"),
+    interruptRequested("shutdown"),
+  ]
+
+  test("a request is accepted with a step open, between steps and during a compaction, but only under a running claim", () => {
+    expect(inStep().reject(interruptRequested("user"))).toBe("accepted")
+    expect(running().reject(interruptRequested("shutdown"))).toBe("accepted")
+    const compacting = running()
+    compacting.apply(compactionStarted("c1"))
+    expect(compacting.reject(interruptRequested("user"))).toBe("accepted")
+    const idle = finishedTurn()
+    expect(idle.reject(interruptRequested("user"))).toBe("invalid_transition")
+  })
+
+  test("after a request with a step open, only winding down is accepted", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), enqueue("u2"), interruptRequested("user"))
+    expect(log.state!.session.execution).toMatchObject({ status: "running", interrupting: "user" })
+    for (const next of work(true)) expect(log.reject(next), next.type).toBe("invalid_transition")
+    expect(log.reject(stepInterrupted("a1", "user"))).toBe("invalid_transition") // call_1 is unsettled
+    expect(log.reject(textEnded("a1", "partial"))).toBe("accepted")
+    expect(log.reject(settled("a1", "call_1", "not_started"))).toBe("accepted")
+    log.apply(settled("a1", "call_1", "not_started"))
+    expect(log.reject(stepInterrupted("a1", "shutdown"))).toBe("invalid_transition")
+    expect(log.reject(stepCrashed("a1"))).toBe("invalid_transition")
+    log.apply(stepInterrupted("a1", "user"))
+    for (const next of work(false)) expect(log.reject(next), next.type).toBe("invalid_transition")
+    expect(log.reject(executionInterrupted("user"))).toBe("invalid_transition") // the marker is owed
+    log.apply(synthetic("s1"))
+    for (const next of work(false)) expect(log.reject(next), next.type).toBe("invalid_transition")
+    expect(log.reject(executionInterrupted("shutdown"))).toBe("invalid_transition")
+    log.apply(executionInterrupted("user"))
+    expect(log.state!.session.execution).toBeNull()
+    expect(log.state!.inbox.map((item) => item.messageId)).toEqual([m("u2")])
+  })
+
+  test("the user can still type, rename and withdraw input while the execution winds down", () => {
+    const log = inStep()
+    log.apply(enqueue("u2"), interruptRequested("user"))
+    for (const next of [
+      enqueue("u3"),
+      event("inbox.delivery_changed", { messageId: m("u2"), delivery: "queue" }),
+      event("inbox.cancelled", { messageId: m("u2") }),
+      event("session.renamed", { title: "x" }),
+      event("session.archived", {}),
+    ])
+      expect(log.reject(next), next.type).toBe("accepted")
+  })
+
+  test("between steps the request is followed by an optional marker and the release", () => {
+    const log = inStep()
+    log.apply(stepEnded("a1", "tool_calls"), interruptRequested("user"))
+    for (const next of work(false)) expect(log.reject(next), next.type).toBe("invalid_transition")
+    expect(log.reject(executionInterrupted("user"))).toBe("accepted")
+    log.apply(synthetic("s1"), executionInterrupted("user"))
+    expect(log.state!.session.execution).toBeNull()
+  })
+
+  test("a step or a compaction ends as interrupted only for a requested interrupt, and an execution too", () => {
+    const step = inStep()
+    expect(step.reject(stepInterrupted("a1", "user"))).toBe("invalid_transition")
+    const compaction = running()
+    compaction.apply(compactionStarted("c1"))
+    const interrupted = (reason: "user" | "shutdown") =>
+      event("compaction.failed", { messageId: m("c1"), error: { kind: "interrupted", reason } })
+    expect(compaction.reject(interrupted("user"))).toBe("invalid_transition")
+    compaction.apply(interruptRequested("shutdown"))
+    expect(compaction.reject(interrupted("user"))).toBe("invalid_transition")
+    expect(compaction.reject(compactionEnded("c1", 5))).toBe("invalid_transition")
+    expect(compaction.reject(event("compaction.failed", { messageId: m("c1"), error: { kind: "crashed" } }))).toBe(
+      "invalid_transition",
+    )
+    compaction.apply(interrupted("shutdown"), executionInterrupted("shutdown"))
+    expect(compaction.state!.session.execution).toMatchObject({ status: "suspended" })
+    const boundary = running()
+    expect(boundary.reject(executionInterrupted("user"))).toBe("invalid_transition")
+  })
+
+  test("recovery after a crash during a cancel can only finish the cancel", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), started("a1", "call_1", "exec"), interruptRequested("user"))
+    // The process dies here. The next start sees the request.
+    expect(log.reject(executionResumed())).toBe("invalid_transition")
+    log.apply(settled("a1", "call_1", "effect_unknown"))
+    expect(log.reject(stepCrashed("a1"))).toBe("invalid_transition")
+    log.apply(stepInterrupted("a1", "user"), synthetic("s1"))
+    expect(log.reject(executionResumed())).toBe("invalid_transition")
+    expect(log.reject(executionFailed())).toBe("invalid_transition")
+    log.apply(executionInterrupted("user"))
+    expect(log.state!.session).toMatchObject({ execution: null, open: null })
+  })
+
+  test("a crash during a shutdown is finished as a shutdown and its resume is not counted", () => {
+    const log = inStep()
+    log.apply(interruptRequested("shutdown"))
+    log.apply(stepInterrupted("a1", "shutdown"), synthetic("s1"), executionInterrupted("shutdown"), executionResumed())
+    expect(log.state!.session.execution).toMatchObject({ status: "running", crashResumes: 0, interrupting: null })
+  })
+
+  test("a cut-short step is followed by the interrupt marker and by nothing else", () => {
+    const crashed = inStep()
+    crashed.apply(stepCrashed("a1"))
+    for (const next of [stepStarted("a2"), executionResumed(), executionFailed(), synthetic("s1", "check"), instruction("i1")])
+      expect(crashed.reject(next), next.type).toBe("invalid_transition")
+    expect(crashed.reject(enqueue("u2"))).toBe("accepted")
+    crashed.apply(synthetic("s1"))
+    expect(crashed.reject(stepStarted("a2"))).toBe("accepted")
+    expect(crashed.reject(executionFailed())).toBe("accepted")
+  })
+
+  test("a step that failed for another reason owes no marker", () => {
+    for (const error of [
+      { kind: "internal", message: "bug" },
+      { kind: "provider", error: makeProviderError("provider_internal", "500") },
+    ] as const) {
+      const log = inStep()
+      log.apply(event("step.failed", { messageId: m("a1"), error, usage: null }))
+      expect(log.reject(stepStarted("a2"))).toBe("accepted")
+    }
+  })
+
+  test("a fork taken between a cut-short step and its marker owes nothing", () => {
+    const parent = inStep()
+    parent.apply(stepCrashed("a1"))
+    const fork = new Log("ses_2" as SessionId, parent.state)
+    fork.apply(
+      event("session.created", {
+        cwd: "/repo",
+        title: null,
+        lineage: { kind: "fork", parentSessionId: "ses_1" as SessionId, throughSeq: parent.seq },
+      }),
+      enqueue("u2"),
+      executionStarted("exe_2"),
+    )
+    expect(fork.reject(deliver("u2"))).toBe("accepted")
+  })
+})
+
+describe("going idle", () => {
+  test("an execution succeeds only when nothing waits in the inbox", () => {
+    for (const delivery of ["steer", "queue"] as const) {
+      const log = inStep()
+      log.apply(stepEnded("a1"), enqueue("u2", "more", delivery))
+      expect(log.reject(executionSucceeded())).toBe("invalid_transition")
+      log.apply(event("inbox.cancelled", { messageId: m("u2") }))
+      expect(log.reject(executionSucceeded())).toBe("accepted")
+    }
+  })
+
+  test("an execution succeeds only after the model answered what it was given", () => {
+    const delivered = running()
+    expect(delivered.reject(executionSucceeded())).toBe("invalid_transition") // u1 has no answer
+    const tools = inStep()
+    tools.apply(called("a1", "call_1"), settled("a1", "call_1", "error"), stepEnded("a1", "tool_calls"))
+    expect(tools.reject(executionSucceeded())).toBe("invalid_transition") // the model has not seen the result
+    const failed = inStep()
+    failed.apply(event("step.failed", { messageId: m("a1"), error: { kind: "internal", message: "bug" }, usage: null }))
+    expect(failed.reject(executionSucceeded())).toBe("invalid_transition")
+    expect(failed.reject(executionFailed())).toBe("accepted")
+    const nudged = inStep()
+    nudged.apply(stepEnded("a1"), synthetic("s1", "empty_response"))
+    expect(nudged.reject(executionSucceeded())).toBe("invalid_transition") // the nudge has no answer
+    for (const finish of ["stop", "length"] as const) {
+      const answered = inStep()
+      answered.apply(textEnded("a1", "Done."), stepEnded("a1", finish))
+      expect(answered.reject(executionSucceeded())).toBe("accepted")
+    }
+  })
+
+  test("an execution that added nothing to answer may succeed", () => {
+    const log = new Log()
+    log.apply(created, baselineSet, enqueue("u1"), executionStarted(), event("inbox.cancelled", { messageId: m("u1") }))
+    expect(log.reject(executionSucceeded())).toBe("accepted")
+    // An instruction or a compaction is not something the model has to answer.
+    const turn = finishedTurn()
+    turn.apply(executionStarted("exe_2"), instruction("i1"), compactionStarted("c1"), compactionEnded("c1", 15))
+    expect(turn.reject(executionSucceeded("exe_2"))).toBe("accepted")
+  })
+})
+
+describe("delivery order", () => {
+  test("items of one mode are delivered in the order they were admitted", () => {
+    const log = running()
+    log.apply(enqueue("u2"), enqueue("u3"), enqueue("u4"))
+    expect(log.reject(deliver("u3"))).toBe("invalid_transition")
+    log.apply(deliver("u2"))
+    expect(log.reject(deliver("u4"))).toBe("invalid_transition")
+    log.apply(deliver("u3"), deliver("u4"))
+    expect(ids(log.state!.messages)).toEqual(["u1", "u2", "u3", "u4"])
+  })
+
+  test("a steer is delivered at any boundary; a queued item only when the session would go idle and no steer waits", () => {
+    const log = inStep()
+    log.apply(enqueue("q1", "later", "queue"), enqueue("u2", "now", "steer"))
+    log.apply(called("a1", "call_1"), settled("a1", "call_1", "error"), stepEnded("a1", "tool_calls"))
+    expect(log.reject(deliver("q1"))).toBe("invalid_transition")
+    log.apply(deliver("u2"))
+    expect(log.reject(deliver("q1"))).toBe("invalid_transition") // u2 is not answered
+    log.apply(stepStarted("a2"), stepEnded("a2", "tool_calls"))
+    expect(log.reject(deliver("q1"))).toBe("invalid_transition") // the model asked for tools
+    log.apply(stepStarted("a3"), textEnded("a3", "Done."), stepEnded("a3"), enqueue("u3", "wait", "steer"))
+    expect(log.reject(deliver("q1"))).toBe("invalid_transition") // a steer waits
+    log.apply(deliver("u3"), stepStarted("a4"), stepEnded("a4"))
+    expect(log.reject(deliver("q1"))).toBe("accepted")
+  })
+
+  test("switching an item's mode moves it to the other line at its original place", () => {
+    const log = running()
+    log.apply(enqueue("q1", "a", "queue"), enqueue("u2", "b", "steer"))
+    log.apply(event("inbox.delivery_changed", { messageId: m("q1"), delivery: "steer" }))
+    expect(log.reject(deliver("u2"))).toBe("invalid_transition")
+    expect(log.reject(deliver("q1"))).toBe("accepted")
+  })
+
+  test("a queued prompt admitted while idle is delivered when the next execution starts", () => {
+    const log = finishedTurn()
+    log.apply(enqueue("q1", "next", "queue"), executionStarted("exe_2"))
+    expect(log.reject(deliver("q1"))).toBe("accepted")
+  })
+})
+
+describe("what a step needs", () => {
+  test("no step and no compaction starts before the baseline is set", () => {
+    const log = new Log()
+    log.apply(created, enqueue("u1"), executionStarted(), deliver("u1"))
+    expect(log.reject(stepStarted("a1"))).toBe("invalid_transition")
+    expect(log.reject(compactionStarted("c1"))).toBe("invalid_transition")
+    log.apply(baselineSet)
+    expect(log.reject(stepStarted("a1"))).toBe("accepted")
+    expect(log.reject(compactionStarted("c1"))).toBe("accepted")
+  })
+
+  test("harness and instruction messages are appended only under a running claim", () => {
+    const idle = finishedTurn()
+    expect(idle.reject(synthetic("s1"))).toBe("invalid_transition")
+    expect(idle.reject(instruction("i1"))).toBe("invalid_transition")
+    const suspended = running()
+    suspended.apply(interruptRequested("shutdown"), executionInterrupted("shutdown"))
+    expect(suspended.reject(synthetic("s1"))).toBe("invalid_transition")
+    expect(suspended.reject(instruction("i1"))).toBe("invalid_transition")
+    const claimed = running()
+    expect(claimed.reject(synthetic("s1", "check"))).toBe("accepted")
+    expect(claimed.reject(instruction("i1"))).toBe("accepted")
   })
 })
 
@@ -862,12 +1164,12 @@ describe("baseline and instructions", () => {
 
   test("an appended instruction is a message with its text frozen", () => {
     const log = finishedTurn()
-    log.apply(instruction("i1", "Today is Thursday."))
+    log.apply(executionStarted("exe_2"), instruction("i1", "Today is Thursday."))
     expect(log.message("i1")).toEqual({
       kind: "instruction",
       id: m("i1"),
-      seq: 17,
-      time: 170,
+      seq: 18,
+      time: 180,
       excluded: null,
       source: "date",
       text: "Today is Thursday.",
@@ -918,6 +1220,7 @@ describe("compaction", () => {
     log.apply(
       executionStarted("exe_2"),
       compactionStarted("c1"),
+      interruptRequested("user", "exe_2"),
       event("compaction.failed", { messageId: m("c1"), error: { kind: "interrupted", reason: "user" } }),
     )
     expect(log.message("c1")).toMatchObject({ status: "failed", summary: null, keepFromSeq: null })
@@ -1054,7 +1357,7 @@ describe("fork", () => {
   test("a fork of a fork folds the same way", () => {
     const parent = finishedTurn()
     const child = new Log("ses_2" as SessionId, parent.state)
-    child.apply(forkCreated(16), enqueue("u2"), executionStarted("exe_2"), deliver("u2"), executionSucceeded("exe_2"))
+    child.apply(forkCreated(16), enqueue("u2"), executionStarted("exe_2"), deliver("u2"), executionFailed("exe_2"))
     const grandchild = new Log("ses_3" as SessionId, child.state)
     grandchild.apply(
       event("session.created", {
@@ -1158,10 +1461,10 @@ describe("reducer properties", () => {
       inboxRemoved: [m("u2")],
     })
 
-    const idle = log.apply(executionSucceeded())
+    const idle = log.apply(stepStarted("a2"), stepEnded("a2"), executionSucceeded())
     const revertedState = log.apply(reverted(6))
     const revertChanges = projectionChanges(idle, revertedState)
-    expect(ids(revertChanges.messages)).toEqual(["a1", "u2"])
+    expect(ids(revertChanges.messages)).toEqual(["a1", "u2", "a2"])
     expect(revertChanges.session).toBeNull()
   })
 

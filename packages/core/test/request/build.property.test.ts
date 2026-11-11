@@ -14,6 +14,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import type { EventType, StoredEvent } from "../../src/event/durable.ts"
+import type { MessageId } from "../../src/id.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import type { Projection } from "../../src/message/message.ts"
 import { reduce, reduceAll } from "../../src/message/reducer.ts"
@@ -62,8 +63,8 @@ const scenarios: Record<string, () => Script> = {
       ],
       end: "interrupted",
     })
-    s.interruptExecution()
     s.harness("interrupt", INTERRUPT)
+    s.interruptExecution()
     s.user("stop, do something else")
     s.step({ parts: [{ text: "Okay." }] })
     s.release()
@@ -123,8 +124,9 @@ const scenarios: Record<string, () => Script> = {
   "a steering message between tool results and the next step": () => {
     const s = new Script().open()
     s.user("fix the bug")
-    let steer = s.enqueue("placeholder")
-    s.step({ parts: [{ call: "call_1" }, { call: "call_2" }], during: () => (steer = s.enqueue("also update the docs")) })
+    const steers: MessageId[] = []
+    s.step({ parts: [{ call: "call_1" }, { call: "call_2" }], during: () => steers.push(s.enqueue("also update the docs")) })
+    const steer = steers[0]!
     s.deliver(steer)
     s.step({ parts: [{ text: "Both done." }] })
     s.release()
@@ -233,20 +235,20 @@ function randomSession(seed: number): Script {
     }
   }
 
-  let interrupted = false
   for (let turn = 0, turns = 2 + below(5); turn < turns; turn++) {
     if (chance(0.15)) s.instruction("date", `The date has changed (${turn}).`)
-    if (interrupted) s.harness("interrupt", INTERRUPT)
-    interrupted = false
     const prompt = s.user(`prompt ${turn}`, pick(["steer", "queue"]))
     let open = true
     for (let step = 0, steps = below(4); open && step < steps; step++) {
       const kind = pick(["tools", "tools", "tools", "steered", "retried", "continued", "interrupted", "refused", "blank"])
       if (kind === "tools") s.step({ parts: toolParts() })
       if (kind === "steered") {
-        let steer = s.enqueue("to be cancelled")
-        s.step({ parts: toolParts(), during: () => (steer = s.enqueue(`steer ${below(1000)}`)) })
-        s.deliver(steer)
+        // One steer is withdrawn before the boundary; the other is delivered there.
+        const withdrawn = s.enqueue("to be cancelled")
+        const steers: MessageId[] = []
+        s.step({ parts: toolParts(), during: () => steers.push(s.enqueue(`steer ${below(1000)}`)) })
+        s.cancel(withdrawn)
+        s.deliver(steers[0]!)
       }
       if (kind === "retried") s.step({ retriesBeforeOutput: 1 + below(2), parts: toolParts() })
       if (kind === "continued") {
@@ -255,8 +257,9 @@ function randomSession(seed: number): Script {
           parts: [...opening(), ...calls(["success", "error", "effect_unknown"]), ...(chance(0.4) ? [{ reasoning: "cut" }] : [])],
           end,
         })
-        // Only a provider failure is retried; after a crash the turn carries on with a fresh step.
+        // Only a provider failure is retried; after a crash the model is told and the turn carries on with a fresh step.
         if (end === "provider_error") s.retry(failed, 2)
+        else s.harness("interrupt", INTERRUPT)
         s.step({ attempt: end === "provider_error" ? 2 : 1, parts: toolParts() })
       }
       if (kind === "interrupted") {
@@ -264,8 +267,8 @@ function randomSession(seed: number): Script {
           parts: [...opening(), ...calls(["success", "not_started", "effect_unknown", "error"]), ...(chance(0.4) ? [{ reasoning: "cut" }] : [])],
           end: "interrupted",
         })
+        s.harness("interrupt", INTERRUPT)
         s.interruptExecution()
-        interrupted = true
         open = false
       }
       if (kind === "refused") {

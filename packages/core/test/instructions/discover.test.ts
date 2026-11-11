@@ -195,6 +195,8 @@ describe("discovery, detection and the request together", () => {
         newMessageId: () => `ins_${++next}` as MessageId,
       })
       const before = s.projection.baseline === null ? null : s.hashes()
+      // History grows only under a running execution, so the loop prepares instructions after it took the claim.
+      s.claim()
       s.apply(...events)
       if (before !== null) expect(comparePrefix(before, s.hashes())).toEqual({ extension: true, appended: events.length })
       return events.flatMap((event) => (event.type === "instruction.appended" ? [event.data.text] : []))

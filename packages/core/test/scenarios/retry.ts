@@ -8,6 +8,7 @@ import {
   STEP_LIMIT,
   type Scenario,
   called,
+  continuationNote,
   deliver,
   enqueue,
   executionFailed,
@@ -53,10 +54,10 @@ export const retryBeforeOutput: Scenario = {
 }
 
 export const retryAfterPartialText: Scenario = {
-  title: "A retryable failure after partial text",
+  title: "A retryable failure after partial text: the model is asked to continue",
   description:
-    "The server fails after the model had written part of its answer, which the user saw. That text is now durable output, so the retry cannot be transparent: the message is marked failed with its partial text kept, and the next attempt runs under a new message with attempt 2. Both stay in the UI. The model sees the partial message too (see the ambiguity on this in the document).",
-  provider: "attempt 1 streams \"Let me look at the\" and then fails with provider_internal (HTTP 500); attempt 2 answers",
+    "The server fails after the model had written part of its answer, which the user saw. That text is now durable output, so the retry cannot be transparent: the message is marked failed with its partial text kept, and the next attempt runs under a new message with attempt 2. Between the two the loop appends a short harness note asking the model to continue from where it stopped. Without the note the next request ends on the model's own half sentence and the model starts its answer again from the top (checked against the live provider); with it, the new message picks up mid-sentence. Both messages stay in the UI, and the model sees the partial message, the note and the continuation.",
+  provider: "attempt 1 streams \"Let me look at the\" and then fails with provider_internal (HTTP 500); attempt 2 continues the sentence",
   phases: [
     {
       label: "attempt 1 fails after output",
@@ -66,6 +67,11 @@ export const retryAfterPartialText: Scenario = {
           event: retryScheduled("a1", 2, serverError),
           code: "invalid_transition",
           why: "after durable output the retry may not continue under the same message",
+        },
+        {
+          event: continuationNote("s1"),
+          code: "invalid_transition",
+          why: "a message enters history only at a step boundary: the failed step is closed first",
         },
       ],
     },
@@ -78,32 +84,47 @@ export const retryAfterPartialText: Scenario = {
           code: "invalid_transition",
           why: "the retry continues the step's attempt budget, so it must carry the scheduled attempt 2",
         },
+        {
+          event: retryScheduled("a1", 3, serverError),
+          code: "invalid_transition",
+          why: "attempt 2 is already scheduled; the budget moves on when the new message starts",
+        },
+        {
+          event: executionSucceeded(),
+          code: "invalid_transition",
+          why: "the latest step failed, so the model has not answered",
+        },
       ],
     },
     {
-      label: "the retry runs under a new message",
-      events: [
-        stepStarted("a2", 2),
-        say("a2", "Let me look at the test first."),
-        stepEnded("a2"),
-        executionSucceeded(),
-      ],
+      label: "the model is asked to continue, and the retry runs under a new message",
+      events: [continuationNote("s1"), stepStarted("a2", 2)],
       expect: {
-        ui: [
-          { id: "u1" },
-          { id: "a1", status: "failed", attempt: 1, error: "provider:provider_internal", text: "Let me look at the" },
-          { id: "a2", status: "completed", attempt: 2 },
-        ],
-        history: ["u1", "a1", "a2"],
-        execution: null,
+        open: "a2",
+        history: ["u1", "a1", "s1", "a2"],
+        ui: [{ id: "u1" }, { id: "a1", status: "failed" }, { id: "s1", kind: "synthetic", origin: "continuation" }, { id: "a2", status: "running", attempt: 2 }],
       },
       rejects: [
         {
           event: retryScheduled("a1", 3, serverError),
           code: "invalid_transition",
-          why: "a1 is no longer the latest step; only the latest step can be retried",
+          why: "a1 is no longer the step in progress; only a2 can be retried now",
         },
       ],
+    },
+    {
+      label: "the continuation",
+      events: [say("a2", " test first, then the implementation."), stepEnded("a2"), executionSucceeded()],
+      expect: {
+        ui: [
+          { id: "u1" },
+          { id: "a1", status: "failed", attempt: 1, error: "provider:provider_internal", text: "Let me look at the" },
+          { id: "s1", kind: "synthetic", origin: "continuation" },
+          { id: "a2", status: "completed", attempt: 2, text: " test first, then the implementation." },
+        ],
+        history: ["u1", "a1", "s1", "a2"],
+        execution: null,
+      },
     },
   ],
 }

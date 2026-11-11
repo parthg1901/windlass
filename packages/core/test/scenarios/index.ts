@@ -8,8 +8,6 @@ import type { Scenario } from "./script.ts"
 import { shutdownScenarios } from "./shutdown.ts"
 import { steeringScenarios } from "./steering.ts"
 
-export { todoScenarios } from "./todo.ts"
-
 export const families: Record<string, readonly Scenario[]> = {
   "Happy paths": happyPaths,
   "Cancel by the user": cancelScenarios,

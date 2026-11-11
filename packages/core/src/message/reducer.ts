@@ -9,16 +9,26 @@
  * where the log's invariants are enforced:
  *
  * - `seq` is dense and events belong to the session being folded.
- * - Messages enter history only at a step boundary, and a delivered inbox item
- *   or a new step is always covered by an execution claim.
+ * - Messages enter history only at a step boundary and only under a running
+ *   execution claim. A step needs a baseline to build its request from.
+ * - Inbox items are delivered oldest first within their mode; a queued item
+ *   only when no steer waits and the session would otherwise go idle.
+ * - An execution succeeds only when nothing waits in the inbox and the model
+ *   has answered everything it was given.
  * - A tool call follows its state machine and settles exactly once.
  * - A step has exactly one terminal event, and all its calls settle before it.
+ * - A retry is scheduled only for a retryable provider error, only for the
+ *   step in progress and only before durable output or after the message
+ *   failed; attempts count up by one and the next step carries the scheduled one.
+ * - Once an interrupt is requested the execution only winds down and ends as
+ *   interrupted for that reason. A step that was cut short (interrupted or
+ *   crashed) is followed at once by the interrupt marker.
  * - Revert and refusal ranges never reach back past the latest compaction.
  *
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
  */
-import type { StoredEvent } from "../event/durable.ts"
+import { type StepError, type StoredEvent, HARNESS_ORIGIN } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
 import {
@@ -121,9 +131,78 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
   }
 }
 
-function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.created" }>): Projection {
+type AppliedEvent = Exclude<StoredEvent, { type: "session.created" }>
+
+/**
+ * What an event is to an execution that is winding down.
+ * - `session`: about the session or its inbox, written whenever the user acts. Never held back.
+ * - `wind_down`: brings an interrupted execution to rest (each has its own check below).
+ * - `work`: moves the session forward. Rejected once an interrupt was requested,
+ *   and while a cut-short step still waits for its marker.
+ *
+ * Listing every type here makes a new event a compile error until it is classified.
+ */
+const SCOPE = {
+  "session.renamed": "session",
+  "session.archived": "session",
+  "session.unarchived": "session",
+  "inbox.enqueued": "session",
+  "inbox.delivery_changed": "session",
+  "inbox.cancelled": "session",
+  "text.ended": "wind_down",
+  "tool.settled": "wind_down",
+  "step.failed": "wind_down",
+  "compaction.failed": "wind_down",
+  "synthetic.appended": "wind_down",
+  "execution.interrupted": "wind_down",
+  "baseline.set": "work",
+  "instruction.appended": "work",
+  "inbox.delivered": "work",
+  "execution.started": "work",
+  "execution.interrupt_requested": "work",
+  "execution.resumed": "work",
+  "execution.succeeded": "work",
+  "execution.failed": "work",
+  "step.started": "work",
+  "step.ended": "work",
+  "step.refused": "work",
+  "retry.scheduled": "work",
+  "reasoning.ended": "work",
+  "tool.called": "work",
+  "tool.started": "work",
+  "compaction.started": "work",
+  "compaction.ended": "work",
+  "history.reverted": "work",
+} as const satisfies Record<AppliedEvent["type"], "session" | "wind_down" | "work">
+
+function apply(state: Projection, event: AppliedEvent): Projection {
   const fail = (code: ReduceErrorCode, detail: string): never => {
     throw new ReduceError(code, detail, event)
+  }
+  const held = state.session.execution
+  if (held !== null && SCOPE[event.type] !== "session") {
+    if (held.interrupting !== null && SCOPE[event.type] === "work")
+      fail(
+        "invalid_transition",
+        `an interrupt (${held.interrupting}) was requested, so the execution only winds down and ends as interrupted`,
+      )
+    // Cancel rule 6: the model is told, durably, right where the response was cut.
+    const last = state.messages.at(-1)
+    const cutShort =
+      last?.kind === "assistant" &&
+      last.seq > held.startedSeq &&
+      last.status === "failed" &&
+      (last.error?.kind === "interrupted" || last.error?.kind === "crashed")
+    if (cutShort && !(event.type === "synthetic.appended" && event.data.origin === HARNESS_ORIGIN.interrupt))
+      fail("invalid_transition", `step ${last.id} was cut short: the interrupt marker must follow it`)
+  }
+  /** A step or compaction closes as `interrupted` exactly when that interrupt was requested, and as nothing else then. */
+  const closing = (error: StepError) => {
+    const interrupting = held?.interrupting ?? null
+    if (error.kind === "interrupted" && error.reason !== interrupting)
+      fail("invalid_transition", `no ${error.reason} interrupt was requested (execution.interrupt_requested comes first)`)
+    if (error.kind !== "interrupted" && interrupting !== null)
+      fail("invalid_transition", `an interrupt (${interrupting}) was requested, so this ends as interrupted for that reason`)
   }
   const session = (patch: Partial<SessionState>): Projection => ({ ...state, session: { ...state.session, ...patch } })
   const atBoundary = () => {
@@ -135,6 +214,25 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
     const current = state.session.execution
     if (current === null || current.status !== "running") return fail("invalid_transition", "no execution is running")
     return current
+  }
+  /** The baseline every request of a step or compaction is built from. */
+  const based = () => {
+    if (state.baseline === null) fail("invalid_transition", "no baseline has been set (baseline.set comes before the first step)")
+  }
+  /**
+   * Whether the session would go idle now: under this claim, nothing said to
+   * the model is still unanswered. True when the claim has added no user,
+   * harness or assistant message, or when the latest of them is a completed
+   * step that did not ask for tools.
+   */
+  const wouldGoIdle = (startedSeq: number) => {
+    const latest = state.messages.findLast(
+      (message) =>
+        message.seq > startedSeq && (message.kind === "user" || message.kind === "synthetic" || message.kind === "assistant"),
+    )
+    return (
+      latest === undefined || (latest.kind === "assistant" && latest.status === "completed" && latest.finish !== "tool_calls")
+    )
   }
   const unused = (id: MessageId) => {
     if (state.messages.some((message) => message.id === id) || state.inbox.some((item) => item.messageId === id))
@@ -212,6 +310,7 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       return { ...state, baseline: { seq: event.seq, instructions: event.data.instructions, tools: event.data.tools } }
     }
     case "instruction.appended":
+      claimed()
       return add({
         kind: "instruction",
         id: event.data.messageId,
@@ -247,7 +346,17 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       const item = state.inbox.find((candidate) => candidate.messageId === event.data.messageId)
       if (item === undefined) return fail("not_found", `inbox item ${event.data.messageId} is not waiting`)
       atBoundary()
-      claimed()
+      const current = claimed()
+      const first = state.inbox.find((candidate) => candidate.delivery === item.delivery)
+      if (first !== item)
+        fail("invalid_transition", `${item.delivery} item ${first?.messageId} was admitted earlier and is delivered first`)
+      if (item.delivery === "queue") {
+        const steer = state.inbox.find((candidate) => candidate.delivery === "steer")
+        if (steer !== undefined)
+          fail("invalid_transition", `steered item ${steer.messageId} is delivered before any queued item`)
+        if (!wouldGoIdle(current.startedSeq))
+          fail("invalid_transition", "a queued item is delivered only when the session would otherwise go idle")
+      }
       const delivered: Message =
         item.origin === null
           ? { kind: "user", id: item.messageId, ...created, content: item.content, delivery: item.delivery }
@@ -266,6 +375,9 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       }
     }
     case "synthetic.appended":
+      if ((held?.interrupting ?? null) !== null && event.data.origin !== HARNESS_ORIGIN.interrupt)
+        fail("invalid_transition", "while an interrupt is wound down the only harness message is the interrupt marker")
+      claimed()
       return add({
         kind: "synthetic",
         id: event.data.messageId,
@@ -280,26 +392,51 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
         fail("invalid_transition", `execution ${state.session.execution.id} already holds the claim`)
       atBoundary()
       return session({
-        execution: { id: event.data.executionId, status: "running", resumes: 0, startedSeq: event.seq, nextAttempt: 1 },
+        execution: { id: event.data.executionId, status: "running", crashResumes: 0, startedSeq: event.seq, nextAttempt: 1, interrupting: null },
       })
     }
     case "execution.resumed": {
       const current = execution(event.data.executionId, ["running", "suspended"])
-      return session({ execution: { ...current, status: "running", resumes: current.resumes + 1 } })
+      // A claim that is still `running` at start-up was cut off by a crash; a `suspended` one was shut down cleanly.
+      const crashResumes = current.crashResumes + (current.status === "running" ? 1 : 0)
+      return session({ execution: { ...current, status: "running", crashResumes } })
     }
-    case "execution.succeeded":
-      execution(event.data.executionId, ["running"])
+    case "execution.succeeded": {
+      const current = execution(event.data.executionId, ["running"])
+      const waiting = state.inbox[0]
+      if (waiting !== undefined)
+        fail("invalid_transition", `inbox item ${waiting.messageId} is waiting: deliver it instead of going idle`)
+      if (!wouldGoIdle(current.startedSeq))
+        fail("invalid_transition", "the model has not answered everything it was given under this execution")
       return session({ execution: null })
+    }
     case "execution.failed":
       execution(event.data.executionId, ["running", "suspended"])
       return session({ execution: null })
+    case "execution.interrupt_requested": {
+      const current = claimed()
+      if (current.id !== event.data.executionId)
+        fail("not_found", `execution ${event.data.executionId} is not the claimed execution`)
+      // A second request is rejected above: the first reason wins, as it does on the abort token.
+      return session({ execution: { ...current, interrupting: event.data.reason } })
+    }
     case "execution.interrupted": {
       const current = execution(event.data.executionId, ["running"])
-      return session({ execution: releasesClaim(event.data.reason) ? null : { ...current, status: "suspended" } })
+      if (current.interrupting !== event.data.reason)
+        fail(
+          "invalid_transition",
+          current.interrupting === null
+            ? `no ${event.data.reason} interrupt was requested (execution.interrupt_requested comes first)`
+            : `the interrupt was requested for ${current.interrupting}, so the execution ends for that reason`,
+        )
+      return session({
+        execution: releasesClaim(event.data.reason) ? null : { ...current, status: "suspended", interrupting: null },
+      })
     }
 
     case "step.started": {
       const current = claimed()
+      based()
       if (event.data.attempt !== current.nextAttempt)
         fail(
           "invalid_transition",
@@ -342,6 +479,7 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       const error = event.data.error
       if (error.kind === "provider" && error.error.kind === "content_policy")
         fail("invalid_transition", "a refusal is recorded as step.refused so that it is excluded from model history")
+      closing(error)
       return close(event.data.messageId, (message) => ({
         ...message,
         status: "failed",
@@ -444,6 +582,7 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
 
     case "compaction.started": {
       claimed()
+      based()
       const started = add({
         kind: "compaction",
         id: event.data.messageId,
@@ -467,6 +606,7 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       if (open === null || open.kind !== "compaction" || open.messageId !== event.data.messageId)
         fail("invalid_transition", `compaction ${event.data.messageId} is not open`)
       if (event.type === "compaction.failed") {
+        closing(event.data.error)
         const failed = edit(event.data.messageId, "compaction", (message) => ({
           ...message,
           status: "failed",

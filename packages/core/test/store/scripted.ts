@@ -49,6 +49,8 @@ export const executionResumed = (id: string) => event("execution.resumed", { exe
 export const executionSucceeded = (id: string) => event("execution.succeeded", { executionId: x(id) })
 export const executionFailed = (id: string, message: string) =>
   event("execution.failed", { executionId: x(id), message })
+export const interruptRequested = (id: string, reason: "user" | "shutdown") =>
+  event("execution.interrupt_requested", { executionId: x(id), reason })
 export const executionInterrupted = (id: string, reason: "user" | "shutdown") =>
   event("execution.interrupted", { executionId: x(id), reason })
 export const stepStarted = (id: string, attempt = 1) =>
@@ -189,8 +191,17 @@ export const SCRIPTS: Record<string, Script> = {
     const d = new Driver(store, sid(prefix, "plain"))
     d.add(created("/work/demo", "Fix the README"), baselineSet())
     exchange(d, "1", "What does this repo do?", "It is a small CLI that prints the weather.")
-    d.add(instruction("i1", "date", "Today is Wednesday."))
-    exchange(d, "2", "Thanks. Rename the CLI to `sky`.", "Done: the binary is now called `sky`.")
+    // The date changed while the session was idle: it is appended once the next execution holds the claim.
+    d.add(
+      enqueue("u2", "Thanks. Rename the CLI to `sky`."),
+      executionStarted("exe_2"),
+      instruction("i1", "date", "Today is Wednesday."),
+      deliver("u2"),
+      stepStarted("a2"),
+      textEnded("a2", "Done: the binary is now called `sky`."),
+      stepEnded("a2"),
+      executionSucceeded("exe_2"),
+    )
     d.add(event("session.renamed", { title: "Rename the CLI" }), event("session.archived", {}))
     d.add(event("session.unarchived", {}))
     return [d.id]
@@ -251,24 +262,28 @@ export const SCRIPTS: Record<string, Script> = {
       started("a1", "call_1", "exec"),
     )
     d.request("r1", "a1", "step", "aborted")
-    // The user pressed stop: the running call reports what it saw, the pending one never began.
+    // The user pressed stop: the cancel is durable first, then the running call reports what it saw, the
+    // pending one never began, the step closes and the model is told.
     d.add(
+      interruptRequested("exe_1", "user"),
       settled("a1", "call_1", "error", "Interrupted by the user after 3s. Output so far: 12 pass"),
       settled("a1", "call_2", "not_started", "Not run: the step was interrupted before this call started."),
       stepFailed("a1", { kind: "interrupted", reason: "user" }),
+      synthetic("s1", "interrupt", "The previous response was interrupted by the user."),
       executionInterrupted("exe_1", "user"),
     )
     d.add(
       enqueue("u2", "Only run the unit tests."),
       executionStarted("exe_2"),
-      synthetic("s1", "interrupt", "The previous response was interrupted by the user."),
       deliver("u2"),
       stepStarted("a2"),
       textEnded("a2", "Running the unit tests"),
     )
     // Shutdown mid-turn keeps the claim; the next start resumes it.
     d.add(
+      interruptRequested("exe_2", "shutdown"),
       stepFailed("a2", { kind: "interrupted", reason: "shutdown" }),
+      synthetic("s2", "interrupt", "The previous response was cut short when the harness restarted."),
       executionInterrupted("exe_2", "shutdown"),
       executionResumed("exe_2"),
       stepStarted("a3"),
@@ -311,7 +326,12 @@ export const SCRIPTS: Record<string, Script> = {
     exchange(d, "1", "List the files.", "There are three files.")
     const [delivered] = d.add(enqueue("u2", "Write something the filter rejects."), executionStarted("exe_2"), deliver("u2"))
       .slice(-1)
-    d.add(stepStarted("a2"), textEnded("a2", "Sure, here"), stepRefused("a2", delivered!.seq), executionSucceeded("exe_2"))
+    d.add(
+      stepStarted("a2"),
+      textEnded("a2", "Sure, here"),
+      stepRefused("a2", delivered!.seq),
+      executionFailed("exe_2", "The provider refused the request."),
+    )
     exchange(d, "3", "Never mind. What is in README.md?", "A title and an install section.")
     return [d.id]
   },
@@ -353,15 +373,19 @@ export const SCRIPTS: Record<string, Script> = {
       changeDelivery("u2", "steer"),
       cancel("u3"),
       executionStarted("exe_1"),
+      // The steer goes first; the queued items follow one at a time, each once the session would go idle.
       deliver("u2"),
       stepStarted("a1"),
       textEnded("a1", "Fixing it."),
       stepEnded("a1"),
       deliver("u1"),
-      deliver("b1"),
       stepStarted("a2"),
-      textEnded("a2", "Logs are clean and the job succeeded."),
+      textEnded("a2", "Logs are clean."),
       stepEnded("a2"),
+      deliver("b1"),
+      stepStarted("a3"),
+      textEnded("a3", "And the job succeeded."),
+      stepEnded("a3"),
       executionSucceeded("exe_1"),
     )
     // Waiting items stay in the inbox.

@@ -37,6 +37,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "execution.resumed": event("execution.resumed", { executionId }),
   "execution.succeeded": event("execution.succeeded", { executionId }),
   "execution.failed": event("execution.failed", { executionId, message: "gave up" }),
+  "execution.interrupt_requested": event("execution.interrupt_requested", { executionId, reason: "shutdown" }),
   "execution.interrupted": event("execution.interrupted", { executionId, reason: "user" }),
   "step.started": event("step.started", { messageId, attempt: 1, model: "gpt-test" }),
   "step.ended": event("step.ended", { messageId, finish: "tool_calls", usage }),

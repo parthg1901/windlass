@@ -85,6 +85,32 @@ export const stepError = variant("kind", {
 })
 export type StepError = Infer<typeof stepError>
 
+/**
+ * The `origin` of the messages the step loop appends with `synthetic.appended`.
+ * Any other non-empty string is a valid origin too (a background command, a
+ * wake-up); these are the ones the loop and the reducer agree on.
+ */
+export const HARNESS_ORIGIN = {
+  /**
+   * The marker that the previous response was cut short. It must directly
+   * follow a step that ended `interrupted` or `crashed`, and it is the only
+   * harness message accepted while an interrupt is being wound down.
+   */
+  interrupt: "interrupt",
+  /**
+   * After a model call failed with partial text already durable: the note
+   * that asks the model to continue from where it stopped instead of starting
+   * over. Appended between the failed message and the retry's new message.
+   */
+  continuation: "continuation",
+  /** The response hit the output limit while a tool call was being written, so that call never ran. */
+  outputLimit: "output_limit",
+  /** The single nudge after an empty response. */
+  emptyResponse: "empty_response",
+  /** The step limit was reached; the next call is the last and runs without tools. */
+  stepLimit: "step_limit",
+} as const
+
 function define<const V extends number, D>(v: V, data: Validator<D>) {
   return { v, data }
 }
@@ -147,7 +173,8 @@ export const durableEvents = {
    * The harness itself added a message to history at a step boundary, without
    * going through the inbox: the marker that the previous response was
    * interrupted (cancel rule 6), the single empty-response nudge, a check
-   * result. `origin` names the kind, e.g. `"interrupt"`.
+   * result. `origin` names the kind; see `HARNESS_ORIGIN` for the ones the
+   * step loop writes.
    */
   "synthetic.appended": define(1, object({ messageId, origin: nonEmptyString, content })),
 
@@ -160,17 +187,34 @@ export const durableEvents = {
    */
   "execution.started": define(1, object({ executionId })),
   /**
-   * Recovery took up a claimed execution again after a restart. Counting these
-   * events is the durable resume-attempt accounting.
+   * A new process took up a claimed execution again. When the claim was still
+   * `running`, the previous process crashed, and the resume counts toward the
+   * crash-resume cap (`crashResumes`); when it was `suspended` by a clean
+   * shutdown, it does not.
    */
   "execution.resumed": define(1, object({ executionId })),
-  /** The session ran until it had nothing left to do. Releases the claim. */
+  /**
+   * The session ran until it had nothing left to do: the inbox is empty and
+   * the model has answered everything it was given. Releases the claim.
+   */
   "execution.succeeded": define(1, object({ executionId })),
   /** The execution gave up (a non-retryable error, attempts exhausted). Releases the claim. */
   "execution.failed": define(1, object({ executionId, message: string })),
   /**
-   * The execution was interrupted. `reason` is explicit and has no default:
-   * `user` releases the claim, `shutdown` keeps it for the next start.
+   * An interrupt was asked for: the user cancelled, or the process is shutting
+   * down. Written the moment the abort fires, before any tool has stopped, so
+   * a crash in the middle of stopping cannot turn a cancel back into work.
+   * From here until `execution.interrupted` with the same `reason`, only
+   * events that wind the execution down are accepted: flushing visible text,
+   * settling calls, closing the open step or compaction as interrupted, and
+   * the interrupt marker. Recovery that finds a requested interrupt finishes
+   * it the same way and never resumes the work.
+   */
+  "execution.interrupt_requested": define(1, object({ executionId, reason: interruptReason })),
+  /**
+   * The execution was interrupted, as asked for by the
+   * `execution.interrupt_requested` before it. `reason` is explicit and has no
+   * default: `user` releases the claim, `shutdown` keeps it for the next start.
    */
   "execution.interrupted": define(1, object({ executionId, reason: interruptReason })),
 

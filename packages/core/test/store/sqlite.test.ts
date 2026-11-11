@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { text } from "../../src/content.ts"
 import { EventDecodeError } from "../../src/event/decode.ts"
 import { event, type NewEvent, type StoredEvent } from "../../src/event/durable.ts"
 import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
@@ -208,9 +209,9 @@ describe("rebuild equals live", () => {
     expect(history("revert_revert")).toEqual(["u1", "a1", "u3", "a3"])
     expect(history("compaction_compaction")).toEqual(["c2", "u2", "a2", "u3", "a3"])
     expect(store.readModelHistory(sid("compaction_compaction")).baseline?.instructions).toContain("Prefer small diffs")
-    expect(history("inbox_inbox")).toEqual(["u2", "a1", "u1", "b1", "a2"])
+    expect(history("inbox_inbox")).toEqual(["u2", "a1", "u1", "a2", "b1", "a3"])
     expect(store.readInbox(sid("inbox_inbox")).map((item) => item.messageId as string)).toEqual(["u4"])
-    expect(history("interrupted_interrupted")).toEqual(["u1", "a1", "s1", "u2", "a2", "a3"])
+    expect(history("interrupted_interrupted")).toEqual(["u1", "a1", "s1", "u2", "a2", "s2", "a3"])
     expect(history("retried_retried")).toEqual(["u1", "a1", "u2", "a2", "a3"])
     expect(history("fork_child")).toEqual(["u1", "a1", "u2", "a2"])
     expect(store.readMessages(sid("fork_child"))[3]).toMatchObject({ id: "a2", parts: [{ text: "Tests written." }] })
@@ -314,6 +315,11 @@ describe("persistence", () => {
         display: null,
       }),
       event("step.failed", { messageId: "a1" as MessageId, error: { kind: "crashed" }, usage: null }),
+      event("synthetic.appended", {
+        messageId: "s1" as MessageId,
+        origin: "interrupt",
+        content: text("The previous response was cut short when the harness restarted."),
+      }),
       event("execution.failed", { executionId: "exe_1" as never, message: "crashed" }),
     )
     expect(expectStoreConsistent(second)).toBe(ids.length)
@@ -380,6 +386,7 @@ describe("reads", () => {
     store.append(sid("running"), [executionStarted("exe_r")])
     store.append(sid("suspended"), [
       executionStarted("exe_s"),
+      event("execution.interrupt_requested", { executionId: "exe_s" as never, reason: "shutdown" }),
       event("execution.interrupted", { executionId: "exe_s" as never, reason: "shutdown" }),
     ])
     const claimed = store.listClaimedSessions()
