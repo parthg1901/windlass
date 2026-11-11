@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# never commit credentials, session databases, or real session logs
+auth.json
+auth-pending.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+.env
+.env.*

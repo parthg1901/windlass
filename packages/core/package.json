@@ -1,0 +1,10 @@
+{
+  "name": "@light-harness/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./auth/chatgpt": "./src/auth/chatgpt.ts"
+  }
+}
