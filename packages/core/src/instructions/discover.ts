@@ -18,6 +18,7 @@
  * is searched: walking up to the filesystem root would pick up files that
  * have nothing to do with the project.
  */
+import { brand } from "../brand.ts"
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
@@ -49,12 +50,12 @@ export interface DiscoveryInput {
   readonly known?: readonly string[]
 }
 
-/** The harness config directory: `$XDG_CONFIG_HOME/light-harness`, by default `~/.config/light-harness`. */
+/** The harness config directory: `$XDG_CONFIG_HOME/<brand.directory>`, by default `~/.config/<brand.directory>`. */
 export function defaultConfigDir(
   env: Readonly<Record<string, string | undefined>> = process.env,
   home: string = homedir(),
 ): string {
-  return join(env.XDG_CONFIG_HOME || join(home, ".config"), "light-harness")
+  return join(env.XDG_CONFIG_HOME || join(home, ".config"), brand.directory)
 }
 
 /** The current instruction sources: AGENTS.md files, then the environment block, then the date. */
