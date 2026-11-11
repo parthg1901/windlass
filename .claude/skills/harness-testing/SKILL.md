@@ -45,3 +45,22 @@ If port 1455 is forwarded to this machine, `bun scripts/login.ts listen` catches
 ## Gotchas
 
 - Do not stop a background helper with `pkill -f <its command line>` from a shell whose own command line contains the same text: it kills the shell too. Kill by PID.
+
+## Running real tasks (the fastest whole-product check)
+
+```sh
+bun evals/run-agent.ts --all --model gpt-6-luna --effort low --out <dir outside the repo>   # ten tasks, about 3.5 min, about 60 requests
+bun evals/run-agent.ts fix-failing-test --model gpt-6-luna                                   # one task, about 20 s
+bun packages/cli/src/main.ts --cwd <workspace> --model gpt-6-luna --effort low "<prompt>"    # one prompt, human-readable
+```
+
+First full run (2026-11-11, gpt-6-luna, low effort): 8 of 10 passed, median 18.6 s, 283k tokens, 75% of input read from cache.
+
+Reading a result:
+- `cache-drop` in the anomalies column means a step read fewer cached tokens than the one before. Do not assume a harness bug. Export the session and ask prefixlens:
+  `bun scripts/export-trace.ts <session-id> -o /tmp/t.jsonl && bun ../prefixlens/src/cli.ts report /tmp/t.jsonl --all`
+  "provider-side miss, not caused by the harness" with all records full-request means the prefix was intact (seen on 4 of 10 runs; it is the provider's lag on quick follow-ups). Any other cause is a real bug.
+- "N full-request, 0 usage-only" in the report is itself a check: every request rebuilt from the log matched the hashes in the ledger.
+- A failed task is not always the agent's fault. Read the task prompt against the grader's reason before blaming either (one grader demanded behaviour the prompt never asked for).
+- `retry-after-error` fails on gpt-6-luna at low effort because the model refuses to remove a stale lock without confirmation. That is model caution, a useful signal when comparing prompts or models.
+- Keep run output and exported traces outside the repo and delete them afterwards.
