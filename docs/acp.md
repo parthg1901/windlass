@@ -44,7 +44,7 @@ every command the agent started is stopped, and the session resumes later where 
 | `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_light-harness/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. |
-| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. |
+| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort }`. |
 | `session/prompt` | Text, `resource_link` (named as `[file: /path]` or `[link: uri]` so the model can open it) and embedded text `resource` (the text in a fenced block under the same header). The response is the stop reason of the turn. |
 | A prompt while the agent works | Steers it: the message reaches the model at the next step boundary (after the running tool calls), in the same turn. Every prompt the turn took in is answered when it ends, with the same stop reason. |
 | `session/cancel` | Prompts not yet delivered are withdrawn and answered `cancelled` at once; the running turn is interrupted (commands are stopped) and its prompt is answered `cancelled` after its last update. A prompt sent right after a cancel starts the next turn. |
@@ -55,7 +55,8 @@ every command the agent started is stopped, and the session resumes later where 
 Stop reasons: `end_turn`; `max_turn_requests` when the turn reached its step limit; `max_tokens` when the last
 response hit the output limit; `refusal` when the provider refused; `cancelled`. A turn that fails answers the prompt
 with an error instead (v1 has no error stop reason): `-32000` when the sign-in was rejected, otherwise `-32603` with
-the harness's sentence, such as "The model call failed 4 times: ...".
+the harness's sentence, such as "The model call failed 4 times: ...", and `data["light-harness"] = { reason:
+"execution_failed", providerError? }` naming the provider's error class when there was one.
 
 Updates during a turn: `agent_thought_chunk` (reasoning summaries) and `agent_message_chunk` as they stream; one
 `tool_call` per call as soon as the model starts writing it, then `tool_call_update`s: the title and arguments

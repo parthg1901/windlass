@@ -51,6 +51,8 @@ let sessionId = ""
 let cancelled = false
 let streaming: string | null = null
 const toolTitles = new Map<string, string>()
+/** Shell calls, for `--cancel-on-command`. Declared before the connection so the update handler can use it at once. */
+const commandCalls = new Set<string>()
 const connection = client({ name: "try-client" })
   .onNotification(methods.client.session.update, ({ params }) => show(params))
   .onNotification("*", ({ method, params }) => showExt(method, params as Record<string, unknown>))
@@ -115,6 +117,8 @@ await finish(0)
 
 function show(note: SessionNotification): void {
   const update = note.update
+  const chunk = update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk" || update.sessionUpdate === "user_message_chunk"
+  if (!chunk) endStream()
   if (args.raw) console.log(dim(JSON.stringify(update)))
   switch (update.sessionUpdate) {
     case "agent_message_chunk":
@@ -188,7 +192,6 @@ function showExt(method: string, params: Record<string, unknown>): void {
   say(dim(`  ${method} ${JSON.stringify(params)}`))
 }
 
-const commandCalls = new Set<string>()
 function watchCommand(toolCallId: string): void {
   commandCalls.add(toolCallId)
 }
