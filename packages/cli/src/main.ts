@@ -29,7 +29,7 @@ import {
 import { type FakeSession } from "./fake-engine.ts"
 import { JsonSink, PrettyRenderer, QuietSink, type Sink } from "./renderer.ts"
 import { selectEngine } from "./select-engine.ts"
-import { Screen } from "./terminal.ts"
+import { type EditorAction, Screen } from "./terminal.ts"
 import { colorEnabled, displayWidth, formatDuration } from "./text.ts"
 
 export interface Io {
@@ -313,11 +313,9 @@ class TerminalMode {
     readonly screen: Screen,
   ) {}
 
-  start(handle: (action: ReturnType<Screen["input"]>[number]) => void): void {
+  start(handle: (action: EditorAction) => void): void {
     if (this.io.stdin.listen === undefined) throw new Error("interactive mode needs keyboard input")
-    this.stop = this.io.stdin.listen((data) => {
-      for (const action of this.screen.input(data)) handle(action)
-    })
+    this.stop = this.io.stdin.listen((data) => this.screen.input(data, handle))
     this.io.stdout.write("\x1b[?2004h")
   }
 

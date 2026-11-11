@@ -3,7 +3,7 @@ import { validateEvent } from "@light-harness/core"
 import { brand } from "@light-harness/core"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { findScenario } from "../src/demo/scenarios.ts"
-import { runCli } from "./helpers.ts"
+import { CLI, runCli } from "./helpers.ts"
 
 const EPHEMERAL = ["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]
 
@@ -48,5 +48,54 @@ describe("--quiet", () => {
     expect(result.code).toBe(1)
     expect(result.out).toBe("")
     expect(result.err).toBe(`${brand.binary}: failed: Signed out: sign in again to continue.\n`)
+  })
+})
+
+describe("--json for a live reader", () => {
+  test("each line arrives as its event happens, and stdout holds JSON lines only, even across a Ctrl-C", async () => {
+    const proc = Bun.spawn(["bun", CLI, "--demo", "a-long-build-command", "--json", "--demo-speed", "2"], { stdout: "pipe", stderr: "pipe", stdin: "ignore" })
+    try {
+      const arrivals: { at: number; line: string }[] = []
+      const decoder = new TextDecoder()
+      let buffer = ""
+      let interrupted = false
+      for await (const chunk of proc.stdout) {
+        buffer += decoder.decode(chunk, { stream: true })
+        for (let end = buffer.indexOf("\n"); end !== -1; end = buffer.indexOf("\n")) {
+          arrivals.push({ at: Date.now(), line: buffer.slice(0, end) })
+          buffer = buffer.slice(end + 1)
+        }
+        if (!interrupted && arrivals.filter((item) => item.line.includes('"tool.progress"')).length >= 3) {
+          interrupted = true
+          proc.kill("SIGINT")
+        }
+      }
+      expect(await proc.exited).toBe(130)
+      expect(buffer).toBe("")
+      const types = arrivals.map((item) => (JSON.parse(item.line) as { type: string }).type)
+      expect(types).toContain("execution.interrupt_requested")
+      expect(types.at(-1)).toBe("execution.interrupted")
+      // Lines came in over the run, not in one burst at the end.
+      const spread = arrivals.at(-1)!.at - arrivals[0]!.at
+      expect(spread).toBeGreaterThan(1000)
+      expect(new Set(arrivals.map((item) => Math.floor(item.at / 100))).size).toBeGreaterThan(5)
+      expect(await new Response(proc.stderr).text()).toBe(`${brand.binary}: stopping; press Ctrl-C again to exit now\n`)
+    } finally {
+      proc.kill("SIGKILL")
+    }
+  }, 30_000)
+})
+
+describe("--quiet errors", () => {
+  test("a refused turn, a failure and a usage error all go to stderr; stdout has only answers", async () => {
+    const refusal = await runCli(["--demo", "a-content-policy-refusal", "--demo-speed", "0", "-q"])
+    expect(refusal.code).toBe(0)
+    expect(refusal.out).toBe("It exports a.\na.\n")
+    expect(refusal.err).toBe(`${brand.binary}: failed: The provider refused the request.\n`)
+    const interrupted = await runCli(["--demo", "cancel-while-text-is-streaming", "--demo-speed", "0", "-q"])
+    expect(interrupted).toEqual({ code: 130, out: "", err: `${brand.binary}: interrupted\n` })
+    const unavailable = await runCli(["-q", "hello"], { realEngineModule: "./no-such-engine.ts" })
+    expect(unavailable.out).toBe("")
+    expect(unavailable.err).not.toBe("")
   })
 })

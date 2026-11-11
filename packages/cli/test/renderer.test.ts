@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { type EphemeralEvent, type NewEvent, type SessionId, event, text } from "@light-harness/core"
-import { c, m, opening, stepStarted } from "@light-harness/core/testing/scenarios"
+import { type EphemeralEvent, type NewEvent, type ProviderErrorKind, type SessionId, brand, event, makeProviderError, text } from "@light-harness/core"
+import { c, m, opening, stepStarted, synthetic } from "@light-harness/core/testing/scenarios"
 import { demoScenarios } from "../src/demo/scenarios.ts"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { displayWidth, stripAnsi } from "../src/text.ts"
+import { PrettyRenderer } from "../src/renderer.ts"
 import { render, runCli, stored, withoutDurations } from "./helpers.ts"
 
 const SESSION = "ses_test" as SessionId
@@ -17,6 +18,9 @@ const start = (messageId: string, callId: string, effect: "read" | "write" | "ex
 const settle = (messageId: string, callId: string, outcome: "success" | "error" | "not_started" | "effect_unknown", output: string, display: NewEvent<"tool.settled">["data"]["display"] = null) =>
   event("tool.settled", { messageId: m(messageId), callId: c(callId), outcome, output, truncation: null, attachments: [], display })
 const SGR = /\x1b\[[0-9;]*m/
+const brandBinary = brand.binary
+const providerError = (kind: ProviderErrorKind, message: string, status?: number, retryAfterMs?: number, requestId: string | null = null, reason?: "connection" | "stalled") =>
+  makeProviderError(kind, message, { ...(status === undefined ? {} : { status }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }), requestId, ...(reason === undefined ? {} : { reason }) })
 
 describe("streamed text", () => {
   test("text streamed as deltas is not printed again when text.ended arrives", () => {
@@ -241,5 +245,121 @@ describe("turn summary", () => {
   test("has no usage line when no step reported usage", () => {
     const out = render(stored([...opening(), stepStarted("a1"), event("step.failed", { messageId: m("a1"), error: { kind: "interrupted", reason: "user" }, usage: null }), event("execution.interrupted", { executionId: "exe_1" as never, reason: "user" })]))
     expect(out).toBe("› Fix the failing test.\n\n■ interrupted · 500ms\n")
+  })
+})
+
+describe("events the core added", () => {
+  const exe = "exe_1" as never
+  const failedWith = (error: ReturnType<typeof providerError>) => [
+    ...opening(),
+    stepStarted("a1"),
+    event("step.failed", { messageId: m("a1"), error: { kind: "provider", error }, usage: null }),
+    event("execution.failed", { executionId: exe, message: "The model call failed: it went wrong." }),
+  ]
+
+  test("a failure line carries the provider's request ID, on a line of its own", () => {
+    const out = render(stored(failedWith(providerError("provider_internal", "boom", 500, undefined, "req_7f3a"))))
+    expect(out.split("\n").slice(-3)).toEqual(["✗ failed (provider_internal): The model call failed: it went wrong.", "  request req_7f3a", ""])
+    expect(render(stored(failedWith(providerError("provider_internal", "boom", 500))))).not.toContain("request ")
+  })
+
+  test("--quiet puts the request ID in the failure message on stderr", async () => {
+    // Exercised through the sink directly: no scenario fails with a request ID.
+    const { QuietSink } = await import("../src/renderer.ts")
+    let out = ""
+    let err = ""
+    const sink = new QuietSink((text) => (out += text), (text) => (err += text))
+    for (const item of stored(failedWith(providerError("rate_limit", "slow down", 429, undefined, "req_9")))) sink.event(item)
+    expect(out).toBe("")
+    expect(err).toBe("lh: failed: The model call failed: it went wrong. (request req_9)\n".replace("lh", brandBinary))
+  })
+
+  test("a stalled connection is named as such on the retry line", () => {
+    const stalled = providerError("transport", "no data for 60 s", undefined, undefined, null, "stalled")
+    const out = render(stored([...opening(), stepStarted("a1"), event("retry.scheduled", { messageId: m("a1"), attempt: 2, delayMs: 2000, error: stalled })]))
+    expect(out).toContain("↻ retrying in 2.0s (attempt 2) · the connection stalled: no data for 60 s\n")
+  })
+
+  test("a model or effort change shows what changed", () => {
+    const out = render(
+      stored([
+        ...opening(),
+        event("settings.changed", { model: "gpt-other", reasoningEffort: "medium" }),
+        event("settings.changed", { model: "gpt-other", reasoningEffort: "high" }),
+        event("settings.changed", { model: "gpt-mini", reasoningEffort: null }),
+      ]),
+    )
+    expect(out).toContain(
+      ["⇄ model gpt-test → gpt-other · from the next step", "⇄ effort medium → high · from the next step", "⇄ model gpt-other → gpt-mini · effort high → default · from the next step", ""].join("\n"),
+    )
+  })
+
+  test("instruction files are named once per baseline, and a removed source says so", () => {
+    const base = (sources: string[]) =>
+      event("baseline.set", { instructions: "x", tools: [], sources: sources.map((source) => ({ source, fingerprint: "f" })) })
+    const out = render(
+      stored([
+        base(["date", "agents:AGENTS.md", "agents:src/AGENTS.md"]),
+        base(["date", "agents:AGENTS.md", "agents:src/AGENTS.md"]),
+        event("instruction.appended", { messageId: m("i1"), source: "agents:src/AGENTS.md", text: "", fingerprint: null }),
+      ]),
+    )
+    expect(out).toBe("· instructions from AGENTS.md, src/AGENTS.md\n· instructions removed: src/AGENTS.md\n")
+  })
+
+  test("the stop request is shown when it is written, with the exit hint when this CLI asked for it", () => {
+    const events = stored([...opening(), stepStarted("a1"), event("execution.interrupt_requested", { executionId: exe, reason: "user" })])
+    expect(render(events).split("\n").at(-2)).toBe("■ stopping…")
+    let out = ""
+    const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false })
+    renderer.interruptRequested()
+    for (const item of events) renderer.event(item)
+    renderer.interruptRequested()
+    expect(out).toBe("■ stopping… press Ctrl-C again to exit now\n■ still stopping… press Ctrl-C again to exit now\n")
+  })
+
+  test("text that a provider error cut off continues after the note, marked as a continuation", () => {
+    const out = render(
+      stored([
+        ...opening(),
+        stepStarted("a1"),
+        said("a1", "Let me look at the"),
+        event("step.failed", { messageId: m("a1"), error: { kind: "provider", error: providerError("provider_internal", "oops", 500) }, usage: null }),
+        event("retry.scheduled", { messageId: m("a1"), attempt: 2, delayMs: 2000, error: providerError("provider_internal", "oops", 500) }),
+        synthetic("s1", "continuation", "Continue."),
+        stepStarted("a2", 2),
+      ]),
+    )
+    const [step] = stored([said("a2", " test first.")])
+    expect(out + render([delta("a2", " test"), delta("a2", " first."), step!], {})).toContain("↻ asking the model to continue where it was cut off\n")
+    // Within one renderer: the continuation's leading space is dropped and the block starts with an ellipsis.
+    let text = ""
+    const renderer = new PrettyRenderer({ write: (value) => (text += value), color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false })
+    for (const item of [...stored([...opening(), stepStarted("a1"), synthetic("s1", "continuation", "Continue."), stepStarted("a2")]), delta("a2", " test"), delta("a2", " first.")]) renderer.event(item)
+    expect(text.endsWith("\n… test first.")).toBe(true)
+  })
+
+  test("a line that arrives while text streams does not split the text silently", () => {
+    const events = stored([...opening(), stepStarted("a1")])
+    const [enqueued] = stored([event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("Also b.ts") })]).map((item) => ({ ...item, seq: 99 }))
+    const out = render([...events, delta("a1", "Reading a."), enqueued!, delta("a1", "ts now.")])
+    expect(out).toContain('Reading a.\n\n↳ sent: "Also b.ts" · the agent will see it after the current step\n\n… ts now.')
+  })
+
+  test("messages still waiting when a turn is interrupted are counted", () => {
+    const out = render(
+      stored([
+        ...opening(),
+        stepStarted("a1"),
+        event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "queue", content: text("Then the changelog.") }),
+        event("execution.interrupt_requested", { executionId: exe, reason: "user" }),
+        event("step.failed", { messageId: m("a1"), error: { kind: "interrupted", reason: "user" }, usage: null }),
+        synthetic("s1", "interrupt", "The user stopped the previous response before it finished."),
+        event("execution.interrupted", { executionId: exe, reason: "user" }),
+      ]),
+    )
+    expect(out).toContain('↳ queued: "Then the changelog." · the agent will see it after this turn\n')
+    expect(render(stored([...opening(), event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("Also check b.ts and c.ts.") })]), { columns: () => 40 })).toContain('↳ sent: "Also check …" · after this step\n')
+    expect(out.split("\n").slice(-3)).toEqual(["■ interrupted · 800ms", "  1 message still waiting · delivered when work starts again", ""])
   })
 })

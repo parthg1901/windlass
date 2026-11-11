@@ -507,9 +507,14 @@ export class PrettyRenderer implements Sink {
       if (this.options.echoPrompts) this.prompt(text)
       return
     }
-    const when = data.delivery === "queue" ? "queued: " : "sent: "
-    const later = data.delivery === "queue" ? " · the agent will see it when the current work is done" : " · the agent will see it after the current step"
-    this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg(when, "dim"), seg(quote(text)), seg(later, "dim")])
+    const queued = data.delivery === "queue"
+    const before = [seg(`${SYMBOL.inbox} `, "magenta"), seg(queued ? "queued: " : "sent: ", "dim")]
+    // The message is shortened before the explanation; on a narrow terminal the explanation is the short one.
+    const full = queued ? " · the agent will see it after this turn" : " · the agent will see it after the current step"
+    const fits = displayWidth(`↳ queued: ${full}`) + 16 <= this.width
+    const later = fits ? full : queued ? " · after this turn" : " · after this step"
+    const room = Math.max(8, this.width - displayWidth(`↳ ${queued ? "queued: " : "sent: "}${later}`) - 2)
+    this.line("info", [...before, seg(`"${truncate(flatten(text), room)}"`), seg(later, "dim")])
   }
 
   // ---------------------------------------------------------------- turn bookkeeping

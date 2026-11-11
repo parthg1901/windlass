@@ -51,6 +51,8 @@ export async function runCli(
     /** Keyboard input for the interactive mode: called with the function that types into it. */
     keys?: (type: (data: string) => void) => void
     onSignal?: Io["onSignal"]
+    /** Sees every write to stdout as it happens. */
+    onWrite?: (text: string) => void
   } = {},
 ): Promise<CliRun> {
   let out = ""
@@ -62,6 +64,7 @@ export async function runCli(
     stdout: {
       write: (text) => {
         out += text
+        options.onWrite?.(text)
       },
       isTTY: options.stdoutTTY ?? false,
       columns: () => options.columns ?? 80,

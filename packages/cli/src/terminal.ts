@@ -90,9 +90,12 @@ export class Screen {
 
   // ---------------------------------------------------------------- input
 
-  /** Feeds raw terminal input. Returns what the keys amount to, in order. */
-  input(data: string): EditorAction[] {
-    const actions: EditorAction[] = []
+  /**
+   * Feeds raw terminal input. `handle` is called for each action the moment
+   * its key is read, so it sees the input as it was then (Ctrl-C followed by
+   * more keys in one read clears the entry before those keys apply).
+   */
+  input(data: string, handle: (action: EditorAction) => void): void {
     let rest = data
     while (rest !== "") {
       if (this.pasting) {
@@ -116,17 +119,16 @@ export class Screen {
         this.insert((submit ? rest.slice(0, -1) : rest).replace(/\r\n?/g, "\n").replace(/\t/g, "  "))
         if (submit) {
           const action = this.enter()
-          if (action !== null) actions.push(action)
+          if (action !== null) handle(action)
         }
         break
       }
       const token = nextToken(rest)
       rest = rest.slice(token.length)
       const action = this.key(token)
-      if (action !== null) actions.push(action)
+      if (action !== null) handle(action)
     }
     this.redraw()
-    return actions
   }
 
   /** What is typed in the input now. */
@@ -198,9 +200,12 @@ export class Screen {
         this.cursor = end === -1 ? this.buffer.length : end
         return null
       }
-      case "\x15":
-        this.replace(this.buffer.lastIndexOf("\n", this.cursor - 1) + 1, this.cursor, "")
+      case "\x15": {
+        // At the start of a line it joins the line to the one above, so repeated presses clear a multi-line entry.
+        const lineStart = this.buffer.lastIndexOf("\n", this.cursor - 1) + 1
+        this.replace(lineStart === this.cursor && lineStart > 0 ? lineStart - 1 : lineStart, this.cursor, "")
         return null
+      }
       case "\x0b": {
         const end = this.buffer.indexOf("\n", this.cursor)
         this.replace(this.cursor, end === -1 ? this.buffer.length : end, "")

@@ -151,6 +151,8 @@ export class FakeSession implements Session {
   private readonly speed: number
   private cursor = 0
   private playing: Promise<void> | null = null
+  /** The turn being played has written its terminal event; its replay may still be finishing. */
+  private turnEnded = false
   /** The stop that was asked for (`interrupt` or `close`); the first wins. */
   private stopWanted: InterruptReason | null = null
   /** The stop is in effect: its request is in the log and the replay winds down. */
@@ -200,7 +202,9 @@ export class FakeSession implements Session {
 
   async send(prompt: string, options: SendOptions = {}): Promise<MessageId | null> {
     if (this.closed || this.closing !== null) return null
-    if (this.playing !== null) return this.admit(prompt, options.delivery ?? "steer")
+    if (this.playing !== null && !this.turnEnded) return this.admit(prompt, options.delivery ?? "steer")
+    await this.playing
+    if (this.closed || this.closing !== null) return null
     const turn = this.turns[this.cursor] ?? this.genericTurn(prompt)
     this.cursor = Math.min(this.cursor + 1, this.turns.length)
     const events = turn.events.map((planned, index) =>
@@ -210,6 +214,7 @@ export class FakeSession implements Session {
     )
     this.stopWanted = null
     this.stopping = false
+    this.turnEnded = false
     this.playing = this.play(events).finally(() => {
       this.playing = null
     })
@@ -516,6 +521,7 @@ export class FakeSession implements Session {
         this.execution = null
         this.interrupting = null
         this.unanswered = []
+        this.turnEnded = true
         return
       case "step.started":
         this.step = item.data.messageId
