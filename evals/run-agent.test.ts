@@ -19,7 +19,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  process.env.TMPDIR = scratch.previousTmp
+  // Assigning `undefined` would store the string "undefined" and break `tmpdir()` for every test file that runs after this one.
+  if (scratch.previousTmp === undefined) delete process.env.TMPDIR
+  else process.env.TMPDIR = scratch.previousTmp
   await rm(scratch.dir, { recursive: true, force: true })
 })
 
