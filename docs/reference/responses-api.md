@@ -34,6 +34,11 @@ How to read the provenance tags. Every statement ends with one or more tags:
 
 All `.md` variants of these pages (append `.md`) carry the same text [docs:SIWC-MI].
 
+- `[live]` means observed against the real endpoint on 2026-11-11 with `scripts/probe-responses.ts` (model `gpt-6-luna`,
+  effort `low` unless noted). Raw captures stay in the git-ignored `captures/`; trimmed fixtures are in
+  `packages/core/test/fixtures/responses/`. Where `[live]` contradicts a docs or opencode claim in the body, the old
+  claim is kept and marked "Corrected (live)".
+
 | Source key | Path under the opencode snapshot `.../scratchpad/opencode-dev/` |
 | --- | --- |
 | OR | `packages/ai/src/protocols/open-responses.ts` (provider-neutral Responses request lowering and stream parser) |
@@ -46,6 +51,86 @@ All `.md` variants of these pages (append `.md`) carry the same text [docs:SIWC-
 | CACHE | `packages/ai/src/protocols/utils/cache.ts` |
 | FR | `packages/ai/src/route/framing.ts` |
 | OCORE | `packages/core/src/plugin/provider/openai.ts` (the older Codex-backend ChatGPT flow at `chatgpt.com/backend-api/codex`; NOT this flow, cited only for contrast) |
+
+---
+
+## Verified live (2026-11-11)
+
+One line per finding. Probe name in brackets; run `bun scripts/probe-responses.ts <name>` to re-check. 46 inference
+requests in total.
+
+1. Plain top-level `{type:"function", name, description, parameters, strict:true}` tools are accepted and called. A
+   `namespace` tool is also accepted, and its call carries `namespace:"wx"` [tools] [extras].
+2. Function-call stream order: `output_item.added` (`arguments:""`, `status:"in_progress"`) →
+   `function_call_arguments.delta`×n → `function_call_arguments.done` → `output_item.done` → `response.metadata` →
+   `response.completed` [tools].
+3. Calls in a parallel response came with no `function_call_arguments.delta` at all, only `.done`. Arguments were
+   formatted differently there (`{"city": "Paris"}`, with a space). Two calls arrive one after the other at
+   `output_index` 0 and 1, never interleaved [parallel].
+4. Stateless replay works. Item `id`s are optional everywhere: the minimal `{type:"function_call", call_id, name,
+   arguments}` (no `id`, no `status`) is accepted, and so is an invented `fc_` id. `function_call_output` without
+   `call_id` fails with 400 `"A function call output without a call_id requires a name."` (`code: null`) [replay].
+5. `encrypted_content` is returned by default with `store:false`; `include: ["reasoning.encrypted_content"]` is
+   accepted but not needed. It is already complete-looking on `output_item.added` [reasoning].
+6. Replaying a reasoning item is optional. With it, without it (function_call kept), or without its `id`, the next
+   request completes. With it, input grows by about 15 tokens (the attribution map bills the `rs_` item). A corrupted
+   `encrypted_content` fails with 400 `invalid_encrypted_content` [reasoning].
+7. Reasoning items have keys `type, id, summary, content, encrypted_content` and no `status`. At effort `low`,
+   `gpt-6-luna` emitted no reasoning item for simple prompts; at `medium` it did (`reasoning_tokens` 13) [reasoning].
+8. `instructions` and a `developer` message are both accepted. A `system` message fails with HTTP 400
+   `{"detail":"System messages are not allowed"}` [instructions].
+9. Rejected request fields fail before the stream with HTTP 400, `content-type: application/json` and body
+   `{"detail":"Unsupported parameter: temperature"}`. An unknown field gets the same shape. There is no `error.code`
+   for these [rejected].
+10. Unsupported input items fail with HTTP 400 `{"error":{"type":"invalid_request_error","param":"input",
+    "code":"subscription_sharing_unsupported_capability",...}}`. `configuration_update` is one of them [extras].
+11. Three pre-stream error body shapes exist: `{"detail"}`, `{"error"}` with a code, and `{"error"}` with `code: null`.
+    One 400 (`invalid_encrypted_content`) came without a `content-type` header [rejected] [replay] [reasoning].
+12. SSE framing: every frame has `event: <type>` and `data: <json>` lines, and the event name matches the JSON `type`.
+    No `[DONE]` sentinel is sent. `: keep-alive` comment lines occur. The last event of every successful stream was
+    `response.completed` [framing].
+13. `response.metadata` (undocumented) appears once per stream, carrying `response_id` and a large
+    `metadata.openai_chatgpt_moderation_metadata` object. It can arrive in the middle of a message item (between
+    `output_text.delta` and `output_text.done`), not only after the items [framing] [text].
+14. Delta events carry an `obfuscation` string by default; `stream_options.include_obfuscation:false` removes it.
+    `response_id` appears only on `response.metadata`, not on function-call events [framing] [extras].
+15. Event types seen across 38 streams: `output_text.delta`, `output_item.added`/`.done`, `created`, `in_progress`,
+    `metadata`, `completed`, `content_part.added`/`.done`, `output_text.done`, `function_call_arguments.delta`/`.done`,
+    `reasoning_summary_part.added`/`.done`, `reasoning_summary_text.delta`/`.done`. No `error`, `response.failed`,
+    `response.incomplete` or `reasoning_text.*` was ever observed [framing].
+16. Usage on `response.completed`: `input_tokens`, `input_tokens_details.{cached_tokens, cache_write_tokens}`,
+    `output_tokens`, `output_tokens_details.reasoning_tokens`, `total_tokens`, plus `attribution` [usage].
+17. `attribution.items` maps an item id to `{input_tokens, cached_tokens, cache_write_tokens, output_tokens,
+    content?: [same per content part]}` for every input item and the output item. Input items sent without ids get
+    server ids (`msg_`, `fc_`), so the keys cannot be matched to the request by id, only by order.
+    `attribution.request_fields.tools` bills the tool definitions (38 tokens for one small tool) [usage] [cache].
+18. `cache_write_tokens` was 0 in every response, including cold ones [cache].
+19. Prompt caching hits only with a `session-id` request header. The server overwrites `prompt_cache_key`: the echoed
+    value is the `session-id` header when present, otherwise a fresh random UUID per request. A body
+    `prompt_cache_key` alone never hit (two attempts, 2 s and 6 s apart) [cache] [cache2].
+20. With a stable `session-id`: a repeat request cached 3,072 of about 3,260 input tokens (twice). Changing only the
+    last user message still cached 3,072. Changing one tool description cached 0. The same prefix under a different
+    `session-id` cached 0, so the cache is scoped to the session-id [cache] [cache2].
+21. `prompt_cache_options` fails on `gpt-6-luna` with 400 `{"error":{"code":"invalid_parameter",
+    "param":"prompt_cache_options","message":"prompt_cache_options is not supported on this model"}}` [extras].
+22. Response headers on a 200 stream: `x-oai-request-id` (e.g. `req_…`; not `x-request-id`), `cf-ray`,
+    `x-models-etag`, `x-codex-turn-state` (an opaque `gAAAA…` blob), `x-openai-proxy-wasm`, plus standard ones. No
+    `x-ratelimit-*`, `retry-after` or `openai-processing-ms` headers appeared on 200 or 400 responses [headers].
+23. `tool_choice:"none"` with tools present is accepted; the model answers in text and makes no call [toolnone].
+24. `parallel_tool_calls:true` gave two calls in one response; `false` is accepted and gave one call [parallel].
+25. Aborting a stream from the client after the first text delta causes no problem; the next request completes
+    [abort].
+26. `allowed_tools` with `mode:"none"` fails with 400 `"'none' is not a valid mode for Allowed Tools."` [extras].
+27. A zstd-compressed body with `Content-Encoding: zstd` is accepted [extras].
+28. The echoed response shows server defaults: `reasoning.summary:"detailed"` when `auto` was sent,
+    `reasoning.context:"all_turns"`, `prompt_cache_retention:"24h"`, `temperature:1.0`, `top_p:0.98`, and a
+    `safety_identifier` (`user-…`). `response.completed.response.output` is populated even with `store:false`
+    [text] [tools].
+29. The model list is `{models:[...]}`, as the SIWC docs say. Entries carry `visibility` (`list`/`hide`),
+    `supported_in_api`, `context_window`, `max_context_window`, `supported_reasoning_levels`,
+    `default_reasoning_level`, `default_verbosity`, `supports_parallel_tool_calls`,
+    `supports_reasoning_effort_updates`, `prefer_websockets: true`, `base_instructions` and many Codex-specific
+    flags. `gpt-6-luna` is described as "Fast and affordable model for easier tasks" (GET /models, not counted above).
 
 ---
 
@@ -96,16 +181,22 @@ Also rejected or unsupported:
   unsupported [docs:SIWC-ER].
 - An unsupported input, tool, execution feature, model or service-tier override fails with
   `subscription_sharing_unsupported_capability` (HTTP 400). `error.param` names the offending field [docs:SIWC-ER].
+  Corrected (live): that holds for unsupported input items (`param: "input"`). Rejected or unknown top-level
+  fields instead return HTTP 400 `{"detail":"Unsupported parameter: <field>"}` with no code, and a `system` message
+  returns `{"detail":"System messages are not allowed"}` [live].
 - opencode disables `reasoning.mode: "pro"` models for this flow [oc:CG:325-327]. It also disables
   `configuration_update` effort updates [oc:CG:322] and native `/responses/compact` ("Token sharing does not support
   native /responses/compact") [oc:CG:323-324]. The docs do not state these three restrictions; see section 12.
+  `configuration_update` is confirmed rejected with `subscription_sharing_unsupported_capability` [live].
 
 ### 1.3 Accepted (not on the rejected list) and relevant to an agent loop
 
 `instructions`, `tools`, `tool_choice`, `parallel_tool_calls`, `include`, `reasoning` (`effort`, `summary`), `text`
 (`verbosity`, `format`), `prompt_cache_key`, `stream_options`. These are documented in the general API
 [docs:API-CREATE] and are absent from the rejected list [docs:SIWC-PL]. The SIWC docs never affirmatively list
-"accepted" fields, so acceptance is inferred from absence (section 12). opencode sends `instructions`, `tools`,
+"accepted" fields, so acceptance is inferred from absence. Live: `instructions`, `tools`, `tool_choice`,
+`parallel_tool_calls`, `include`, `reasoning` (`effort`, `summary`), `prompt_cache_key` and `stream_options` are all
+accepted; `text` was not sent on its own [live]. opencode sends `instructions`, `tools`,
 `tool_choice`, `parallel_tool_calls`, `include`, `reasoning`, `text.verbosity` and `prompt_cache_key` on this route
 when they are configured [oc:OR:808-845] [oc:OAR:239-268].
 
@@ -120,8 +211,8 @@ Field reference (general API):
 | `include` | array of strings | e.g. `"reasoning.encrypted_content"` (section 3.6) | [docs:API-CREATE] |
 | `reasoning` | `{ effort?, summary?, context?, mode? }` | Section 9 | [docs:API-CREATE] |
 | `text` | `{ format?, verbosity? }` | `verbosity`: `low` / `medium` (default) / `high` | [docs:API-CREATE] |
-| `prompt_cache_key` | string | Section 6. opencode clamps it to 64 chars [oc:SH:117-124] | [docs:API-CREATE] |
-| `prompt_cache_options` | `{ mode?, ttl?, prewarm?, comparison_response_id? }` | GPT-5.6+. Not mentioned by SIWC docs (section 12) | [docs:API-CREATE] |
+| `prompt_cache_key` | string | Section 6. opencode clamps it to 64 chars [oc:SH:117-124]. Live: accepted but overwritten by the server (section 6) [live] | [docs:API-CREATE] |
+| `prompt_cache_options` | `{ mode?, ttl?, prewarm?, comparison_response_id? }` | GPT-5.6+. Not mentioned by SIWC docs. Live: rejected on `gpt-6-luna` with `invalid_parameter` "not supported on this model" [live] | [docs:API-CREATE] |
 | `stream_options` | `{ include_obfuscation?: boolean }` | Only with `stream: true`. Adds an `obfuscation` field to delta events; on by default | [docs:API-CREATE] |
 | `service_tier` | `auto`, `default`, `flex`, `scale`, `priority`, `fast`, `ultrafast` | A service-tier override can fail with `subscription_sharing_unsupported_capability` [docs:SIWC-ER] | [docs:API-CREATE] |
 
@@ -142,7 +233,7 @@ Field reference (general API):
 Recommendation, derived from the docs above. Put the stable system prompt in the first `input` item as
 `{role:"developer", content:[{type:"input_text", text:...}]}` and never change it. This gives a stable, cacheable prefix
 and a natural cache boundary, and it can later take an explicit `prompt_cache_breakpoint` if the flow supports
-`prompt_cache_options` (unverified, section 12). Using `instructions` is also valid if it never changes, but it cannot
+`prompt_cache_options` (live: rejected on `gpt-6-luna`; section 12). Using `instructions` is also valid if it never changes, but it cannot
 carry a breakpoint. Put dynamic content (timestamps, per-user data) after the stable prefix [docs:G-CACHE].
 
 opencode puts the request's system prompt in top-level `instructions` [oc:OR:808-814]. It lowers later system messages
@@ -205,6 +296,10 @@ Field shapes come from [docs:API-CREATE] [docs:G-FC] [docs:G-REASON]. `include` 
 - `Authorization: Bearer <ACCESS_TOKEN>` and `Content-Type: application/json` [docs:SIWC-MI].
 - opencode also sends `session-id`, `thread-id` and `x-client-request-id` on this flow. Its comment says "ChatGPT
   derives prompt-cache affinity from session-id" [oc:CG:285-288]. The docs do not mention these headers.
+  Live: `session-id` is required for any cache hit. The server uses its value as the echoed `prompt_cache_key`, and a
+  different `session-id` misses a warm prefix. Send one stable `session-id` per conversation (section 6) [live].
+  `thread-id` and `x-client-request-id` were not probed.
+- Live: a `Content-Encoding: zstd` body is accepted [live]. The ~1 MiB uncompressed limit below was not probed.
 - opencode compresses request bodies with `zstd` (`content-encoding`) on this flow. Its comment says "ChatGPT sign-in
   rejects uncompressed bodies over ~1 MiB and decodes zstd" [oc:CG:303-304] [oc:SH:456-484]. The docs do not state
   this limit (section 12).
@@ -260,7 +355,8 @@ Fields:
 ### 2.3 Namespaces and `additional_tools`
 
 The SIWC preview limits say: "Group function/custom tools in namespaces or supply them through `additional_tools`
-input items" [docs:SIWC-PL].
+input items" [docs:SIWC-PL]. Live: plain top-level function tools are accepted as well, so this is not a requirement.
+Namespace tools are accepted too, and the resulting `function_call` carries `namespace` [live].
 
 Namespace tool shape:
 
@@ -309,6 +405,10 @@ Forbidding tool calls on a final step: send `"tool_choice": "none"` and keep the
 
 `parallel_tool_calls: false` means "exactly zero or one tool is called". Default `true` [docs:G-FC]. Changing it can
 change the cached prefix [docs:G-CACHE].
+
+Live: `tool_choice:"none"` with tools present gives a text answer and no call. `parallel_tool_calls` `true` and `false`
+are both accepted; `true` produced two sequential calls in one response. `allowed_tools` `mode:"none"` is rejected
+[live].
 
 ---
 
@@ -384,6 +484,8 @@ Replay the `message` output item exactly as received in `response.output_item.do
 - `call_id` links the call to its output [docs:G-FC].
 - opencode replays `{type:"function_call", id?, call_id, name, namespace?, arguments}`. It drops `id` unless it holds a
   well-formed server id, and drops `status` [oc:OR:537-561] [oc:OR:527-534].
+- Live: `{type, call_id, name, arguments}` is enough. Without `id` and `status`, and also with an invented `id`, the
+  request completes [live].
 
 ### 3.5 `function_call_output` (your tool result)
 
@@ -397,6 +499,8 @@ Replay the `message` output item exactly as received in `response.output_item.do
 - Optional fields: `id`, `name`, `namespace`, `status`, `caller` [docs:API-CREATE].
 - opencode always sends `{type, call_id, output}` [oc:OR:796-802]. It sends text/json/error results as a plain string
   and media results as a content array [oc:OR:629-640].
+- Live: without `call_id` the request fails with 400 "A function call output without a call_id requires a name."
+  Always send `call_id` [live].
 
 Array form:
 
@@ -422,6 +526,9 @@ Reasoning output item:
 }
 ```
 
+Corrected (live): the observed item has no `status`. Its keys are `type, id, summary, content, encrypted_content`, with
+`content: []` [live].
+
 - Fields: `id` (string), `summary` (array of `{type:"summary_text", text}`), `type:"reasoning"`, and optional
   `content` (array of `{type:"reasoning_text", text}`), `encrypted_content` and `status` [docs:API-CREATE]
   [docs:API-EVENTS].
@@ -433,7 +540,10 @@ Reasoning output item:
   still accepts the legacy `reasoning.encrypted_content` value in `include` for compatibility, but doesn't require it"
   [docs:G-REASON]. The `include` parameter reference still describes it as what "enables reasoning items to be used in
   multi-turn conversations when using the Responses API statelessly" [docs:API-CREATE]. Sending it is harmless and
-  accepted [docs:G-REASON].
+  accepted [docs:G-REASON]. Live: confirmed. `encrypted_content` comes back without `include`, and with it [live].
+- Live: replaying the reasoning item is optional. Keeping it, dropping it while keeping the function call, or dropping
+  only its `id` all complete. A corrupted `encrypted_content` fails with 400 `invalid_encrypted_content`, so a client
+  that edits or truncates reasoning blobs breaks the request [live].
 - opencode sends `store: false, include: ["reasoning.encrypted_content"]` as route defaults [oc:OAR:363]. It replays
   reasoning as `{type:"reasoning", id?, summary:[...], encrypted_content}`. It skips the item when there is neither
   summary text nor encrypted content, and it does not replay `content` [oc:OR:563-578]. It merges multiple streamed
@@ -448,7 +558,8 @@ Reasoning output item:
 - In the input schemas, `id` is required on `reasoning` items and optional on `function_call`, `function_call_output`
   and EasyInputMessage-style messages [docs:API-CREATE].
 - The docs' stateless examples replay full output items, which carry their ids [docs:G-STATE].
-- No document says whether ids must, may or must not be sent with `store: false` (section 12).
+- ~~No document says whether ids must, may or must not be sent with `store: false`.~~ Live: ids are optional on
+  `function_call` and `reasoning` items and are not checked against server state [live].
 - opencode sends ids when it has them and omits them otherwise. Its reasoning item `id` is optional
   [oc:OR:93-98] [oc:OR:572-576] [oc:OR:553-560].
 
@@ -460,7 +571,8 @@ Safest documented behaviour: replay items exactly as received, ids included.
   without rewriting the prefix (GPT-6+) [docs:G-REASON] [docs:G-CACHE]. Constraints: put it before the next user
   message, don't combine it with automatic compaction or truncation, and replay it at its original position
   [docs:G-REASON]. opencode disables this on the ChatGPT flow [oc:CG:322], and its comment says consecutive updates
-  are rejected [oc:OR:660-662] (section 12).
+  are rejected [oc:OR:660-662]. Live: a single `configuration_update` item is rejected with
+  `subscription_sharing_unsupported_capability` (`param: "input"`) [live].
 - `compaction` `{type, id?, encrypted_content}` is returned by OpenAI compaction [docs:API-CREATE]. opencode says
   native compaction is unsupported on this flow and uses its own summary compaction [oc:CG:302] [oc:CG:323-324].
 - `custom_tool_call` / `custom_tool_call_output` are freeform custom tools. They use the same `call_id` linkage and
@@ -502,8 +614,10 @@ Rules applied: items replayed in original order, reasoning passed back with the 
 
 - Server-sent events. Each event's JSON has a `type` and an integer `sequence_number` [docs:API-EVENTS] [docs:G-STREAM].
 - Dispatch on the JSON `type`. opencode reads only each SSE event's `data:` payload, drops empty events, keepalives
-  and a `[DONE]` sentinel, and decodes the JSON [oc:FR:9-14] [oc:FR:28-62]. Section 12 covers whether `[DONE]` or
-  `event:` lines are sent.
+  and a `[DONE]` sentinel, and decodes the JSON [oc:FR:9-14] [oc:FR:28-62]. Live: every frame has an `event:` line
+  matching the JSON `type`, no `[DONE]` is sent, and `: keep-alive` comment lines occur [live].
+- Live: an undocumented `response.metadata` event (`{type, sequence_number, response_id, metadata}`) arrives once per
+  stream, sometimes in the middle of a message item. Ignore it [live].
 - Delta events may carry an extra `obfuscation` string field unless `stream_options.include_obfuscation: false`.
   Ignore it [docs:API-CREATE].
 
@@ -525,8 +639,13 @@ error                                  (can occur instead of the above)
 - The complete function-call sequence is documented [docs:G-FC]:
   `output_item.added` (function_call, `arguments:""`) → `function_call_arguments.delta`* →
   `function_call_arguments.done` → `output_item.done`.
-- The nesting order of content-part and reasoning-summary events within an item is inferred from the event schemas,
-  not stated (section 12).
+- ~~The nesting order of content-part and reasoning-summary events within an item is inferred from the event
+  schemas, not stated.~~ Live order: message is `output_item.added` → `content_part.added` → `output_text.delta`* →
+  `output_text.done` → `content_part.done` → `output_item.done`. Reasoning is `output_item.added` →
+  `reasoning_summary_part.added` → `reasoning_summary_text.delta`* → `reasoning_summary_text.done` →
+  `reasoning_summary_part.done` → `output_item.done` [live].
+- Corrected (live): `function_call_arguments.delta` is not guaranteed. In a parallel-call response both calls went
+  straight from `output_item.added` to `function_call_arguments.done` [live].
 - `response.queued` also exists (status `queued`) [docs:API-EVENTS]. Treat it as non-terminal.
 
 ### 4.3 Event payloads
@@ -606,7 +725,7 @@ Function-call arguments. These carry no `content_index`:
   `function_call_output` [docs:G-FC].
 - Accumulate `delta`s per item. `function_call_arguments.done.arguments` is authoritative [docs:API-EVENTS].
 - The docs' function-call example also shows a `response_id` field on these events [docs:G-FC]. The schema reference
-  does not list it [docs:API-EVENTS]. Do not depend on it.
+  does not list it [docs:API-EVENTS]. Do not depend on it. Live: absent on function-call events [live].
 - opencode keys parser state by `output_index`, adopting the id first seen at that slot because some gateways change
   ids between events [oc:OR:1007-1039]. On `response.completed`, it also finalizes tool calls whose
   `output_item.done` never arrived [oc:OR:1419-1428].
@@ -705,6 +824,10 @@ non-documented `response.reasoning.delta` / `.done` alias [oc:OR:1504-1515] [oc:
   - `usage.output_tokens_details.reasoning_tokens` [docs:API-EVENTS].
   - `usage.total_tokens` [docs:API-EVENTS].
 - Uncached input = `input_tokens - cached_tokens - cache_write_tokens` [docs:G-CACHE].
+- Live: `cache_write_tokens` was always 0, `cache_write_tokens_details` never appeared, and usage also carries an
+  undocumented `attribution` object: `items` maps each input and output item id to `{input_tokens, cached_tokens,
+  cache_write_tokens, output_tokens, content?}`, and `request_fields.tools` counts the tool definitions. Server-assigned
+  ids appear for input items sent without ids [live].
 - opencode reads usage from `response.completed` and `response.incomplete`. It treats every count as optional and
   lenient [oc:OR:337-356] [oc:OR:893-913] [oc:OR:1438].
 - Plan usage is not billed per token to the app. opencode zeroes model cost on this flow [oc:CG:333]. Users see usage
@@ -752,7 +875,8 @@ occur when generation reaches the context window limit [docs:G-REASON].
 - Because history is client-held, retrying means resending the same request. Discard partial output from the dead
   attempt and never replay partial items. Do not execute a tool call whose `output_item.done` never arrived. The
   `encrypted_content` from `output_item.added` may be incomplete [docs:API-EVENTS].
-- Neither source documents an idle or keepalive timeout (section 12).
+- Neither source documents an idle or keepalive timeout (section 12). Live: `: keep-alive` SSE comment lines occur
+  [live].
 
 ---
 
@@ -770,9 +894,20 @@ occur when generation reaches the context window limit [docs:G-REASON].
 - Cache lifetime: on 5.6+, at least 30 minutes by default, or 12 hours via `prompt_cache_options.ttl`. On 5.5 it is
   about 30 minutes, up to 24 hours [docs:G-CACHE].
 
+Live, on this flow (overrides the general-API claims below) [live]:
+
+- Caching works only with a `session-id` request header. The server overwrites `prompt_cache_key` with the
+  `session-id` value, or with a fresh random UUID when the header is absent. A body `prompt_cache_key` alone never
+  produced a hit.
+- The cache is scoped to the `session-id`. A warm prefix under a different `session-id` cached 0 tokens.
+- With a stable `session-id`, a repeat cached 3,072 of about 3,260 tokens. Changing only the last user message kept
+  the 3,072. Changing one tool description dropped it to 0, so tools render before the developer prefix.
+- `cached_tokens` was 3,072 every time, not the exact message boundary (about 3,250). Granularity is unknown.
+- Hits appeared 2 seconds after the cold request.
+
 `prompt_cache_key`:
 
-- Not on the SIWC rejected list [docs:SIWC-PL].
+- Not on the SIWC rejected list [docs:SIWC-PL]. Corrected (live): accepted but overwritten, see above.
 - Before GPT-5.6, a stable key per shared prefix improves cache routing. Aim for about 15 requests per minute per key
   [docs:G-CACHE].
 - On 5.6+, routing is automatic and the key only separates cache accounting [docs:G-CACHE].
@@ -809,7 +944,8 @@ Cache-preserving alternatives [docs:G-CACHE]:
 
 Cached tokens still count toward TPM rate limits [docs:G-CACHE].
 
-opencode sends `session-id` on this flow for cache affinity [oc:CG:285-288]; not documented.
+opencode sends `session-id` on this flow for cache affinity [oc:CG:285-288]; not documented. Live: confirmed and
+required (see the top of this section) [live].
 
 ---
 
@@ -830,7 +966,14 @@ opencode sends `session-id` on this flow for cache affinity [oc:CG:285-288]; not
   The field names come from [docs:SIWC-ER] [docs:G-ERR]. The `{"error":{...}}` wrapper also matches opencode's
   primary decode layout [oc:PE:168-186]. opencode also decodes `{"detail": "..."}` [oc:PE:179].
 - Preserve the HTTP status, body shape, error code and request ID [docs:SIWC-ER]. The general API exposes the request
-  ID as the `x-request-id` response header [docs:G-RL].
+  ID as the `x-request-id` response header [docs:G-RL]. Corrected (live): this flow sends `x-oai-request-id`
+  (`req_…`) and no `x-request-id` [live].
+- Live pre-stream bodies [live]:
+  - `{"detail":"Unsupported parameter: temperature"}` (HTTP 400) for any rejected or unknown top-level field, and
+    `{"detail":"System messages are not allowed"}` for a system message. No code.
+  - `{"error":{"message","type":"invalid_request_error","param","code"}}` where `code` can be a string
+    (`subscription_sharing_unsupported_capability`, `invalid_encrypted_content`, `invalid_parameter`) or `null`.
+  - One such 400 had no `content-type` header. Parse the body as JSON regardless.
 
 Direct-admission statuses [docs:SIWC-ER]:
 
@@ -893,6 +1036,7 @@ Refresh errors [docs:SIWC-ER]:
 - Headers (general API): `x-ratelimit-limit-requests`, `x-ratelimit-limit-tokens`, `x-ratelimit-remaining-requests`,
   `x-ratelimit-remaining-tokens`, `x-ratelimit-reset-requests` (e.g. `1s`), `x-ratelimit-reset-tokens` (e.g.
   `6m0s`), and the project-token variants [docs:G-RL]. The SIWC docs do not say whether these appear on this flow.
+  Live: none of them, and no `retry-after`, appeared on 200 or 400 responses. 429s were not probed [live].
 - General codes: `429 rate_limit_error / slow_down` (traffic ramped too fast; can happen under limits) and
   `503 service_unavailable_error / server_is_overloaded` [docs:G-RL] [docs:G-ERR].
 - opencode parses `retry-after-ms` first, then `retry-after` as seconds or an HTTP-date [oc:EX:22-35]. It also parses
@@ -934,6 +1078,8 @@ Refresh errors [docs:SIWC-ER]:
 | `invalid_prompt`, `bio_policy`, `misalignment_policy_violation`, `image_content_policy_violation` | content_policy | No | [docs:API-EVENTS] |
 | `subscription_sharing_unsupported_capability` (400) | invalid_request | No, fix the body | [docs:SIWC-ER] |
 | `subscription_sharing_route_not_supported` (403) | invalid_request | No, fix the route | [docs:SIWC-ER] |
+| HTTP 400 `{"detail":"Unsupported parameter: …"}` or `{"detail":"System messages are not allowed"}` | invalid_request | No, fix the body | [live] |
+| HTTP 400 `invalid_encrypted_content` | invalid_request | No; replay reasoning blobs byte-for-byte or drop the item | [live] |
 | HTTP 400 `invalid_request_error`; image codes (`invalid_image*`, `image_too_large`, ...) | invalid_request | No | [docs:G-ERR] [docs:API-EVENTS] |
 | HTTP 413 / payload too large | invalid_request | No (compress or shrink) | [oc:PE:235-236] |
 | 400 with context-length overflow | context_overflow | No as-is; compact history, then a new request | [docs:API-EVENTS] [oc:PE:225-234] |
@@ -981,6 +1127,9 @@ The example values are illustrative; field names and types come from the decodin
 - `slug`, `display_name` and `visibility` are documented [docs:SIWC-MI].
 - `supported_in_api` (boolean), `context_window` (integer greater than 1), `input_modalities` (string array) and
   `supported_reasoning_levels` (optional array of `{effort}`) come only from opencode's schema [oc:CG:76-86].
+  Live: all four are present, along with `max_context_window`, `default_reasoning_level`, `default_verbosity`,
+  `supports_parallel_tool_calls`, `base_instructions` and many Codex-specific flags. `supported_reasoning_levels`
+  entries also have a `description` [live].
 - opencode filters `visibility === "list" && supported_in_api` [oc:CG:425]. It maps `context_window` to the context
   limit, `supported_reasoning_levels[].effort` to effort variants, and keeps only `text`/`image` input modalities
   [oc:CG:445-465].
@@ -1006,6 +1155,8 @@ The example values are illustrative; field names and types come from the decodin
 - `text.verbosity` takes `low`, `medium` (default) or `high` [docs:API-CREATE].
 - `text.format` defaults to `{type:"text"}`; `json_schema` is also available [docs:API-CREATE].
 - None of these fields is on the rejected list [docs:SIWC-PL]. Acceptance is not affirmatively documented (section 12).
+  Live: `reasoning.effort` `low`/`medium` and `reasoning.summary:"auto"` are accepted. The response echoes
+  `summary:"detailed"` for `auto`. At `low`, `gpt-6-luna` emitted no reasoning item for trivial prompts [live].
 - Changing `reasoning.effort` or `text.verbosity` between steps changes the cached prefix. Keep both fixed per
   conversation. On GPT-6+, use a `configuration_update` item instead [docs:G-CACHE] [docs:G-PREFIX].
 - The response echoes the request-level `reasoning.effort` even after a `configuration_update` [docs:G-REASON].
@@ -1054,58 +1205,42 @@ The example values are illustrative; field names and types come from the decodin
 6. Accumulate argument deltas by `item_id`. Execute tools only after `output_item.done` or `arguments.done` (4.3).
 7. A step succeeds only on `response.completed`. EOF without a terminal event is `incomplete_stream` (5.4).
 8. Read usage from the terminal event's `response.usage` (4.5).
-9. Classify errors per 7.6. Never auto-retry usage-limit, auth, policy or invalid-request failures.
+9. Classify errors per 7.6. Never auto-retry usage-limit, auth, policy or invalid-request failures. Pre-stream
+   bodies come as `{"detail": "..."}` or `{"error": {...}}`, and `error.code` can be null [live].
+10. Send one stable `session-id` header per conversation. Without it no prompt caching happens [live].
+11. Do not require `function_call_arguments.delta` events; take arguments from `.done` or `output_item.done`.
+    Ignore `response.metadata` and SSE comment lines [live].
 
 ---
 
 ## 12. Unverified / conflicting
 
-1. `include: ["reasoning.encrypted_content"]`. [docs:G-REASON] and the reasoning item schema [docs:API-CREATE] say
-   encrypted content is returned by default when `store:false` and `include` is legacy and unnecessary. The `include`
-   parameter description [docs:API-CREATE] still frames it as what enables stateless reasoning, and opencode always
-   sends it [oc:OAR:363]. Sending it is safe by both accounts.
-2. Item `id`s under `store:false`. The reasoning input schema marks `id` required [docs:API-CREATE]. opencode treats it
-   as optional and omits ids it does not have [oc:OR:93-98]. No source says whether sending server item ids with
-   `store:false` is required, optional or harmful.
-3. `function_call_output.call_id` is typed "optional" in the schema [docs:API-CREATE], yet it is the only link to the
-   call [docs:G-FC]. Treat it as required.
-4. Top-level plain `function` tools. [docs:SIWC-PL] says "Group function/custom tools in namespaces or supply them
-   through `additional_tools` input items", which could mean bare top-level functions are not accepted. opencode sends
-   bare top-level functions on this flow [oc:OAR:206] [oc:CG:301]. Unverified which is required.
-5. Accepted fields are inferred only from absence on the rejected list: `prompt_cache_key`, `prompt_cache_options`,
-   `prompt_cache_breakpoint`, `reasoning.*`, `text.verbosity`, `include`, `stream_options`, `parallel_tool_calls` and
-   `tool_choice`. [docs:SIWC-ER] warns that service-tier overrides may be rejected. Neither source confirms
-   `prompt_cache_options` on this flow.
-6. `configuration_update`, native compaction (`/responses/compact`, `context_management`, `compaction_trigger`) and
-   `reasoning.mode:"pro"`. opencode disables all three on this flow [oc:CG:322-327]. The docs neither list nor reject
-   them for SIWC. opencode also says consecutive `configuration_update` items are rejected [oc:OR:660-662]; the docs
-   do not say so.
-7. Body size. "ChatGPT sign-in rejects uncompressed bodies over ~1 MiB and decodes zstd" is an opencode comment only
-   [oc:CG:303-304]. The docs give a 512 MB payload limit for images in the general API [docs:G-VISION] and say nothing
-   about compression on this flow.
-8. `session-id` / `thread-id` / `x-client-request-id` headers for cache affinity are opencode only [oc:CG:285-288].
-9. Model list shape. [docs:SIWC-MI] returns `{ models: [{slug, display_name, visibility, ...}] }`; the general
-   `/v1/models` reference returns `{ object:"list", data:[{id, created, owned_by, ...}] }` [docs:API-MODELS]. Use the
-   SIWC shape for this flow. `supported_in_api`, `context_window`, `input_modalities` and
-   `supported_reasoning_levels` are opencode observations only [oc:CG:76-86].
-10. Context-overflow error. The docs only say "fail with a 400 error" [docs:API-EVENTS]. The exact `error.code` (for
-    example `context_length_exceeded`) and the wording are not documented in the sources read. opencode detects
-    overflow by code or regex [oc:PE:16-58] [oc:PE:225-234].
-11. Whether the `error` SSE event is always terminal is not stated in the docs. opencode treats it as terminal
-    [oc:OR:968-972].
-12. Event ordering inside an item (content_part, reasoning summary part, delta, done nesting) is inferred from the
-    event schemas [docs:API-EVENTS]. Only the function-call sequence is shown explicitly [docs:G-FC].
-13. SSE details: whether `event:` lines accompany `data:` lines, and whether a `[DONE]` sentinel is sent. Neither is
-    documented. opencode ignores both and dispatches on JSON `type` [oc:FR:9-14].
-14. No source documents idle or keepalive timeouts or a maximum stream duration for this flow.
-15. Whether `x-ratelimit-*` headers and `Retry-After` appear on this flow (as opposed to the API-key flow) is not
-    stated. The sharing codes doc never mentions Retry-After, and `subscription_sharing_usage_limit_exceeded` says not
-    to infer a reset time [docs:SIWC-ER].
-16. `allowed_tools.mode`: the docs list `auto` and `required` [docs:API-CREATE]; opencode's schema also allows `none`
-    [oc:OR:281-285].
-17. The `response_id` field on function-call stream events appears in the guide example [docs:G-FC] but not in the
-    event schemas [docs:API-EVENTS].
-18. `incomplete_details.reason: "max_messages"` is listed without explanation [docs:API-EVENTS].
-19. `subscription_sharing_workplace_individual_usage_limit_exceeded` is opencode only [oc:CG:55].
-20. Whether `response.incomplete` carries a populated `usage` is not shown; the docs example has `usage: null`
-    [docs:API-EVENTS]. opencode reads it when present [oc:OR:1438].
+Items settled live on 2026-11-11 (include, item ids, `call_id`, top-level functions, `configuration_update`,
+`session-id`, model list shape, event ordering, SSE framing, rate-limit headers on 200/400, `allowed_tools` `none`,
+`response_id`) moved to "Verified live" at the top. What remains:
+
+1. Accepted fields not yet exercised: `prompt_cache_breakpoint`, `text.verbosity` and `text.format`,
+   `reasoning.context`, `service_tier`, `additional_tools` items. `prompt_cache_options` is rejected on `gpt-6-luna`
+   ("not supported on this model"); other models were not tried.
+2. Native compaction (`/responses/compact`, `context_management`, `compaction_trigger`) and `reasoning.mode:"pro"`.
+   opencode disables both on this flow [oc:CG:322-327]. Not probed: pro mode could be expensive.
+3. Body size. The ~1 MiB uncompressed limit is an opencode comment only [oc:CG:303-304]. zstd bodies are accepted
+   [live]; the limit itself was not probed.
+4. `thread-id` and `x-client-request-id` headers [oc:CG:285-288]: purpose and effect not probed.
+5. `x-codex-turn-state` response header: an opaque `gAAAA…` blob on every response [live]. Whether a client should
+   echo it back (for routing or cache affinity) is unknown.
+6. `cached_tokens` granularity: 3,072 of a ~3,250-token prefix each time [live]. Whether this is 1,024- or
+   128-token blocks, and the minimum cacheable prefix on this flow, are not settled. Cache lifetime was not measured.
+7. Context-overflow error. The docs only say "fail with a 400 error" [docs:API-EVENTS]. Skipped: too expensive to
+   trigger. opencode detects overflow by code or regex [oc:PE:16-58] [oc:PE:225-234].
+8. Mid-stream failures. No `error` event, `response.failed` or `response.incomplete` was observed, so their live
+   shapes, whether `error` is always terminal, and whether `response.incomplete` carries `usage` remain open.
+9. 429 and usage-limit responses: whether `retry-after` or `x-ratelimit-*` appear on them. Not triggered on purpose.
+10. Idle or keepalive timeouts and maximum stream duration. `: keep-alive` comments do occur [live]; their interval
+    and any server timeout are unknown.
+11. Whether the model actually uses replayed reasoning (`reasoning.context` echoes `all_turns`). Replay is accepted
+    and billed about 15 input tokens [live]; its effect on answers was not measured.
+12. `function_call_output` addressed by `name` instead of `call_id`: the error text implies it is possible [live].
+    Not tried; always send `call_id`.
+13. `incomplete_details.reason: "max_messages"` is listed without explanation [docs:API-EVENTS].
+14. `subscription_sharing_workplace_individual_usage_limit_exceeded` is opencode only [oc:CG:55].
