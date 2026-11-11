@@ -1,0 +1,10 @@
+{
+  "status": 400,
+  "headers": {
+    "content-type": "application/json",
+    "x-oai-request-id": "req_TEST1"
+  },
+  "body": {
+    "detail": "Unsupported parameter: temperature"
+  }
+}
