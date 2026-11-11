@@ -1,0 +1,11 @@
+{
+  "id": "follow-up-change",
+  "title": "Add a function, then change it in a follow-up message of the same session",
+  "prompts": [
+    "Can you add a slugify(title) function to src/text.ts? Lowercase, words joined with single hyphens, so \"Hello World\" becomes \"hello-world\".",
+    "Thanks. One more thing about the slugs: they also need to drop accents and anything that isn't a letter or a digit, so \"Crème Brûlée!\" becomes \"creme-brulee\", and there should never be a hyphen at the start or end."
+  ],
+  "tags": ["multi-turn", "feature", "follow-up", "typescript"],
+  "timeoutSeconds": 420,
+  "maxSteps": 20
+}

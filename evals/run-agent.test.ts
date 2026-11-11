@@ -4,7 +4,9 @@ import { mkdtemp, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type CallId, type EventData, type EventType, type MessageId, type SessionId, event } from "../packages/core/src/index.ts"
-import { type RunOptions, computeMetrics, formatTable, parseRunnerArgs, runAgent } from "./run-agent.ts"
+import { traceHash } from "../packages/core/src/trace/format.ts"
+import { classifySession, classifyTrace, prefixlensDir } from "./classify.ts"
+import { type RunOptions, computeMetrics, explainAnomalies, formatTable, parseRunnerArgs, runAgent } from "./run-agent.ts"
 import { grade, prepareWorkspace } from "./run-check.ts"
 
 const STAND_IN = ["bun", join(import.meta.dir, "testing", "stand-in-agent.ts")]
@@ -28,7 +30,8 @@ afterAll(async () => {
 const runs = { count: 0 }
 function run(mode: string, options: Partial<RunOptions> & { tasks: string[] }, env: Record<string, string> = {}) {
   runs.count += 1
-  return runAgent({ cli: STAND_IN, out: join(scratch.dir, `out-${runs.count}`), graceSeconds: 5, ...options, env: { STAND_IN_MODE: mode, ...env } })
+  // The agent's data directory is the scratch one, so classification never reads the real session database.
+  return runAgent({ cli: STAND_IN, out: join(scratch.dir, `out-${runs.count}`), graceSeconds: 5, ...options, env: { XDG_DATA_HOME: join(scratch.dir, "data"), STAND_IN_MODE: mode, ...env } })
 }
 
 async function leftovers() {
@@ -178,7 +181,7 @@ describe("anomalies from a crafted event stream", () => {
     const metrics = computeMetrics(stream, 2)
     const kinds = metrics.anomalies.map((anomaly) => anomaly.kind)
     expect(kinds.filter((kind) => kind !== "malformed-event")).toEqual(["effect-unknown", "not-started", "cache-drop", "no-execution-end", "over-step-limit"])
-    expect(metrics.anomalies.find((anomaly) => anomaly.kind === "cache-drop")?.detail).toBe("step 3: cached input fell from 900 to 200")
+    expect(metrics.anomalies.find((anomaly) => anomaly.kind === "cache-drop")?.detail).toBe("step 3 (message m3): cached input fell from 900 to 200")
     expect(metrics.unknownEvents).toEqual({ "something.new": 1 })
     expect(metrics.malformed).toBe(2)
     expect(metrics.toolOutcomes).toMatchObject({ effect_unknown: 1, not_started: 1 })
@@ -193,8 +196,217 @@ describe("anomalies from a crafted event stream", () => {
     expect(result.exitCode).toBe(0)
     expect(result.metrics.unknownEvents).toEqual({ "something.new": 1 })
     expect(result.overStepLimit).toBe(false)
-    expect(formatTable(report)).toContain("effect-unknown,not-started,malformed-event,cache-drop,no-execution-end")
+    expect(formatTable(report)).toContain("effect-unknown,not-started,malformed-event,cache-drop(?),no-execution-end")
   }, 30_000)
+})
+
+describe("a multi-turn task", () => {
+  test("each prompt is a turn of the same session, and the grader runs after the last", async () => {
+    const report = await run("solve", { tasks: ["follow-up-change"] })
+    const result = report.results[0]!
+    expect(result.pass).toBe(true)
+    expect(result.prompts).toBe(2)
+    expect(result.turns.map((turn) => turn.exitCode)).toEqual([0, 0])
+    expect(result.wallMs).toBe(result.turns[0]!.wallMs + result.turns[1]!.wallMs)
+    expect(result.metrics.sessionId).toBe("ses_standin")
+    expect(result.metrics.steps).toBe(4)
+    expect(result.metrics.toolCalls).toBe(2)
+    expect(result.metrics.tools.shell?.success).toBe(2)
+    // The stand-in's second turn reads nothing from cache; there is no database here to explain the drop with.
+    expect(result.metrics.anomalies.map((anomaly) => [anomaly.kind, anomaly.explained])).toEqual([["cache-drop", null]])
+    const stream = (await Bun.file(result.eventsFile).text()).trim().split("\n").map((line) => JSON.parse(line))
+    // The second turn resumed the session: one session.created, two executions.
+    expect(stream.filter((item) => item.type === "session.created")).toHaveLength(1)
+    expect(stream.filter((item) => item.type === "execution.succeeded")).toHaveLength(2)
+    expect(await Bun.file(result.stderrFile).text()).toContain("--- turn 2")
+  }, 60_000)
+
+  test("a turn that hits the time limit ends the run; the next prompt is not sent", async () => {
+    const report = await run("hang", { tasks: ["follow-up-change"], timeoutSeconds: 1 })
+    const result = report.results[0]!
+    expect(result.turns).toHaveLength(1)
+    expect(result.status).toBe("timeout")
+    expect(result.metrics.end).toBe("interrupted")
+  }, 30_000)
+
+  test("a turn that crashes ends the run and is reported as crashed", async () => {
+    const report = await run("crash", { tasks: ["follow-up-change"] })
+    const result = report.results[0]!
+    expect(result.turns).toHaveLength(1)
+    expect(result.status).toBe("crashed")
+    expect(result.metrics.anomalies.map((anomaly) => anomaly.kind)).toContain("no-execution-end")
+  }, 30_000)
+
+  test("an execution that starts and never ends is flagged even when an earlier one ended", () => {
+    const first = computeMetrics(
+      [
+        { type: "execution.started", v: 1, data: { executionId: "exe_1" }, sessionId: "ses_x", seq: 1, time: 0 },
+        { type: "execution.succeeded", v: 1, data: { executionId: "exe_1", verification: { status: "not_configured" } }, sessionId: "ses_x", seq: 2, time: 0 },
+        { type: "execution.started", v: 1, data: { executionId: "exe_2" }, sessionId: "ses_x", seq: 3, time: 0 },
+      ]
+        .map((item) => JSON.stringify(item))
+        .join("\n"),
+      5,
+    )
+    expect(first.verification).toBe("not_configured")
+    expect(first.anomalies).toEqual([{ kind: "no-execution-end", detail: "2 executions started, 1 ended" }])
+  })
+})
+
+/**
+ * Hand-written traces in the shape the exporter writes (SPEC format 1.1 plus the harness extension), each call
+ * 2 s after the one before, so prefixlens judges a miss with the prefix intact as provider-side.
+ */
+function handTrace(calls: readonly { readonly blocks: readonly object[]; readonly read: number; readonly hints?: readonly object[]; readonly fidelity?: string; readonly reason?: string }[]) {
+  return calls
+    .map((call, index) =>
+      JSON.stringify({
+        v: 1,
+        id: `req_${index + 1}`,
+        session: "ses_hand",
+        lane: "main",
+        ts: new Date(Date.UTC(2026, 10, 11, 10) + index * 2000).toISOString(),
+        provider: "openai",
+        model: "gpt-test",
+        fidelity: call.fidelity ?? "full-request",
+        ...(call.fidelity === "usage-only" ? {} : { request: { blocks: call.blocks } }),
+        usage: { input_tokens: 3000 + index * 300 - call.read, cache_read_tokens: call.read, cache_write_tokens: null, output_tokens: 10 },
+        ...(call.hints ? { hints: call.hints } : {}),
+        x_light_harness: { ordinal: index, message_id: `msg_${index + 1}`, attempt: 1, purpose: "step", outcome: "ok", verified: call.fidelity !== "usage-only", ...(call.reason ? { unverified_reason: call.reason } : {}), params_omitted: [] },
+      }),
+    )
+    .join("\n")
+}
+const block = (kind: string, key: string | undefined, content: object) => ({ kind, ...(key ? { key } : {}), hash: traceHash(content), content })
+const tool = (name: string) => block("tool", name, { type: "function", name, description: `${name} tool`, parameters: {} })
+const system = (text: string) => block("system", undefined, { type: "text", text })
+const message = (n: number) => block("message", "user", { type: "message", role: "user", content: [{ type: "input_text", text: `message ${n} `.repeat(50) }] })
+const instructions = system("You are a coding agent. ".repeat(200))
+const prefix = [tool("read"), tool("shell"), instructions]
+const present = await Bun.file(join(prefixlensDir(), "src", "cli.ts")).exists()
+const withPrefixlens = (name: string) => (present ? name : `${name} [skipped: no prefixlens checkout at ${prefixlensDir()}]`)
+
+describe("cache classification", () => {
+  const trace = async (name: string, calls: Parameters<typeof handTrace>[0]) => {
+    const file = join(scratch.dir, `${name}.trace.jsonl`)
+    await Bun.write(file, `${handTrace(calls)}\n`)
+    return file
+  }
+
+  test.skipIf(!present)(withPrefixlens("a provider-side miss, a declared break and an avoidable miss are told apart"), async () => {
+    const file = await trace("mixed", [
+      { blocks: [...prefix, message(1)], read: 0 },
+      { blocks: [...prefix, message(1), message(2)], read: 3200 },
+      // Nothing changed and the provider read nothing: provider-side.
+      { blocks: [...prefix, message(1), message(2), message(3)], read: 0 },
+      // A tool disappeared mid-session: the harness's fault.
+      { blocks: [tool("read"), instructions, message(1), message(2), message(3), message(4)], read: 0 },
+      // A compaction, declared.
+      { blocks: [tool("read"), system("Summary of the work so far."), message(5)], read: 0, hints: [{ kind: "prefix_break", reason: "compaction" }] },
+    ])
+    const result = await classifyTrace(file)
+    expect(result).toMatchObject({ status: "classified", records: 5, fullRequest: 5, usageOnly: 0, fullFidelity: true, providerSide: 1, intentional: 1, avoidable: 1, expired: 0 })
+    expect(result.avoidableCauses).toEqual(["turn 4: tools_changed: tool list changed (-1 tool: 2 → 1)"])
+    expect(result.misses.map((miss) => [miss.messageId, miss.verdict])).toEqual([
+      ["msg_3", "provider-side"],
+      ["msg_4", "avoidable"],
+      ["msg_5", "intentional"],
+    ])
+
+    // The event stream's cache drops are matched to those verdicts by message ID.
+    const usage = (input: number, cached: number) => ({ inputTokens: input, cachedInputTokens: cached, outputTokens: 10, reasoningTokens: 0 })
+    const steps = [usage(3000, 0), usage(3300, 3200), usage(3600, 0), usage(3900, 2000), usage(4200, 0), usage(4500, 4400), usage(4800, 4300)]
+    const stream = steps
+      .map((step, index) => JSON.stringify({ type: "step.ended", v: 1, data: { messageId: `msg_${index + 1}`, finish: "stop", usage: step }, sessionId: "ses_hand", seq: index + 1, time: 0 }))
+      .join("\n")
+    const marked = explainAnomalies(computeMetrics(stream, 20), result)
+    const drops = marked.filter((anomaly) => anomaly.kind === "cache-drop").map((anomaly) => [anomaly.detail.split(":")[0], anomaly.explained])
+    expect(drops).toEqual([
+      ["step 3 (message msg_3)", true],
+      ["step 5 (message msg_5)", true],
+      // A drop of 100 tokens: prefixlens counts no miss within its 128-token tolerance.
+      ["step 7 (message msg_7)", true],
+    ])
+    expect(marked.find((anomaly) => anomaly.detail.startsWith("step 3"))?.detail).toEndWith("explained, provider-side")
+    expect(marked.filter((anomaly) => anomaly.kind === "avoidable-miss").map((anomaly) => anomaly.detail)).toEqual(["trace call 4: tools_changed: tool list changed (-1 tool: 2 → 1)"])
+  }, 60_000)
+
+  test.skipIf(!present)(withPrefixlens("a drop at an avoidable miss is unexplained"), async () => {
+    const file = await trace("avoidable", [
+      { blocks: [...prefix, message(1)], read: 0 },
+      { blocks: [...prefix, message(1), message(2)], read: 3200 },
+      { blocks: [tool("shell"), tool("read"), instructions, message(1), message(2), message(3)], read: 0 },
+    ])
+    const result = await classifyTrace(file)
+    expect(result.avoidable).toBe(1)
+    expect(result.avoidableCauses[0]).toStartWith("turn 3: tools_reordered")
+    const usage = (input: number, cached: number) => ({ inputTokens: input, cachedInputTokens: cached, outputTokens: 10, reasoningTokens: 0 })
+    const stream = [usage(3000, 0), usage(3300, 3200), usage(3600, 0)]
+      .map((step, index) => JSON.stringify({ type: "step.ended", v: 1, data: { messageId: `msg_${index + 1}`, finish: "stop", usage: step }, sessionId: "ses_hand", seq: index + 1, time: 0 }))
+      .join("\n")
+    const drop = explainAnomalies(computeMetrics(stream, 20), result).find((anomaly) => anomaly.kind === "cache-drop")!
+    expect(drop.explained).toBe(false)
+    expect(drop.detail).toEndWith("unexplained, tools_reordered")
+  }, 60_000)
+
+  test.skipIf(!present)(withPrefixlens("a usage-only record is a fidelity failure, with the exporter's reason"), async () => {
+    const file = await trace("usage-only", [
+      { blocks: [...prefix, message(1)], read: 0 },
+      { blocks: [], read: 3200, fidelity: "usage-only", reason: "hash_mismatch" },
+    ])
+    const result = await classifyTrace(file)
+    expect(result.fullFidelity).toBe(false)
+    expect(result.unfaithful).toEqual([{ turn: 2, messageId: "msg_2", reason: "hash_mismatch" }])
+    expect(explainAnomalies(computeMetrics("", 5), result).map((anomaly) => anomaly.kind)).toContain("usage-only-record")
+  }, 60_000)
+
+  test("without the prefixlens checkout it is skipped and says why; drops stay unexplained", async () => {
+    const previous = process.env.PREFIXLENS_DIR
+    process.env.PREFIXLENS_DIR = join(scratch.dir, "no-prefixlens")
+    try {
+      const result = await classifySession("ses_x", { database: join(scratch.dir, "none.db"), traceFile: join(scratch.dir, "none.jsonl") })
+      expect(result.status).toBe("skipped")
+      expect(result.reason).toBe(`no prefixlens checkout at ${join(scratch.dir, "no-prefixlens")}`)
+      const usage = (cached: number) => ({ inputTokens: 3000, cachedInputTokens: cached, outputTokens: 10, reasoningTokens: 0 })
+      const stream = [usage(2000), usage(0)].map((step, index) => JSON.stringify({ type: "step.ended", v: 1, data: { messageId: `m${index}`, finish: "stop", usage: step } })).join("\n")
+      expect(explainAnomalies(computeMetrics(stream, 5), result).find((anomaly) => anomaly.kind === "cache-drop")?.explained).toBeNull()
+    } finally {
+      if (previous === undefined) delete process.env.PREFIXLENS_DIR
+      else process.env.PREFIXLENS_DIR = previous
+    }
+  })
+
+  // End to end: the stand-in writes a scripted session into a real session database, the runner exports it with
+  // scripts/export-trace.ts and classifies it.
+  test.skipIf(!present)(withPrefixlens("the runner exports a real session and classifies its declared breaks"), async () => {
+    const data = join(scratch.dir, "data-settings")
+    const report = await run("scripted", { tasks: ["answer-question"] }, { XDG_DATA_HOME: data, STAND_IN_SCRIPT: "settings changes" })
+    const result = report.results[0]!
+    expect(result.cache).toMatchObject({ status: "classified", records: 3, fullRequest: 3, fullFidelity: true, intentional: 2, avoidable: 0 })
+    expect(result.traceFile).toBe(join(report.out, "runs", "answer-question-1.trace.jsonl"))
+    expect(await Bun.file(result.traceFile!).exists()).toBe(true)
+    expect(report.totals.cache).toEqual({ classified: 1, providerSide: 0, intentional: 2, avoidable: 0, unfaithful: 0 })
+    expect(formatTable(report)).toContain("0 provider-side, 2 intentional, 0 avoidable; 0 usage-only records")
+  }, 60_000)
+
+  test.skipIf(!present)(withPrefixlens("a session whose ledger does not match its log exports usage-only, and that is flagged"), async () => {
+    const data = join(scratch.dir, "data-broken")
+    const report = await run("scripted", { tasks: ["answer-question"] }, { XDG_DATA_HOME: data, STAND_IN_SCRIPT: "multi-step turns", STAND_IN_BUILDER: "broken" })
+    const result = report.results[0]!
+    expect(result.cache.status).toBe("classified")
+    expect(result.cache.fullFidelity).toBe(false)
+    expect(result.cache.unfaithful.length).toBe(result.cache.records)
+    expect(result.cache.unfaithful[0]!.reason).toContain("differs from the ledger")
+    expect(result.metrics.anomalies.filter((anomaly) => anomaly.kind === "usage-only-record")).toHaveLength(result.cache.records)
+  }, 60_000)
+
+  test("--no-classify turns it off, and an unknown session is reported, not fatal", async () => {
+    const off = await run("nothing", { tasks: ["answer-question"], classify: false })
+    expect(off.results[0]!.cache).toMatchObject({ status: "skipped", reason: "classification turned off" })
+    const missing = await run("nothing", { tasks: ["answer-question"] })
+    expect(missing.results[0]!.cache.status).toBe("skipped")
+    expect(missing.results[0]!.cache.reason).toContain(present ? "no session database" : "no prefixlens checkout")
+  }, 60_000)
 })
 
 test("--keep keeps the finished workspace", async () => {
@@ -217,6 +429,7 @@ test("arguments", async () => {
     cli: ["bun", "my agent.ts", "--demo", "1"],
     timeoutSeconds: 0.5,
   })
+  expect(await parseRunnerArgs(["answer-question", "--db", "x.db", "--no-classify"])).toMatchObject({ database: join(process.cwd(), "x.db"), classify: false })
   expect(((await parseRunnerArgs(["--all"])) as RunOptions).tasks.length).toBeGreaterThanOrEqual(10)
   expect(await parseRunnerArgs([])).toStartWith("name some tasks")
   expect(await parseRunnerArgs(["no-such-task"])).toStartWith("unknown task no-such-task")

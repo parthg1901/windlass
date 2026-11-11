@@ -1,0 +1,12 @@
+import { expect, test } from "bun:test"
+import { excerpt, titleCase } from "./text.ts"
+
+test("titleCase", () => {
+  expect(titleCase("the  quick fox")).toBe("The Quick Fox")
+  expect(titleCase("HELLO")).toBe("Hello")
+})
+
+test("excerpt", () => {
+  expect(excerpt("short", 10)).toBe("short")
+  expect(excerpt("a longer sentence", 9)).toBe("a longer…")
+})

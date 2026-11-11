@@ -14,7 +14,13 @@ export const TASKS_DIR = join(import.meta.dir, "tasks")
 export interface Task {
   readonly id: string
   readonly title: string
+  /** The first prompt. */
   readonly prompt: string
+  /**
+   * Every prompt in order, the first included. A task.json gives either `prompt` (one turn) or `prompts` (several
+   * turns of one session: each is sent after the previous turn ends, and the grader runs after the last).
+   */
+  readonly prompts: readonly string[]
   readonly tags: readonly string[]
   readonly timeoutSeconds: number
   readonly maxSteps: number
@@ -36,7 +42,8 @@ export async function loadTask(id: string): Promise<Task> {
   const value: unknown = await Bun.file(join(TASKS_DIR, id, "task.json")).json()
   if (!isTask(value)) throw new Error(`tasks/${id}/task.json does not match the task shape`)
   if (value.id !== id) throw new Error(`tasks/${id}/task.json has id ${value.id}`)
-  return value
+  const prompts = value.prompts ?? [value.prompt!]
+  return { ...value, prompt: prompts[0]!, prompts }
 }
 
 /** Copies `workspace/` (renaming stored `*.in` files) into a new temporary directory. */
@@ -91,14 +98,19 @@ export async function grade(id: string, dir: string): Promise<GradeResult> {
   return { pass: result.code === 0, message: lastLine(result.output) }
 }
 
-function isTask(value: unknown): value is Task {
+type TaskFile = Omit<Task, "prompt" | "prompts"> & { readonly prompt?: string; readonly prompts?: readonly string[] }
+
+function isTask(value: unknown): value is TaskFile {
   if (typeof value !== "object" || value === null) return false
   const task = value as Record<string, unknown>
-  const strings = ["id", "title", "prompt"].every((key) => typeof task[key] === "string" && task[key] !== "")
+  const text = (item: unknown) => typeof item === "string" && item !== ""
+  const strings = ["id", "title"].every((key) => text(task[key]))
+  // Exactly one of `prompt` and `prompts`.
+  const prompt = task.prompts === undefined ? text(task.prompt) : task.prompt === undefined && Array.isArray(task.prompts) && task.prompts.length > 0 && task.prompts.every(text)
   const numbers = ["timeoutSeconds", "maxSteps"].every((key) => Number.isInteger(task[key]) && (task[key] as number) > 0)
   const tags = Array.isArray(task.tags) && task.tags.every((tag) => typeof tag === "string")
   const setup = task.setup === undefined || (Array.isArray(task.setup) && task.setup.length > 0 && task.setup.every((arg) => typeof arg === "string"))
-  return strings && numbers && tags && setup
+  return strings && prompt && numbers && tags && setup
 }
 
 if (import.meta.main) {
