@@ -1,0 +1,1077 @@
+import { describe, expect, test } from "bun:test"
+import { text } from "../../src/content.ts"
+import { type NewEvent, type StoredEvent, type ToolOutcome, event } from "../../src/event/durable.ts"
+import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
+import { projectionChanges, selectModelHistory } from "../../src/message/history.ts"
+import {
+  type AssistantMessage,
+  type Message,
+  type Projection,
+  type ToolCallPart,
+  baseline,
+  inboxItem,
+  message,
+  sessionState,
+} from "../../src/message/message.ts"
+import { ReduceError, type ReduceErrorCode, reduce, reduceAll } from "../../src/message/reducer.ts"
+import { makeProviderError } from "../../src/provider/error.ts"
+
+const m = (id: string) => id as MessageId
+const c = (id: string) => id as CallId
+const x = (id: string) => id as ExecutionId
+const usage = { inputTokens: 100, cachedInputTokens: 60, outputTokens: 20, reasoningTokens: 5 }
+
+/** A session log under test. `seq` is assigned densely and `time` is `seq * 10`. */
+class Log {
+  state: Projection | null
+  readonly events: StoredEvent[] = []
+
+  constructor(
+    readonly sessionId = "ses_1" as SessionId,
+    parent: Projection | null = null,
+  ) {
+    this.state = parent
+  }
+
+  private position(next: NewEvent): StoredEvent {
+    const seq = (this.state?.lastSeq ?? 0) + 1
+    return { ...next, sessionId: this.sessionId, seq, time: seq * 10 }
+  }
+
+  apply(...events: NewEvent[]): Projection {
+    for (const next of events) {
+      const stored = this.position(next)
+      this.state = reduce(this.state, stored)
+      this.events.push(stored)
+    }
+    return this.state!
+  }
+
+  /** Tries an event without keeping it, and returns the reducer's error code. */
+  reject(next: NewEvent): ReduceErrorCode | "accepted" {
+    try {
+      reduce(this.state, this.position(next))
+    } catch (error) {
+      if (error instanceof ReduceError) return error.code
+      throw error
+    }
+    return "accepted"
+  }
+
+  get seq() {
+    return this.state!.lastSeq
+  }
+
+  message(id: string): Message {
+    const found = this.state!.messages.find((candidate) => candidate.id === id)
+    if (found === undefined) throw new Error(`no message ${id}`)
+    return found
+  }
+
+  assistant(id: string): AssistantMessage {
+    const found = this.message(id)
+    if (found.kind !== "assistant") throw new Error(`${id} is not an assistant message`)
+    return found
+  }
+
+  call(id: string, callId: string): ToolCallPart {
+    const part = this.assistant(id).parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === callId)
+    if (part?.type !== "tool_call") throw new Error(`no call ${callId}`)
+    return part
+  }
+}
+
+const created = event("session.created", { cwd: "/repo", title: null, lineage: null })
+const baselineSet = event("baseline.set", {
+  instructions: "You are a coding agent.",
+  tools: [{ name: "read", description: "Read a file", inputSchema: { type: "object" } }],
+})
+const enqueue = (id: string, value = "hello", delivery: "steer" | "queue" = "steer", origin: string | null = null) =>
+  event("inbox.enqueued", { messageId: m(id), origin, delivery, content: text(value) })
+const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
+const executionStarted = (id = "exe_1") => event("execution.started", { executionId: x(id) })
+const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id) })
+const stepStarted = (id: string, attempt = 1) =>
+  event("step.started", { messageId: m(id), attempt, model: "gpt-test" })
+const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
+  event("step.ended", { messageId: m(id), finish, usage })
+const stepInterrupted = (id: string, reason: "user" | "shutdown" = "user") =>
+  event("step.failed", { messageId: m(id), error: { kind: "interrupted", reason }, usage: null })
+const textEnded = (id: string, value: string) =>
+  event("text.ended", { messageId: m(id), text: value, providerData: null })
+const reasoningEnded = (id: string, value: string) =>
+  event("reasoning.ended", { messageId: m(id), text: value, providerData: { encrypted_content: "gAAAA" } })
+const called = (id: string, callId: string, input = "{}") =>
+  event("tool.called", { messageId: m(id), callId: c(callId), name: "read", input, providerData: null })
+const started = (id: string, callId: string) => event("tool.started", { messageId: m(id), callId: c(callId) })
+const settled = (id: string, callId: string, outcome: ToolOutcome = "success", output = "ok") =>
+  event("tool.settled", {
+    messageId: m(id),
+    callId: c(callId),
+    outcome,
+    output,
+    truncation: null,
+    attachments: [],
+    display: null,
+  })
+const synthetic = (id: string, origin = "interrupt", value = "The previous response was interrupted.") =>
+  event("synthetic.appended", { messageId: m(id), origin, content: text(value) })
+const instruction = (id: string, value = "Today is Thursday.") =>
+  event("instruction.appended", { messageId: m(id), source: "date", text: value })
+const compactionStarted = (id: string) => event("compaction.started", { messageId: m(id), trigger: "auto" })
+const compactionEnded = (id: string, keepFromSeq: number) =>
+  event("compaction.ended", { messageId: m(id), summary: "Summary so far.", keepFromSeq, usage: null })
+const reverted = (fromSeq: number) => event("history.reverted", { fromSeq })
+
+/** A session with a delivered prompt `u1` and a running execution: seq 1..5. */
+function running(): Log {
+  const log = new Log()
+  log.apply(created, enqueue("u1"), executionStarted(), baselineSet, deliver("u1"))
+  return log
+}
+
+/** `running()` plus an open step `a1` at seq 6. */
+function inStep(): Log {
+  const log = running()
+  log.apply(stepStarted("a1"))
+  return log
+}
+
+/** A finished two-step turn, idle at the end: seq 1..15. */
+function finishedTurn(): Log {
+  const log = inStep()
+  log.apply(
+    reasoningEnded("a1", "thinking"),
+    textEnded("a1", "Let me read it."),
+    called("a1", "call_1", '{"path":"a.ts"}'),
+    started("a1", "call_1"),
+    settled("a1", "call_1", "success", "const a = 1"),
+    stepEnded("a1", "tool_calls"),
+    stepStarted("a2"),
+    textEnded("a2", "Done."),
+    stepEnded("a2"),
+    executionSucceeded(),
+  )
+  return log
+}
+
+const ids = (messages: readonly Message[]) => messages.map((candidate) => candidate.id as string)
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const child of Object.values(value)) deepFreeze(child)
+  }
+  return value
+}
+
+describe("session lifecycle", () => {
+  test("session.created starts an empty, idle session", () => {
+    const log = new Log()
+    expect(log.apply(created)).toEqual({
+      lastSeq: 1,
+      updatedAt: 10,
+      session: {
+        id: "ses_1" as SessionId,
+        cwd: "/repo",
+        title: null,
+        lineage: null,
+        archived: false,
+        createdAt: 10,
+        execution: null,
+        open: null,
+        compaction: null,
+      },
+      baseline: null,
+      messages: [],
+      inbox: [],
+    })
+  })
+
+  test("nothing can precede session.created and it cannot repeat", () => {
+    const log = new Log()
+    expect(log.reject(enqueue("u1"))).toBe("out_of_order")
+    log.apply(created)
+    expect(log.reject(created)).toBe("out_of_order")
+  })
+
+  test("seq must be dense", () => {
+    const log = new Log()
+    log.apply(created)
+    const next = { ...enqueue("u1"), sessionId: log.sessionId, time: 0 }
+    expect(() => reduce(log.state, { ...next, seq: 3 })).toThrow(ReduceError)
+    expect(() => reduce(log.state, { ...next, seq: 1 })).toThrow(ReduceError)
+    expect(() => reduce(null, { ...created, sessionId: log.sessionId, seq: 2, time: 0 })).toThrow(ReduceError)
+    expect(reduce(log.state, { ...next, seq: 2 }).lastSeq).toBe(2)
+  })
+
+  test("an event of another session is rejected", () => {
+    const log = new Log()
+    log.apply(created)
+    const foreign = { ...enqueue("u1"), sessionId: "ses_2" as SessionId, seq: 2, time: 0 }
+    const code = (() => {
+      try {
+        reduce(log.state, foreign)
+      } catch (error) {
+        if (error instanceof ReduceError) return error.code
+      }
+      return "accepted"
+    })()
+    expect(code).toBe("wrong_session")
+  })
+
+  test("rename, archive and unarchive change only the session", () => {
+    const log = new Log()
+    log.apply(created)
+    expect(log.apply(event("session.renamed", { title: "Fix the bug" })).session.title).toBe("Fix the bug")
+    expect(log.apply(event("session.archived", {})).session.archived).toBe(true)
+    expect(log.apply(event("session.unarchived", {})).session.archived).toBe(false)
+    expect(log.state!.updatedAt).toBe(40)
+  })
+})
+
+describe("inbox", () => {
+  test("an enqueued item waits in the inbox and is not a message", () => {
+    const log = new Log()
+    const state = log.apply(created, enqueue("u1", "first", "queue"), enqueue("s1", "build finished", "steer", "shell"))
+    expect(state.messages).toEqual([])
+    expect(state.inbox).toEqual([
+      { messageId: m("u1"), seq: 2, time: 20, origin: null, delivery: "queue", content: text("first") },
+      { messageId: m("s1"), seq: 3, time: 30, origin: "shell", delivery: "steer", content: text("build finished") },
+    ])
+  })
+
+  test("delivery turns the item into a message at the delivery seq and empties the inbox row", () => {
+    const log = new Log()
+    log.apply(created, enqueue("u1", "first", "queue"), enqueue("s1", "build finished", "steer", "shell"))
+    const state = log.apply(executionStarted(), deliver("s1"), deliver("u1"))
+    expect(state.inbox).toEqual([])
+    expect(state.messages).toEqual([
+      {
+        kind: "synthetic",
+        id: m("s1"),
+        seq: 5,
+        time: 50,
+        excluded: null,
+        origin: "shell",
+        content: text("build finished"),
+        delivery: "steer",
+      },
+      { kind: "user", id: m("u1"), seq: 6, time: 60, excluded: null, content: text("first"), delivery: "queue" },
+    ])
+  })
+
+  test("the delivery mode can change while the item waits", () => {
+    const log = new Log()
+    log.apply(created, enqueue("u1", "first", "queue"))
+    const state = log.apply(event("inbox.delivery_changed", { messageId: m("u1"), delivery: "steer" }))
+    expect(state.inbox[0]).toMatchObject({ delivery: "steer", seq: 2 })
+    log.apply(executionStarted(), deliver("u1"))
+    expect(log.message("u1")).toMatchObject({ kind: "user", delivery: "steer" })
+    expect(log.reject(event("inbox.delivery_changed", { messageId: m("u1"), delivery: "queue" }))).toBe("not_found")
+  })
+
+  test("a cancelled item never becomes a message", () => {
+    const log = new Log()
+    log.apply(created, enqueue("u1"), enqueue("u2"), event("inbox.cancelled", { messageId: m("u1") }))
+    expect(log.state!.inbox.map((item) => item.messageId)).toEqual([m("u2")])
+    log.apply(executionStarted())
+    expect(log.reject(deliver("u1"))).toBe("not_found")
+    expect(log.reject(event("inbox.cancelled", { messageId: m("u1") }))).toBe("not_found")
+  })
+
+  test("delivery needs an execution claim", () => {
+    const log = new Log()
+    log.apply(created, enqueue("u1"))
+    expect(log.reject(deliver("u1"))).toBe("invalid_transition")
+  })
+
+  test("delivery happens only at a step boundary, but enqueueing is always allowed", () => {
+    const log = inStep()
+    expect(log.reject(enqueue("u2"))).toBe("accepted")
+    log.apply(enqueue("u2"))
+    expect(log.reject(deliver("u2"))).toBe("invalid_transition")
+    log.apply(stepEnded("a1"))
+    expect(log.reject(deliver("u2"))).toBe("accepted")
+  })
+
+  test("an id cannot be reused, whether it is waiting or already a message", () => {
+    const log = running()
+    log.apply(enqueue("u2"))
+    expect(log.reject(enqueue("u2"))).toBe("duplicate_id")
+    expect(log.reject(enqueue("u1"))).toBe("duplicate_id")
+    expect(log.reject(stepStarted("u1"))).toBe("duplicate_id")
+    expect(log.reject(stepStarted("u2"))).toBe("duplicate_id")
+    expect(log.reject(synthetic("u1"))).toBe("duplicate_id")
+  })
+})
+
+describe("execution claim", () => {
+  test("started takes the claim and succeeded releases it", () => {
+    const log = new Log()
+    log.apply(created, executionStarted())
+    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 0, startedSeq: 2 })
+    expect(log.reject(executionStarted("exe_2"))).toBe("invalid_transition")
+    expect(log.apply(executionSucceeded()).session.execution).toBeNull()
+    expect(log.reject(executionSucceeded())).toBe("not_found")
+  })
+
+  test("terminal events must name the claimed execution", () => {
+    const log = new Log()
+    log.apply(created, executionStarted())
+    expect(log.reject(executionSucceeded("exe_other"))).toBe("not_found")
+    expect(log.reject(event("execution.interrupted", { executionId: x("exe_other"), reason: "user" }))).toBe("not_found")
+  })
+
+  test("a user interrupt releases the claim; a shutdown keeps it suspended", () => {
+    const user = new Log()
+    user.apply(created, executionStarted())
+    user.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }))
+    expect(user.state!.session.execution).toBeNull()
+
+    const shutdown = new Log()
+    shutdown.apply(created, executionStarted())
+    shutdown.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
+    expect(shutdown.state!.session.execution).toMatchObject({ status: "suspended", resumes: 0 })
+    expect(shutdown.reject(executionStarted("exe_2"))).toBe("invalid_transition")
+    expect(shutdown.reject(stepStarted("a1"))).toBe("invalid_transition")
+    expect(shutdown.reject(executionSucceeded())).toBe("invalid_transition")
+  })
+
+  test("resuming counts attempts durably, and a suspended execution can be failed", () => {
+    const log = new Log()
+    log.apply(created, executionStarted())
+    log.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
+    log.apply(event("execution.resumed", { executionId: x("exe_1") }))
+    expect(log.state!.session.execution).toEqual({ id: x("exe_1"), status: "running", resumes: 1, startedSeq: 2 })
+    // After a crash the claim is still "running"; recovery resumes it again.
+    log.apply(event("execution.resumed", { executionId: x("exe_1") }))
+    expect(log.state!.session.execution).toMatchObject({ status: "running", resumes: 2 })
+    log.apply(event("execution.interrupted", { executionId: x("exe_1"), reason: "shutdown" }))
+    log.apply(event("execution.failed", { executionId: x("exe_1"), message: "resume attempts exhausted" }))
+    expect(log.state!.session.execution).toBeNull()
+  })
+
+  test("an execution cannot end while a step is open", () => {
+    const log = inStep()
+    expect(log.reject(executionSucceeded())).toBe("invalid_transition")
+    expect(log.reject(event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }))).toBe(
+      "invalid_transition",
+    )
+    expect(log.reject(event("execution.resumed", { executionId: x("exe_1") }))).toBe("invalid_transition")
+  })
+})
+
+describe("steps", () => {
+  test("a step needs a claim and a boundary", () => {
+    const log = new Log()
+    log.apply(created)
+    expect(log.reject(stepStarted("a1"))).toBe("invalid_transition")
+    log.apply(executionStarted(), stepStarted("a1"))
+    expect(log.state!.session.open).toEqual({ kind: "step", messageId: m("a1") })
+    expect(log.reject(stepStarted("a2"))).toBe("invalid_transition")
+  })
+
+  test("a completed two-step turn projects to the expected messages", () => {
+    const log = finishedTurn()
+    expect(log.seq).toBe(16)
+    expect(log.state!.session).toMatchObject({ execution: null, open: null })
+    expect(ids(log.state!.messages)).toEqual(["u1", "a1", "a2"])
+    expect(log.assistant("a1")).toEqual({
+      kind: "assistant",
+      id: m("a1"),
+      seq: 6,
+      time: 60,
+      excluded: null,
+      model: "gpt-test",
+      attempt: 1,
+      status: "completed",
+      parts: [
+        { type: "reasoning", text: "thinking", providerData: { encrypted_content: "gAAAA" } },
+        { type: "text", text: "Let me read it.", providerData: null },
+        {
+          type: "tool_call",
+          callId: c("call_1"),
+          name: "read",
+          input: '{"path":"a.ts"}',
+          providerData: null,
+          state: {
+            status: "settled",
+            outcome: "success",
+            output: "const a = 1",
+            truncation: null,
+            attachments: [],
+            display: null,
+          },
+        },
+      ],
+      finish: "tool_calls",
+      usage,
+      error: null,
+      refusal: null,
+      lastRetry: null,
+      endedAt: 120,
+    })
+    expect(log.assistant("a2")).toMatchObject({ seq: 13, status: "completed", finish: "stop", endedAt: 150 })
+  })
+
+  test("a step has exactly one terminal event", () => {
+    const log = inStep()
+    log.apply(stepEnded("a1"))
+    expect(log.reject(stepEnded("a1"))).toBe("invalid_transition")
+    expect(log.reject(stepInterrupted("a1"))).toBe("invalid_transition")
+    expect(log.reject(textEnded("a1", "late"))).toBe("invalid_transition")
+    expect(log.reject(called("a1", "call_9"))).toBe("invalid_transition")
+  })
+
+  test("output must belong to the open step", () => {
+    const log = inStep()
+    expect(log.reject(textEnded("a0", "x"))).toBe("invalid_transition")
+    expect(log.reject(textEnded("u1", "x"))).toBe("invalid_transition")
+    expect(log.reject(stepEnded("a0"))).toBe("invalid_transition")
+  })
+
+  test("a step cannot end while a tool call is unsettled", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), called("a1", "call_2"), started("a1", "call_1"), settled("a1", "call_1"))
+    expect(log.reject(stepEnded("a1", "tool_calls"))).toBe("invalid_transition")
+    expect(log.reject(stepInterrupted("a1"))).toBe("invalid_transition")
+    expect(log.reject(event("step.refused", { messageId: m("a1"), message: "no", excludeFromSeq: 6, usage: null }))).toBe(
+      "invalid_transition",
+    )
+    log.apply(settled("a1", "call_2", "not_started", "Not started: the step was interrupted."))
+    expect(log.reject(stepInterrupted("a1"))).toBe("accepted")
+  })
+
+  test("a failed step keeps its output and records the error", () => {
+    const log = inStep()
+    const error = { kind: "provider", error: makeProviderError("usage_limit", "limit reached") } as const
+    log.apply(textEnded("a1", "partial"), event("step.failed", { messageId: m("a1"), error, usage: null }))
+    expect(log.assistant("a1")).toMatchObject({
+      status: "failed",
+      error,
+      parts: [{ type: "text", text: "partial" }],
+      excluded: null,
+      endedAt: 80,
+    })
+    expect(log.state!.session.open).toBeNull()
+  })
+
+  test("messages enter history only at a step boundary", () => {
+    const log = inStep()
+    expect(log.reject(synthetic("s1"))).toBe("invalid_transition")
+    expect(log.reject(instruction("i1"))).toBe("invalid_transition")
+    expect(log.reject(compactionStarted("c1"))).toBe("invalid_transition")
+    expect(log.reject(baselineSet)).toBe("invalid_transition")
+    log.apply(stepEnded("a1"))
+    expect(log.reject(synthetic("s1"))).toBe("accepted")
+    expect(log.reject(instruction("i1"))).toBe("accepted")
+  })
+})
+
+describe("tool-call state machine", () => {
+  const outcomes: ToolOutcome[] = ["success", "error", "not_started", "effect_unknown"]
+
+  test("a call starts pending, with its input exactly as the model wrote it", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1", '{"path": "a.ts", '))
+    expect(log.call("a1", "call_1")).toEqual({
+      type: "tool_call",
+      callId: c("call_1"),
+      name: "read",
+      input: '{"path": "a.ts", ',
+      providerData: null,
+      state: { status: "pending" },
+    })
+  })
+
+  test("a pending call settles only as not_started or error", () => {
+    for (const outcome of outcomes) {
+      const log = inStep()
+      log.apply(called("a1", "call_1"))
+      const allowed = outcome === "not_started" || outcome === "error"
+      expect(log.reject(settled("a1", "call_1", outcome))).toBe(allowed ? "accepted" : "invalid_transition")
+    }
+  })
+
+  test("a running call settles only as success, error or effect_unknown", () => {
+    for (const outcome of outcomes) {
+      const log = inStep()
+      log.apply(called("a1", "call_1"), started("a1", "call_1"))
+      expect(log.call("a1", "call_1").state).toEqual({ status: "running" })
+      const allowed = outcome !== "not_started"
+      expect(log.reject(settled("a1", "call_1", outcome))).toBe(allowed ? "accepted" : "invalid_transition")
+    }
+  })
+
+  test("a call settles exactly once and cannot restart", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), started("a1", "call_1"))
+    expect(log.reject(started("a1", "call_1"))).toBe("invalid_transition")
+    log.apply(settled("a1", "call_1", "effect_unknown", "The command was started; its outcome is unknown."))
+    expect(log.call("a1", "call_1").state).toMatchObject({
+      status: "settled",
+      outcome: "effect_unknown",
+      output: "The command was started; its outcome is unknown.",
+    })
+    for (const outcome of outcomes) expect(log.reject(settled("a1", "call_1", outcome))).toBe("invalid_transition")
+    expect(log.reject(started("a1", "call_1"))).toBe("invalid_transition")
+  })
+
+  test("the settled output is stored exactly as given", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), started("a1", "call_1"))
+    const truncation = { originalBytes: 90_000, originalLines: 3_000, spillPath: "/tmp/spill.txt" }
+    log.apply(
+      event("tool.settled", {
+        messageId: m("a1"),
+        callId: c("call_1"),
+        outcome: "success",
+        output: "head\n[... 2990 lines omitted ...]\ntail\n",
+        truncation,
+        attachments: [{ hash: "ab12", mediaType: "image/png" }],
+        display: { exitCode: 0 },
+      }),
+    )
+    expect(log.call("a1", "call_1").state).toEqual({
+      status: "settled",
+      outcome: "success",
+      output: "head\n[... 2990 lines omitted ...]\ntail\n",
+      truncation,
+      attachments: [{ hash: "ab12", mediaType: "image/png" }],
+      display: { exitCode: 0 },
+    })
+  })
+
+  test("unknown calls are rejected", () => {
+    const log = inStep()
+    expect(log.reject(started("a1", "call_1"))).toBe("not_found")
+    expect(log.reject(settled("a1", "call_1", "error"))).toBe("not_found")
+  })
+
+  test("a call id cannot repeat inside one assistant message", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"))
+    expect(log.reject(called("a1", "call_1"))).toBe("duplicate_id")
+  })
+
+  test("the same provider call id in a later step is a different call", () => {
+    const log = inStep()
+    log.apply(
+      called("a1", "call_1", '{"path":"a.ts"}'),
+      started("a1", "call_1"),
+      settled("a1", "call_1", "success", "first result"),
+      stepEnded("a1", "tool_calls"),
+      stepStarted("a2"),
+      called("a2", "call_1", '{"path":"b.ts"}'),
+    )
+    expect(log.call("a2", "call_1").state).toEqual({ status: "pending" })
+    expect(log.call("a1", "call_1").state).toMatchObject({ status: "settled", output: "first result" })
+    log.apply(started("a2", "call_1"), settled("a2", "call_1", "error", "second result"))
+    expect(log.call("a1", "call_1").state).toMatchObject({ outcome: "success", output: "first result" })
+    expect(log.call("a2", "call_1").state).toMatchObject({ outcome: "error", output: "second result" })
+    // The earlier step is closed, so its call can no longer be touched through the shared id.
+    expect(log.reject(settled("a1", "call_1", "error"))).toBe("invalid_transition")
+  })
+
+  test("parallel calls settle independently and in any order", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), called("a1", "call_2"), called("a1", "call_3"))
+    log.apply(started("a1", "call_2"), started("a1", "call_1"))
+    log.apply(settled("a1", "call_1", "success", "one"), settled("a1", "call_3", "not_started", "three"))
+    log.apply(settled("a1", "call_2", "error", "two"))
+    const states = log.assistant("a1").parts.map((part) => (part.type === "tool_call" ? part.state : null))
+    expect(states).toMatchObject([
+      { outcome: "success", output: "one" },
+      { outcome: "error", output: "two" },
+      { outcome: "not_started", output: "three" },
+    ])
+  })
+})
+
+describe("cancel and recovery", () => {
+  test("a cancelled step keeps partial text, settles every call and ends once", () => {
+    const log = inStep()
+    log.apply(
+      called("a1", "call_1"),
+      called("a1", "call_2"),
+      started("a1", "call_1"),
+      // The user cancels here: the visible partial text is flushed, calls are settled.
+      settled("a1", "call_1", "error", "Interrupted. Output so far: ..."),
+      settled("a1", "call_2", "not_started", "Not started: the step was interrupted."),
+      stepInterrupted("a1"),
+      synthetic("s1"),
+      event("execution.interrupted", { executionId: x("exe_1"), reason: "user" }),
+    )
+    expect(log.assistant("a1")).toMatchObject({ status: "failed", error: { kind: "interrupted", reason: "user" } })
+    expect(log.state!.session).toMatchObject({ execution: null, open: null })
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1", "s1"])
+    expect(log.message("s1")).toMatchObject({ kind: "synthetic", origin: "interrupt", delivery: null })
+  })
+
+  test("crash orphans are settled by recovery before the execution resumes", () => {
+    const log = inStep()
+    log.apply(called("a1", "call_1"), called("a1", "call_2"), started("a1", "call_1"))
+    // The process dies. At the next start the claim is still running and the step is open.
+    expect(log.state!.session).toMatchObject({ execution: { status: "running" }, open: { messageId: m("a1") } })
+    expect(log.reject(event("execution.resumed", { executionId: x("exe_1") }))).toBe("invalid_transition")
+    log.apply(
+      settled("a1", "call_1", "effect_unknown", "Started before a crash; outcome unknown."),
+      settled("a1", "call_2", "not_started", "Not started."),
+      event("step.failed", { messageId: m("a1"), error: { kind: "crashed" }, usage: null }),
+      event("execution.resumed", { executionId: x("exe_1") }),
+    )
+    expect(log.assistant("a1")).toMatchObject({ status: "failed", error: { kind: "crashed" } })
+    expect(log.state!.session.execution).toMatchObject({ status: "running", resumes: 1 })
+    expect(log.reject(stepStarted("a2"))).toBe("accepted")
+  })
+})
+
+describe("retries", () => {
+  const rateLimit = makeProviderError("rate_limit", "slow down", { status: 429, retryAfterMs: 2000 })
+
+  test("before output, the retry continues under the same message", () => {
+    const log = inStep()
+    log.apply(event("retry.scheduled", { messageId: m("a1"), attempt: 2, delayMs: 2000, error: rateLimit }))
+    expect(log.assistant("a1")).toMatchObject({
+      status: "running",
+      attempt: 2,
+      lastRetry: { attempt: 2, delayMs: 2000, error: rateLimit, time: 70 },
+    })
+    expect(log.state!.session.open).toEqual({ kind: "step", messageId: m("a1") })
+    log.apply(textEnded("a1", "ok"), stepEnded("a1"))
+    expect(log.assistant("a1")).toMatchObject({ status: "completed", attempt: 2 })
+    expect(ids(log.state!.messages)).toEqual(["u1", "a1"])
+  })
+
+  test("after output, the message fails and the retry runs under a new one", () => {
+    const log = inStep()
+    const died = makeProviderError("incomplete_stream", "stream ended early")
+    log.apply(
+      textEnded("a1", "partial"),
+      event("step.failed", { messageId: m("a1"), error: { kind: "provider", error: died }, usage: null }),
+      event("retry.scheduled", { messageId: m("a1"), attempt: 2, delayMs: 2000, error: died }),
+      stepStarted("a2", 2),
+      textEnded("a2", "complete"),
+      stepEnded("a2"),
+    )
+    expect(log.assistant("a1")).toMatchObject({ status: "failed", attempt: 1, lastRetry: { attempt: 2 } })
+    expect(log.assistant("a2")).toMatchObject({ status: "completed", attempt: 2, lastRetry: null })
+  })
+
+  test("a retry must move the attempt forward and name an assistant message", () => {
+    const log = inStep()
+    log.apply(event("retry.scheduled", { messageId: m("a1"), attempt: 3, delayMs: 0, error: rateLimit }))
+    expect(log.reject(event("retry.scheduled", { messageId: m("a1"), attempt: 3, delayMs: 0, error: rateLimit }))).toBe(
+      "invalid_transition",
+    )
+    expect(log.reject(event("retry.scheduled", { messageId: m("u1"), attempt: 2, delayMs: 0, error: rateLimit }))).toBe(
+      "invalid_transition",
+    )
+    expect(log.reject(event("retry.scheduled", { messageId: m("zz"), attempt: 2, delayMs: 0, error: rateLimit }))).toBe(
+      "not_found",
+    )
+  })
+})
+
+describe("refusal", () => {
+  const refused = (id: string, excludeFromSeq: number) =>
+    event("step.refused", { messageId: m(id), message: "I can't help with that.", excludeFromSeq, usage: null })
+
+  test("a refused step stays in the log and leaves model history, with the range that led to it", () => {
+    const log = finishedTurn()
+    log.apply(enqueue("u2", "something disallowed"), executionStarted("exe_2"), deliver("u2"), stepStarted("a3"))
+    const deliveredSeq = log.message("u2").seq
+    log.apply(textEnded("a3", "I can't"), refused("a3", deliveredSeq))
+    expect(log.assistant("a3")).toMatchObject({
+      status: "refused",
+      refusal: "I can't help with that.",
+      excluded: "refused",
+      parts: [{ type: "text", text: "I can't" }],
+    })
+    expect(log.message("u2").excluded).toBe("refused")
+    expect(ids(log.state!.messages)).toEqual(["u1", "a1", "a2", "u2", "a3"])
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1", "a2"])
+    expect(log.state!.session.open).toBeNull()
+  })
+
+  test("the range may cover only the refused message itself", () => {
+    const log = inStep()
+    log.apply(refused("a1", 6))
+    expect(log.message("u1").excluded).toBeNull()
+    expect(log.message("a1").excluded).toBe("refused")
+  })
+
+  test("the range must include the refused message and stay inside the log", () => {
+    const log = inStep()
+    expect(log.reject(refused("a1", 7))).toBe("invalid_range")
+    expect(log.reject(refused("a1", 1))).toBe("accepted")
+  })
+
+  test("a content-policy failure cannot be recorded as an ordinary failure", () => {
+    const log = inStep()
+    const error = { kind: "provider", error: makeProviderError("content_policy", "refused") } as const
+    expect(log.reject(event("step.failed", { messageId: m("a1"), error, usage: null }))).toBe("invalid_transition")
+  })
+})
+
+describe("baseline and instructions", () => {
+  test("the baseline freezes instructions and tools with the seq that set them", () => {
+    const log = running()
+    expect(log.state!.baseline).toEqual({ seq: 4, ...baselineSet.data })
+  })
+
+  test("the baseline cannot change until a compaction has completed", () => {
+    const log = finishedTurn()
+    const changed = event("baseline.set", { instructions: "New prompt.", tools: [] })
+    expect(log.reject(changed)).toBe("invalid_transition")
+    log.apply(executionStarted("exe_2"), compactionStarted("c1"))
+    expect(log.reject(changed)).toBe("invalid_transition")
+    log.apply(compactionEnded("c1", 13))
+    expect(log.apply(changed).baseline).toEqual({ seq: log.seq, instructions: "New prompt.", tools: [] })
+    expect(log.reject(changed)).toBe("invalid_transition")
+  })
+
+  test("an appended instruction is a message with its text frozen", () => {
+    const log = finishedTurn()
+    log.apply(instruction("i1", "Today is Thursday."))
+    expect(log.message("i1")).toEqual({
+      kind: "instruction",
+      id: m("i1"),
+      seq: 17,
+      time: 170,
+      excluded: null,
+      source: "date",
+      text: "Today is Thursday.",
+    })
+    expect(log.state!.baseline).toEqual({ seq: 4, ...baselineSet.data })
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1", "a2", "i1"])
+  })
+})
+
+describe("compaction", () => {
+  /** finishedTurn (u1@5, a1@6, a2@13), then a completed compaction c1 that keeps from a2. */
+  function compacted(): Log {
+    const log = finishedTurn()
+    log.apply(executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 13), executionSucceeded("exe_2"))
+    return log
+  }
+
+  test("a compaction is open like a step until it ends", () => {
+    const log = finishedTurn()
+    expect(log.reject(compactionStarted("c1"))).toBe("invalid_transition")
+    log.apply(executionStarted("exe_2"), compactionStarted("c1"))
+    expect(log.state!.session.open).toEqual({ kind: "compaction", messageId: m("c1") })
+    expect(log.reject(stepStarted("a3"))).toBe("invalid_transition")
+    expect(log.reject(executionSucceeded("exe_2"))).toBe("invalid_transition")
+    expect(log.reject(compactionEnded("a2", 13))).toBe("invalid_transition")
+  })
+
+  test("model history becomes the checkpoint, then the kept messages, then what follows", () => {
+    const log = compacted()
+    expect(log.state!.session.compaction).toEqual({ messageId: m("c1"), seq: 18, keepFromSeq: 13 })
+    expect(log.message("c1")).toMatchObject({
+      kind: "compaction",
+      status: "completed",
+      summary: "Summary so far.",
+      keepFromSeq: 13,
+      endedAt: 190,
+    })
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a2"])
+    log.apply(enqueue("u2"), executionStarted("exe_3"), deliver("u2"))
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a2", "u2"])
+    // Nothing was deleted: the UI still has every message.
+    expect(ids(log.state!.messages)).toEqual(["u1", "a1", "a2", "c1", "u2"])
+  })
+
+  test("a failed compaction leaves model history unchanged", () => {
+    const log = finishedTurn()
+    const before = ids(selectModelHistory(log.state!).messages)
+    log.apply(
+      executionStarted("exe_2"),
+      compactionStarted("c1"),
+      event("compaction.failed", { messageId: m("c1"), error: { kind: "interrupted", reason: "user" } }),
+    )
+    expect(log.message("c1")).toMatchObject({ status: "failed", summary: null, keepFromSeq: null })
+    expect(log.state!.session).toMatchObject({ compaction: null, open: null })
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(before)
+  })
+
+  test("a second compaction replaces the first as the start of history", () => {
+    const log = compacted()
+    log.apply(enqueue("u2"), executionStarted("exe_3"), deliver("u2"), compactionStarted("c2"))
+    const u2 = log.message("u2").seq
+    log.apply(compactionEnded("c2", u2))
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c2", "u2"])
+  })
+
+  test("keepFromSeq must lie after the previous compaction and not after this one", () => {
+    const log = compacted()
+    log.apply(executionStarted("exe_3"), compactionStarted("c2"))
+    const own = log.message("c2").seq
+    expect(log.reject(compactionEnded("c2", 18))).toBe("invalid_range")
+    expect(log.reject(compactionEnded("c2", own + 1))).toBe("invalid_range")
+    expect(log.reject(compactionEnded("c2", 19))).toBe("accepted")
+    // Keeping nothing: history is the checkpoint alone.
+    log.apply(compactionEnded("c2", own))
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c2"])
+  })
+
+  test("excluded messages stay excluded inside the kept range", () => {
+    const log = finishedTurn()
+    log.apply(reverted(13), executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 6))
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a1"])
+  })
+})
+
+describe("revert", () => {
+  test("marks every message from the given seq and removes them from model history", () => {
+    const log = finishedTurn()
+    log.apply(reverted(13))
+    expect(log.state!.messages.map((candidate) => candidate.excluded)).toEqual([null, null, "reverted"])
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1"])
+    expect(ids(log.state!.messages)).toEqual(["u1", "a1", "a2"])
+  })
+
+  test("messages written after a revert are visible again", () => {
+    const log = finishedTurn()
+    log.apply(reverted(5), enqueue("u2"), executionStarted("exe_2"), deliver("u2"))
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u2"])
+  })
+
+  test("needs an idle session", () => {
+    const log = running()
+    expect(log.reject(reverted(5))).toBe("invalid_transition")
+  })
+
+  test("the range must be inside the log and after the latest compaction", () => {
+    const log = finishedTurn()
+    expect(log.reject(reverted(log.seq + 1))).toBe("invalid_range")
+    log.apply(executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 13), executionSucceeded("exe_2"))
+    expect(log.reject(reverted(13))).toBe("invalid_range")
+    expect(log.reject(reverted(18))).toBe("invalid_range")
+    expect(log.reject(reverted(19))).toBe("accepted")
+  })
+
+  test("a refused message stays refused when it is later reverted", () => {
+    const log = inStep()
+    log.apply(
+      event("step.refused", { messageId: m("a1"), message: "no", excludeFromSeq: 6, usage: null }),
+      event("execution.failed", { executionId: x("exe_1"), message: "refused" }),
+      reverted(5),
+    )
+    expect(log.state!.messages.map((candidate) => candidate.excluded)).toEqual(["reverted", "refused"])
+  })
+})
+
+describe("fork", () => {
+  const forkCreated = (throughSeq: number) =>
+    event("session.created", {
+      cwd: "/repo",
+      title: "Fork",
+      lineage: { kind: "fork", parentSessionId: "ses_1" as SessionId, throughSeq },
+    })
+
+  test("a fork continues the parent's history at the next seq", () => {
+    const parent = finishedTurn()
+    const atStepBoundary = reduceAll(parent.events.slice(0, 12))!
+    const child = new Log("ses_2" as SessionId, atStepBoundary)
+    const state = child.apply(forkCreated(12))
+    expect(state.lastSeq).toBe(13)
+    expect(state.session).toMatchObject({
+      id: "ses_2" as SessionId,
+      title: "Fork",
+      lineage: { kind: "fork", parentSessionId: "ses_1" as SessionId, throughSeq: 12 },
+      execution: null,
+      open: null,
+    })
+    expect(ids(state.messages)).toEqual(["u1", "a1"])
+    expect(state.baseline).toEqual(atStepBoundary.baseline)
+    expect(state.inbox).toEqual([])
+    child.apply(enqueue("u2", "another direction"), executionStarted("exe_9"), deliver("u2"))
+    expect(ids(selectModelHistory(child.state!).messages)).toEqual(["u1", "a1", "u2"])
+    expect(child.message("u2").seq).toBe(16)
+    // The parent is untouched.
+    expect(ids(parent.state!.messages)).toEqual(["u1", "a1", "a2"])
+  })
+
+  test("a fork does not inherit the parent's waiting input or its claim", () => {
+    const parent = running()
+    parent.apply(enqueue("u2"))
+    const child = new Log("ses_2" as SessionId, parent.state)
+    const state = child.apply(forkCreated(6))
+    expect(state.inbox).toEqual([])
+    expect(state.session.execution).toBeNull()
+    expect(parent.state!.inbox).toHaveLength(1)
+  })
+
+  test("a fork inherits the latest compaction", () => {
+    const parent = finishedTurn()
+    parent.apply(executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 13), executionSucceeded("exe_2"))
+    const child = new Log("ses_2" as SessionId, parent.state)
+    child.apply(forkCreated(parent.seq))
+    expect(ids(selectModelHistory(child.state!).messages)).toEqual(["c1", "a2"])
+  })
+
+  test("a fork must sit on its parent at exactly throughSeq, at a step boundary", () => {
+    const parent = finishedTurn()
+    expect(new Log("ses_2" as SessionId, parent.state).reject(forkCreated(3))).toBe("invalid_range")
+    expect(new Log("ses_2" as SessionId, null).reject(forkCreated(16))).toBe("invalid_range")
+    const other = { ...parent.state!, session: { ...parent.state!.session, id: "ses_x" as SessionId } }
+    expect(new Log("ses_2" as SessionId, other).reject(forkCreated(16))).toBe("invalid_range")
+    const midStep = reduceAll(parent.events.slice(0, 7))!
+    expect(new Log("ses_2" as SessionId, midStep).reject(forkCreated(7))).toBe("invalid_transition")
+  })
+
+  test("a fork of a fork folds the same way", () => {
+    const parent = finishedTurn()
+    const child = new Log("ses_2" as SessionId, parent.state)
+    child.apply(forkCreated(16), enqueue("u2"), executionStarted("exe_2"), deliver("u2"), executionSucceeded("exe_2"))
+    const grandchild = new Log("ses_3" as SessionId, child.state)
+    grandchild.apply(
+      event("session.created", {
+        cwd: "/repo",
+        title: null,
+        lineage: { kind: "fork", parentSessionId: "ses_2" as SessionId, throughSeq: child.seq },
+      }),
+    )
+    expect(ids(grandchild.state!.messages)).toEqual(["u1", "a1", "a2", "u2"])
+    expect(grandchild.seq).toBe(child.seq + 1)
+  })
+})
+
+describe("reducer properties", () => {
+  test("it never mutates the state or the event it is given", () => {
+    const log = new Log()
+    const source = finishedTurn()
+    for (const stored of source.events) log.state = reduce(deepFreeze(log.state), deepFreeze(stored))
+    expect(log.state).toEqual(source.state)
+  })
+
+  test("folding the same log again gives an equal projection", () => {
+    const log = finishedTurn()
+    log.apply(reverted(13), enqueue("u2"), executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 6))
+    expect(reduceAll(log.events)).toEqual(log.state)
+    expect(reduceAll([])).toBeNull()
+  })
+
+  test("the projection survives a JSON round trip through its validators", () => {
+    const log = finishedTurn()
+    log.apply(
+      enqueue("u2", "more", "queue"),
+      enqueue("s1", "wake", "steer", "timer"),
+      executionStarted("exe_2"),
+      compactionStarted("c1"),
+      compactionEnded("c1", 13),
+      stepStarted("a3"),
+      called("a3", "call_1"),
+      started("a3", "call_1"),
+    )
+    const stored = JSON.parse(JSON.stringify(log.state)) as Projection
+    expect(stored.messages.map((candidate) => message(candidate, "message"))).toEqual([...log.state!.messages])
+    expect(stored.inbox.map((item) => inboxItem(item, "inbox"))).toEqual([...log.state!.inbox])
+    expect(sessionState(stored.session, "session")).toEqual(log.state!.session)
+    expect(baseline(stored.baseline, "baseline")).toEqual(log.state!.baseline!)
+  })
+
+  test("untouched parts of the state keep their identity", () => {
+    const log = inStep()
+    const before = log.state!
+    const after = log.apply(textEnded("a1", "hi"))
+    expect(after.session).toBe(before.session)
+    expect(after.baseline).toBe(before.baseline)
+    expect(after.inbox).toBe(before.inbox)
+    expect(after.messages[0]).toBe(before.messages[0]!)
+    expect(after.messages[1]).not.toBe(before.messages[1]!)
+    const enqueued = log.apply(enqueue("u2"))
+    expect(enqueued.messages).toBe(after.messages)
+    expect(enqueued.session).toBe(after.session)
+  })
+
+  test("projectionChanges reports exactly the rows an event touched", () => {
+    const log = inStep()
+    const before = log.state!
+    expect(projectionChanges(before, log.apply(textEnded("a1", "hi")))).toEqual({
+      session: null,
+      baseline: undefined,
+      messages: [log.message("a1")],
+      inbox: [],
+      inboxRemoved: [],
+    })
+
+    const enqueuedFrom = log.state!
+    const enqueued = log.apply(enqueue("u2"))
+    expect(projectionChanges(enqueuedFrom, enqueued)).toMatchObject({
+      session: null,
+      messages: [],
+      inbox: [{ messageId: m("u2") }],
+      inboxRemoved: [],
+    })
+
+    const changedFrom = log.state!
+    const changed = log.apply(event("inbox.delivery_changed", { messageId: m("u2"), delivery: "queue" }))
+    expect(projectionChanges(changedFrom, changed)).toMatchObject({
+      inbox: [{ messageId: m("u2"), delivery: "queue" }],
+      inboxRemoved: [],
+    })
+
+    const endedFrom = log.state!
+    const ended = log.apply(stepEnded("a1"))
+    const endedChanges = projectionChanges(endedFrom, ended)
+    expect(endedChanges.session).toBe(ended.session)
+    expect(ids(endedChanges.messages)).toEqual(["a1"])
+
+    const deliveredFrom = log.state!
+    const delivered = log.apply(deliver("u2"))
+    expect(projectionChanges(deliveredFrom, delivered)).toMatchObject({
+      session: null,
+      messages: [{ id: m("u2"), kind: "user" }],
+      inbox: [],
+      inboxRemoved: [m("u2")],
+    })
+
+    const idle = log.apply(executionSucceeded())
+    const revertedState = log.apply(reverted(6))
+    const revertChanges = projectionChanges(idle, revertedState)
+    expect(ids(revertChanges.messages)).toEqual(["a1", "u2"])
+    expect(revertChanges.session).toBeNull()
+  })
+
+  test("projectionChanges from nothing returns everything, and reports a baseline change", () => {
+    const log = new Log()
+    log.apply(created, enqueue("u1"), executionStarted())
+    const before = log.state!
+    const after = log.apply(baselineSet)
+    expect(projectionChanges(before, after).baseline).toBe(after.baseline)
+    expect(projectionChanges(null, after)).toEqual({
+      session: after.session,
+      baseline: after.baseline,
+      messages: after.messages,
+      inbox: after.inbox,
+      inboxRemoved: [],
+    })
+  })
+
+  test("applying the reported changes row by row rebuilds the projection", () => {
+    // A minimal stand-in for the store's tables, to show the changes are sufficient.
+    const source = finishedTurn()
+    source.apply(reverted(13), enqueue("u2"), enqueue("u3"), event("inbox.cancelled", { messageId: m("u2") }))
+    const rows = { session: null as unknown, baseline: null as unknown, messages: new Map(), inbox: new Map() }
+    let previous: Projection | null = null
+    for (const stored of source.events) {
+      const next = reduce(previous, stored)
+      const changes = projectionChanges(previous, next)
+      if (changes.session !== null) rows.session = changes.session
+      if (changes.baseline !== undefined) rows.baseline = changes.baseline
+      for (const changed of changes.messages) rows.messages.set(changed.id, changed)
+      for (const item of changes.inbox) rows.inbox.set(item.messageId, item)
+      for (const removed of changes.inboxRemoved) rows.inbox.delete(removed)
+      previous = next
+    }
+    const bySeq = (a: { seq: number }, b: { seq: number }) => a.seq - b.seq
+    expect(rows.session).toEqual(source.state!.session)
+    expect(rows.baseline).toEqual(source.state!.baseline)
+    expect([...rows.messages.values()].sort(bySeq)).toEqual([...source.state!.messages])
+    expect([...rows.inbox.values()].sort(bySeq)).toEqual([...source.state!.inbox])
+  })
+})
