@@ -55,7 +55,7 @@ export interface SandboxCommandOptions {
   readonly env?: Readonly<Record<string, string | undefined>>
   /** A detection to use instead of `detectSandbox()` (which is cached). */
   readonly detection?: SandboxDetection
-  /** Linux: the mode-000 file bound over hidden files. Default: one created per process under the temp directory. */
+  /** Linux: the mode-000 file bound over hidden files. Default: one per user under the temp directory. */
   readonly maskFile?: string
 }
 

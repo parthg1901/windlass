@@ -63,8 +63,8 @@ function detectUncached(platform: NodeJS.Platform, bwrapOverride: string | undef
   if (platform !== "linux") return unavailable(null, `No sandbox backend exists for ${platform}.`, null)
 
   const bwrapPath = bwrapOverride ?? Bun.which("bwrap")
-  if (!bwrapPath)
-    return unavailable("bwrap", "bubblewrap (bwrap) is not installed.", "Install bubblewrap, for example `sudo apt install bubblewrap` or `sudo dnf install bubblewrap`.")
+  if (!bwrapPath || !existsSync(bwrapPath))
+    return unavailable("bwrap", `bubblewrap (bwrap) is not installed${bwrapPath ? ` at ${bwrapPath}` : ""}.`, "Install bubblewrap, for example `sudo apt install bubblewrap` or `sudo dnf install bubblewrap`.")
 
   const envPath = findSignalEnv()
   const probe = Bun.spawnSync(

@@ -17,7 +17,7 @@
  *   `env --default-signal`: a group SIGTERM reaches only the command and its
  *   descendants, which get the caller's grace period before SIGKILL.
  */
-import { lstatSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs"
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { brand } from "../brand.ts"
@@ -27,7 +27,7 @@ export interface BwrapOptions {
   readonly bwrapPath: string
   /** GNU env supporting --ignore-signal/--default-signal, or null to skip the signal trampoline. */
   readonly envPath: string | null
-  /** An empty file with mode 000 to bind over hidden files. Default: one created per process. */
+  /** An empty file with mode 000 to bind over hidden files. Default: one per user under the temp directory. */
   readonly maskFile?: string
 }
 
@@ -97,16 +97,38 @@ let maskFile: string | null = null
  * hidden file is covered by binding this host file over it. Mode 000 and no
  * capabilities inside the sandbox make every open fail with EACCES (a
  * /dev/null bind would read as empty instead of failing).
+ *
+ * One stable file per user (`<tmp>/<brand>-sandbox-<uid>/hidden`), so nothing
+ * accumulates and nothing needs cleaning up. The directory is only trusted
+ * when it is ours, a real directory and private; otherwise a fresh private
+ * directory is used.
  */
 function processMaskFile() {
-  if (maskFile && lstatOrNull(maskFile)) return maskFile
-  const dir = mkdtempSync(join(tmpdir(), `${brand.directory}-sandbox-`))
+  if (maskFile && isMask(maskFile)) return maskFile
+  const uid = process.getuid?.() ?? 0
+  const stable = join(tmpdir(), `${brand.directory}-sandbox-${uid}`)
+  ignoreExists(() => mkdirSync(stable, { mode: 0o700 }))
+  const dirStat = lstatOrNull(stable)
+  const dir = dirStat?.isDirectory() && dirStat.uid === uid && (dirStat.mode & 0o077) === 0 ? stable : mkdtempSync(join(tmpdir(), `${brand.directory}-sandbox-`))
   const file = join(dir, "hidden")
-  writeFileSync(file, "")
-  chmodSync(file, 0o000)
-  process.once("exit", () => rmSync(dir, { recursive: true, force: true }))
+  if (lstatOrNull(file) && !isMask(file)) rmSync(file, { force: true })
+  // Mode 0 at creation (the umask can only remove bits), so the file is never readable, even briefly.
+  ignoreExists(() => writeFileSync(file, "", { mode: 0o000, flag: "wx" }))
   maskFile = file
   return file
+}
+
+function isMask(path: string) {
+  const stat = lstatOrNull(path)
+  return stat !== null && stat.isFile() && stat.size === 0 && (stat.mode & 0o777) === 0 && stat.uid === (process.getuid?.() ?? 0)
+}
+
+function ignoreExists(create: () => void) {
+  try {
+    create()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  }
 }
 
 function existingRealpath(path: string) {
