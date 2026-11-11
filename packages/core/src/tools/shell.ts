@@ -8,7 +8,8 @@
  * Stopping (abort, timeout, or leftovers after the command exits): SIGTERM to
  * the whole group, wait up to the grace period for the group to empty, then
  * SIGKILL the group. Background processes the command started are stopped the
- * same way when it finishes.
+ * same way when it finishes. If this process dies while a command runs, a
+ * guard process kills the command's group (`guardGroup`).
  */
 import { mkdir, unlink } from "node:fs/promises"
 import { join } from "node:path"
@@ -95,6 +96,7 @@ async function runShell(
   }
   const child = spawned
   const group = createGroup(child.pid, options.graceMs)
+  const guard = guardGroup(child.pid)
 
   let stopReason: StopReason | null = null
   const stop = (reason: StopReason) => {
@@ -121,6 +123,7 @@ async function runShell(
   context.signal.removeEventListener("abort", onAbort)
   // Whatever is left of the group (background jobs, a grandchild that ignored SIGTERM) is stopped now.
   await group.terminate()
+  guard.release()
   const drained = await Promise.race([pumps.then(() => true), Bun.sleep(DRAIN_MS).then(() => false)])
   if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
   await buffer.close()
@@ -176,6 +179,42 @@ function createGroup(pid: number, graceMs: number) {
       })()
       return terminating
     },
+  }
+}
+
+/**
+ * Makes sure the group led by `pid` does not outlive this process, however
+ * the process ends (a crash, SIGKILL, a second Ctrl-C). The command runs in
+ * its own process group, so nothing the operating system does to this
+ * process reaches it; while this process lives, `createGroup` stops it.
+ *
+ * The guard is a small shell process in a session of its own that blocks
+ * reading a pipe only this process holds the other end of. When this process
+ * dies, for any reason, the pipe closes, the read returns and the guard kills
+ * the group. `release` ends the guard once the command is over.
+ * It is best effort: if the guard cannot be started the command still runs.
+ */
+function guardGroup(pid: number): { release: () => void } {
+  try {
+    // `kill -s KILL -- -<pgid>` is the form every POSIX shell accepts for a process group (dash rejects `-KILL -- -<pgid>`).
+    const guard = Bun.spawn(["/bin/sh", "-c", 'read -r _; kill -s KILL -- "-$1" 2>/dev/null', "guard", String(pid)], {
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "ignore",
+      detached: true,
+    })
+    guard.unref()
+    return {
+      release: () => {
+        try {
+          guard.kill("SIGKILL")
+        } catch {
+          // Already gone.
+        }
+      },
+    }
+  } catch {
+    return { release: () => {} }
   }
 }
 
