@@ -11,3 +11,6 @@ auth-pending.json
 *.db
 .env
 .env.*
+
+# live API probe captures (scripts/probe-responses.ts); never commit
+captures/
