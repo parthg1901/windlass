@@ -307,7 +307,18 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       const compactedSince = (state.session.compaction?.seq ?? 0) > (state.baseline?.seq ?? 0)
       if (state.baseline !== null && !compactedSince)
         fail("invalid_transition", "the baseline is frozen until the next compaction")
-      return { ...state, baseline: { seq: event.seq, instructions: event.data.instructions, tools: event.data.tools } }
+      const sources = event.data.sources.map((entry) => entry.source)
+      const repeated = sources.find((source, index) => sources.indexOf(source) !== index)
+      if (repeated !== undefined) fail("duplicate_id", `instruction source ${repeated} is listed twice`)
+      return {
+        ...state,
+        baseline: {
+          seq: event.seq,
+          instructions: event.data.instructions,
+          tools: event.data.tools,
+          sources: event.data.sources,
+        },
+      }
     }
     case "instruction.appended":
       claimed()
@@ -317,6 +328,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         ...created,
         source: event.data.source,
         text: event.data.text,
+        fingerprint: event.data.fingerprint,
       })
 
     case "inbox.enqueued": {

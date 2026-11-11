@@ -5,6 +5,7 @@
 import { type BlobRef, text } from "../../src/content.ts"
 import { type EventData, type NewEvent, type StepError, type StoredEvent, type ToolOutcome, event } from "../../src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
+import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import type { Json } from "../../src/json.ts"
 import type { Projection } from "../../src/message/message.ts"
 import { reduce } from "../../src/message/reducer.ts"
@@ -37,7 +38,7 @@ export const SHELL: ToolSpec = {
   inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
 }
 
-export const BASELINE: EventData<"baseline.set"> = { instructions: "You are a coding agent.", tools: [READ, SHELL] }
+export const BASELINE: EventData<"baseline.set"> = { instructions: "You are a coding agent.", tools: [READ, SHELL], sources: [] }
 
 /** What the provider attached to a reasoning item. */
 export const ENCRYPTED: Json = { id: "rs_1", encrypted_content: "gAAAA" }
@@ -217,9 +218,14 @@ export class Script {
     return this.seq
   }
 
-  instruction(source: string, value: string): number {
+  /**
+   * An instruction message. `value` is the fingerprint of what `text` gives
+   * the model for `source` (`null` for a removal notice); by default the text
+   * itself is fingerprinted, which is enough where only rendering matters.
+   */
+  instruction(source: string, value: string, fingerprint: string | null = fingerprintOf(value)): number {
     this.claim()
-    this.apply(event("instruction.appended", { messageId: this.id("ins"), source, text: value }))
+    this.apply(event("instruction.appended", { messageId: this.id("ins"), source, text: value, fingerprint }))
     return this.seq
   }
 

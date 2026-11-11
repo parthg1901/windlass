@@ -12,12 +12,11 @@
  *   Run the tests before you report.
  *   </instructions>
  *
- * The header states how many lines the body has. That makes a section
- * readable back exactly from text the model was sent, whatever the body
- * contains (a closing tag, another header): `parseSections` takes the stated
- * number of lines and never searches the body. Change detection depends on
- * this, because today the log stores instruction text and nothing else about
- * a source (see `state.ts`).
+ * The header states how many lines the body has, so where a section ends
+ * never depends on what the body contains (a closing tag, another header).
+ * `parseSections` shows that: it takes the stated number of lines and never
+ * searches the body. Change detection does not read sections back; it
+ * compares the `fingerprint` the log stores for each source (see `state.ts`).
  */
 import { createHash } from "node:crypto"
 
@@ -76,7 +75,8 @@ export function agentsSource(path: string, content: string): InstructionSource {
 
 /**
  * The identity of a source's value for change detection: lowercase hex
- * SHA-256 of its UTF-8 bytes.
+ * SHA-256 of its UTF-8 bytes. Stored in `baseline.set` and
+ * `instruction.appended` next to the text that carries the value.
  */
 export function fingerprint(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex")

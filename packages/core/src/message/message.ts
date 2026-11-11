@@ -7,7 +7,7 @@
  * also read back from SQLite JSON.
  */
 import { blobRef, content } from "../content.ts"
-import { delivery, finishReason, lineage, stepError, toolOutcome } from "../event/durable.ts"
+import { delivery, finishReason, instructionFingerprint, lineage, stepError, toolOutcome } from "../event/durable.ts"
 import { callId, executionId, messageId, sessionId } from "../id.ts"
 import { interruptReason } from "../interrupt.ts"
 import { providerError } from "../provider/error.ts"
@@ -116,8 +116,18 @@ export const message = variant("kind", {
    * appended directly rather than delivered from the inbox.
    */
   synthetic: object({ kind: literal("synthetic"), ...base, origin: nonEmptyString, content, delivery: nullable(delivery) }),
-  /** An instruction appended after the baseline, with its text frozen. */
-  instruction: object({ kind: literal("instruction"), ...base, source: nonEmptyString, text: string }),
+  /**
+   * An instruction appended after the baseline, with its text frozen.
+   * `fingerprint` identifies the value it gives the model for `source`, or is
+   * `null` when it says the source is gone.
+   */
+  instruction: object({
+    kind: literal("instruction"),
+    ...base,
+    source: nonEmptyString,
+    text: string,
+    fingerprint: nullable(nonEmptyString),
+  }),
   /** The output of one step attempt. */
   assistant: object({
     kind: literal("assistant"),
@@ -182,8 +192,17 @@ export const inboxItem = object({
 })
 export type InboxItem = Infer<typeof inboxItem>
 
-/** The frozen request prefix in force, and the `seq` of the event that set it. */
-export const baseline = object({ seq: integer(1), instructions: string, tools: array(toolSpec) })
+/**
+ * The frozen request prefix in force, and the `seq` of the event that set it.
+ * `sources` is what the model was given per instruction source in
+ * `instructions`; later `instruction` messages supersede it source by source.
+ */
+export const baseline = object({
+  seq: integer(1),
+  instructions: string,
+  tools: array(toolSpec),
+  sources: array(instructionFingerprint),
+})
 export type Baseline = Infer<typeof baseline>
 
 export const sessionState = object({

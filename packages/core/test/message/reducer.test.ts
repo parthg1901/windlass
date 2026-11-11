@@ -86,6 +86,7 @@ const created = event("session.created", { cwd: "/repo", title: null, lineage: n
 const baselineSet = event("baseline.set", {
   instructions: "You are a coding agent.",
   tools: [{ name: "read", description: "Read a file", inputSchema: { type: "object" } }],
+  sources: [{ source: "environment", fingerprint: "env-1" }],
 })
 const enqueue = (id: string, value = "hello", delivery: "steer" | "queue" = "steer", origin: string | null = null) =>
   event("inbox.enqueued", { messageId: m(id), origin, delivery, content: text(value) })
@@ -125,8 +126,8 @@ const settled = (id: string, callId: string, outcome: ToolOutcome = "success", o
   })
 const synthetic = (id: string, origin = "interrupt", value = "The previous response was interrupted.") =>
   event("synthetic.appended", { messageId: m(id), origin, content: text(value) })
-const instruction = (id: string, value = "Today is Thursday.") =>
-  event("instruction.appended", { messageId: m(id), source: "date", text: value })
+const instruction = (id: string, value = "Today is Thursday.", fingerprint: string | null = "date-thursday") =>
+  event("instruction.appended", { messageId: m(id), source: "date", text: value, fingerprint })
 const compactionStarted = (id: string) => event("compaction.started", { messageId: m(id), trigger: "auto" })
 const compactionEnded = (id: string, keepFromSeq: number) =>
   event("compaction.ended", { messageId: m(id), summary: "Summary so far.", keepFromSeq, usage: null })
@@ -1151,14 +1152,26 @@ describe("baseline and instructions", () => {
     expect(log.state!.baseline).toEqual({ seq: 4, ...baselineSet.data })
   })
 
+  test("the baseline records what the model was given per instruction source, each source once", () => {
+    const log = new Log()
+    log.apply(created)
+    const sources = [
+      { source: "agents:/repo/AGENTS.md", fingerprint: "f1" },
+      { source: "date", fingerprint: "f2" },
+    ]
+    const twice = event("baseline.set", { instructions: "x", tools: [], sources: [...sources, { source: "date", fingerprint: "f3" }] })
+    expect(log.reject(twice)).toBe("duplicate_id")
+    expect(log.apply(event("baseline.set", { instructions: "x", tools: [], sources })).baseline!.sources).toEqual(sources)
+  })
+
   test("the baseline cannot change until a compaction has completed", () => {
     const log = finishedTurn()
-    const changed = event("baseline.set", { instructions: "New prompt.", tools: [] })
+    const changed = event("baseline.set", { instructions: "New prompt.", tools: [], sources: [] })
     expect(log.reject(changed)).toBe("invalid_transition")
     log.apply(executionStarted("exe_2"), compactionStarted("c1"))
     expect(log.reject(changed)).toBe("invalid_transition")
     log.apply(compactionEnded("c1", 13))
-    expect(log.apply(changed).baseline).toEqual({ seq: log.seq, instructions: "New prompt.", tools: [] })
+    expect(log.apply(changed).baseline).toEqual({ seq: log.seq, instructions: "New prompt.", tools: [], sources: [] })
     expect(log.reject(changed)).toBe("invalid_transition")
   })
 
@@ -1173,9 +1186,13 @@ describe("baseline and instructions", () => {
       excluded: null,
       source: "date",
       text: "Today is Thursday.",
+      fingerprint: "date-thursday",
     })
+    // A removal notice carries no fingerprint.
+    log.apply(instruction("i2", "The date is no longer given.", null))
+    expect(log.message("i2")).toMatchObject({ source: "date", fingerprint: null })
     expect(log.state!.baseline).toEqual({ seq: 4, ...baselineSet.data })
-    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1", "a2", "i1"])
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1", "a2", "i1", "i2"])
   })
 })
 

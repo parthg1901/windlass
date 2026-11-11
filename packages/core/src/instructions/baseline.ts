@@ -16,7 +16,7 @@
  */
 import type { EventData } from "../event/durable.ts"
 import { type ToolSpec, sortTools, specOf } from "../tool/tool.ts"
-import { type InstructionSource, parseSections, renderSection } from "./source.ts"
+import { type InstructionSource, fingerprint, parseSections, renderSection } from "./source.ts"
 import systemPrompt from "./system-prompt.txt"
 
 /**
@@ -37,7 +37,7 @@ export interface BaselineInput {
 /** Builds the data of a `baseline.set` event. Pure: the same input gives the same text and the same tool order. */
 export function buildBaseline(input: BaselineInput): EventData<"baseline.set"> {
   const prompt = input.prompt ?? BASE_SYSTEM_PROMPT
-  // Sections are read back from this text (`instructionState`), so the prompt must not look like one.
+  // A section in the prompt would read to the model as a source, but no source is recorded for it.
   if (parseSections(prompt).length > 0) throw new Error("the base system prompt contains an instruction section")
   const tools = sortTools(input.tools.map(specOf))
   const repeatedTool = tools.find((tool, index) => tools[index - 1]?.name === tool.name)
@@ -45,5 +45,10 @@ export function buildBaseline(input: BaselineInput): EventData<"baseline.set"> {
   const keys = input.sources.map((source) => source.key)
   const repeatedKey = keys.find((key, index) => keys.indexOf(key) !== index)
   if (repeatedKey !== undefined) throw new Error(`two instruction sources have the key "${repeatedKey}"`)
-  return { instructions: [prompt, ...input.sources.map(renderSection)].join("\n\n"), tools }
+  return {
+    instructions: [prompt, ...input.sources.map(renderSection)].join("\n\n"),
+    tools,
+    // What the model is given per source, recorded beside the text so that change detection never parses it.
+    sources: input.sources.map((source) => ({ source: source.key, fingerprint: fingerprint(source.value) })),
+  }
 }

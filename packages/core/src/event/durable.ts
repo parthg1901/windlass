@@ -72,6 +72,16 @@ export const finishReason = oneOf(["stop", "tool_calls", "length"])
 export const toolOutcome = oneOf(["success", "error", "not_started", "effect_unknown"])
 export type ToolOutcome = Infer<typeof toolOutcome>
 
+/**
+ * What the model was last given for one instruction source. `source` is the
+ * source's stable key (`environment`, `date`, `agents:<path>`), and
+ * `fingerprint` identifies the value it had (the instructions module uses the
+ * SHA-256 of the value). Change detection compares fingerprints and never
+ * reads rendered text back.
+ */
+export const instructionFingerprint = object({ source: nonEmptyString, fingerprint: nonEmptyString })
+export type InstructionFingerprint = Infer<typeof instructionFingerprint>
+
 /** Why a step or a compaction did not complete. */
 export const stepError = variant("kind", {
   /** The model call failed with a classified provider error. */
@@ -140,16 +150,26 @@ export const durableEvents = {
    * The system prompt and tool list every request uses from here on, with
    * their text frozen (context rule 2). Recorded before the session's first
    * step and again only after a compaction, which is the one place the prefix
-   * may change.
+   * may change. `sources` lists the instruction sources folded into
+   * `instructions`, each with the fingerprint of the value it had; a source
+   * appears at most once.
    */
-  "baseline.set": define(1, object({ instructions: string, tools: array(toolSpec) })),
+  "baseline.set": define(
+    1,
+    object({ instructions: string, tools: array(toolSpec), sources: array(instructionFingerprint) }),
+  ),
   /**
    * An instruction that changed after the baseline (the date, an edited
    * AGENTS.md, a skill list) became part of history as a new message, with its
    * text frozen here (context rule 3). `source` names what it describes so a
-   * later compaction can fold the newest text per source into the next baseline.
+   * later compaction can fold the newest text per source into the next
+   * baseline. `fingerprint` identifies the value `text` gives the model for
+   * that source; `null` means the message tells the model the source is gone.
    */
-  "instruction.appended": define(1, object({ messageId, source: nonEmptyString, text: string })),
+  "instruction.appended": define(
+    1,
+    object({ messageId, source: nonEmptyString, text: string, fingerprint: nullable(nonEmptyString) }),
+  ),
 
   // ---- inbox ----
 

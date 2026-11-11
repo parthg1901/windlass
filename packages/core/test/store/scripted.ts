@@ -33,6 +33,7 @@ export const baselineSet = (instructions = "You are a coding agent working in /w
       { name: "read", description: "Read a file", inputSchema: { type: "object", properties: { path: { type: "string" } } } },
       { name: "shell", description: "Run a command", inputSchema: { type: "object", properties: { cmd: { type: "string" } } } },
     ],
+    sources: [{ source: "date", fingerprint: "date:tuesday" }],
   })
 export const enqueue = (
   id: string,
@@ -88,8 +89,8 @@ export const settled = (id: string, callId: string, outcome: ToolOutcome, output
   })
 export const synthetic = (id: string, origin: string, value: string) =>
   event("synthetic.appended", { messageId: m(id), origin, content: text(value) })
-export const instruction = (id: string, source: string, value: string) =>
-  event("instruction.appended", { messageId: m(id), source, text: value })
+export const instruction = (id: string, source: string, value: string, fingerprint: string | null = `${source}:${value}`) =>
+  event("instruction.appended", { messageId: m(id), source, text: value, fingerprint })
 export const compactionStarted = (id: string) => event("compaction.started", { messageId: m(id), trigger: "auto" })
 export const compactionEnded = (id: string, keepFromSeq: number) =>
   event("compaction.ended", {

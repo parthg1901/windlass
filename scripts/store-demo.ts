@@ -40,6 +40,7 @@ append(
       { name: "read", description: "Read a file", inputSchema: { type: "object" } },
       { name: "shell", description: "Run a command", inputSchema: { type: "object" } },
     ],
+    sources: [],
   }),
 )
 

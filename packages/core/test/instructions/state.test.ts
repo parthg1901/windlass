@@ -71,18 +71,26 @@ describe("instructionState", () => {
     expect(instructionState({ baseline: null, messages: [] }).size).toBe(0)
   })
 
+  test("the baseline event lists each source with the fingerprint of its value", () => {
+    expect(buildBaseline({ tools, sources: initial }).sources).toEqual(
+      initial.map((source) => ({ source: source.key, fingerprint: fingerprint(source.value) })),
+    )
+  })
+
   test("starts as the sources of the baseline", () => {
     expect([...state(session())]).toEqual(initial.map((source) => [source.key, fingerprint(source.value)]))
   })
 
-  test("a baseline without sections knows no sources", () => {
+  test("a baseline that lists no sources knows none, whatever its text says", () => {
     expect(state(new Script().open()).size).toBe(0)
+    const text = buildBaseline({ tools, sources: initial }).instructions
+    expect(state(new Script().open({ instructions: text, tools, sources: [] })).size).toBe(0)
   })
 
   test("follows appended messages: the newest value per source wins, a removal clears it", () => {
     const s = session()
-    s.instruction(monday.key, renderUpdate(tuesday, "replaced"))
-    s.instruction(rootFile.key, renderRemoval(rootFile.key))
+    s.instruction(monday.key, renderUpdate(tuesday, "replaced"), fingerprint(tuesday.value))
+    s.instruction(rootFile.key, renderRemoval(rootFile.key), null)
     const current = state(s)
     expect(current.get("date")).toBe(fingerprint(tuesday.value))
     expect(current.get(rootFile.key)).toBeNull()
@@ -90,11 +98,23 @@ describe("instructionState", () => {
     expect(knownAgentsFiles(current)).toEqual(["/home/u/.config/light-harness/AGENTS.md"])
   })
 
-  test("only the section of the message's own source counts", () => {
+  test("a message counts for its own source only, by its stored fingerprint and never by its text", () => {
     const s = session()
-    s.instruction("skills", `Available skills:\n${renderUpdate(tuesday, "replaced")}`)
+    // The text carries a date section; the event says it is about `skills`.
+    s.instruction("skills", `Available skills:\n${renderUpdate(tuesday, "replaced")}`, "skills-v1")
     expect(state(s).get("date")).toBe(fingerprint(monday.value))
-    expect(state(s).get("skills")).toBeNull()
+    expect(state(s).get("skills")).toBe("skills-v1")
+    // The same text with another fingerprint is another value; text that changes under one fingerprint is not.
+    s.instruction("skills", `Available skills:\n${renderUpdate(tuesday, "replaced")}`, "skills-v2")
+    expect(state(s).get("skills")).toBe("skills-v2")
+    s.instruction("skills", "Reworded, same list.", "skills-v2")
+    expect(state(s).get("skills")).toBe("skills-v2")
+  })
+
+  test("the text format of a section does not matter to the state", () => {
+    const s = new Script().open({ ...buildBaseline({ tools, sources: initial }), instructions: "No sections here at all." })
+    expect([...state(s)]).toEqual(initial.map((source) => [source.key, fingerprint(source.value)]))
+    expect(detect(s, initial)).toEqual([])
   })
 })
 
@@ -115,6 +135,7 @@ describe("detectInstructionChanges", () => {
           messageId: "ins_new_1" as MessageId,
           source: "date",
           text: 'The date has changed. This replaces the date you were given before:\n<date lines="1">\nTuesday, 2026-11-10\n</date>',
+          fingerprint: fingerprint("Tuesday, 2026-11-10"),
         },
       },
     ])
@@ -130,6 +151,7 @@ describe("detectInstructionChanges", () => {
         messageId: "ins_new_1" as MessageId,
         source: "agents:/repo/AGENTS.md",
         text: renderUpdate(edited, "replaced"),
+        fingerprint: fingerprint(edited.value),
       },
     ])
     expect(events[0]!.data.text).toContain("replaces everything you were given from that file before")
@@ -154,7 +176,7 @@ describe("detectInstructionChanges", () => {
     const s = session()
     const without = initial.filter((source) => source.key !== rootFile.key)
     expect(sync(s, without).map((event) => event.data)).toEqual([
-      { messageId: "ins_new_1" as MessageId, source: rootFile.key, text: renderRemoval(rootFile.key) },
+      { messageId: "ins_new_1" as MessageId, source: rootFile.key, text: renderRemoval(rootFile.key), fingerprint: null },
     ])
     expect(detect(s, without)).toEqual([])
     expect(sync(s, initial).map((event) => event.data.text)).toEqual([renderUpdate(rootFile, "added")])

@@ -139,7 +139,7 @@ const scenarios: Record<string, () => Script> = {
     const kept = s.instruction("date", "The date has changed.")
     s.step({ parts: [{ text: "Done." }] })
     s.compact(() => kept)
-    s.baseline({ instructions: "You are a coding agent. The date is known.", tools: [READ, SHELL] })
+    s.baseline({ instructions: "You are a coding agent. The date is known.", tools: [READ, SHELL], sources: [] })
     s.step({ parts: [{ text: "Continuing." }] })
     s.release()
     s.user("second task")
@@ -230,7 +230,7 @@ function randomSession(seed: number): Script {
       const compactionSeq = s.compact((seq) => (chance(0.3) || visible.length === 0 ? seq : pick(visible.slice(-4)).seq))
       if (chance(0.7))
         s.baseline(
-          chance(0.5) ? BASELINE : { instructions: `You are a coding agent. Epoch ${compactionSeq}.`, tools: [READ, SHELL] },
+          chance(0.5) ? BASELINE : { instructions: `You are a coding agent. Epoch ${compactionSeq}.`, tools: [READ, SHELL], sources: [] },
         )
     }
   }

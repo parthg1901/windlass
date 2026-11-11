@@ -5,10 +5,14 @@
  * given? It is derived from the model's view of the log and nothing else, so
  * there is no memory to lose or to get out of step:
  *
- * - the sections of the baseline in force, then
+ * - the sources of the baseline in force (`baseline.sources`), then
  * - every visible instruction message newer than that baseline, in order.
- *   A message that carries a section for its source sets the value; one that
- *   carries none (a removal notice) marks the source as gone.
+ *   Its `fingerprint` is the value the model now has for its source; `null`
+ *   marks the source as gone.
+ *
+ * Both are fields the log stores (`baseline.set` and `instruction.appended`
+ * carry them), so nothing here reads rendered text back: the text format of a
+ * section can change without touching detection.
  *
  * Deriving it from the model's view makes the hard cases fall out by
  * themselves. A reverted or refused instruction message is no longer visible,
@@ -16,27 +20,13 @@
  * instruction message behind the checkpoint has the same effect, unless the
  * new baseline already folded the change in. A fork inherits the state with
  * the parent's history.
- *
- * THE GAP. Events store instruction text only, so the value of a source is
- * read back out of that text with `parseSections`. That is exact, because
- * sections state their own length, but it ties detection to the text format.
- * `InstructionState` is the shape the log should store instead: when
- * `baseline.set` and `instruction.appended` carry a fingerprint per source,
- * `instructionState` becomes a fold over those fields and nothing else here changes.
  */
 import { type EventData, type NewEvent, event } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { Projection } from "../message/message.ts"
 import { type BaselineInput, buildBaseline } from "./baseline.ts"
-import {
-  type InstructionSource,
-  agentsPath,
-  fingerprint,
-  parseSections,
-  renderRemoval,
-  renderUpdate,
-} from "./source.ts"
+import { type InstructionSource, agentsPath, fingerprint, renderRemoval, renderUpdate } from "./source.ts"
 
 /**
  * Source key -> `fingerprint` of the value the model was last given, or `null`
@@ -49,12 +39,11 @@ export function instructionState(history: ModelHistory): InstructionState {
   const state = new Map<string, string | null>()
   const baseline = history.baseline
   if (baseline === null) return state
-  for (const section of parseSections(baseline.instructions)) state.set(section.key, fingerprint(section.value))
+  for (const entry of baseline.sources) state.set(entry.source, entry.fingerprint)
   for (const message of history.messages) {
     // The request builder drops instruction messages older than the baseline, so they tell the model nothing.
     if (message.kind !== "instruction" || message.seq < baseline.seq) continue
-    const section = parseSections(message.text).find((candidate) => candidate.key === message.source)
-    state.set(message.source, section === undefined ? null : fingerprint(section.value))
+    state.set(message.source, message.fingerprint)
   }
   return state
 }
@@ -79,18 +68,20 @@ export function detectInstructionChanges(
   sources: readonly InstructionSource[],
   newMessageId: () => MessageId,
 ): NewEvent<"instruction.appended">[] {
-  const appended = (source: string, text: string) => event("instruction.appended", { messageId: newMessageId(), source, text })
+  const appended = (source: string, text: string, value: string | null) =>
+    event("instruction.appended", { messageId: newMessageId(), source, text, fingerprint: value })
   const changed = sources.flatMap((source) => {
     const known = state.get(source.key) ?? null
-    if (known === fingerprint(source.value)) return []
-    return [appended(source.key, renderUpdate(source, known === null ? "added" : "replaced"))]
+    const current = fingerprint(source.value)
+    if (known === current) return []
+    return [appended(source.key, renderUpdate(source, known === null ? "added" : "replaced"), current)]
   })
   const present = new Set(sources.map((source) => source.key))
   const removed = [...state]
     .filter(([key, known]) => known !== null && agentsPath(key) !== null && !present.has(key))
     .map(([key]) => key)
     .sort()
-    .map((key) => appended(key, renderRemoval(key)))
+    .map((key) => appended(key, renderRemoval(key), null))
   return [...changed, ...removed]
 }
 
@@ -108,7 +99,10 @@ export interface PrepareInput extends BaselineInput {
 
 /**
  * What to append at a step boundary, before the next request is built, so
- * that the request carries current instructions:
+ * that the request carries current instructions. The caller holds the
+ * execution claim: an instruction message is accepted only under a running
+ * execution, so a change noticed while the session is idle is appended once
+ * the next execution has started.
  *
  * - no baseline yet, or a compaction completed since the baseline was set:
  *   one `baseline.set` built from `input` (the only two points where the

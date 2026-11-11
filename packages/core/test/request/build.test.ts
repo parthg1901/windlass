@@ -54,7 +54,7 @@ describe("baseline", () => {
 
   test("tool order is the frozen order, even when that order is not sorted", () => {
     const frozen = [SHELL, READ]
-    const s = new Script().open({ instructions: "x", tools: frozen })
+    const s = new Script().open({ instructions: "x", tools: frozen, sources: [] })
     expect(s.request().tools.map((tool) => tool.name)).toEqual(["shell", "read"])
     expect(sortTools(frozen).map((tool) => tool.name)).toEqual(["read", "shell"])
   })

@@ -19,8 +19,14 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "baseline.set": event("baseline.set", {
     instructions: "You are a coding agent.",
     tools: [{ name: "read", description: "Read a file", inputSchema: { type: "object" } }],
+    sources: [{ source: "date", fingerprint: "f".repeat(64) }],
   }),
-  "instruction.appended": event("instruction.appended", { messageId, source: "date", text: "Today is Wednesday." }),
+  "instruction.appended": event("instruction.appended", {
+    messageId,
+    source: "date",
+    text: "Today is Wednesday.",
+    fingerprint: "a".repeat(64),
+  }),
   "inbox.enqueued": event("inbox.enqueued", { messageId, origin: null, delivery: "steer", content: text("hello") }),
   "inbox.delivery_changed": event("inbox.delivery_changed", { messageId, delivery: "queue" }),
   "inbox.cancelled": event("inbox.cancelled", { messageId }),

@@ -11,6 +11,7 @@
 import { text } from "../../src/content.ts"
 import { type NewEvent, type StepError, type ToolOutcome, HARNESS_ORIGIN, event } from "../../src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
+import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import type { InterruptReason } from "../../src/interrupt.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import type { Exclusion, Message, Projection } from "../../src/message/message.ts"
@@ -113,6 +114,7 @@ export const baseline = () =>
   event("baseline.set", {
     instructions: "You are a coding agent.",
     tools: Object.keys(TOOLS).map((name) => ({ name, description: `The ${name} tool`, inputSchema: { type: "object" } })),
+    sources: [{ source: "date", fingerprint: fingerprintOf("Thursday, 2026-11-12") }],
   })
 /** The user (origin `null`) or a harness component submits input. */
 export const enqueue = (
@@ -122,8 +124,9 @@ export const enqueue = (
   origin: string | null = null,
 ) => event("inbox.enqueued", { messageId: m(id), origin, delivery, content: text(value) })
 export const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
+/** An instruction that changed after the baseline. The fingerprint identifies the value the text carries. */
 export const instruction = (id: string, source: string, value: string) =>
-  event("instruction.appended", { messageId: m(id), source, text: value })
+  event("instruction.appended", { messageId: m(id), source, text: value, fingerprint: fingerprintOf(value) })
 export const synthetic = (id: string, origin: string, value: string) =>
   event("synthetic.appended", { messageId: m(id), origin, content: text(value) })
 
