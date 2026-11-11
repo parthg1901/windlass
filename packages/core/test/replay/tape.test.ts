@@ -16,7 +16,7 @@ describe("tape extraction", () => {
     const tape = tapeOf(severalSteps)
     expect(tape.cwd).toBe("/repo")
     expect(tape.baseline?.instructions).toBe("You are a coding agent.")
-    expect(tape.steps.map((step) => [step.messageId, step.calls.map((call) => `${call.messageId}/${call.callId} ${call.name}`)])).toEqual([
+    expect(tape.steps.map((step) => [String(step.messageId), step.calls.map((call) => `${call.messageId}/${call.callId} ${call.name}`)])).toEqual([
       ["a1", ["a1/call_1 read"]],
       ["a2", ["a2/call_1 write"]],
       ["a3", ["a3/call_1 shell"]],
@@ -60,7 +60,7 @@ describe("tape extraction", () => {
 
   test("a crash after the tools started keeps the complete step, its outcomes and the restart marker", () => {
     const tape = tapeOf(crashWhileSideEffectRuns)
-    expect(tape.steps.map((step) => [step.messageId, step.response, step.end.kind])).toEqual([
+    expect(tape.steps.map((step) => [String(step.messageId), step.response, step.end.kind])).toEqual([
       ["a1", "complete", "crashed"],
       ["a2", "complete", "ended"],
       ["a3", "complete", "ended"],
@@ -89,7 +89,7 @@ describe("tape extraction", () => {
   })
 
   test("inputs that arrive between steps carry the index of the step they precede", () => {
-    expect(tapeOf(steerAtNextBoundary).inputs.flatMap((input) => (input.kind === "message" ? [[input.messageId, input.beforeStep]] : []))).toEqual([
+    expect(tapeOf(steerAtNextBoundary).inputs.flatMap((input) => (input.kind === "message" ? [[String(input.messageId), input.beforeStep]] : []))).toEqual([
       ["u1", 0],
       ["u2", 1],
     ])
@@ -102,7 +102,7 @@ describe("tape extraction", () => {
 
   test("a refusal is an unsupported input at its position", () => {
     const tape = tapeOf(refusedTurn)
-    expect(tape.steps.map((step) => step.messageId)).toEqual(["a1", "a2", "a4"])
+    expect(tape.steps.map((step) => String(step.messageId))).toEqual(["a1", "a2", "a4"])
     expect(tape.inputs.find((input) => input.kind === "unsupported")).toMatchObject({ what: "refusal", beforeStep: 2 })
   })
 
@@ -113,7 +113,7 @@ describe("tape extraction", () => {
     const fromStore = tapeFromStore(store, sessionId)
     const fromEvents = tapeFromEvents(allEvents(severalSteps))
     expect(fromStore.sessionId).toBe(sessionId)
-    expect({ ...fromStore, sessionId: null }).toEqual(fromEvents)
+    expect({ ...fromStore, sessionId: null } as typeof fromEvents).toEqual(fromEvents)
     store.close()
   })
 })

@@ -35,7 +35,7 @@ describe("matcher", () => {
   test("parallel calls may arrive in another order; the reordering is counted", () => {
     const matcher = new TapeMatcher(tapeOf(parallelToolCalls))
     const results = matcher.matchCalls([call("read", '{"path":"b.ts"}'), call("read", '{"path":"a.ts"}')])
-    expect(results.map((result) => (result.kind === "matched" ? result.recorded.callId : result.kind))).toEqual(["call_2", "call_1"])
+    expect(results.map((result) => (result.kind === "matched" ? String(result.recorded.callId) : result.kind))).toEqual(["call_2", "call_1"])
     expect(matcher.endStep({ calls: 2, text: "" }).kind).toBe("continue")
     expect(matcher.matched).toMatchObject({ steps: 1, calls: 2, reordered: 1 })
   })
