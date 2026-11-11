@@ -24,12 +24,14 @@
  * - Every await is followed by a check of the abort signal before anything
  *   that carries the work on is appended.
  */
+import { homedir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../brand.ts"
 import { text } from "../content.ts"
 import { type NewEvent, type SessionSettings, type StoredEvent, HARNESS_ORIGIN, event } from "../event/durable.ts"
 import type { EphemeralEvent } from "../event/ephemeral.ts"
 import { type CallId, type ExecutionId, type MessageId, type RequestId, type SessionId, newId } from "../id.ts"
-import { type DiscoveryInput, defaultConfigDir, discoverSources } from "../instructions/discover.ts"
+import { type DiscoveryInput, discoverSources } from "../instructions/discover.ts"
 import type { InstructionSource } from "../instructions/source.ts"
 import { instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
 import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonOf } from "../interrupt.ts"
@@ -168,8 +170,8 @@ export interface EngineOptions {
   readonly prompt?: string
   /**
    * Reads the instruction sources as they are now. Defaults to
-   * `discoverSources` with the harness config directory, this platform and
-   * the engine's clock.
+   * `discoverSources` with the harness config directory (named from `brand`),
+   * this platform and the engine's clock.
    */
   readonly discover?: (input: Pick<DiscoveryInput, "cwd" | "known">) => InstructionSource[]
   /** Call settings that are the same for every request of this build. */
@@ -318,7 +320,7 @@ export function createEngine(options: EngineOptions): Engine {
     prompt: options.prompt,
     discover:
       options.discover ??
-      ((input) => discoverSources({ ...input, configDir: defaultConfigDir(), platform: process.platform, now: () => new Date(clock.now()) })),
+      ((input) => discoverSources({ ...input, configDir: configDirectory(), platform: process.platform, now: () => new Date(clock.now()) })),
     call: options.call ?? {},
     refreshAuth: options.refreshAuth,
     probe: options.hooks?.probe,
@@ -1212,6 +1214,11 @@ class LiveSession implements EngineSession {
     if (message?.kind !== "assistant") throw new Error(`step ${messageId} has no assistant message`)
     return message
   }
+}
+
+/** The harness config directory, where the user-level AGENTS.md lives: `$XDG_CONFIG_HOME/<brand.directory>`. */
+function configDirectory(): string {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), brand.directory)
 }
 
 /** Waits for `promise`, or for the abort, whichever is first, and leaves no listener behind. */
