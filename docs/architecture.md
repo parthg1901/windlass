@@ -4,8 +4,9 @@ light-harness is a coding-agent harness built around one idea: a session is an a
 and everything else (the messages a UI shows, the request sent to the model) is computed from that log.
 
 This page describes the contracts in `packages/core`: the event schema, the reducer that folds it, and what the
-store, the request builder, the provider and the tools promise each other. The step loop is the next thing to be
-built on them; `docs/step-loop-scenarios.md` is its acceptance target.
+store, the request builder, the provider and the tools promise each other. The step loop (`engine/`) is built on
+them; `docs/step-loop-scenarios.md` is its specification, and `test/engine/conformance.test.ts` drives the loop
+through every scenario in it.
 
 ## Package layout
 
@@ -24,6 +25,9 @@ packages/core/src
   provider/       provider.ts (stream events), error.ts (error taxonomy), usage.ts, openai-responses*.ts
   tool/           tool.ts (Tool, ToolContext, ToolResult), runtime.ts (one call to its terminal outcome), cap.ts
   tools/          the standard tools: read, write, edit, ls, glob, grep, shell
+  engine/         the step loop: engine.ts (sessions, the drain, cancel, retries), recovery.ts (start-up recovery),
+                  state.ts (what the loop reads off the projection), constants.ts (limits and frozen texts),
+                  channel.ts (the event stream), clock.ts
   testing/        fake-provider.ts (scripted provider for tests)
   auth/           ChatGPT sign-in (owned by the model layer)
   sandbox/ config/ verify/ snapshot/   built by their own tracks on top of these contracts
@@ -35,7 +39,7 @@ type. Dependencies point one way: `event` knows nothing about `message`, `store`
 
 Entry points: `@light-harness/core` exports the contracts, the SQLite store, the Responses provider, the request
 builder, instructions, the tool runtime, the standard tools and `brand`. Subpaths: `/store/sqlite`,
-`/provider/openai-responses` (with the wire-level pieces), `/request`, `/instructions`, `/tools`, `/auth/chatgpt`,
+`/provider/openai-responses` (with the wire-level pieces), `/request`, `/instructions`, `/tools`, `/engine`, `/auth/chatgpt`,
 `/testing` (the fake provider) and `/testing/scenarios` (the step-loop scenarios and their vocabulary).
 
 ## Single-owner files
@@ -46,7 +50,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | --- | --- |
 | `event/durable.ts` and `message/reducer.ts` | A new event must be folded by the reducer and rendered by the request builder. The exhaustive `switch` and the `SCOPE` table make a missed case a compile error, but only if both change together. |
 | `request/build.ts` | It alone decides what bytes the model sees. Two people changing it independently is how prefix breaks appear. |
-| The step loop (to be written) | It owns the order of durable writes around a model call and its tools. |
+| `engine/engine.ts` (the step loop) | It owns the order of durable writes around a model call and its tools. |
 
 ## Durable events
 
@@ -166,6 +170,23 @@ is a new version with a decoder for the old one.
 - The context carries the abort signal with its reason. A tool that is aborted returns what it observed.
 - The context carries `putBlob`, which stores bytes in the blob table and returns the reference a tool lists in its
   result's `attachments`. The tool runtime supplies it from its options (`store.putBlob`), so a tool never sees the store.
+
+**Engine** (`engine/`)
+- `createEngine` takes everything it touches as a dependency (store, provider, tools, clock, ID generators, the
+  jitter source, limits, the data directory), so tests inject fakes. A session offers `send` (steer or queue),
+  `start`, `interrupt`, `setSettings`, an event stream and `close`.
+- One step is one model call. Before every step the loop re-reads the projection and decides from stored state alone;
+  it keeps no conversation state in memory. Events that are decided together are appended in one transaction.
+- `tool.called` is durable when the call finishes streaming and `tool.started` right before the tool runs, both
+  before any side effect. An interrupt is durable (`execution.interrupt_requested`) before anything is aborted.
+- One attempt budget per logical step; the numbers and every text the loop freezes into the log are in
+  `engine/constants.ts`.
+- Opening a session that still holds a claim recovers it (`engine/recovery.ts`), then resumes it.
+- The event stream never slows the loop down: durable events are queued in order, and deltas a reader has not taken
+  yet are merged per item.
+- `Engine.close()` is the hook a process calls before it exits: every session is stopped as a shutdown, which leaves
+  its execution suspended and resumable. If the process dies without it, a guard process kills the process group of
+  every running shell command (`tools/shell.ts`).
 
 ## How the loop writes the common sequences
 

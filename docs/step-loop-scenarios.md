@@ -1,7 +1,7 @@
 # Step-loop scenarios
 
-The step loop (not written yet) takes a prompt, calls the model, runs tools, and handles cancel, retries and crash
-recovery. This page is its acceptance target: for each situation, the exact durable events the loop must write, in
+The step loop (`packages/core/src/engine/`) takes a prompt, calls the model, runs tools, and handles cancel, retries
+and crash recovery. This page is its specification: for each situation, the exact durable events the loop must write, in
 order, what a UI and the model should see afterwards, and the wrong moves the reducer rejects at that point. The rules
 come from the blueprint *Agent session core — storage, cancel, retries, context* (vault `Blueprints/`), cited below
 as e.g. "cancel rule 4".
@@ -9,6 +9,11 @@ as e.g. "cancel rule 4".
 The scenarios live in `packages/core/test/scenarios/`, one module per family, and are exported for other packages as
 `@light-harness/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state
 after each phase, and checks, one test per entry, that the reducer rejects every wrong move listed with a phase.
+
+`packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario with the scripted provider
+and compares the events it wrote with the scenario's. Two scenarios differ from what the loop writes, each by one
+stated detail (the `baseline.set` after a compaction in 31, the runtime's wording for malformed arguments in 26); the
+test lists them with the reason.
 
 Every ordering rule on this page is enforced by the reducer, which runs inside the append transaction: an event that
 breaks one is never written. A loop test therefore needs no separate checker. It folds the events its loop wrote; a
