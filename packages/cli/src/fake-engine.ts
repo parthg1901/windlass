@@ -79,6 +79,11 @@ export function scriptTurns(scenario: Scenario): { preamble: NewEvent[]; turns: 
           preamble.push(item)
           return
         }
+        if (!startsTurn) {
+          // What happens while the session is idle (a revert, its undo) is played right after the turn before it.
+          turns.at(-1)!.events.push({ event: item, phaseStart: index === 0 })
+          return
+        }
         current = { prompt: item.type === "inbox.enqueued" ? promptText(item) : null, events: [] }
         turns.push(current)
       }
@@ -140,7 +145,20 @@ interface InboxItem {
 /** The last work event after which the loop may deliver input: a step boundary that is not part of a retry or a wind-down. */
 const DELIVERY_POINTS = new Set(["step.ended", "execution.started", "execution.resumed", "baseline.set", "inbox.delivered", "instruction.appended", "compaction.ended"])
 /** Events about the session or its inbox, written whenever the user acts; they do not move the turn on. */
-const SESSION_SCOPED = new Set(["inbox.enqueued", "inbox.delivery_changed", "inbox.cancelled", "settings.changed", "session.created", "session.renamed", "session.archived", "session.unarchived"])
+const SESSION_SCOPED = new Set([
+  "inbox.enqueued",
+  "inbox.delivery_changed",
+  "inbox.cancelled",
+  "settings.changed",
+  "session.created",
+  "session.renamed",
+  "session.archived",
+  "session.unarchived",
+  // A snapshot is a fact about the working tree; it does not move the turn on either.
+  "snapshot.taken",
+  "snapshot.unavailable",
+  "snapshot.coverage",
+])
 
 export class FakeSession implements Session {
   readonly events: AsyncIterable<EngineEvent>
@@ -316,6 +334,12 @@ export class FakeSession implements Session {
 
   private async play(events: readonly Planned[]): Promise<void> {
     for (const [index, planned] of events.entries()) {
+      // After the turn's terminal event only idle-time events are left. They follow at once and cannot be stopped:
+      // the client is about to see the turn as over, and they belong to what it then shows.
+      if (this.turnEnded) {
+        this.emitDurable(planned.event)
+        continue
+      }
       if (planned.phaseStart && index > 0 && !(await this.wait(700))) return this.cancel()
       if (!(await this.deliverBefore(planned.event))) return this.cancel()
       if (!(await this.replay(planned.event))) return this.cancel()

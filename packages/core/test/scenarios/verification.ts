@@ -1,0 +1,268 @@
+/**
+ * Verification: the session would go idle, and the harness runs the project's
+ * configured checks itself before the execution may end as done. The result
+ * is a fact in the log, not something the model says: `checks.started`, then
+ * `checks.finished` with the evidence, appended together with what the gate
+ * decided from it. A failing run is reported to the model as a harness
+ * message and the turn goes on; it ends as done only with passing checks, or
+ * as unresolved with the reason recorded.
+ *
+ * These sessions have snapshots: the workspace is recorded before input is
+ * delivered, around the tools of a step that can change files and around a
+ * run of checks, which is how the gate knows what changed.
+ */
+import {
+  CHECK,
+  CHECKS_CONFIG,
+  type Scenario,
+  called,
+  checkReport,
+  checksFailed,
+  checksFinished,
+  checksStarted,
+  executionInterrupted,
+  executionResumed,
+  executionSucceeded,
+  interruptMarker,
+  interruptRequested,
+  openingIn,
+  passed,
+  say,
+  settled,
+  snap,
+  stepEnded,
+  stepStarted,
+  succeededWith,
+  toolStartedAs,
+  unresolved,
+  wrote,
+} from "./script.ts"
+
+export const FILES = { "add.ts": "export const add = (a: number, b: number) => a - b\n", "add.test.ts": 'test("add", () => expect(add(1, 2)).toBe(3))\n' }
+const setup = { files: FILES, config: CHECKS_CONFIG }
+export const FIRST_FIX = '{"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\\n"}'
+export const SECOND_FIX = '{"path":"add.ts","content":"export const add = (a: number, b: number) => a + b\\n"}'
+export const ACKNOWLEDGEMENT = { checks: [CHECK.name], reason: "The test needs a fixture that is not in the repository." }
+
+/** The turn up to the model's first "done": it changed add.ts (the workspace goes from w0 to w1) and answered. */
+const firstAttempt = (answer: string) => [
+  ...openingIn(),
+  ...wrote("a1", FIRST_FIX, "Wrote add.ts", "w0", "w1"),
+  stepStarted("a2"),
+  say("a2", answer),
+  stepEnded("a2"),
+]
+/** The checks run on workspace `id` and fail; the model is told. `r` is the report's message ID. */
+const failingRun = (run: number, id: string, report: string) => [
+  snap("checks_start", id),
+  checksStarted(run),
+  snap("checks_end", id),
+  checksFinished(run, "failed", ["add.ts"]),
+  checkReport(report),
+]
+
+export const checksPass: Scenario = {
+  title: "The checks pass",
+  description:
+    "The model changes a file and says it is done. The harness records the workspace, runs the configured check and it passes, so the execution ends as done with the evidence. The check ran because `add.ts` differs between the snapshot the session started with and the one taken now.",
+  provider: "step 1 calls write, step 2 answers; the `test` check exits 0",
+  setup,
+  phases: [
+    {
+      label: "the model changes a file and says it is done",
+      events: firstAttempt("Fixed add."),
+      expect: { execution: { status: "running", crashResumes: 0 }, open: null },
+      rejects: [
+        {
+          event: checksFinished(1, "passed", ["add.ts"]),
+          code: "invalid_transition",
+          why: "a run of checks is started (durably) before it can have results",
+        },
+      ],
+    },
+    {
+      label: "the harness runs the checks",
+      events: [snap("checks_start", "w1"), checksStarted(1)],
+      expect: { open: "checks:1" },
+      rejects: [
+        { event: executionSucceeded(), code: "invalid_transition", why: "the execution cannot end while its checks are running" },
+        { event: stepStarted("a3"), code: "invalid_transition", why: "nothing else happens until the run has its terminal event" },
+      ],
+    },
+    {
+      label: "they pass, and the execution ends as done",
+      events: [snap("checks_end", "w1"), checksFinished(1, "passed", ["add.ts"]), succeededWith(passed(1, ["add.ts"]))],
+      expect: { execution: null, open: null, history: ["u1", "a1", "a2"] },
+    },
+  ],
+}
+
+export const checksFailThenPass: Scenario = {
+  title: "The checks fail, the model fixes the code, and they pass",
+  description:
+    "The model's first fix leaves the test failing. The run and its report are appended together: the report is an ordinary harness message at the end of history, so the next request extends the previous one. The model fixes the code, says it is done again, and the second run passes.",
+  provider: "write, answer; the check exits 1; then write, answer; the check exits 0",
+  setup,
+  phases: [
+    {
+      label: "the first run fails and the model is sent back",
+      events: [...firstAttempt("Fixed add."), ...failingRun(1, "w1", "r1")],
+      expect: {
+        open: null,
+        execution: { status: "running", crashResumes: 0 },
+        ui: [{ id: "u1" }, { id: "a1" }, { id: "a2", text: "Fixed add." }, { id: "r1", origin: "check_report" }],
+        history: ["u1", "a1", "a2", "r1"],
+      },
+      rejects: [
+        { event: executionSucceeded(), code: "invalid_transition", why: "the report is unanswered: the model has to act on it or say that it cannot" },
+      ],
+    },
+    {
+      label: "the model fixes the code and says it is done again",
+      events: [...wrote("a3", SECOND_FIX, "Wrote add.ts", "w1", "w2"), stepStarted("a4"), say("a4", "Now it adds."), stepEnded("a4")],
+    },
+    {
+      label: "the second run passes",
+      events: [snap("checks_start", "w2"), checksStarted(2), snap("checks_end", "w2"), checksFinished(2, "passed", ["add.ts"]), succeededWith(passed(2, ["add.ts"]))],
+      expect: { execution: null, history: ["u1", "a1", "a2", "r1", "a3", "a4"] },
+    },
+  ],
+}
+
+export const checksFailUntilMaxRounds: Scenario = {
+  title: "The checks still fail after the last allowed round",
+  description:
+    "`verify.maxRounds` is 1 here: the model is sent back once. Its second attempt fails too, so the execution ends, as unresolved: the event names the failing check and the reason (`max_rounds`) and carries the evidence. The last report is appended in the same transaction so that whoever continues the session sees it; it is the one harness message that may stay unanswered.",
+  provider: "write, answer; the check exits 1; write, answer; the check exits 1 again",
+  setup: { files: FILES, config: { ...CHECKS_CONFIG, verify: { maxRounds: 1 } } },
+  phases: [
+    {
+      label: "the first run fails and the model is sent back",
+      events: [...firstAttempt("Fixed add."), ...failingRun(1, "w1", "r1")],
+    },
+    {
+      label: "the model tries again",
+      events: [...wrote("a3", SECOND_FIX, "Wrote add.ts", "w1", "w2"), stepStarted("a4"), say("a4", "Now it adds."), stepEnded("a4")],
+    },
+    {
+      label: "the second run fails too: the execution ends unresolved",
+      events: [...failingRun(2, "w2", "r2"), succeededWith(unresolved("max_rounds", 2, ["add.ts"]))],
+      expect: {
+        execution: null,
+        ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "r1" }, { id: "a3" }, { id: "a4" }, { id: "r2", origin: "check_report" }],
+        history: ["u1", "a1", "a2", "r1", "a3", "a4", "r2"],
+      },
+    },
+  ],
+}
+
+export const checksAcknowledged: Scenario = {
+  title: "The model reports that it cannot make the checks pass",
+  description:
+    "After the report the model does not claim success: it calls `report_check_failure`, naming the check and the reason. That call is the acknowledgement; nothing is read out of its prose. The files did not change since the run, so the checks are not run again, and the execution ends as unresolved with what the model said.",
+  provider: "write, answer; the check exits 1; the model calls report_check_failure and then answers",
+  setup,
+  phases: [
+    {
+      label: "the run fails and the model is sent back",
+      events: [...firstAttempt("Fixed add."), ...failingRun(1, "w1", "r1")],
+    },
+    {
+      label: "the model acknowledges the failure with the tool",
+      events: [
+        stepStarted("a3"),
+        called("a3", "call_1", "report_check_failure", JSON.stringify(ACKNOWLEDGEMENT)),
+        toolStartedAs("a3", "call_1", "read"),
+        settled("a3", "call_1", "success", "Recorded as unresolved: test."),
+        stepEnded("a3", "tool_calls"),
+        stepStarted("a4"),
+        say("a4", "The test cannot pass without the fixture."),
+        stepEnded("a4"),
+      ],
+    },
+    {
+      label: "nothing changed since the run, so it stands: the execution ends unresolved",
+      events: [snap("checks_start", "w1"), succeededWith(unresolved("acknowledged", 1, ["add.ts"], ACKNOWLEDGEMENT))],
+      expect: { execution: null, history: ["u1", "a1", "a2", "r1", "a3", "a4"] },
+    },
+  ],
+}
+
+export const noChecksConfigured: Scenario = {
+  title: "No checks are configured",
+  description:
+    "The project has no configuration file. The turn ends as done, and the event says that nothing was verified, so a client can tell this ending from one that rests on passing checks. The workspace is still recorded, so the turn can be undone.",
+  provider: "step 1 calls write, step 2 answers",
+  setup: { files: FILES },
+  phases: [
+    {
+      label: "the turn",
+      events: [...firstAttempt("Fixed add."), executionSucceeded()],
+      expect: { execution: null, history: ["u1", "a1", "a2"] },
+    },
+  ],
+}
+
+export const cancelDuringChecks: Scenario = {
+  title: "Cancel while the checks run",
+  description:
+    "The user cancels while the check command is running. The request is durable first; the command is stopped like a tool; the run is closed as interrupted, which says nothing about the code; the model is told and the claim is released. No result is recorded and nothing is reported.",
+  provider: "write, answer; the check hangs until the user cancels",
+  setup,
+  phases: [
+    {
+      label: "the checks are running",
+      events: [...firstAttempt("Fixed add."), snap("checks_start", "w1"), checksStarted(1)],
+      expect: { open: "checks:1" },
+    },
+    {
+      label: "the user cancels",
+      events: [interruptRequested("user")],
+      rejects: [
+        { event: checksFinished(1, "passed", ["add.ts"]), code: "invalid_transition", why: "once an interrupt is requested the run can only be closed as interrupted" },
+        { event: executionInterrupted("user"), code: "invalid_transition", why: "the run of checks is closed before the execution is" },
+      ],
+    },
+    {
+      label: "the run is closed and the execution released",
+      events: [checksFailed(1, { kind: "interrupted", reason: "user" }), interruptMarker("s1", "user"), executionInterrupted("user")],
+      expect: { execution: null, open: null, history: ["u1", "a1", "a2", "s1"] },
+    },
+  ],
+}
+
+export const crashDuringChecks: Scenario = {
+  title: "The process dies while the checks run",
+  description:
+    "`checks.started` was durable and the process died before any result. Recovery closes the run as crashed and resumes the execution (a crash counts toward the resume cap, so a check that kills the harness cannot be run for ever). The loop finds the model's answer still standing and no result for it, runs the checks again, and ends the execution on what they show.",
+  provider: "write, answer; the process is killed while the check runs; after restart the check exits 0 and the model is not called",
+  setup,
+  phases: [
+    {
+      label: "the process dies while the checks run",
+      events: [...firstAttempt("Fixed add."), snap("checks_start", "w1"), checksStarted(1)],
+      expect: { execution: { status: "running", crashResumes: 0 }, open: "checks:1" },
+      rejects: [{ event: executionResumed(), code: "invalid_transition", why: "recovery closes the run before it records the resume" }],
+    },
+    {
+      label: "at next start-up",
+      events: [checksFailed(1, { kind: "crashed" }), executionResumed()],
+      expect: { execution: { status: "running", crashResumes: 1 }, open: null },
+    },
+    {
+      label: "the loop runs the checks again",
+      events: [snap("checks_start", "w1"), checksStarted(1), snap("checks_end", "w1"), checksFinished(1, "passed", ["add.ts"]), succeededWith(passed(1, ["add.ts"]))],
+      expect: { execution: null, history: ["u1", "a1", "a2"] },
+    },
+  ],
+}
+
+export const verificationScenarios = [
+  checksPass,
+  checksFailThenPass,
+  checksFailUntilMaxRounds,
+  checksAcknowledged,
+  noChecksConfigured,
+  cancelDuringChecks,
+  crashDuringChecks,
+]

@@ -39,7 +39,9 @@ import {
   m,
   usage,
 } from "../scenarios/script.ts"
-import { Harness, ScriptedTools, comparable, failed, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
+import { EDIT } from "../scenarios/revert.ts"
+import { ACKNOWLEDGEMENT, FIRST_FIX, SECOND_FIX } from "../scenarios/verification.ts"
+import { FakeWorkspace, Harness, ScriptedTools, comparable, failed, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
 
@@ -61,6 +63,13 @@ async function stopped(h: Harness) {
 }
 
 type Play = (h: Harness, say: readonly string[]) => Promise<void>
+
+/** A write call as the model makes it, and the tool that carries it out on the scenario's workspace. */
+const write = (input: string) => [call("call_1", "write", input), U]
+const writes = (h: Harness, output: string) => (input: Record<string, unknown>) => {
+  h.workspace!.files.set(String(input.path), String(input.content))
+  return output
+}
 
 /** How each scenario is made to happen. Keyed by the scenario's title. */
 const PLAYS: Record<string, Play> = {
@@ -594,6 +603,109 @@ const PLAYS: Record<string, Play> = {
     await h.engine.close()
     h.restart("claim")
   },
+
+  // ---------------------------------------------------------------- verification
+
+  "The checks pass": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."))
+    h.tools.on("write", writes(h, "Wrote add.ts"))
+    h.checks.on("test", "passed")
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.checks.ran).toEqual(["test"])
+  },
+
+  "The checks fail, the model fixes the code, and they pass": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."), write(SECOND_FIX), answer("Now it adds."))
+    h.tools.on("write", writes(h, "Wrote add.ts"), writes(h, "Wrote add.ts"))
+    h.checks.on("test", "failed", "passed")
+    h.create().send(say[0]!)
+    await h.settled()
+    // The report is appended to the conversation: the request after it is the one before it plus new items.
+    expect(h.provider.prefixBreaks()).toEqual([])
+    expect(JSON.stringify(h.provider.requests[2]!.input.at(-1))).toContain("Checks run by the harness after your changes: 1 failed.")
+  },
+
+  "The checks still fail after the last allowed round": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."), write(SECOND_FIX), answer("Now it adds."))
+    h.tools.on("write", writes(h, "Wrote add.ts"), writes(h, "Wrote add.ts"))
+    h.checks.on("test", "failed", "failed")
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.provider.calls).toHaveLength(4)
+  },
+
+  "The model reports that it cannot make the checks pass": async (h, say) => {
+    h.provider.enqueue(
+      write(FIRST_FIX),
+      answer("Fixed add."),
+      [call("call_1", "report_check_failure", ACKNOWLEDGEMENT), U],
+      answer("The test cannot pass without the fixture."),
+    )
+    h.tools.on("write", writes(h, "Wrote add.ts"))
+    h.checks.on("test", "failed")
+    h.create().send(say[0]!)
+    await h.settled()
+    // The tool is in the frozen list because verification was on when the baseline was set.
+    expect(h.provider.requests[0]!.tools.map((tool) => tool.name)).toContain("report_check_failure")
+    expect(h.checks.ran).toEqual(["test"])
+  },
+
+  "No checks are configured": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."))
+    h.tools.on("write", writes(h, "Wrote add.ts"))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.provider.requests[0]!.tools.map((tool) => tool.name)).not.toContain("report_check_failure")
+  },
+
+  "Cancel while the checks run": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."))
+    h.tools.on("write", writes(h, "Wrote add.ts"))
+    h.checks.on("test", async (_check, options) => {
+      await untilAbort(options.signal)
+      return "interrupted" as const
+    })
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "checks.started")
+    h.session.interrupt()
+    await h.settled()
+  },
+
+  "The process dies while the checks run": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."))
+    h.tools.on("write", writes(h, "Wrote add.ts"))
+    // Dead the moment the run's start is durable: the command itself never runs.
+    h.dieAt("checks.started")
+    h.create().send(say[0]!)
+    await h.settled()
+    h.checks.on("test", "passed")
+    h.restart()
+    await h.settled()
+    expect(h.provider.calls).toHaveLength(2)
+  },
+
+  // ---------------------------------------------------------------- revert
+
+  "Revert of the last turn": async (h, say) => {
+    h.provider.enqueue(write(EDIT), answer("Added the line."))
+    h.tools.on("write", writes(h, "Wrote notes.md"))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.workspace!.files.get("notes.md")).toContain("reviewed")
+    expect(await h.session.revert()).toMatchObject({ kind: "reverted", plan: { changes: [{ path: "notes.md", status: "modified", handEdited: false }] } })
+    expect(Object.fromEntries(h.workspace!.files)).toEqual({ "notes.md": "# Notes\n" })
+  },
+
+  "Revert, then undo the revert": async (h, say) => {
+    h.provider.enqueue(write(EDIT), answer("Added the line."))
+    h.tools.on("write", writes(h, "Wrote notes.md"))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(await h.session.revert()).toMatchObject({ kind: "reverted" })
+    expect(await h.session.undoRevert()).toMatchObject({ kind: "reverted", plan: { messages: 3 } })
+    expect(h.workspace!.files.get("notes.md")).toContain("reviewed")
+  },
 }
 
 /**
@@ -633,7 +745,13 @@ describe("the loop writes each scenario's events", () => {
       const tools = scenario.title.includes("the next build no longer has")
         ? new ScriptedTools({ read: "read", shell: "exec", write: "write", fetch: "network" })
         : new ScriptedTools()
-      const h = new Harness({ tools, limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET } })
+      const setup = scenario.setup
+      const h = new Harness({
+        tools,
+        limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET },
+        ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
+        ...(setup?.config === undefined ? {} : { config: setup.config }),
+      })
       try {
         await play(h, prompts(scenario))
         const wanted = (await DEVIATIONS[scenario.title]?.expected(allEvents(scenario))) ?? allEvents(scenario)
@@ -641,6 +759,7 @@ describe("the loop writes each scenario's events", () => {
         // Nothing scripted was left over, so the situation happened the way the scenario describes it.
         expect(h.provider.remaining).toBe(0)
         expect(h.tools.unused).toBe(0)
+        expect(h.checks.unused).toBe(0)
         // Only a simulated kill may make the engine report anything.
         expect(h.diagnostics.filter((diagnostic) => !/killed|Database has closed/.test(diagnostic.message))).toEqual([])
         h.verify()
@@ -652,7 +771,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(45)
+    expect(scenarios).toHaveLength(54)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

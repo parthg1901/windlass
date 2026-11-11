@@ -12,6 +12,7 @@ import { expect } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { type CheckConfig, type Config, type ConfigFile, resolveConfig } from "../../src/config/schema.ts"
 import type { NewEvent, SessionSettings, StoredEvent } from "../../src/event/durable.ts"
 import type { EngineEvent } from "../../src/engine/channel.ts"
 import type { Clock } from "../../src/engine/clock.ts"
@@ -24,13 +25,19 @@ import {
   type ResumeMode,
   createEngine,
 } from "../../src/engine/engine.ts"
+import type { WorkspaceSnapshots } from "../../src/engine/workspace.ts"
 import type { ExecutionId, MessageId, RequestId, SessionId } from "../../src/id.ts"
 import { type InstructionSource, dateSource } from "../../src/instructions/source.ts"
+import { interruptReasonOf } from "../../src/interrupt.ts"
 import { encodeRequest } from "../../src/provider/openai-responses.ts"
 import { buildRequest } from "../../src/request/build.ts"
+import type { ChangeStatus, FileChange } from "../../src/snapshot/diff.ts"
+import type { SkippedFile, SnapshotId, SnapshotUnavailable } from "../../src/snapshot/index.ts"
 import { type SqliteStore, openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider } from "../../src/testing/fake-provider.ts"
 import type { AnyTool, ToolContext, ToolEffect, ToolResult } from "../../src/tool/tool.ts"
+import type { VerificationEvidence } from "../../src/verify/evidence.ts"
+import type { CheckResult, CheckStatus, RunCheckOptions } from "../../src/verify/run.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 
 // ---------------------------------------------------------------- clock
@@ -149,6 +156,141 @@ export class ScriptedTools {
   }
 }
 
+// ---------------------------------------------------------------- workspace
+
+/**
+ * A working tree that exists only in memory, with the snapshot operations
+ * the loop uses. A snapshot ID is the hash of the tree, as with the real
+ * module: equal contents, equal IDs. A test changes `files` where a tool or
+ * a person would change a file.
+ */
+export class FakeWorkspace {
+  /** The files, by path relative to the workspace. */
+  readonly files = new Map<string, string>()
+  /** What the next snapshots report as left out. */
+  skipped: SkippedFile[] = []
+  nestedRepositories: string[] = []
+  /** Set to make `openSnapshots` report that there are none. */
+  unavailable: SnapshotUnavailable | null = null
+  /** Set to make every snapshot fail with this message. */
+  broken: string | null = null
+  /** Every operation asked for, in order. */
+  readonly log: string[] = []
+  private readonly trees = new Map<string, ReadonlyMap<string, string>>()
+
+  constructor(files: Record<string, string> = {}) {
+    for (const [path, content] of Object.entries(files)) this.files.set(path, content)
+  }
+
+  readonly open = async (): Promise<WorkspaceSnapshots | SnapshotUnavailable> => this.unavailable ?? this.store
+
+  /** The contents of snapshot `id`. */
+  tree(id: string): Record<string, string> {
+    return Object.fromEntries(this.trees.get(id) ?? [])
+  }
+
+  private capture(): SnapshotId {
+    if (this.broken !== null) throw new Error(this.broken)
+    const entries = [...this.files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    const id = new Bun.CryptoHasher("sha1").update(JSON.stringify(entries)).digest("hex")
+    this.trees.set(id, new Map(entries))
+    return id as SnapshotId
+  }
+
+  private diff(from: string, to: string): FileChange[] {
+    const before = this.trees.get(from)
+    const after = this.trees.get(to)
+    if (before === undefined || after === undefined) throw new Error(`not a snapshot in this workspace: ${before === undefined ? from : to}`)
+    const state = (content: string | undefined) => (content === undefined ? null : { kind: "file" as const, blob: content })
+    return [...new Set([...before.keys(), ...after.keys()])]
+      .sort()
+      .filter((path) => before.get(path) !== after.get(path))
+      .map((path) => {
+        const status: ChangeStatus = !before.has(path) ? "added" : !after.has(path) ? "deleted" : "modified"
+        return { path, status, before: state(before.get(path)), after: state(after.get(path)) }
+      })
+  }
+
+  readonly store: WorkspaceSnapshots = {
+    workspace: "/repo",
+    take: async (options) => {
+      this.log.push("take")
+      return { id: this.capture(), session: options.session, takenAt: 0, skipped: this.skipped, nestedRepositories: this.nestedRepositories, durationMs: 0 }
+    },
+    changedFiles: async (from, to) => this.diff(from, to).map((change) => change.path),
+    restore: async (target, options) => {
+      this.log.push(options.dryRun ? "restore (dry run)" : `restore${options.paths === undefined ? "" : ` ${options.paths.join(",")}`}`)
+      const before = this.capture()
+      const only = options.paths === undefined ? null : new Set(options.paths)
+      const changes = this.diff(before, target).filter((change) => only === null || only.has(change.path))
+      if (!options.dryRun)
+        for (const change of changes) {
+          if (change.after === null) this.files.delete(change.path)
+          else this.files.set(change.path, change.after.blob)
+        }
+      return { kind: options.dryRun ? "dry_run" : "restored", before, changes, kept: [] }
+    },
+  }
+}
+
+// ---------------------------------------------------------------- checks
+
+export type CheckBehaviour = CheckStatus | ((check: CheckConfig, options: RunCheckOptions) => CheckStatus | Promise<CheckStatus>)
+
+/** The result of a check as the real runner shapes it, with `output` as everything the command printed. */
+export function checkResult(check: Pick<CheckConfig, "name" | "command" | "timeoutSeconds">, status: CheckStatus, output = ""): CheckResult {
+  const bytes = new TextEncoder().encode(output)
+  const lines = output === "" ? 0 : output.split("\n").length - (output.endsWith("\n") ? 1 : 0)
+  return {
+    name: check.name,
+    command: check.command,
+    timeoutSeconds: check.timeoutSeconds,
+    status,
+    exitCode: status === "passed" ? 0 : status === "failed" ? 1 : null,
+    signal: null,
+    interruptedBy: null,
+    startError: null,
+    durationMs: 0,
+    output: { totalBytes: bytes.length, totalLines: lines, path: null, savedBytes: bytes.length, source: { head: bytes, tail: bytes, tailAtLineStart: true, totalBytes: bytes.length, totalLines: lines } },
+  }
+}
+
+/** The text a scripted check prints when it fails. */
+export const CHECK_OUTPUT = "1 fail\n"
+
+/** Scripted checks: each run of a check takes the next behaviour queued for its name. A run stops at an interrupt, as the real one does. */
+export class ScriptedChecks {
+  private readonly queues = new Map<string, CheckBehaviour[]>()
+  /** Every check that ran, in order. */
+  readonly ran: string[] = []
+
+  on(name: string, ...behaviours: CheckBehaviour[]): this {
+    this.queues.set(name, [...(this.queues.get(name) ?? []), ...behaviours])
+    return this
+  }
+
+  get unused(): number {
+    return [...this.queues.values()].reduce((sum, queue) => sum + queue.length, 0)
+  }
+
+  readonly run = async (checks: readonly CheckConfig[], options: RunCheckOptions): Promise<CheckResult[]> => {
+    const results: CheckResult[] = []
+    for (const check of checks) {
+      const stopped = () => ({ ...checkResult(check, "interrupted"), interruptedBy: interruptReasonOf(options.signal) })
+      if (options.signal.aborted) {
+        results.push(stopped())
+        continue
+      }
+      this.ran.push(check.name)
+      const behaviour = this.queues.get(check.name)?.shift()
+      if (behaviour === undefined) throw new Error(`the test scripted no behaviour for this run of check ${check.name}`)
+      const status = typeof behaviour === "string" ? behaviour : await behaviour(check, options)
+      results.push(options.signal.aborted ? stopped() : checkResult(check, status, status === "passed" ? "" : CHECK_OUTPUT))
+    }
+    return results
+  }
+}
+
 // ---------------------------------------------------------------- harness
 
 /** Thrown inside a probe to stop the engine's current path the way a kill would. */
@@ -174,12 +316,20 @@ export interface HarnessOptions {
   readonly refreshAuth?: () => Promise<boolean>
   /** Whether a prefix violation throws. Defaults to `true`, as every test wants; `false` is what a user's session does. */
   readonly strict?: boolean
+  /** A workspace the engine snapshots. Without one snapshots are off, as in every scenario that is not about them. */
+  readonly workspace?: FakeWorkspace
+  /** The configuration file of the project. Without one there is no configuration and nothing is verified. */
+  readonly config?: ConfigFile
 }
 
 export class Harness {
   readonly provider = new FakeProvider()
   readonly clock = new ManualClock()
   readonly tools: ScriptedTools
+  readonly checks = new ScriptedChecks()
+  readonly workspace: FakeWorkspace | null
+  /** The configuration as it is on disk now. An execution reads it when it starts. */
+  config: Config | null
   /** The date the instruction sources report: `[year, month, day]`. */
   date: [number, number, number] = [2026, 11, 12]
   /** Everything the engines reported. A test that expects none asserts on it. */
@@ -200,6 +350,8 @@ export class Harness {
 
   constructor(private readonly options: HarnessOptions = {}) {
     this.tools = options.tools ?? new ScriptedTools()
+    this.workspace = options.workspace ?? null
+    this.config = options.config === undefined ? null : resolveConfig(options.config)
     this.toolNames = Object.keys(this.tools.effects)
     this.directory = mkdtempSync(join(tmpdir(), "lh-engine-"))
     directories.push(this.directory)
@@ -220,7 +372,11 @@ export class Harness {
       dataDir: this.directory,
       clock: this.clock,
       random: this.options.random ?? (() => 0),
-      limits: this.options.limits ?? {},
+      // The manual clock's sleeps take no time, so a wall-clock limit would end every model call at once.
+      limits: { modelCallTimeoutMs: 0, ...this.options.limits },
+      snapshots: this.workspace === null ? null : this.workspace.open,
+      loadConfig: this.options.config === undefined ? null : async () => ({ config: this.config ?? resolveConfig({}), projectDir: "/repo" }),
+      runChecks: this.checks.run,
       prompt: "You are a coding agent.",
       discover: (): InstructionSource[] => [dateSource(...this.date)],
       ids: {
@@ -387,11 +543,16 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  *   engine's tool list). `sources` is compared.
  * - `instruction.appended`: `text` and `fingerprint` (the instructions module
  *   words the update and fingerprints the value). `source` is compared.
+ * - snapshot IDs: a scenario names workspace states (`w0`, `w1`), the loop
+ *   records tree hashes. Both are replaced by the order of first appearance,
+ *   so "the same state as before" and "a new state" are compared.
+ * - check evidence: `afterSeq`, and per check `durationMs`, `fingerprint`
+ *   and `outputPath` (see `evidence` in the scenario vocabulary).
  */
 export function comparable(events: readonly NewEvent[]): Plain[] {
   const labels = new Map<string, string>()
-  const counts = { m: 0, e: 0 }
-  const label = (kind: "m" | "e", id: string) => {
+  const counts = { m: 0, e: 0, w: 0 }
+  const label = (kind: "m" | "e" | "w", id: string) => {
     const known = labels.get(`${kind}:${id}`)
     if (known !== undefined) return known
     const next = `${kind}${++counts[kind]}`
@@ -402,8 +563,22 @@ export function comparable(events: readonly NewEvent[]): Plain[] {
     const data: Record<string, unknown> = { ...(item.data as Record<string, unknown>) }
     if (typeof data.messageId === "string") data.messageId = label("m", data.messageId)
     if (typeof data.executionId === "string") data.executionId = label("e", data.executionId)
+    if (item.type === "snapshot.taken") data.id = label("w", item.data.id)
+    if (item.type === "revert.started" || item.type === "revert.undo_started") Object.assign(data, { target: label("w", item.data.target), before: label("w", item.data.before) })
+    if ((item.type === "history.reverted" || item.type === "history.restored") && item.data.restore !== null) {
+      const record = item.data.restore
+      data.restore = { ...record, target: label("w", record.target), before: label("w", record.before), after: record.after === null ? null : label("w", record.after) }
+    }
+    if (item.type === "checks.finished") data.evidence = plainEvidence(item.data.evidence)
+    if (item.type === "execution.succeeded" && "evidence" in item.data.verification)
+      data.verification = { ...item.data.verification, evidence: plainEvidence(item.data.verification.evidence) }
     if (item.type === "baseline.set") return { type: item.type, data: { sources: data.sources } }
     if (item.type === "instruction.appended") return { type: item.type, data: { messageId: data.messageId, source: data.source } }
     return { type: item.type, data }
   })
+}
+
+/** Check evidence without the values a scenario writes as stand-ins. */
+function plainEvidence(evidence: VerificationEvidence) {
+  return { ...evidence, afterSeq: 0, checks: evidence.checks.map((check) => ({ ...check, durationMs: 0, fingerprint: "", outputPath: null })) }
 }

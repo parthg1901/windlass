@@ -45,6 +45,8 @@ const engine = createEngine({
   tools: createStandardTools({ spillDir: join(workspace, ".spill") }),
   dataDir: workspace,
   discover: () => [],
+  snapshots: null,
+  loadConfig: null,
   log: () => {},
   hooks: {
     probe: (at: ProbePoint) => {

@@ -4,9 +4,13 @@
  * state of its own, so after a restart it decides exactly what the process
  * before it would have decided.
  */
+import type { Content } from "../content.ts"
 import { type NewEvent, HARNESS_ORIGIN, event } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { type AssistantMessage, type Message, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
+import type { ToolEffect } from "../tool/tool.ts"
+import { safeDecode } from "../validate.ts"
+import { ACKNOWLEDGE_TOOL_NAME, type Acknowledgement, acknowledgement } from "../verify/acknowledge.ts"
 import { TOOL_TEXT } from "./constants.ts"
 
 /** The held execution claim. The loop only runs while there is one. */
@@ -169,4 +173,72 @@ export function settledBy(messageId: MessageId, part: ToolCallPart, texts: Orpha
 /** A harness message of one of the loop's origins. */
 export function note(messageId: MessageId, origin: (typeof HARNESS_ORIGIN)[keyof typeof HARNESS_ORIGIN], value: string) {
   return event("synthetic.appended", { messageId, origin, content: [{ type: "text", text: value }] })
+}
+
+// ---------------------------------------------------------------- the verification gate
+
+/** Where the current turn begins in the log: the `seq` of its input, or of the claim when nothing was delivered under it. */
+export function turnStartSeq(projection: Projection): number {
+  return currentTurn(projection)[0]?.seq ?? claimOf(projection).startedSeq
+}
+
+/** The check reports the model was sent in the current turn, oldest first. */
+export function reportsThisTurn(projection: Projection): readonly { readonly seq: number; readonly content: Content }[] {
+  return currentTurn(projection).flatMap((message) =>
+    message.kind === "synthetic" && message.delivery === null && message.origin === HARNESS_ORIGIN.checkReport
+      ? [{ seq: message.seq, content: message.content }]
+      : [],
+  )
+}
+
+/**
+ * What the model said with the acknowledgement tool after the latest check
+ * report of this turn: the input of its latest call that ran, or `null`. A
+ * call made before any report acknowledges nothing, and neither does one
+ * whose arguments were refused.
+ */
+export function acknowledgementThisTurn(projection: Projection): Acknowledgement | null {
+  const report = reportsThisTurn(projection).at(-1)
+  if (report === undefined) return null
+  const calls = currentTurn(projection).flatMap((message) =>
+    message.kind === "assistant" && message.seq > report.seq
+      ? message.parts.filter((part): part is ToolCallPart => part.type === "tool_call" && part.name === ACKNOWLEDGE_TOOL_NAME)
+      : [],
+  )
+  const said = calls.findLast((part) => part.state.status === "settled" && part.state.outcome === "success")
+  if (said === undefined) return null
+  const decoded = safeDecode(acknowledgement, parse(said.input))
+  return decoded.ok ? decoded.value : null
+}
+
+/**
+ * Whether a call that can change files ran after `seq`, going by the effect
+ * class each tool has in this build. The stand-in for a snapshot diff in a
+ * session that has no snapshots: it cannot say which files, only that some may have changed.
+ */
+export function ranSideEffectsSince(projection: Projection, seq: number, effects: ReadonlyMap<string, ToolEffect>): boolean {
+  return projection.messages.some(
+    (message) =>
+      message.kind === "assistant" &&
+      message.seq > seq &&
+      message.parts.some((part) => {
+        if (part.type !== "tool_call" || part.state.status === "pending") return false
+        if (part.state.status === "running") return hasSideEffect(part.state.effect)
+        const effect = effects.get(part.name)
+        return part.state.outcome !== "not_started" && effect !== undefined && hasSideEffect(effect)
+      }),
+  )
+}
+
+/** Whether a response says nothing: no tool call and no text but whitespace. Reasoning alone is not an answer. */
+export function saysNothing(message: AssistantMessage): boolean {
+  return message.parts.every((part) => part.type === "reasoning" || (part.type === "text" && part.text.trim() === ""))
+}
+
+function parse(input: string): unknown {
+  try {
+    return JSON.parse(input)
+  } catch {
+    return null
+  }
 }

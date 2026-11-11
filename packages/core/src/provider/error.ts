@@ -66,8 +66,10 @@ const detail = {
  * - `connection`: the request could not be sent or the connection broke (DNS, refused, reset).
  * - `stalled`: the connection stayed open but nothing arrived within the idle timeout,
  *   before the response started or in the middle of the stream.
+ * - `timeout`: the call was still running at the harness's wall-clock limit for one
+ *   model call, and was stopped. Set by the step loop, never by a provider.
  */
-export const transportReason = oneOf(["connection", "stalled"])
+export const transportReason = oneOf(["connection", "stalled", "timeout"])
 export type TransportReason = Infer<typeof transportReason>
 
 function kind<K extends ProviderErrorKind>(name: K) {

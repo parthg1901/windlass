@@ -10,8 +10,10 @@
  * 2. The claim is `running` and nothing was requested. The process died.
  *    Settle, close the open step as crashed, write the marker, then
  *    `execution.resumed` (which counts the crash), or `execution.failed` once
- *    the cap is reached. With nothing open and nothing left to answer the
- *    execution had finished in all but name, and is released.
+ *    the cap is reached. An open run of checks is closed as crashed too.
+ *    Recovery never writes `execution.succeeded`: even with nothing open and
+ *    nothing left to answer, ending as done is the verification gate's
+ *    decision, so the execution is resumed and the loop makes it.
  * 3. The claim is `suspended`. Nothing to repair; whoever resumes it writes
  *    `execution.resumed`, which is not counted.
  *
@@ -22,7 +24,7 @@ import { type NewEvent, type StepError, HARNESS_ORIGIN, event } from "../event/d
 import type { MessageId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import { FAILURE_TEXT, NOTE_TEXT } from "./constants.ts"
-import { CRASHED, note, openStep, owesMarker, settleUnsettled, wouldGoIdle } from "./state.ts"
+import { CRASHED, note, openStep, owesMarker, settleUnsettled } from "./state.ts"
 
 export interface Recovery {
   /** What to append, in one transaction. Empty when there is nothing to repair. */
@@ -51,6 +53,8 @@ export function recover(
   }
   const open = projection.session.open
   if (open?.kind === "compaction") events.push(event("compaction.failed", { messageId: open.messageId, error }))
+  // A run of checks the process died in produced nothing: the gate runs them again when the execution is taken up.
+  if (open?.kind === "checks") events.push(event("checks.failed", { run: open.run, error }))
   const marker = (text: string) => note(options.newMessageId(), HARNESS_ORIGIN.interrupt, text)
 
   if (reason !== null) {
@@ -68,10 +72,8 @@ export function recover(
     events.push(event("execution.failed", { executionId: execution.id, message: FAILURE_TEXT.crashCap(options.crashResumeCap) }))
     return { events, claim: "none" }
   }
-  if (events.length === 0 && wouldGoIdle(projection) && projection.inbox.length === 0) {
-    // The answer was durable and nothing waits: only the release was missing.
-    return { events: [event("execution.succeeded", { executionId: execution.id, verification: { status: "not_configured" } })], claim: "none" }
-  }
+  // Also when the answer was durable and nothing waits: whether the execution may end as done is the gate's
+  // decision, which needs the configuration and may have to run checks. Recovery never ends an execution as done.
   events.push(event("execution.resumed", { executionId: execution.id }))
   return { events, claim: "running" }
 }

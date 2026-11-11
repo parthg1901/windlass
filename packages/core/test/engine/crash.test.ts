@@ -69,6 +69,8 @@ async function recoverAndContinue(where: { database: string; workspace: string }
       tools: createStandardTools({ spillDir: join(where.workspace, ".spill") }),
       dataDir: where.workspace,
       discover: () => [],
+      snapshots: null,
+      loadConfig: null,
       log: (line) => diagnostics.push(line),
       strict: true,
     })
@@ -167,7 +169,7 @@ const CASES: readonly Case[] = [
     settles: ["call_1 error", "call_2 not_started"],
     ends: "execution.interrupted",
   },
-  { point: "execution.ending", nth: 1, what: "the answer is durable and the claim is not released", recovery: ["execution.succeeded"], ends: "execution.succeeded" },
+  { point: "execution.ending", nth: 1, what: "the answer is durable and the claim is not released", recovery: ["execution.resumed"], ends: "execution.succeeded" },
 ]
 
 describe("a process killed with SIGKILL is recovered by the next one", () => {

@@ -331,8 +331,8 @@ export const crashBetweenSteps: Scenario = {
 export const crashBeforeRelease: Scenario = {
   title: "The process dies after the answer, before the claim was released",
   description:
-    "The last step ended with `stop` and nothing waits in the inbox, so the execution was finished in all but name. Recovery releases the claim directly; there is no work to resume.",
-  provider: "one step answers with stop; the process is killed before the claim is released",
+    "The last step ended with `stop` and nothing waits in the inbox, so the model is finished. Whether the execution may end as done is still the verification gate's decision, which recovery cannot make (it would have to run checks). So recovery resumes the execution like any other, and the loop, finding nothing left to do, goes through the gate and releases the claim. Here nothing is configured, so nothing is verified.",
+  provider: "one step answers with stop; the process is killed before the claim is released; after restart the model is not called",
   phases: [
     {
       label: "the answer is durable, the claim is not released",
@@ -340,7 +340,12 @@ export const crashBeforeRelease: Scenario = {
       expect: crashedClaim,
     },
     {
-      label: "at next start-up",
+      label: "at next start-up: the execution is resumed, not ended",
+      events: [executionResumed()],
+      expect: { execution: { status: "running", crashResumes: 1 }, open: null },
+    },
+    {
+      label: "the loop finds nothing left to do and ends it through the gate",
       events: [executionSucceeded()],
       expect: { history: ["u1", "a1"], execution: null },
     },

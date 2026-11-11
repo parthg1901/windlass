@@ -8,8 +8,18 @@
  *
  * Nothing here runs a loop. These are the target the loop is built against.
  */
+import type { ConfigFile } from "../../src/config/schema.ts"
 import { text } from "../../src/content.ts"
-import { type NewEvent, type StepError, type ToolOutcome, HARNESS_ORIGIN, event } from "../../src/event/durable.ts"
+import {
+  type NewEvent,
+  type RestoreRecord,
+  type SnapshotPoint,
+  type StepError,
+  type ToolOutcome,
+  type VerificationOutcome,
+  HARNESS_ORIGIN,
+  event,
+} from "../../src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
 import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import type { InterruptReason } from "../../src/interrupt.ts"
@@ -18,6 +28,11 @@ import type { Exclusion, Message, Projection } from "../../src/message/message.t
 import { type ReduceErrorCode, reduce } from "../../src/message/reducer.ts"
 import { type ProviderError, type ProviderErrorKind, makeProviderError } from "../../src/provider/error.ts"
 import type { ToolEffect } from "../../src/tool/tool.ts"
+import type { Acknowledgement } from "../../src/verify/acknowledge.ts"
+import type { VerificationEvidence } from "../../src/verify/evidence.ts"
+import { renderReport } from "../../src/verify/report.ts"
+import type { CheckResult } from "../../src/verify/run.ts"
+import type { CheckStatus } from "../../src/verify/status.ts"
 
 // ---------------------------------------------------------------- types
 
@@ -27,7 +42,20 @@ export interface Scenario {
   readonly description: string
   /** What the provider (and the tools, and the user) do to trigger it. */
   readonly provider: string
+  /**
+   * What the session runs in, for the scenarios about the workspace and the
+   * checks. Without it there are no snapshots and no configuration, and the
+   * log holds none of their events.
+   */
+  readonly setup?: Setup
   readonly phases: readonly Phase[]
+}
+
+export interface Setup {
+  /** The files of the workspace when the session starts, by path. Snapshots are on. */
+  readonly files: Readonly<Record<string, string>>
+  /** The project's configuration file. Absent: no configuration. */
+  readonly config?: ConfigFile
 }
 
 /** A run of events the loop writes without anything else happening in between. */
@@ -62,6 +90,8 @@ export interface Expect {
   readonly open?: string | null
   /** Inbox items still waiting, by message ID. */
   readonly inbox?: readonly string[]
+  /** How many reverts can still be undone. */
+  readonly undoable?: number
 }
 
 /** A message reduced to what a UI shows. */
@@ -372,6 +402,33 @@ export function describeEvent(item: NewEvent): string {
       return `tool.settled ${d.messageId}/${d.callId} ${d.outcome} ${quote(d.output)}`
     case "execution.failed":
       return `execution.failed ${d.executionId} ${quote(d.message)}`
+    case "execution.succeeded": {
+      const outcome = item.data.verification
+      // Nothing verified is the plain case and is not spelled out with every scenario.
+      if (outcome.status === "not_configured") return `execution.succeeded ${d.executionId}`
+      const detail = outcome.status === "unresolved" ? ` ${outcome.reason} failing=${outcome.failing.join(",")}` : ""
+      return `execution.succeeded ${d.executionId} verification=${outcome.status}${detail}`
+    }
+    case "snapshot.taken":
+      return `snapshot.taken ${d.id} ${d.point}${d.messageId === null ? "" : ` ${d.messageId}`}`
+    case "snapshot.unavailable":
+      return `snapshot.unavailable ${d.reason}`
+    case "checks.started":
+      return `checks.started run=${d.run} ${item.data.checks.join(",")}`
+    case "checks.finished":
+      return `checks.finished run=${d.run} ${item.data.evidence.checks.map((check) => `${check.name}:${check.status}`).join(",")}`
+    case "checks.failed":
+      return `checks.failed run=${d.run} ${errorText(item.data.error)}`
+    case "revert.started":
+      return `revert.started fromSeq=${d.fromSeq} target=${d.target} before=${d.before}`
+    case "revert.undo_started":
+      return `revert.undo_started revertSeq=${d.revertSeq} target=${d.target} before=${d.before}`
+    case "history.reverted":
+    case "history.restored": {
+      const record = item.data.restore
+      const range = item.type === "history.reverted" ? `fromSeq=${item.data.fromSeq}` : `revertSeq=${item.data.revertSeq}`
+      return `${item.type} ${range} ${record === null ? "no files restored" : `restored=${record.target} changed=${record.changed}`}`
+    }
     case "execution.interrupt_requested":
     case "execution.interrupted":
       return `${item.type} ${d.executionId} ${d.reason}`
@@ -381,3 +438,113 @@ export function describeEvent(item: NewEvent): string {
     }
   }
 }
+
+// ---------------------------------------------------------------- the workspace, checks and reverts
+
+/**
+ * The workspace was recorded. `id` is a name for its contents (`w0` for the
+ * files the session started with, `w1` after the first change): a real ID is
+ * the hash of the tree, and the same contents always have the same one.
+ */
+export const snap = (point: SnapshotPoint, id: string, step: string | null = null) =>
+  event("snapshot.taken", { id, point, messageId: step === null ? null : m(step) })
+
+/** `opening()` for a session with snapshots: the workspace is recorded as `w0` before the prompt is delivered. Seq 1..6; `u1` has seq 6. */
+export const openingIn = (prompt = "Fix the failing test.", workspace = "w0") => [
+  created(),
+  enqueue("u1", prompt),
+  executionStarted(),
+  snap("delivery", workspace),
+  baseline(),
+  deliver("u1"),
+]
+
+/** A step whose one call changes a file: the workspace is recorded right before the tool runs and right after. */
+export const wrote = (id: string, input: string, output: string, from: string, to: string) => [
+  stepStarted(id),
+  called(id, "call_1", "write", input),
+  snap("step_start", from, id),
+  toolStarted(id, "call_1", "write"),
+  settled(id, "call_1", "success", output),
+  snap("step_end", to, id),
+  stepEnded(id, "tool_calls"),
+]
+
+/** The one check the verification scenarios configure. */
+export const CHECK = { name: "test", command: "bun test", timeoutSeconds: 120 } as const
+/** Their configuration file. */
+export const CHECKS_CONFIG: ConfigFile = { checks: [{ name: CHECK.name, command: CHECK.command }] }
+/** What the failing check prints. */
+export const CHECK_OUTPUT = "1 fail\n"
+
+/** The result of the check as the runner shapes it. */
+export function checkResult(status: CheckStatus, check: { readonly name: string; readonly command: string; readonly timeoutSeconds: number } = CHECK): CheckResult {
+  const bytes = new TextEncoder().encode(status === "passed" || status === "interrupted" ? "" : CHECK_OUTPUT)
+  const lines = bytes.length === 0 ? 0 : 1
+  return {
+    name: check.name,
+    command: check.command,
+    timeoutSeconds: check.timeoutSeconds,
+    status,
+    exitCode: status === "passed" ? 0 : status === "failed" ? 1 : null,
+    signal: null,
+    interruptedBy: null,
+    startError: null,
+    durationMs: 0,
+    output: { totalBytes: bytes.length, totalLines: lines, path: null, savedBytes: bytes.length, source: { head: bytes, tail: bytes, tailAtLineStart: true, totalBytes: bytes.length, totalLines: lines } },
+  }
+}
+
+/**
+ * The record of one run of the check. `afterSeq`, `fingerprint`, `durationMs`
+ * and `outputPath` are stand-ins (the loop fills in the position of
+ * `checks.started`, a hash of the changed files' state, the time taken and
+ * the file that keeps the output).
+ */
+export function evidence(run: number, status: CheckStatus, changedFiles: readonly string[]): VerificationEvidence {
+  const result = checkResult(status)
+  return {
+    run,
+    afterSeq: 0,
+    changedFiles: [...changedFiles],
+    checks: [
+      {
+        name: result.name,
+        command: result.command,
+        status,
+        exitCode: result.exitCode,
+        signal: null,
+        durationMs: 0,
+        files: [...changedFiles],
+        fingerprint: "fingerprint",
+        outputPath: null,
+        outputBytes: result.output.totalBytes,
+        outputLines: result.output.totalLines,
+      },
+    ],
+  }
+}
+
+export const checksStarted = (run: number) => event("checks.started", { run, checks: [CHECK.name] })
+export const checksFinished = (run: number, status: CheckStatus, changedFiles: readonly string[]) =>
+  event("checks.finished", { run, evidence: evidence(run, status, changedFiles) })
+export const checksFailed = (run: number, error: StepError) => event("checks.failed", { run, error })
+/** The report of a failing run, exactly as the model is shown it. */
+export const checkReport = (id: string) => synthetic(id, HARNESS_ORIGIN.checkReport, renderReport([checkResult("failed")]))
+
+/** The execution ends as done, with what the gate found. */
+export const succeededWith = (verification: VerificationOutcome, id = "exe_1") => event("execution.succeeded", { executionId: x(id), verification })
+export const passed = (run: number, changedFiles: readonly string[]): VerificationOutcome => ({ status: "passed", evidence: evidence(run, "passed", changedFiles) })
+export const unresolved = (
+  reason: "acknowledged" | "max_rounds" | "report_mode",
+  run: number,
+  changedFiles: readonly string[],
+  acknowledgement: Acknowledgement | null = null,
+): VerificationOutcome => ({ status: "unresolved", reason, failing: [CHECK.name], acknowledgement, evidence: evidence(run, "failed", changedFiles) })
+
+/** What a restore did: from `before` to `target`, `changed` files written or removed, nothing kept. */
+export const restore = (target: string, before: string, changed: number): RestoreRecord => ({ target, before, after: target, changed, kept: [], keptOmitted: 0 })
+export const revertStarted = (fromSeq: number, target: string, before: string) => event("revert.started", { fromSeq, target, before, keep: [] })
+export const historyReverted = (fromSeq: number, record: RestoreRecord | null) => event("history.reverted", { fromSeq, restore: record })
+export const undoStarted = (revertSeq: number, target: string, before: string) => event("revert.undo_started", { revertSeq, target, before, keep: [] })
+export const historyRestored = (revertSeq: number, record: RestoreRecord | null) => event("history.restored", { revertSeq, restore: record })

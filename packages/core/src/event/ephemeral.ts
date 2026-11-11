@@ -39,6 +39,26 @@ export type EphemeralEvent =
       readonly text: string
     }
 
+  /** Progress from a running check: the tail of its output so far. `text` replaces the previous progress text of the check. */
+  | { readonly type: "checks.progress"; readonly sessionId: SessionId; readonly run: number; readonly check: string; readonly text: string }
+  /**
+   * The files the execution that is about to end changed: what differs
+   * between the snapshot taken when its first input arrived (`from`) and the
+   * latest one (`to`). Derived from the durable snapshot IDs, for display.
+   */
+  | { readonly type: "workspace.changes"; readonly sessionId: SessionId; readonly from: string; readonly to: string; readonly files: readonly string[] }
+  /**
+   * Something the engine noticed about this session that is not part of its
+   * log: a request that broke the cached prefix with no event that allows it,
+   * a tool or a listener that threw, an internal error.
+   */
+  | {
+      readonly type: "diagnostic"
+      readonly sessionId: SessionId
+      readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed"
+      readonly message: string
+    }
+
 export type EphemeralEventType = EphemeralEvent["type"]
 
 /** Compile-time check that no ephemeral type name is also a durable one. */

@@ -37,6 +37,15 @@ export interface EngineLimits {
    * abandoned. Longer than the shell's own grace period plus its drain.
    */
   readonly toolStopGraceMs: number
+  /**
+   * The longest one model call may take, from sending the request to its
+   * terminal event. A call still running then is stopped and fails as a
+   * `transport` error with reason `timeout`, which is retried like any other
+   * within the step's attempt budget. Generous on purpose: a long answer at
+   * high reasoning effort takes many minutes, and the provider's own idle
+   * timeout already catches a connection that went quiet. `0` means no limit.
+   */
+  readonly modelCallTimeoutMs: number
 }
 
 export const ENGINE_LIMITS: EngineLimits = {
@@ -49,6 +58,7 @@ export const ENGINE_LIMITS: EngineLimits = {
   stepLimit: 60,
   maxToolCallsPerStep: 32,
   toolStopGraceMs: 10_000,
+  modelCallTimeoutMs: 30 * 60_000,
 }
 
 /**
@@ -111,6 +121,7 @@ export const FAILURE_TEXT = {
   overflow: "The conversation no longer fits the model's context window, even after compacting it.",
   compaction: (reason: string) => `Could not compact the conversation: ${reason}`,
   stepLimitIgnored: "The step limit was reached and the model kept asking for tools.",
+  config: (problem: string) => `The configuration could not be loaded: ${problem}`,
   internal: (message: string) => `The harness failed: ${message}`,
 } as const
 
@@ -127,6 +138,9 @@ function duration(ms: number): string {
   const hours = Math.round(minutes / 60)
   return `${hours} hour${hours === 1 ? "" : "s"}`
 }
+
+/** The message of the error a model call fails with when it reaches `modelCallTimeoutMs`. */
+export const modelCallTimedOut = (limitMs: number) => `The model call did not finish within ${duration(limitMs)}`
 
 /** The message a provider stream gets when it ends with neither `finish` nor `error` and nobody aborted it. */
 export const INCOMPLETE_STREAM = "The stream ended without a terminal event"

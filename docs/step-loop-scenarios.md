@@ -1231,9 +1231,9 @@ The step ended and its results are durable; the next model call had not started.
 
 #### 40. The process dies after the answer, before the claim was released
 
-The last step ended with `stop` and nothing waits in the inbox, so the execution was finished in all but name. Recovery releases the claim directly; there is no work to resume.
+The last step ended with `stop` and nothing waits in the inbox, so the model is finished. Whether the execution may end as done is still the verification gate's decision, which recovery cannot make (it would have to run checks). So recovery resumes the execution like any other, and the loop, finding nothing left to do, goes through the gate and releases the claim. Here nothing is configured, so nothing is verified.
 
-*Provider:* one step answers with stop; the process is killed before the claim is released.
+*Provider:* one step answers with stop; the process is killed before the claim is released; after restart the model is not called.
 
 ```
 -- the answer is durable, the claim is not released
@@ -1241,8 +1241,10 @@ The last step ended with `stop` and nothing waits in the inbox, so the execution
   6  step.started a1 attempt=1
   7  text.ended a1 "Done."
   8  step.ended a1 finish=stop
--- at next start-up
-  9  execution.succeeded exe_1
+-- at next start-up: the execution is resumed, not ended
+  9  execution.resumed exe_1
+-- the loop finds nothing left to do and ends it through the gate
+ 10  execution.succeeded exe_1
 ```
 
 *UI:* u1 user · a1 completed. *Claim:* released.
@@ -1420,6 +1422,383 @@ The app is quit while a test run is in progress. The shutdown is made durable, t
 *The reducer rejects:*
 - after "the shutdown is requested, then the process is killed": `step.failed a1 crashed` (invalid_transition). The shutdown was requested, so the step ends as interrupted for shutdown.
 - after "the shutdown is requested, then the process is killed": `execution.resumed exe_1` (invalid_transition). The requested shutdown is finished before anything resumes.
+
+### Verification
+
+#### 46. The checks pass
+
+The model changes a file and says it is done. The harness records the workspace, runs the configured check and it passes, so the execution ends as done with the evidence. The check ran because `add.ts` differs between the snapshot the session started with and the one taken now.
+
+*Provider:* step 1 calls write, step 2 answers; the `test` check exits 0.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}]}`.
+
+```
+-- the model changes a file and says it is done
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+-- the harness runs the checks
+ 17  snapshot.taken w1 checks_start
+ 18  checks.started run=1 test
+-- they pass, and the execution ends as done
+ 19  snapshot.taken w1 checks_end
+ 20  checks.finished run=1 test:passed
+ 21  execution.succeeded exe_1 verification=passed
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the model changes a file and says it is done": `checks.finished run=1 test:passed` (invalid_transition). A run of checks is started (durably) before it can have results.
+- after "the harness runs the checks": `execution.succeeded exe_1` (invalid_transition). The execution cannot end while its checks are running.
+- after "the harness runs the checks": `step.started a3 attempt=1` (invalid_transition). Nothing else happens until the run has its terminal event.
+
+#### 47. The checks fail, the model fixes the code, and they pass
+
+The model's first fix leaves the test failing. The run and its report are appended together: the report is an ordinary harness message at the end of history, so the next request extends the previous one. The model fixes the code, says it is done again, and the second run passes.
+
+*Provider:* write, answer; the check exits 1; then write, answer; the check exits 0.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}]}`.
+
+```
+-- the first run fails and the model is sent back
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+ 17  snapshot.taken w1 checks_start
+ 18  checks.started run=1 test
+ 19  snapshot.taken w1 checks_end
+ 20  checks.finished run=1 test:failed
+ 21  synthetic.appended r1 origin=check_report "Checks run by the harness after your changes: 1 failed.\n\n..."
+-- the model fixes the code and says it is done again
+ 22  step.started a3 attempt=1
+ 23  tool.called a3/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => a + b\n"}
+ 24  snapshot.taken w1 step_start a3
+ 25  tool.started a3/call_1 effect=write
+ 26  tool.settled a3/call_1 success "Wrote add.ts"
+ 27  snapshot.taken w2 step_end a3
+ 28  step.ended a3 finish=tool_calls
+ 29  step.started a4 attempt=1
+ 30  text.ended a4 "Now it adds."
+ 31  step.ended a4 finish=stop
+-- the second run passes
+ 32  snapshot.taken w2 checks_start
+ 33  checks.started run=2 test
+ 34  snapshot.taken w2 checks_end
+ 35  checks.finished run=2 test:passed
+ 36  execution.succeeded exe_1 verification=passed
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed · r1 synthetic · a3 completed [write success] · a4 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, r1, a3, a4.
+
+*The reducer rejects:*
+- after "the first run fails and the model is sent back": `execution.succeeded exe_1` (invalid_transition). The report is unanswered: the model has to act on it or say that it cannot.
+
+#### 48. The checks still fail after the last allowed round
+
+`verify.maxRounds` is 1 here: the model is sent back once. Its second attempt fails too, so the execution ends, as unresolved: the event names the failing check and the reason (`max_rounds`) and carries the evidence. The last report is appended in the same transaction so that whoever continues the session sees it; it is the one harness message that may stay unanswered.
+
+*Provider:* write, answer; the check exits 1; write, answer; the check exits 1 again.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}],"verify":{"maxRounds":1}}`.
+
+```
+-- the first run fails and the model is sent back
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+ 17  snapshot.taken w1 checks_start
+ 18  checks.started run=1 test
+ 19  snapshot.taken w1 checks_end
+ 20  checks.finished run=1 test:failed
+ 21  synthetic.appended r1 origin=check_report "Checks run by the harness after your changes: 1 failed.\n\n..."
+-- the model tries again
+ 22  step.started a3 attempt=1
+ 23  tool.called a3/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => a + b\n"}
+ 24  snapshot.taken w1 step_start a3
+ 25  tool.started a3/call_1 effect=write
+ 26  tool.settled a3/call_1 success "Wrote add.ts"
+ 27  snapshot.taken w2 step_end a3
+ 28  step.ended a3 finish=tool_calls
+ 29  step.started a4 attempt=1
+ 30  text.ended a4 "Now it adds."
+ 31  step.ended a4 finish=stop
+-- the second run fails too: the execution ends unresolved
+ 32  snapshot.taken w2 checks_start
+ 33  checks.started run=2 test
+ 34  snapshot.taken w2 checks_end
+ 35  checks.finished run=2 test:failed
+ 36  synthetic.appended r2 origin=check_report "Checks run by the harness after your changes: 1 failed.\n\n..."
+ 37  execution.succeeded exe_1 verification=unresolved max_rounds failing=test
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed · r1 synthetic · a3 completed [write success] · a4 completed · r2 synthetic. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, r1, a3, a4, r2.
+
+#### 49. The model reports that it cannot make the checks pass
+
+After the report the model does not claim success: it calls `report_check_failure`, naming the check and the reason. That call is the acknowledgement; nothing is read out of its prose. The files did not change since the run, so the checks are not run again, and the execution ends as unresolved with what the model said.
+
+*Provider:* write, answer; the check exits 1; the model calls report_check_failure and then answers.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}]}`.
+
+```
+-- the run fails and the model is sent back
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+ 17  snapshot.taken w1 checks_start
+ 18  checks.started run=1 test
+ 19  snapshot.taken w1 checks_end
+ 20  checks.finished run=1 test:failed
+ 21  synthetic.appended r1 origin=check_report "Checks run by the harness after your changes: 1 failed.\n\n..."
+-- the model acknowledges the failure with the tool
+ 22  step.started a3 attempt=1
+ 23  tool.called a3/call_1 report_check_failure {"checks":["test"],"reason":"The test needs a fixture that is not in the repository."}
+ 24  tool.started a3/call_1 effect=read
+ 25  tool.settled a3/call_1 success "Recorded as unresolved: test."
+ 26  step.ended a3 finish=tool_calls
+ 27  step.started a4 attempt=1
+ 28  text.ended a4 "The test cannot pass without the fixture."
+ 29  step.ended a4 finish=stop
+-- nothing changed since the run, so it stands: the execution ends unresolved
+ 30  snapshot.taken w1 checks_start
+ 31  execution.succeeded exe_1 verification=unresolved acknowledged failing=test
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed · r1 synthetic · a3 completed [report_check_failure success] · a4 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, r1, a3, a4.
+
+#### 50. No checks are configured
+
+The project has no configuration file. The turn ends as done, and the event says that nothing was verified, so a client can tell this ending from one that rests on passing checks. The workspace is still recorded, so the turn can be undone.
+
+*Provider:* step 1 calls write, step 2 answers.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; no configuration file.
+
+```
+-- the turn
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+#### 51. Cancel while the checks run
+
+The user cancels while the check command is running. The request is durable first; the command is stopped like a tool; the run is closed as interrupted, which says nothing about the code; the model is told and the claim is released. No result is recorded and nothing is reported.
+
+*Provider:* write, answer; the check hangs until the user cancels.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}]}`.
+
+```
+-- the checks are running
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+ 17  snapshot.taken w1 checks_start
+ 18  checks.started run=1 test
+-- the user cancels
+ 19  execution.interrupt_requested exe_1 user
+-- the run is closed and the execution released
+ 20  checks.failed run=1 interrupted:user
+ 21  synthetic.appended s1 origin=interrupt "The user stopped the previous response before it finished."
+ 22  execution.interrupted exe_1 user
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed · s1 synthetic. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, s1.
+
+*The reducer rejects:*
+- after "the user cancels": `checks.finished run=1 test:passed` (invalid_transition). Once an interrupt is requested the run can only be closed as interrupted.
+- after "the user cancels": `execution.interrupted exe_1 user` (invalid_transition). The run of checks is closed before the execution is.
+
+#### 52. The process dies while the checks run
+
+`checks.started` was durable and the process died before any result. Recovery closes the run as crashed and resumes the execution (a crash counts toward the resume cap, so a check that kills the harness cannot be run for ever). The loop finds the model's answer still standing and no result for it, runs the checks again, and ends the execution on what they show.
+
+*Provider:* write, answer; the process is killed while the check runs; after restart the check exits 0 and the model is not called.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}]}`.
+
+```
+-- the process dies while the checks run
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => b + a - 1\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote add.ts"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Fixed add."
+ 16  step.ended a2 finish=stop
+ 17  snapshot.taken w1 checks_start
+ 18  checks.started run=1 test
+-- at next start-up
+ 19  checks.failed run=1 crashed
+ 20  execution.resumed exe_1
+-- the loop runs the checks again
+ 21  snapshot.taken w1 checks_start
+ 22  checks.started run=1 test
+ 23  snapshot.taken w1 checks_end
+ 24  checks.finished run=1 test:passed
+ 25  execution.succeeded exe_1 verification=passed
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the process dies while the checks run": `execution.resumed exe_1` (invalid_transition). Recovery closes the run before it records the resume.
+
+### Revert
+
+#### 53. Revert of the last turn
+
+The user undoes the turn. The harness records the workspace as it is (so the revert itself can be undone), announces the restore, puts the files back as they were when the prompt was delivered, and records the restore together with the range that leaves history. The next request does not extend the previous one, which `history.reverted` allows.
+
+*Provider:* one turn: write, answer. Then the user reverts it; the model is not called.
+
+*Setup:* snapshots on; the workspace holds notes.md; no configuration file.
+
+```
+-- the turn
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"notes.md","content":"# Notes\n\n- reviewed\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote notes.md"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Added the line."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_1
+-- the revert is announced
+ 18  snapshot.taken w1 restore_start
+ 19  revert.started fromSeq=6 target=w0 before=w1
+-- the files are back and the turn has left history
+ 20  snapshot.taken w0 restore_end
+ 21  history.reverted fromSeq=6 restored=w0 changed=1
+```
+
+*UI:* u1 user excluded:reverted · a1 completed [write success] excluded:reverted · a2 completed excluded:reverted. *Claim:* released.
+
+*Model sees next:* nothing.
+
+*The reducer rejects:*
+- after "the revert is announced": `execution.started exe_2` (invalid_transition). Nothing starts while a restore is in progress.
+- after "the revert is announced": `history.reverted fromSeq=6 restored=w0 changed=1` (invalid_transition). The record must be of the restore that was announced, with its undo point.
+
+#### 54. Revert, then undo the revert
+
+The user reverts the turn and then changes their mind. Undoing the revert restores the workspace to the snapshot taken right before it and puts exactly the messages it excluded back into history. Only the latest revert can be undone, and only until new work starts.
+
+*Provider:* one turn: write, answer. Then the user reverts it and undoes the revert; the model is not called.
+
+*Setup:* snapshots on; the workspace holds notes.md; no configuration file.
+
+```
+-- the turn is reverted
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"notes.md","content":"# Notes\n\n- reviewed\n"}
+  9  snapshot.taken w0 step_start a1
+ 10  tool.started a1/call_1 effect=write
+ 11  tool.settled a1/call_1 success "Wrote notes.md"
+ 12  snapshot.taken w1 step_end a1
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "Added the line."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_1
+ 18  snapshot.taken w1 restore_start
+ 19  revert.started fromSeq=6 target=w0 before=w1
+ 20  snapshot.taken w0 restore_end
+ 21  history.reverted fromSeq=6 restored=w0 changed=1
+-- the undo is announced
+ 22  snapshot.taken w0 restore_start
+ 23  revert.undo_started revertSeq=21 target=w1 before=w0
+-- the files and the turn are back
+ 24  snapshot.taken w1 restore_end
+ 25  history.restored revertSeq=21 restored=w1 changed=1
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the turn is reverted": `revert.undo_started revertSeq=19 target=w1 before=w0` (invalid_transition). An undo names the revert it undoes by the seq of its history.reverted.
+- after "the turn is reverted": `revert.undo_started revertSeq=21 target=w0 before=w0` (invalid_transition). The undo restores the snapshot taken before that revert.
 
 <!-- scenarios:end -->
 
