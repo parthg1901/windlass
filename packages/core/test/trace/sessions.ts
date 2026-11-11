@@ -1,0 +1,383 @@
+/**
+ * Scripted sessions for the trace tests, written into a real store the way
+ * the step loop writes them: every event goes through `append`, and at each
+ * event that starts a model call the request is built from the stored state,
+ * its block hashes go into the ledger with `beginRequest`, and the call is
+ * finished with usage from a stand-in for the provider's prompt cache.
+ *
+ * The stand-in caches like the Responses API on the ChatGPT flow: a request
+ * reads the longest leading run of blocks it shares with the previous request
+ * of the session, in 128-token steps, once that previous prompt was at least
+ * 1024 tokens. So a session that never rewrites its prefix hits on every call
+ * after the first, and a break shows up as a miss, as it would live.
+ */
+import { HARNESS_ORIGIN, type NewEvent, event } from "../../src/event/durable.ts"
+import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
+import type { Json } from "../../src/json.ts"
+import type { Projection } from "../../src/message/message.ts"
+import { blobRefs, encodeRequest } from "../../src/provider/openai-responses-encode.ts"
+import { makeProviderError } from "../../src/provider/error.ts"
+import { type BuildOptions, buildCompactionRequest, buildRequest } from "../../src/request/build.ts"
+import { type BlockHash, hashRequest } from "../../src/request/prefix.ts"
+import type { ModelRequest } from "../../src/request/request.ts"
+import { type SqliteStore, openSqliteStore } from "../../src/store/sqlite.ts"
+import type { RequestRecord } from "../../src/store/store.ts"
+import {
+  baselineSet,
+  called,
+  compactionEnded,
+  compactionStarted,
+  created,
+  deliver,
+  enqueue,
+  executionFailed,
+  executionInterrupted,
+  executionStarted,
+  executionSucceeded,
+  instruction,
+  interruptRequested,
+  reasoningEnded,
+  retryScheduled,
+  reverted,
+  settingsChanged,
+  settled,
+  started,
+  stepEnded,
+  stepFailed,
+  stepStarted,
+  synthetic,
+  textEnded,
+} from "../store/scripted.ts"
+
+/** The prompt the stand-in loop appends for a compaction call. The log does not store it; the exporter is told. */
+export const COMPACTION_PROMPT = "Summarise the conversation so far so that the work can continue from the summary alone."
+
+/** Builds a step request from a projection. The real builder unless a test seeds a bug. */
+export type StepBuilder = (projection: Projection, options: BuildOptions) => ModelRequest
+
+export const realBuilder: StepBuilder = buildRequest
+
+/** Starts at 2026-11-11T10:00:00Z and moves 1.5 s per reading, so calls are seconds apart, well inside the cache TTL. */
+export function fixedClock() {
+  let now = Date.UTC(2026, 10, 11, 10, 0, 0)
+  return () => (now += 1500)
+}
+
+export function openTestStore(path = ":memory:"): SqliteStore {
+  return openSqliteStore({ path, now: fixedClock() })
+}
+
+const m = (id: string) => id as MessageId
+
+export class Loop {
+  private calls = 0
+  /** What went over the wire for each call, as the provider encoder wrote it: what a recording proxy would have seen. */
+  readonly sent: { readonly row: RequestRecord; readonly body: Record<string, Json>; readonly headers: Readonly<Record<string, string>> }[] = []
+  private previous: { blocks: readonly BlockHash[]; prompt: number } | null = null
+
+  constructor(
+    readonly store: SqliteStore,
+    readonly id: SessionId,
+    readonly builder: StepBuilder = realBuilder,
+  ) {}
+
+  add(...events: NewEvent[]) {
+    for (const next of events) this.store.append(this.id, [next])
+  }
+
+  get projection(): Projection {
+    const projection = this.store.getProjection(this.id)
+    if (projection === null) throw new Error(`session ${this.id} does not exist`)
+    return projection
+  }
+
+  seqOf(messageId: string): number {
+    const found = this.projection.messages.findLast((message) => message.id === messageId)
+    if (found === undefined) throw new Error(`no message ${messageId}`)
+    return found.seq
+  }
+
+  /** One model call, built from the state now stored, recorded in the ledger as the loop records it. */
+  call(messageId: string, attempt: number, outcome: "ok" | "error" | "aborted" = "ok", purpose: "step" | "compaction" = "step") {
+    const request =
+      purpose === "compaction" ? buildCompactionRequest(this.projection, COMPACTION_PROMPT) : this.builder(this.projection, { toolChoice: "auto" })
+    const blocks = hashRequest(request)
+    const id = `${this.id}_r${++this.calls}` as RequestId
+    this.store.beginRequest({ id, sessionId: this.id, messageId: m(messageId), attempt, purpose, model: request.params.model, blocks })
+    const blobs = new Map(blobRefs(request).map((ref) => [ref.hash, this.store.getBlob(ref.hash)!.bytes] as const))
+    const encoded = encodeRequest(request, blobs)
+    const usage = outcome === "ok" ? this.provider(blocks) : null
+    const row = this.store.finishRequest(id, { outcome, usage, errorKind: outcome === "error" ? "transport" : null })
+    this.sent.push({ row, body: JSON.parse(encoded.body), headers: encoded.headers })
+  }
+
+  /** `step.started`, then the call. */
+  start(messageId: string, attempt = 1, model = "gpt-test") {
+    this.add(stepStarted(messageId, attempt, model))
+    this.call(messageId, attempt)
+  }
+
+  /** A prompt admitted, an execution started and the prompt delivered. */
+  prompt(n: string, value: string) {
+    this.add(enqueue(`u${n}`, value), executionStarted(`exe_${n}`), deliver(`u${n}`))
+  }
+
+  /** A one-step answer that ends the execution. */
+  answer(n: string, id: string, value: string, model = "gpt-test") {
+    this.start(id, 1, model)
+    this.add(textEnded(id, value), stepEnded(id), executionSucceeded(`exe_${n}`))
+  }
+
+  /** One read call, settled. */
+  read(id: string, callId: string, path: string, output: string) {
+    this.add(called(id, callId, "read", JSON.stringify({ path })), started(id, callId), settled(id, callId, "success", output))
+  }
+
+  /** The stand-in for the provider's implicit prompt cache. */
+  private provider(blocks: readonly BlockHash[]) {
+    const tokens = blocks.map((block) => Math.ceil(block.bytes / 4) + (block.kind === "instructions" ? 1200 : 0))
+    const prompt = tokens.reduce((sum, value) => sum + value, 0)
+    const previous = this.previous
+    this.previous = { blocks, prompt }
+    if (previous === null || previous.prompt < 1024) return { inputTokens: prompt, cachedInputTokens: 0, outputTokens: 40, reasoningTokens: 8 }
+    const shared = blocks.findIndex((block, index) => previous.blocks[index]?.hash !== block.hash)
+    const common = tokens.slice(0, shared === -1 ? blocks.length : shared).reduce((sum, value) => sum + value, 0)
+    const cached = Math.floor(Math.min(common, previous.prompt) / 128) * 128
+    return { inputTokens: prompt, cachedInputTokens: cached, outputTokens: 40, reasoningTokens: 8 }
+  }
+}
+
+/**
+ * A scripted session: what it does, and which calls (0-based ledger order)
+ * follow a legitimate prefix break, with the causes.
+ */
+export interface TraceScript {
+  readonly name: string
+  /** True when nothing in it may break the prefix: the report must name no harness-caused miss. */
+  readonly clean: boolean
+  readonly breaks: Readonly<Record<number, readonly string[]>>
+  readonly run: (loop: Loop) => void
+}
+
+const opening = (loop: Loop) => loop.add(created("/work/demo", "Demo"), baselineSet())
+
+export const SCRIPTS: readonly TraceScript[] = [
+  {
+    name: "multi-step turns",
+    clean: true,
+    breaks: {},
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Why does the build fail?")
+      loop.start("a1")
+      loop.add(reasoningEnded("a1", "Read the config first."), textEnded("a1", "Let me look at the config."))
+      loop.read("a1", "call_1", "tsconfig.json", '{"strict": true}')
+      loop.add(stepEnded("a1", "tool_calls"))
+      loop.start("a2")
+      loop.read("a2", "call_2", "src/main.ts", "export const x: number = 'a'")
+      loop.add(stepEnded("a2", "tool_calls"))
+      loop.start("a3")
+      loop.add(textEnded("a3", "`x` is declared as a number but holds a string."), stepEnded("a3"), executionSucceeded("exe_1"))
+      loop.prompt("2", "Fix it.")
+      loop.answer("2", "a4", "Changed the value to 1.")
+    },
+  },
+  {
+    name: "parallel tool calls with media",
+    clean: true,
+    breaks: {},
+    run(loop) {
+      const image = loop.store.putBlob(new TextEncoder().encode("\x89PNG synthetic screenshot"), "image/png")
+      opening(loop)
+      loop.add(
+        enqueue("u1", [
+          { type: "text", text: "Why does this page look broken?" },
+          { type: "media", blob: image },
+        ]),
+        executionStarted("exe_1"),
+        deliver("u1"),
+      )
+      loop.start("a1")
+      loop.add(
+        called("a1", "call_1", "read", '{"path":"index.html"}'),
+        called("a1", "call_2", "read", '{"path":"style.css"}'),
+        started("a1", "call_1"),
+        started("a1", "call_2"),
+        settled("a1", "call_2", "success", "body { display: flex }"),
+        settled("a1", "call_1", "success", "<html>...</html>", [image]),
+        stepEnded("a1", "tool_calls"),
+      )
+      // The provider reuses call_1 in the next step; one call is refused before it starts.
+      loop.start("a2")
+      loop.add(
+        called("a2", "call_1", "shell", '{"cmd":"npm test"}'),
+        called("a2", "call_3", "shell", '{"cmd":"rm -rf /"}'),
+        settled("a2", "call_3", "error", "Refused: this command is not allowed in this mode."),
+        started("a2", "call_1", "exec"),
+        settled("a2", "call_1", "error", "1 test failed"),
+        stepEnded("a2", "tool_calls"),
+      )
+      loop.start("a3")
+      loop.add(textEnded("a3", "The flex rule hides the header."), stepEnded("a3"), executionSucceeded("exe_1"))
+    },
+  },
+  {
+    name: "retries before and after output",
+    clean: true,
+    breaks: {},
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Summarise the README.")
+      // Attempt 1 fails before any output; attempt 2 continues under the same message.
+      loop.add(stepStarted("a1"))
+      loop.call("a1", 1, "error")
+      loop.add(retryScheduled("a1", 2))
+      loop.call("a1", 2)
+      loop.read("a1", "call_1", "README.md", "# Demo\nPrints the weather.")
+      loop.add(stepEnded("a1", "tool_calls"))
+      // The next step fails after partial text: it fails, a continuation note follows, attempt 2 runs under a new message.
+      loop.start("a2")
+      loop.add(
+        textEnded("a2", "The README says the tool"),
+        stepFailed("a2", { kind: "provider", error: makeProviderError("transport", "socket closed") }),
+        retryScheduled("a2", 2),
+        synthetic(
+          "n1",
+          HARNESS_ORIGIN.continuation,
+          "Your previous response was cut off by a provider error. Continue exactly where it stopped; do not repeat what you already wrote.",
+        ),
+      )
+      loop.start("a3", 2)
+      loop.add(textEnded("a3", " prints the weather."), stepEnded("a3"), executionSucceeded("exe_1"))
+    },
+  },
+  {
+    name: "user interrupt",
+    clean: true,
+    breaks: {},
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Where is the parser?")
+      loop.answer("1", "a1", "In src/parse.ts.")
+      loop.prompt("2", "Refactor it.")
+      // The cancel arrives mid-stream: the call ends aborted without usage, the partial text is kept.
+      loop.add(stepStarted("a2"))
+      loop.call("a2", 1, "aborted")
+      loop.add(
+        interruptRequested("exe_2", "user"),
+        textEnded("a2", "I will start with the tokenizer and"),
+        stepFailed("a2", { kind: "interrupted", reason: "user" }),
+        synthetic("k1", HARNESS_ORIGIN.interrupt, "The user stopped the previous response before it finished."),
+        executionInterrupted("exe_2", "user"),
+      )
+      loop.prompt("3", "Only the tokenizer, please.")
+      loop.answer("3", "a3", "Done: the tokenizer is its own module now.")
+    },
+  },
+  {
+    name: "steer during a step",
+    clean: true,
+    breaks: {},
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Run the tests.")
+      loop.start("a1")
+      loop.add(called("a1", "call_1", "shell", '{"cmd":"bun test"}'), started("a1", "call_1", "exec"))
+      loop.add(enqueue("u2", "Only the unit tests."))
+      loop.add(settled("a1", "call_1", "success", "12 pass"), stepEnded("a1", "tool_calls"), deliver("u2"))
+      loop.start("a2")
+      loop.add(textEnded("a2", "The unit tests pass."), stepEnded("a2"), executionSucceeded("exe_1"))
+    },
+  },
+  {
+    name: "instruction change",
+    clean: true,
+    breaks: {},
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "What day is it?")
+      loop.answer("1", "a1", "Tuesday.")
+      loop.add(enqueue("u2", "And now?"), executionStarted("exe_2"), instruction("i1", "date", "Today is Wednesday."), deliver("u2"))
+      loop.answer("2", "a2", "Wednesday.")
+    },
+  },
+  {
+    name: "compaction",
+    clean: false,
+    // Call 0 and 1 are the two turns, 2 is the compaction call (it extends call 1), 3 follows the compaction.
+    breaks: { 3: ["compaction"] },
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Fix the README.")
+      loop.answer("1", "a1", "Fixed the typo in the README.")
+      loop.prompt("2", "Run the tests.")
+      loop.answer("2", "a2", "The tests pass.")
+      loop.add(enqueue("u3", "Now update the changelog."), executionStarted("exe_3"), compactionStarted("c1"))
+      loop.call("c1", 1, "ok", "compaction")
+      loop.add(compactionEnded("c1", loop.seqOf("u2")))
+      // A new baseline after the compaction, with the instructions re-read.
+      loop.add(baselineSet("You are a coding agent working in /work/demo. The changelog is CHANGES.md."))
+      loop.add(deliver("u3"))
+      loop.answer("3", "a3", "Added an entry to CHANGES.md.")
+    },
+  },
+  {
+    name: "refusal",
+    clean: false,
+    breaks: { 3: ["refusal"] },
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Summarise a.ts.")
+      loop.answer("1", "a1", "It exports a.")
+      loop.prompt("2", "Now do the thing the filter dislikes.")
+      loop.start("a2")
+      loop.read("a2", "call_1", "b.txt", "contents of b.txt")
+      loop.add(stepEnded("a2", "tool_calls"))
+      loop.start("a3")
+      loop.add(
+        event("step.refused", { messageId: m("a3"), message: "I can't help with that.", excludeFromSeq: loop.seqOf("u2"), usage: null }),
+        executionFailed("exe_2", "The provider refused the request."),
+      )
+      loop.prompt("3", "What does a.ts export?")
+      loop.answer("3", "a4", "a.")
+    },
+  },
+  {
+    name: "revert",
+    clean: false,
+    breaks: { 2: ["revert"] },
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Add a --verbose flag.")
+      loop.answer("1", "a1", "Added --verbose.")
+      loop.prompt("2", "Also add --quiet.")
+      loop.answer("2", "a2", "Added --quiet.")
+      loop.add(reverted(loop.seqOf("u2")))
+      loop.prompt("3", "Make --verbose print timings.")
+      loop.answer("3", "a3", "--verbose now prints timings.")
+    },
+  },
+  {
+    name: "settings changes",
+    clean: false,
+    breaks: { 1: ["settings"], 2: ["settings"] },
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", "Plan the migration.")
+      loop.answer("1", "a1", "Three steps: schema, data, cleanup.")
+      loop.add(settingsChanged("gpt-other"))
+      loop.prompt("2", "Write step one.")
+      loop.answer("2", "a2", "Here is the schema change.", "gpt-other")
+      loop.add(settingsChanged("gpt-other", "high"))
+      loop.prompt("3", "Check it.")
+      loop.answer("3", "a3", "It is correct.", "gpt-other")
+    },
+  },
+]
+
+/** Runs a script on a store under its own session ID. */
+export function record(store: SqliteStore, script: TraceScript, builder?: StepBuilder) {
+  const loop = new Loop(store, `ses_${script.name.replace(/[^a-z]+/g, "_")}` as SessionId, builder)
+  script.run(loop)
+  return loop
+}
