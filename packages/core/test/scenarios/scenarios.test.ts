@@ -4,10 +4,12 @@
  * rejects every wrong move listed with a phase. See docs/step-loop-scenarios.md.
  */
 import { describe, expect, test } from "bun:test"
+import { join } from "node:path"
 import type { NewEvent } from "../../src/event/durable.ts"
 import type { Projection } from "../../src/message/message.ts"
 import { ReduceError, reduce } from "../../src/message/reducer.ts"
 import { families } from "./index.ts"
+import { SCENARIOS_END, SCENARIOS_START, renderScenarios } from "./render.ts"
 import { type Expect, allEvents, fold, historyIds, position, view } from "./script.ts"
 
 for (const [family, scenarios] of Object.entries(families)) {
@@ -43,6 +45,17 @@ for (const [family, scenarios] of Object.entries(families)) {
     }
   })
 }
+
+describe("docs/step-loop-scenarios.md", () => {
+  test("its scenario section is what the scenario modules render (bun scripts/scenario-doc.ts --write)", async () => {
+    const document = await Bun.file(join(import.meta.dir, "../../../../docs/step-loop-scenarios.md")).text()
+    const start = document.indexOf(SCENARIOS_START)
+    const end = document.indexOf(SCENARIOS_END)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    expect(document.slice(start + SCENARIOS_START.length, end).trim()).toBe(renderScenarios())
+  })
+})
 
 function check(state: Projection, expected: Expect, label: string) {
   if (expected.ui !== undefined) {

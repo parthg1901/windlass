@@ -15,9 +15,11 @@
  *   never rendered again (storage rule 4).
  * - Nothing is deleted. Revert, compaction and fork are ranges of `seq`.
  *
- * Changing an event's data shape means bumping its `v`, keeping a decoder for
- * the old version, and converting old to new in `decodeEvent`. Adding a value
- * to an enum or adding a new event type needs no version bump.
+ * Nothing has been released and no stored session exists yet, so every event
+ * is at version 1 and its shape was still changed in place. From the first
+ * release on, changing an event's data shape means bumping its `v`, keeping a
+ * decoder for the old version, and converting old to new in `decodeEvent`.
+ * Adding a value to an enum or adding a new event type needs no version bump.
  */
 import { blobRef, content } from "../content.ts"
 import { callId, executionId, messageId, sessionId, type SessionId } from "../id.ts"
