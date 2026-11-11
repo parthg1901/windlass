@@ -84,7 +84,11 @@ export async function runReplay(options: RunReplayOptions): Promise<ReplayRun> {
     )
     const text = response.items.flatMap((item) => (item.type === "assistant_text" ? [item.text] : [])).join("")
     const end = replay.endStep({ text, calls: calls.map((call) => ({ name: call.name, input: call.input })), usage: response.usage })
-    if (end.action === "stop") return finish()
+    if (end.action === "stop") {
+      // Inputs recorded after the last step (an interrupt marker) complete the conversation.
+      if (replay.status === "finished") for (const input of replay.takeInputs()) conversation.push({ kind: "input", input })
+      return finish()
+    }
   }
 }
 
