@@ -1,10 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { OUTPUT_LIMITS } from "../../src/tool/cap.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import type { AnyTool, Tool, ToolEffect, ToolResult } from "../../src/tool/tool.ts"
-import { context, tempDir } from "../tools/helpers.ts"
+import { context, tempDir, removeTempDirs } from "../tools/helpers.ts"
+
+afterEach(removeTempDirs)
 
 const ok = (output: string): ToolResult => ({ status: "success", output, truncation: null, attachments: [], display: null })
 

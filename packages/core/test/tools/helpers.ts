@@ -1,5 +1,4 @@
 /** Shared test helpers for the tools: real temporary directories, a real context, a real runtime. */
-import { afterEach } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -18,9 +17,10 @@ export function tempDir(): string {
   return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()
 }
 
-afterEach(() => {
+/** Removes every directory `tempDir` made. Each test file registers it with `afterEach(removeTempDirs)`. */
+export function removeTempDirs() {
   for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
+}
 
 let calls = 0
 

@@ -1,7 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { OUTPUT_LIMITS, capOutput, countLines, renderCapped } from "../../src/tool/cap.ts"
-import { tempDir } from "../tools/helpers.ts"
+import { tempDir, removeTempDirs } from "../tools/helpers.ts"
+
+afterEach(removeTempDirs)
 
 const bytes = (text: string) => Buffer.byteLength(text)
 
