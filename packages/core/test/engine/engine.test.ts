@@ -148,6 +148,41 @@ describe("sessions", () => {
       h.verify()
     }))
 
+  test("a prompt sent the moment a turn ends starts the next execution", () =>
+    withHarness(async (h) => {
+      h.provider.enqueue([script.text("One.")], [script.text("Two.")])
+      const session = h.create()
+      // A consumer that answers the end of a turn at once, before the drain has returned.
+      let sent = false
+      session.subscribe((item) => {
+        if (item.type !== "execution.succeeded" || sent) return
+        sent = true
+        session.send("Second.")
+      })
+      session.send("First.")
+      await h.settled()
+      expect(h.log().filter((item) => item.type === "execution.succeeded")).toHaveLength(2)
+      expect(h.session.projection().inbox).toEqual([])
+      expect(h.provider.remaining).toBe(0)
+    }))
+
+  test("a provider that ignores the abort signal does not hold a cancel up", () =>
+    withHarness(async (h) => {
+      const session = h.create()
+      // Not the scripted provider: one whose stream never ends and never looks at the signal.
+      const deaf = h.provider.stream
+      h.provider.stream = () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<never>>(() => {}) }),
+      })
+      session.send("Go.")
+      await h.seen((item) => item.type === "step.started")
+      session.interrupt()
+      await h.settled()
+      h.provider.stream = deaf
+      expect(types(h).slice(-4)).toEqual(["execution.interrupt_requested", "step.failed", "synthetic.appended", "execution.interrupted"])
+      expect(h.store.readRequests(session.id).map((row) => row.outcome)).toEqual(["aborted"])
+    }))
+
   test("a settings change while idle is recorded at once, and an unchanged one records nothing", () =>
     withHarness(async (h) => {
       const session = h.create()

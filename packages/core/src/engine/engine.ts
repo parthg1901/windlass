@@ -402,7 +402,7 @@ class LiveSession implements EngineSession {
   private pendingSettings: SessionSettings | null = null
   /** Step limits callers set for the turns their inputs start. Lost with the process, like any option. */
   private readonly turnLimits = new Map<MessageId, number>()
-  /** Input arrived while a user's cancel was winding down: start again once the claim is released. */
+  /** Input arrived while the drain was ending (a user's cancel winding down, or just released): start again when it is gone. */
   private restart = false
   private closing: Promise<void> | null = null
 
@@ -451,8 +451,9 @@ class LiveSession implements EngineSession {
     const projection = this.projection()
     const execution = projection.session.execution
     if (this.run !== null) {
-      // The user cancelled and then asked for more: that work starts once the cancel has finished.
-      if (execution?.interrupting === "user" && projection.inbox.length > 0) this.restart = true
+      // Input that arrives while the drain is on its way out starts the next execution once it is gone: the user
+      // cancelled and then asked for more, or the claim was released a moment ago and the drain has not returned yet.
+      if ((execution === null || execution.interrupting === "user") && projection.inbox.length > 0) this.restart = true
       return
     }
     if (execution === null) {
@@ -881,10 +882,13 @@ class LiveSession implements EngineSession {
     } catch (error) {
       end = threw(error)
     }
+    // A provider that does not stop on abort must not hold the cancel up: the loop stops waiting for it.
+    const stopped = abortedOnce(signal)
     try {
       while (iterator !== null && end === null) {
         // Only the provider's own failure is caught here: an error in what follows is the harness's and must surface.
-        const next = await iterator.next().catch((error: unknown) => ({ failed: error }))
+        const next = await Promise.race([iterator.next().catch((error: unknown) => ({ failed: error })), stopped.promise])
+        if (next === ABORTED) break
         if ("failed" in next) {
           if (!signal.aborted) end = threw(next.failed)
           break
@@ -947,8 +951,10 @@ class LiveSession implements EngineSession {
         }
       }
     } finally {
-      // Stops the request when the loop stopped reading first.
-      await iterator?.return?.().catch(() => {})
+      stopped.dispose()
+      // Stops the request when the loop stopped reading first. After an abort the provider is not waited for.
+      const closed = iterator?.return?.().catch(() => {})
+      if (!signal.aborted) await closed
     }
     // No terminal event and nobody aborted: the stream broke.
     end ??= signal.aborted ? { type: "aborted" } : { type: "error", error: makeProviderError("incomplete_stream", INCOMPLETE_STREAM) }
@@ -1219,6 +1225,20 @@ class LiveSession implements EngineSession {
 /** The harness config directory, where the user-level AGENTS.md lives: `$XDG_CONFIG_HOME/<brand.directory>`. */
 function configDirectory(): string {
   return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), brand.directory)
+}
+
+const ABORTED = Symbol("aborted")
+
+/** A promise that resolves with `ABORTED` when the signal aborts. `dispose` removes its listener. */
+function abortedOnce(signal: AbortSignal): { readonly promise: Promise<typeof ABORTED>; readonly dispose: () => void } {
+  let dispose = () => {}
+  const promise = new Promise<typeof ABORTED>((resolve) => {
+    if (signal.aborted) return resolve(ABORTED)
+    const done = () => resolve(ABORTED)
+    signal.addEventListener("abort", done, { once: true })
+    dispose = () => signal.removeEventListener("abort", done)
+  })
+  return { promise, dispose }
 }
 
 /** Waits for `promise`, or for the abort, whichever is first, and leaves no listener behind. */
