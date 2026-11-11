@@ -26,6 +26,8 @@ export interface RequestParams {
   /**
    * Stable opaque key that routes a session's requests to the same prompt
    * cache. The same for every request of a session; never contains user data.
+   * How it is sent is the provider's business (the ChatGPT flow needs it as
+   * the `session-id` header for cache hits to be reliable).
    */
   readonly cacheKey: string | null
 }
