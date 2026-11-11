@@ -9,12 +9,24 @@
         "typescript": "^5.6.0",
       },
     },
+    "packages/cli": {
+      "name": "@light-harness/cli",
+      "version": "0.0.0",
+      "bin": {
+        "lh": "./src/main.ts",
+      },
+      "dependencies": {
+        "@light-harness/core": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@light-harness/core",
       "version": "0.0.0",
     },
   },
   "packages": {
+    "@light-harness/cli": ["@light-harness/cli@workspace:packages/cli"],
+
     "@light-harness/core": ["@light-harness/core@workspace:packages/core"],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
