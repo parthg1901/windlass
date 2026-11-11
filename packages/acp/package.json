@@ -1,0 +1,13 @@
+{
+  "name": "@light-harness/acp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.5.0",
+    "@light-harness/core": "workspace:*"
+  }
+}

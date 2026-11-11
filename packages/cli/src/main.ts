@@ -82,6 +82,13 @@ export async function run(io: Io): Promise<number> {
       return 0
     case "error":
       return usage(io, parsed.message)
+    case "acp": {
+      // Loaded only here, so a normal run does not pay for the protocol SDK. The defaults stay owned by real-engine.ts.
+      const { serveStdio } = await import("@light-harness/acp")
+      const real = await import("./real-engine.ts")
+      const defaults = { model: real.DEFAULT_MODEL, effort: real.DEFAULT_EFFORT, databaseFile: real.DATABASE_FILE, spillDirectory: real.SPILL_DIRECTORY }
+      return serveStdio({ defaults, env: io.env, version: await version() })
+    }
     case "list":
     case "run":
       break

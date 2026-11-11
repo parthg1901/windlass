@@ -9,6 +9,14 @@
         "typescript": "^5.6.0",
       },
     },
+    "packages/acp": {
+      "name": "@light-harness/acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@agentclientprotocol/sdk": "2.5.0",
+        "@light-harness/core": "workspace:*",
+      },
+    },
     "packages/cli": {
       "name": "@light-harness/cli",
       "version": "0.0.0",
@@ -16,6 +24,7 @@
         "lh": "./src/main.ts",
       },
       "dependencies": {
+        "@light-harness/acp": "workspace:*",
         "@light-harness/core": "workspace:*",
       },
     },
@@ -25,6 +34,10 @@
     },
   },
   "packages": {
+    "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@2.5.0", "", { "peerDependencies": { "@modelcontextprotocol/server": "^2.4.0", "zod": "^3.25.76 || ^4.0.0" }, "optionalPeers": ["@modelcontextprotocol/server"] }, "sha512-MFlXeIuwN6nZSK45SAsSnVjbLgQ2r4fnthoF1lQoGJP3PdaPRpOZeCF2Dds8S4cN8yZP5QbxB1bkJccGskmcYw=="],
+
+    "@light-harness/acp": ["@light-harness/acp@workspace:packages/acp"],
+
     "@light-harness/cli": ["@light-harness/cli@workspace:packages/cli"],
 
     "@light-harness/core": ["@light-harness/core@workspace:packages/core"],
@@ -38,6 +51,8 @@
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "undici-types": ["undici-types@8.12.4", "", {}, "sha512-GNCQH3MbVGB8OAVAoTiLH8pu4wx5Ni3DWKpnBzGj3WDsi8EwmK0aOVBooNEt+g5YL1eHPxcS9XUTouwFU6j1kQ=="],
+
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
     "@types/node/undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
   }

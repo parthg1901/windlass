@@ -25,6 +25,8 @@ export type Parsed =
   | { readonly kind: "version" }
   /** `--list-sessions` or `--models`: print a listing from the engine and exit. */
   | { readonly kind: "list"; readonly what: "sessions" | "models"; readonly options: Options }
+  /** `acp`: serve the Agent Client Protocol on stdin and stdout. */
+  | { readonly kind: "acp" }
   | { readonly kind: "error"; readonly message: string }
 
 const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--cwd", "--demo", "--demo-speed", "--demo-grace"] as const
@@ -33,6 +35,7 @@ type ValueFlag = (typeof VALUE_FLAGS)[number]
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
 
 export function parseArgs(argv: readonly string[]): Parsed {
+  if (argv[0] === "acp") return argv.length === 1 ? { kind: "acp" } : error("acp takes no arguments; the client sends everything else")
   const values: Partial<Record<ValueFlag, string>> = {}
   const flags = new Set<string>()
   const words: string[] = []
@@ -114,6 +117,7 @@ Usage:
   ${b} [options] <prompt...>     run one prompt and exit
   echo "<prompt>" | ${b} [options]  read the prompt from stdin
   ${b} [options]                 interactive: a prompt line, then the agent's work
+  ${b} acp                       serve the Agent Client Protocol on stdio (for editors)
 
 Options:
   --session <id>         resume a session by ID

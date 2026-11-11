@@ -11,6 +11,7 @@
     "./engine": "./src/engine.ts"
   },
   "dependencies": {
-    "@light-harness/core": "workspace:*"
+    "@light-harness/core": "workspace:*",
+    "@light-harness/acp": "workspace:*"
   }
 }
