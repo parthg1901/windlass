@@ -1,4 +1,8 @@
-/** Every step-loop scenario, by family, in the order docs/step-loop-scenarios.md lists them. */
+/**
+ * Every step-loop scenario, by family, in the order docs/step-loop-scenarios.md
+ * lists them, together with the vocabulary they are written in. Other
+ * packages import this module as `@light-harness/core/testing/scenarios`.
+ */
 import { cancelScenarios } from "./cancel.ts"
 import { crashScenarios } from "./crash.ts"
 import { happyPaths } from "./happy.ts"
@@ -7,6 +11,8 @@ import { retryScenarios } from "./retry.ts"
 import type { Scenario } from "./script.ts"
 import { shutdownScenarios } from "./shutdown.ts"
 import { steeringScenarios } from "./steering.ts"
+
+export * from "./script.ts"
 
 export const families: Record<string, readonly Scenario[]> = {
   "Happy paths": happyPaths,

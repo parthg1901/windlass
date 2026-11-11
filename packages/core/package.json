@@ -5,6 +5,13 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./auth/chatgpt": "./src/auth/chatgpt.ts"
+    "./auth/chatgpt": "./src/auth/chatgpt.ts",
+    "./store/sqlite": "./src/store/sqlite.ts",
+    "./provider/openai-responses": "./src/provider/openai-responses.ts",
+    "./request": "./src/request/index.ts",
+    "./instructions": "./src/instructions/index.ts",
+    "./tools": "./src/tools/index.ts",
+    "./testing": "./src/testing/index.ts",
+    "./testing/scenarios": "./test/scenarios/index.ts"
   }
 }
