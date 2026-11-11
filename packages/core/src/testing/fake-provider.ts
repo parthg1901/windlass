@@ -12,7 +12,7 @@
  * it contains a complete tool call, otherwise `stop`.
  */
 import type { Json } from "../json.ts"
-import { type ProviderError, type ProviderErrorKind, makeProviderError } from "../provider/error.ts"
+import { type ProviderError, type ProviderErrorDetail, type ProviderErrorKind, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
 import type { Usage } from "../provider/usage.ts"
 import { type PrefixComparison, comparePrefix, hashRequest } from "../request/prefix.ts"
@@ -94,7 +94,7 @@ export const script = {
   /** Fails the call with an error of the given class. */
   fail: (
     kind: ProviderErrorKind,
-    detail: { message?: string; status?: number; code?: string; retryAfterMs?: number } = {},
+    detail: ProviderErrorDetail & { message?: string } = {},
   ): ScriptItem => ({ type: "error", error: makeProviderError(kind, detail.message ?? `scripted ${kind}`, detail) }),
   cut: (): ScriptItem => ({ type: "cut" }),
   hang: (): ScriptItem => ({ type: "hang" }),

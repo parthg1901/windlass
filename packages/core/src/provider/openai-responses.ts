@@ -7,13 +7,17 @@
  *
  * Failure mapping when the stream does not complete:
  * - before a response: token getter failure -> `auth`; `fetch` rejects ->
- *   `transport`; no response headers within `idleTimeoutMs` -> `transport`.
+ *   `transport` (`connection`); no response headers within `idleTimeoutMs` ->
+ *   `transport` (`stalled`).
  * - a non-2xx response -> classified from its status and body
  *   (openai-responses-error.ts), with `retry-after` honoured when present.
- * - after the stream opened: a read error (connection reset) -> `transport`;
- *   no bytes (not even a keep-alive comment) for `idleTimeoutMs` ->
- *   `transport`; a clean end of body without a terminal event ->
- *   `incomplete_stream`; a frame that is not JSON -> `provider_internal`.
+ * - after the stream opened: a read error (connection reset) -> `transport`
+ *   (`connection`); no bytes (not even a keep-alive comment) for
+ *   `idleTimeoutMs` -> `transport` (`stalled`); a clean end of body without a
+ *   terminal event -> `incomplete_stream`; a frame that is not JSON ->
+ *   `provider_internal`.
+ * - every error of a response that had an `x-oai-request-id` header carries it
+ *   as `requestId`; the message never contains it.
  * - abort: the HTTP request is cancelled and the stream ends with no terminal event.
  */
 import { type BlobRef } from "../content.ts"
@@ -96,7 +100,10 @@ export class OpenAIResponsesProvider implements Provider {
         return
       }
       if (!response.body) {
-        yield { type: "error", error: makeProviderError("incomplete_stream", "the response had no body", { status: response.status }) }
+        yield {
+          type: "error",
+          error: makeProviderError("incomplete_stream", "the response had no body", { status: response.status, requestId }),
+        }
         return
       }
 
@@ -108,7 +115,9 @@ export class OpenAIResponsesProvider implements Provider {
         const chunk = await this.withTimeout(body.read(), controller)
         if (signal.aborted) return
         if (chunk instanceof Timeout) {
-          yield* mapper.fail(makeProviderError("transport", `no data from the stream for ${this.idleTimeoutMs} ms`))
+          yield* mapper.fail(
+            makeProviderError("transport", `no data from the stream for ${this.idleTimeoutMs} ms`, { reason: "stalled" }),
+          )
           break
         }
         if (chunk instanceof Failure) {
@@ -170,7 +179,7 @@ export class OpenAIResponsesProvider implements Provider {
     })
     const result = await this.withTimeout(sent, controller)
     if (result instanceof Timeout)
-      return { error: makeProviderError("transport", `no response within ${this.idleTimeoutMs} ms`) }
+      return { error: makeProviderError("transport", `no response within ${this.idleTimeoutMs} ms`, { reason: "stalled" }) }
     if (result instanceof Failure)
       return { error: makeProviderError("transport", `the request failed: ${describe(result.cause)}`) }
     return { response: result }

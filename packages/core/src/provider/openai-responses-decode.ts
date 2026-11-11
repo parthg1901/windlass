@@ -61,7 +61,7 @@ export class ResponsesStreamMapper {
     const parsed = parse(frame.data)
     if (!isRecord(parsed) || typeof parsed.type !== "string")
       return this.fail(
-        makeProviderError("provider_internal", this.withRequest(`unparseable stream frame: ${clip(frame.data)}`)),
+        makeProviderError("provider_internal", `unparseable stream frame: ${clip(frame.data)}`),
       )
     return this.event(parsed as Record_ & { type: string })
   }
@@ -70,15 +70,19 @@ export class ResponsesStreamMapper {
   end(): StreamEvent[] {
     if (this.terminated) return []
     return this.fail(
-      makeProviderError("incomplete_stream", this.withRequest("the stream ended before response.completed")),
+      makeProviderError("incomplete_stream", "the stream ended before response.completed"),
     )
   }
 
-  /** Fails the call with an error found outside the frames (transport, timeout). */
+  /**
+   * Fails the call with an error found outside the frames (transport,
+   * timeout) or inside them. Every error of a stream carries the request ID
+   * of the response it belongs to.
+   */
   fail(error: ProviderError): StreamEvent[] {
     if (this.terminated) return []
     this.terminated = true
-    return [{ type: "error", error }]
+    return [{ type: "error", error: { ...error, requestId: error.requestId ?? this.requestId } }]
   }
 
   private event(event: Record_ & { type: string }): StreamEvent[] {
@@ -214,7 +218,7 @@ export class ResponsesStreamMapper {
   private completed(response: Record_): StreamEvent[] {
     const events = [...this.settleOpenItems(response), ...this.usage(response)]
     if (this.refusal !== null)
-      return [...events, ...this.fail(makeProviderError("content_policy", this.withRequest(`refused: ${this.refusal}`), { code: "refusal" }))]
+      return [...events, ...this.fail(makeProviderError("content_policy", `refused: ${this.refusal}`, { code: "refusal" }))]
     this.terminated = true
     return [...events, { type: "finish", reason: this.toolCalls > 0 ? "tool_calls" : "stop" }]
   }
@@ -229,8 +233,8 @@ export class ResponsesStreamMapper {
     }
     const error =
       reason === "content_filter" || this.refusal !== null
-        ? makeProviderError("content_policy", this.withRequest(`response incomplete: ${reason ?? "refusal"}`), { code: reason ?? "refusal" })
-        : makeProviderError("provider_internal", this.withRequest(`response incomplete: ${reason ?? "no reason given"}`), {
+        ? makeProviderError("content_policy", `response incomplete: ${reason ?? "refusal"}`, { code: reason ?? "refusal" })
+        : makeProviderError("provider_internal", `response incomplete: ${reason ?? "no reason given"}`, {
             code: reason ?? undefined,
           })
     return [...events, ...this.fail(error)]
@@ -269,9 +273,6 @@ export class ResponsesStreamMapper {
     return [{ type: "usage", usage }]
   }
 
-  private withRequest(message: string) {
-    return this.requestId ? `${message} (request ${this.requestId})` : message
-  }
 }
 
 function parse(data: string): unknown {

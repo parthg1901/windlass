@@ -79,17 +79,16 @@ export interface FailureDetail {
   readonly code?: string | null
   readonly message: string
   readonly retryAfterMs?: number | null
-  /** The `x-oai-request-id` of the response, appended to the message for diagnosis. */
+  /** The `x-oai-request-id` of the response. It becomes the error's `requestId`, never part of the message. */
   readonly requestId?: string | null
 }
 
 export function classify(failure: FailureDetail): ProviderError {
-  const kind = kindOf(failure)
-  const message = failure.requestId ? `${failure.message} (request ${failure.requestId})` : failure.message
-  return makeProviderError(kind, message, {
+  return makeProviderError(kindOf(failure), failure.message, {
     status: failure.status,
     code: failure.code ?? undefined,
     retryAfterMs: failure.retryAfterMs ?? undefined,
+    requestId: failure.requestId,
   })
 }
 

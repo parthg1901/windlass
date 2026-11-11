@@ -99,7 +99,7 @@ describe("Responses stream decoding: synthetic fixtures", () => {
     expect(await decodeFixture("synthetic-incomplete-content-filter.sse")).toEqual([
       {
         type: "error",
-        error: { kind: "content_policy", retryable: false, message: "response incomplete: content_filter", status: null, code: "content_filter", retryAfterMs: null },
+        error: { kind: "content_policy", retryable: false, message: "response incomplete: content_filter", status: null, code: "content_filter", retryAfterMs: null, requestId: null },
       },
     ])
   })
@@ -161,7 +161,9 @@ describe("Responses stream decoding: framing", () => {
     const mapper = new ResponsesStreamMapper("req_TEST1")
     const events = mapper.frame({ event: "response.output_text.delta", data: "{not json" })
     expect(events).toMatchObject([{ type: "error", error: { kind: "provider_internal", retryable: true } }])
-    expect(events[0]?.type === "error" && events[0].error.message).toContain("req_TEST1")
+    // The request ID is its own field; the message is only the description.
+    expect(events[0]?.type === "error" && events[0].error).toMatchObject({ requestId: "req_TEST1" })
+    expect(events[0]?.type === "error" && events[0].error.message).not.toContain("req_TEST1")
     expect(mapper.done).toBe(true)
     expect(mapper.frame({ event: "x", data: '{"type":"response.completed","response":{}}' })).toEqual([])
     expect(mapper.end()).toEqual([])

@@ -48,15 +48,17 @@ describe("classify", () => {
     expect(kindOf({ status: 429, message: "Request too large: too many tokens per min" })).toBe("rate_limit")
   })
 
-  test("the request id is appended to the message and detail is kept", () => {
+  test("the request id is a field of its own, the message is left alone and detail is kept", () => {
     expect(classify({ status: 429, code: "slow_down", message: "HTTP 429: slow", retryAfterMs: 2000, requestId: "req_TEST1" })).toEqual({
       kind: "rate_limit",
       retryable: true,
-      message: "HTTP 429: slow (request req_TEST1)",
+      message: "HTTP 429: slow",
       status: 429,
       code: "slow_down",
       retryAfterMs: 2000,
+      requestId: "req_TEST1",
     })
+    expect(classify({ status: 500, message: "HTTP 500: boom" }).requestId).toBeNull()
   })
 })
 

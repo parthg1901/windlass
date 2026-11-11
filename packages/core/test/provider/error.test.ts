@@ -30,20 +30,34 @@ describe("provider error taxonomy", () => {
       status: 429,
       code: null,
       retryAfterMs: 1500,
+      requestId: null,
     })
-    expect(makeProviderError("auth", "sign in again")).toEqual({
+    expect(makeProviderError("auth", "sign in again", { requestId: "req_1" })).toEqual({
       kind: "auth",
       retryable: false,
       message: "sign in again",
       status: null,
       code: null,
       retryAfterMs: null,
+      requestId: "req_1",
     })
+  })
+
+  test("a transport error says whether the connection broke or stalled, and no other kind has a reason", () => {
+    expect(makeProviderError("transport", "reset")).toMatchObject({ kind: "transport", retryable: true, reason: "connection" })
+    const stalled = makeProviderError("transport", "no data for 300000 ms", { reason: "stalled" })
+    expect(stalled).toMatchObject({ kind: "transport", retryable: true, reason: "stalled" })
+    expect(providerError(JSON.parse(JSON.stringify(stalled)), "")).toEqual(stalled)
+    expect(makeProviderError("rate_limit", "slow down", { reason: "stalled" })).not.toHaveProperty("reason")
+    const { reason: _, ...withoutReason } = stalled
+    expect(() => providerError(withoutReason, "error")).toThrow(DecodeError)
+    expect(() => providerError({ ...stalled, reason: "slow" }, "error")).toThrow(DecodeError)
+    expect(() => providerError({ ...makeProviderError("auth", "nope"), reason: "stalled" }, "error")).toThrow(DecodeError)
   })
 
   test("every kind survives a JSON round trip through the validator", () => {
     for (const kind of kinds) {
-      const error = makeProviderError(kind, "message", { code: "some_code" })
+      const error = makeProviderError(kind, "message", { code: "some_code", requestId: "req_abc" })
       expect(providerError(JSON.parse(JSON.stringify(error)), "")).toEqual(error)
     }
   })

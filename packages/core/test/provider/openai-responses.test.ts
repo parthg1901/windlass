@@ -212,10 +212,11 @@ describe("OpenAIResponsesProvider over HTTP", () => {
     expect(await errorOf("detail-400")).toEqual({
       kind: "invalid_request",
       retryable: false,
-      message: "HTTP 400: Unsupported parameter: temperature (request req_TEST1)",
+      message: "HTTP 400: Unsupported parameter: temperature",
       status: 400,
       code: null,
       retryAfterMs: null,
+      requestId: "req_TEST1",
     })
     expect(await errorOf("code-400-no-content-type")).toMatchObject({ kind: "invalid_request", status: 400, code: "invalid_encrypted_content" })
     expect(await errorOf("null-code-400")).toMatchObject({ kind: "invalid_request", status: 400, code: "invalid_request_error" })
@@ -246,7 +247,7 @@ describe("OpenAIResponsesProvider over HTTP", () => {
       const events = await collect(provider("", { baseUrl: `http://127.0.0.1:${killer.port}` }).stream(request, new AbortController().signal))
       expect(events).toMatchObject([
         { type: "text.delta", text: "partial" },
-        { type: "error", error: { kind: "transport", retryable: true } },
+        { type: "error", error: { kind: "transport", retryable: true, reason: "connection" } },
       ])
     } finally {
       killer.stop(true)
@@ -256,21 +257,24 @@ describe("OpenAIResponsesProvider over HTTP", () => {
   test("a body that ends without a terminal event is incomplete_stream", async () => {
     const events = await collect(provider("cut").stream(request, new AbortController().signal))
     expect(events.at(-1)).toMatchObject({ type: "error", error: { kind: "incomplete_stream", retryable: true } })
-    expect(events.at(-1)?.type === "error" && events.at(-1)).toMatchObject({ error: { message: expect.stringContaining("req_TEST1") } })
+    expect(events.at(-1)?.type === "error" && events.at(-1)).toMatchObject({
+      error: { requestId: "req_TEST1", message: expect.not.stringContaining("req_TEST1") },
+    })
   })
 
   test("a stalled stream fails as transport after the idle timeout and the request is cancelled", async () => {
     const started = Date.now()
     const events = await collect(provider("stall", { idleTimeoutMs: 150 }).stream(request, new AbortController().signal))
     expect(Date.now() - started).toBeLessThan(1_500)
-    expect(events.at(-1)).toMatchObject({ type: "error", error: { kind: "transport", retryable: true } })
+    // Still a transport error, so it is retried like one, but told apart from a broken connection.
+    expect(events.at(-1)).toMatchObject({ type: "error", error: { kind: "transport", retryable: true, reason: "stalled", requestId: "req_TEST1" } })
     await sleep(50)
     expect(cancelled.has("/stall/responses")).toBe(true)
   })
 
   test("no response headers within the idle timeout is transport", async () => {
     const error = await errorOf("stall-headers", { idleTimeoutMs: 150 })
-    expect(error).toMatchObject({ kind: "transport", status: null })
+    expect(error).toMatchObject({ kind: "transport", status: null, reason: "stalled", requestId: null })
   })
 
   test("keep-alive comments keep a slow stream alive past the idle timeout", async () => {
@@ -296,7 +300,11 @@ describe("OpenAIResponsesProvider over HTTP", () => {
     const closed = Bun.serve({ port: 0, fetch: () => new Response("") })
     const port = closed.port
     closed.stop(true)
-    expect(await errorOf("", { baseUrl: `http://127.0.0.1:${port}` })).toMatchObject({ kind: "transport", retryable: true })
+    expect(await errorOf("", { baseUrl: `http://127.0.0.1:${port}` })).toMatchObject({
+      kind: "transport",
+      retryable: true,
+      reason: "connection",
+    })
   })
 
   test("a failing token getter is auth and sends nothing", async () => {
