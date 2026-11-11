@@ -6,6 +6,7 @@ import {
   type Tool,
   type ToolContext,
   type ToolProgress,
+  noBlobStore,
   specOf,
   toolEffect,
   toolSpec,
@@ -45,6 +46,7 @@ function context(signal: AbortSignal, progress: ToolProgress[] = []): ToolContex
     cwd: "/repo",
     signal,
     progress: (update) => progress.push(update),
+    putBlob: noBlobStore,
   }
 }
 

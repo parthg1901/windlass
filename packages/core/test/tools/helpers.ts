@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { type ToolCallOutcome, createToolRuntime } from "../../src/tool/runtime.ts"
-import type { AnyTool, ToolContext, ToolProgress } from "../../src/tool/tool.ts"
+import { type AnyTool, type ToolContext, type ToolProgress, noBlobStore } from "../../src/tool/tool.ts"
 import { type StandardToolOptions, createStandardTools } from "../../src/tools/index.ts"
 
 const created: string[] = []
@@ -33,6 +33,8 @@ export function context(cwd: string, options: { signal?: AbortSignal; progress?:
     cwd,
     signal: options.signal ?? createInterrupt().signal,
     progress: (update) => options.progress?.push(update),
+    // None of the standard tools returns media yet.
+    putBlob: noBlobStore,
   }
 }
 
@@ -41,7 +43,7 @@ export function workspace(options: Partial<StandardToolOptions> = {}) {
   const root = tempDir()
   const spillDir = join(tempDir(), "spill")
   const tools = createStandardTools({ spillDir, ...options })
-  const runtime = createToolRuntime({ tools, spillDir })
+  const runtime = createToolRuntime({ tools, spillDir, putBlob: noBlobStore })
   return {
     root,
     spillDir,

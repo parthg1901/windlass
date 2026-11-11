@@ -10,12 +10,13 @@ import { join } from "node:path"
 import type { CallId, MessageId, SessionId } from "../packages/core/src/id.ts"
 import { createInterrupt } from "../packages/core/src/interrupt.ts"
 import { createToolRuntime } from "../packages/core/src/tool/runtime.ts"
+import { noBlobStore } from "../packages/core/src/tool/tool.ts"
 import { createStandardTools } from "../packages/core/src/tools/index.ts"
 
 const root = mkdtempSync(join(tmpdir(), "lh-tools-demo-"))
 const workspace = join(root, "workspace")
 const spillDir = join(root, "spill")
-const runtime = createToolRuntime({ tools: createStandardTools({ spillDir }), spillDir })
+const runtime = createToolRuntime({ tools: createStandardTools({ spillDir }), spillDir, putBlob: noBlobStore })
 
 await Bun.write(
   join(workspace, "src/math.ts"),

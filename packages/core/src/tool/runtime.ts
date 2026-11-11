@@ -19,7 +19,7 @@ import { interruptReasonOf } from "../interrupt.ts"
 import { excerpt, parseArguments } from "./args.ts"
 import { OUTPUT_LIMITS, type OutputLimits, capOutput } from "./cap.ts"
 import { type SchemaCheck, compileSchema } from "./schema.ts"
-import type { AnyTool, ToolContext, ToolResult, Truncation } from "./tool.ts"
+import type { AnyTool, PutBlob, ToolContext, ToolResult, Truncation } from "./tool.ts"
 
 /** Exactly the fields of the `tool.settled` event besides `messageId` and `callId`. */
 export interface Settlement<Outcome extends "success" | "error" | "not_started" | "effect_unknown"> {
@@ -52,11 +52,14 @@ export type ToolCallOutcome =
       readonly settlement: Settlement<"error" | "effect_unknown">
     }
 
+/** What the caller knows about one call. The runtime adds what it owns (`putBlob`) to make the tool's `ToolContext`. */
+export type ToolCallContext = Omit<ToolContext, "putBlob">
+
 export interface ToolCall {
   readonly name: string
   /** The argument text exactly as the model produced it. */
   readonly argumentsText: string
-  readonly context: ToolContext
+  readonly context: ToolCallContext
 }
 
 export interface RunHooks {
@@ -72,6 +75,12 @@ export interface ToolRuntimeOptions {
   readonly tools: readonly AnyTool[]
   /** Where capped output is written in full. Created on first use. */
   readonly spillDir: string
+  /**
+   * Where tools store media they return, normally `store.putBlob`. Every
+   * call's context gets it, so a tool can attach an image without knowing
+   * about the store.
+   */
+  readonly putBlob: PutBlob
   readonly limits?: OutputLimits
 }
 
@@ -105,7 +114,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     const input = acceptInput(entry.tool.name, entry.check, call.argumentsText)
     if (!input.ok) return input.outcome
     hooks.onStart?.()
-    const result = await execute(entry.tool, input.value, call.context)
+    const result = await execute(entry.tool, input.value, { ...call.context, putBlob: options.putBlob })
     if (!result.ok) return crashed(entry.tool, result.error)
     if (result.value.truncation !== null)
       return { kind: "completed", settlement: { ...settlementOf(result.value), outcome: result.value.status } }

@@ -1,5 +1,6 @@
 /** Check selection, the fingerprint, evidence and the acknowledgement tool. */
 import { afterEach, describe, expect, test } from "bun:test"
+import { noBlobStore } from "../../src/tool/tool.ts"
 import { rmSync, utimesSync } from "node:fs"
 import { join } from "node:path"
 import { DecodeError, safeDecode } from "../../src/validate.ts"
@@ -133,6 +134,7 @@ describe("acknowledgement", () => {
         cwd: "/",
         signal: createInterrupt().signal,
         progress: () => {},
+        putBlob: noBlobStore,
       },
     )
     expect(result).toEqual({ status: "success", output: "Recorded as unresolved: test, lint.", truncation: null, attachments: [], display: null })

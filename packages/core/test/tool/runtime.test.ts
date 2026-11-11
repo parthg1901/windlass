@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { OUTPUT_LIMITS } from "../../src/tool/cap.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
-import type { AnyTool, Tool, ToolEffect, ToolResult } from "../../src/tool/tool.ts"
+import { type AnyTool, type Tool, type ToolEffect, type ToolResult, noBlobStore } from "../../src/tool/tool.ts"
 import { context, tempDir, removeTempDirs } from "../tools/helpers.ts"
 
 afterEach(removeTempDirs)
@@ -46,7 +46,7 @@ function crasher(name: string, effect: ToolEffect): Tool<Record<string, never>> 
 
 function setup(tools: AnyTool[]) {
   const spillDir = `${tempDir()}/spill`
-  const runtime = createToolRuntime({ tools, spillDir })
+  const runtime = createToolRuntime({ tools, spillDir, putBlob: noBlobStore })
   const cwd = tempDir()
   return { runtime, spillDir, run: (name: string, argumentsText: string, signal?: AbortSignal, onStart?: () => void) =>
     runtime.run({ name, argumentsText, context: context(cwd, { signal }) }, { onStart }) }
@@ -197,6 +197,44 @@ describe("tool runtime", () => {
   })
 
   test("tool names must be unique", () => {
-    expect(() => createToolRuntime({ tools: [echo(), echo()], spillDir: "/tmp" })).toThrow("unique")
+    expect(() => createToolRuntime({ tools: [echo(), echo()], spillDir: "/tmp", putBlob: noBlobStore })).toThrow("unique")
+  })
+
+  test("a tool stores media through the context and attaches the reference it gets back", async () => {
+    const stored: { bytes: Uint8Array; mediaType: string }[] = []
+    const putBlob = (bytes: Uint8Array, mediaType: string) => {
+      stored.push({ bytes, mediaType })
+      return { hash: `hash-${stored.length}`, mediaType }
+    }
+    const screenshot: Tool<Record<string, never>> = {
+      name: "screenshot",
+      description: "Takes a screenshot.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      effect: "read",
+      execute: async (_, ctx) => ({ ...ok("screenshot taken"), attachments: [ctx.putBlob(new Uint8Array([137, 80, 78, 71]), "image/png")] }),
+    }
+    const runtime = createToolRuntime({ tools: [screenshot], spillDir: `${tempDir()}/spill`, putBlob })
+    // The caller's context carries no blob store: the runtime supplies the one from its options.
+    const { putBlob: _, ...callContext } = context(tempDir())
+    const outcome = await runtime.run({ name: "screenshot", argumentsText: "{}", context: callContext })
+    expect(outcome).toMatchObject({
+      kind: "completed",
+      settlement: { outcome: "success", output: "screenshot taken", attachments: [{ hash: "hash-1", mediaType: "image/png" }] },
+    })
+    expect(stored).toEqual([{ bytes: new Uint8Array([137, 80, 78, 71]), mediaType: "image/png" }])
+  })
+
+  test("the runtime's blob store wins over one a caller left on the context, and a failing store is the tool's crash", async () => {
+    const attach: Tool<Record<string, never>> = {
+      name: "attach",
+      description: "Stores one byte.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      effect: "read",
+      execute: async (_, ctx) => ({ ...ok("stored"), attachments: [ctx.putBlob(new Uint8Array([1]), "application/octet-stream")] }),
+    }
+    const runtime = createToolRuntime({ tools: [attach], spillDir: `${tempDir()}/spill`, putBlob: noBlobStore })
+    const callers = { ...context(tempDir()), putBlob: () => ({ hash: "callers", mediaType: "x/y" }) }
+    const outcome = await runtime.run({ name: "attach", argumentsText: "{}", context: callers })
+    expect(outcome).toMatchObject({ kind: "crashed", settlement: { outcome: "error", output: expect.stringContaining("no blob store") } })
   })
 })

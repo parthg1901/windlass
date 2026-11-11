@@ -20,7 +20,7 @@ import { callId, messageId, sessionId } from "../id.ts"
 import { type InterruptReason, interruptReason, interruptReasonOf } from "../interrupt.ts"
 import type { Json } from "../json.ts"
 import { type CapSource, countLines } from "../tool/cap.ts"
-import type { ToolResult } from "../tool/tool.ts"
+import { type ToolResult, noBlobStore } from "../tool/tool.ts"
 import { shellTool } from "../tools/shell.ts"
 import { boolean, integer, nullable, object, oneOf, safeDecode, string, type Infer } from "../validate.ts"
 
@@ -98,6 +98,8 @@ export async function runCheck(check: CheckConfig, options: RunCheckOptions): Pr
       cwd: options.cwd,
       signal: options.signal,
       progress: (update) => options.progress?.(check.name, update.text),
+      // A check is a shell command: it returns text, never media.
+      putBlob: noBlobStore,
     },
   )
   const durationMs = Math.round(performance.now() - startedAt)

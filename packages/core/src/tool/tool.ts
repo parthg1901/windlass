@@ -64,6 +64,26 @@ export interface ToolContext {
   readonly signal: AbortSignal
   /** Reports ephemeral progress. Safe to call often; may be dropped. */
   readonly progress: (update: ToolProgress) => void
+  /**
+   * Stores bytes in the content-addressed blob table and returns the
+   * reference, which the tool then lists in `ToolResult.attachments` (a
+   * screenshot, a rendered image). Synchronous and idempotent, like
+   * `Store.putBlob`: the same bytes always give the same reference. The tool
+   * runtime supplies it from its options, so a tool never sees the store.
+   */
+  readonly putBlob: PutBlob
+}
+
+/** Stores bytes under their SHA-256 and returns the reference. The signature of `Store.putBlob`. */
+export type PutBlob = (bytes: Uint8Array, mediaType: string) => BlobRef
+
+/**
+ * For a context built outside a session (a check runner, a unit test of a
+ * tool that returns no media): a `putBlob` that fails loudly instead of
+ * dropping the bytes.
+ */
+export const noBlobStore: PutBlob = () => {
+  throw new Error("this tool context has no blob store")
 }
 
 /**
