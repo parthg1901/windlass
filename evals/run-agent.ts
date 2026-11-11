@@ -557,8 +557,9 @@ export async function parseRunnerArgs(argv: readonly string[]): Promise<RunOptio
     const raw = values.get(flag)
     if (raw === undefined) continue
     const value = Number(raw)
-    if (!Number.isFinite(value) || value < (flag === "--grace" ? 0 : 1) || (flag !== "--timeout" && flag !== "--grace" && !Number.isInteger(value)))
-      return `${flag} must be a ${flag === "--timeout" || flag === "--grace" ? "number of seconds" : "whole number of at least 1"}`
+    const seconds = flag === "--timeout" || flag === "--grace"
+    const valid = Number.isFinite(value) && (seconds ? value > 0 || (flag === "--grace" && value === 0) : Number.isInteger(value) && value >= 1)
+    if (!valid) return `${flag} must be ${seconds ? "a positive number of seconds" : "a whole number of at least 1"}`
     numbers[flag] = value
   }
   const cli = values.get("--cli")
