@@ -133,7 +133,7 @@ describe("encodeRequest", () => {
     const none = JSON.parse(encodeRequest({ ...stepTwo(), toolChoice: "none" }, new Map()).body) as Record<string, unknown>
     expect(none.tool_choice).toBe("none")
     expect(none.tools).toEqual(auto.tools)
-    expect({ ...none, tool_choice: "auto" }).toEqual(auto)
+    expect({ ...none, tool_choice: "auto" } as Record<string, unknown>).toEqual(auto)
   })
 
   test("optional params: no cache key means no header and no prompt_cache_key; verbosity and effort map when set", () => {
