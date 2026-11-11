@@ -7,14 +7,19 @@
  * - `JsonSink`: every event as one JSON line, nothing else on stdout.
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
-import { type EventData, type ProviderError, type StepError, type Usage } from "@light-harness/core"
-import { brand } from "./brand.ts"
+import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, brand } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
 import { callArgument, detailLines, errorSummary, successSummary } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatDuration, paint, plural, renderLine, seg, truncate } from "./text.ts"
 
 export interface Sink {
   event(event: EngineEvent): void
+  /**
+   * The user pressed Ctrl-C and the CLI asked the engine to stop. The engine's
+   * `execution.interrupt_requested` is what shows the stop; this only adds how
+   * to leave without waiting.
+   */
+  interruptRequested(): void
   /** A message from the CLI itself, such as "stopping". Never on stdout in `--json` mode. */
   notice(text: string, tone?: "info" | "warn" | "error"): void
   /** Leaves the terminal tidy (no transient status line, cursor at a line start). Called before the CLI exits. */
@@ -32,6 +37,12 @@ export interface PrettyOptions {
   readonly showReasoning: boolean
   /** Print user prompts found in the stream (`› ...`), for replays where nobody typed them here. */
   readonly echoPrompts: boolean
+  /**
+   * Where the transient status line goes when something else owns the bottom
+   * of the terminal (the interactive input). Without it, and with `live`, the
+   * renderer draws the status line itself.
+   */
+  readonly status?: (text: string | null) => void
 }
 
 type Block = "prompt" | "text" | "reasoning" | "info" | "summary"
@@ -50,6 +61,8 @@ interface Turn {
   usage: Usage | null
   /** The class of the last error seen in this turn, for the failure line. */
   lastError: string | null
+  /** The provider's request ID of the last failed call, for the failure line: what a bug report quotes. */
+  requestId: string | null
 }
 
 interface InboxItem {
@@ -70,6 +83,7 @@ const SYMBOL = {
   inbox: "↳",
   think: "∴",
   stop: "■",
+  settings: "⇄",
   refused: "⊘",
   compact: "⇣",
   note: "·",
@@ -96,6 +110,13 @@ export class PrettyRenderer implements Sink {
   private retrying = false
   /** How the previous process left the current execution, for the resume line. */
   private cutOff: "crash" | "shutdown" | null = null
+  private settings: SessionSettings | null = null
+  /** The instruction files of the latest baseline, so an unchanged list is not shown again. */
+  private instructionFiles = ""
+  /** The stop of the running execution: asked for by this CLI (with the exit hint pending), shown, or neither. */
+  private stop: "hint" | "shown" | null = null
+  /** The next text block continues a response that a provider error cut off. */
+  private continuing = false
   private status: string | null = null
   private statusDrawn = false
 
@@ -109,6 +130,14 @@ export class PrettyRenderer implements Sink {
   notice(text: string, tone: "info" | "warn" | "error" = "info"): void {
     this.line("info", [seg(text, tone === "error" ? "red" : tone === "warn" ? "yellow" : "dim")])
     this.drawStatus()
+  }
+
+  interruptRequested(): void {
+    if (this.stop === "shown") {
+      this.notice(`${SYMBOL.stop} still stopping… press Ctrl-C again to exit now`, "warn")
+      return
+    }
+    this.stop = "hint"
   }
 
   close(): void {
@@ -181,6 +210,7 @@ export class PrettyRenderer implements Sink {
       case "retry.scheduled": {
         this.retrying = true
         const error = event.data.error
+        this.setError(error.kind, error.requestId)
         this.line("info", [
           seg(`${SYMBOL.retry} `, "yellow"),
           seg(`retrying in ${formatDuration(event.data.delayMs)} (attempt ${event.data.attempt})`, "yellow"),
@@ -198,21 +228,42 @@ export class PrettyRenderer implements Sink {
         return
       case "compaction.failed":
         this.compacting = false
-        this.setError(errorClass(event.data.error))
+        this.setError(errorClass(event.data.error), event.data.error.kind === "provider" ? event.data.error.error.requestId : null)
         this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg(`compaction failed: ${stepErrorText(event.data.error)}`, "red")])
         return
       case "synthetic.appended":
         return this.syntheticAppended(event.data.origin)
-      case "instruction.appended":
-        this.line("info", [seg(`${SYMBOL.note} instructions updated (${event.data.source}): `, "dim"), seg(flatten(event.data.text), "dim")])
+      case "instruction.appended": {
+        const source = sourceLabel(event.data.source)
+        if (event.data.fingerprint === null) this.line("info", [seg(`${SYMBOL.note} instructions removed: ${source}`, "dim")])
+        else this.line("info", [seg(`${SYMBOL.note} instructions updated (${source}): `, "dim"), seg(flatten(event.data.text), "dim")])
         return
+      }
+      case "settings.changed":
+        return this.settingsChanged(event.data)
+      case "baseline.set": {
+        const files = event.data.sources.filter((entry) => entry.source.startsWith("agents:")).map((entry) => sourceLabel(entry.source))
+        const list = files.join(", ")
+        if (list === this.instructionFiles) return
+        this.instructionFiles = list
+        if (list !== "") this.line("info", [seg(`${SYMBOL.note} instructions from ${list}`, "dim")])
+        return
+      }
+      case "execution.interrupt_requested": {
+        const hint = this.stop === "hint" ? " press Ctrl-C again to exit now" : ""
+        this.stop = "shown"
+        this.retrying = false
+        const what = event.data.reason === "user" ? "stopping…" : "shutting down…"
+        this.line("info", [seg(`${SYMBOL.stop} `, "yellow"), seg(what, "yellow"), seg(hint, "dim")])
+        return
+      }
       case "inbox.enqueued":
         return this.enqueued(event.data)
       case "inbox.delivered": {
         const item = this.inbox.get(event.data.messageId)
         this.inbox.delete(event.data.messageId)
         if (item === undefined || !item.midTurn) return
-        this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg(`delivered ${item.delivery === "queue" ? "queued message" : "steer"}: `, "dim"), seg(quote(item.text))])
+        this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg("delivered to the agent: ", "dim"), seg(quote(item.text))])
         return
       }
       case "inbox.cancelled": {
@@ -224,20 +275,20 @@ export class PrettyRenderer implements Sink {
       case "inbox.delivery_changed": {
         const item = this.inbox.get(event.data.messageId)
         if (item !== undefined) this.inbox.set(event.data.messageId, { ...item, delivery: event.data.delivery })
-        const what = event.data.delivery === "queue" ? "now queued until the turn ends" : "now steering at the next step"
+        const what = event.data.delivery === "queue" ? "now queued until the current work is done" : "now delivered after the current step"
         this.line("info", [seg(`${SYMBOL.inbox} ${what}: `, "dim"), seg(quote(item?.text ?? event.data.messageId), "dim")])
         return
       }
       case "execution.started":
         this.executing = true
         this.cutOff = null
-        this.turn = { start: event.time, steps: 0, usage: null, lastError: null }
+        this.turn = { start: event.time, steps: 0, usage: null, lastError: null, requestId: null }
         return
       case "execution.resumed": {
         const count = (this.resumes.get(event.data.executionId) ?? 0) + 1
         this.resumes.set(event.data.executionId, count)
         this.executing = true
-        this.turn ??= { start: event.time, steps: 0, usage: null, lastError: null }
+        this.turn ??= { start: event.time, steps: 0, usage: null, lastError: null, requestId: null }
         const why =
           this.cutOff === "crash" ? "after the previous process stopped unexpectedly" : this.cutOff === "shutdown" ? "after a shutdown" : "an unfinished turn"
         this.cutOff = null
@@ -255,9 +306,12 @@ export class PrettyRenderer implements Sink {
         const kind = turn?.lastError
         const head = [seg(`${SYMBOL.fail} `, "red"), seg(kind === null || kind === undefined ? "failed" : `failed (${kind})`, ["red", "bold"])]
         const message = flatten(event.data.message)
+        // The request ID is what a bug report quotes, so it is on a line of its own and never cut.
+        const requestId = turn?.requestId ?? null
+        const more = requestId === null ? [] : [[seg(`  request ${requestId}`, "dim")]]
         // The reason a turn failed is never cut: it moves to its own wrapped lines when it does not fit.
-        if (displayWidth(`✗ failed (${kind ?? ""}): ${message}`) <= this.width) this.summary([...head, seg(`: ${message}`, "red")], turn)
-        else this.summary(head, turn, wrap(message, this.width - 2).map((line) => [seg(`  ${line}`, "red")]))
+        if (displayWidth(`✗ failed (${kind ?? ""}): ${message}`) <= this.width) this.summary([...head, seg(`: ${message}`, "red")], turn, more)
+        else this.summary(head, turn, [...wrap(message, this.width - 2).map((line) => [seg(`  ${line}`, "red")]), ...more])
         return
       }
       case "execution.interrupted": {
@@ -268,17 +322,20 @@ export class PrettyRenderer implements Sink {
           return
         }
         const time = turn === null ? null : formatDuration(event.time - turn.start)
-        this.summary([seg(`${SYMBOL.stop} `, "yellow"), seg("interrupted", ["yellow", "bold"]), seg(suffix([time]), "dim")], turn)
+        const waiting = [...this.inbox.values()].filter((item) => item.origin === null).length
+        const more = waiting === 0 ? [] : [[seg(`  ${plural(waiting, "message")} still waiting · delivered when work starts again`, "dim")]]
+        this.summary([seg(`${SYMBOL.stop} `, "yellow"), seg("interrupted", ["yellow", "bold"]), seg(suffix([time]), "dim")], turn, more)
         return
       }
       case "history.reverted":
         this.line("info", [seg(`${SYMBOL.note} history rewound`, "dim")])
         return
       case "session.created":
+        this.settings = event.data.settings
+        return
       case "session.renamed":
       case "session.archived":
       case "session.unarchived":
-      case "baseline.set":
         return
     }
   }
@@ -287,26 +344,45 @@ export class PrettyRenderer implements Sink {
     const clean = sanitize(text)
     if (clean === "") return
     const buffer = this.textBuffers.get(messageId) ?? ""
-    if (buffer === "") this.startStream("text")
-    this.raw(clean)
     this.textBuffers.set(messageId, buffer + clean)
+    const before = shown(buffer)
+    const after = shown(buffer + clean)
+    if (after === before) return
+    if (before === "") this.startText()
+    // Another line (a steer, a stop) came in while the text streamed: carry on below it, marked as a continuation.
+    else if (this.last !== "text") this.resumeText()
+    this.raw(after.slice(before.length))
   }
 
   private textEnded(messageId: string, text: string): void {
-    const clean = sanitize(text)
-    const buffer = this.textBuffers.get(messageId) ?? ""
+    const final = shown(sanitize(text))
+    const streamed = shown(this.textBuffers.get(messageId) ?? "")
     this.textBuffers.delete(messageId)
-    if (buffer === "") {
-      if (clean.trim() === "") return
-      this.startStream("text")
-      this.raw(clean)
-    } else if (clean.startsWith(buffer)) this.raw(clean.slice(buffer.length))
-    else {
+    if (streamed === "") {
+      if (final.trim() === "") return
+      this.startText()
+      this.raw(final)
+    } else if (final.startsWith(streamed)) {
+      if (final.length > streamed.length && this.last !== "text") this.resumeText()
+      this.raw(final.slice(streamed.length))
+    } else {
       // The final text is not what was streamed; show the final one in full rather than a broken mix.
       this.endLine()
-      this.raw(clean)
+      this.raw(final)
     }
     this.endLine()
+  }
+
+  /** Starts a text block; after a continuation note it is marked as picking up a sentence mid-way. */
+  private startText(): void {
+    this.startStream("text")
+    if (this.continuing) this.raw(paint(this.options.color, "dim", "… "))
+    this.continuing = false
+  }
+
+  private resumeText(): void {
+    this.startStream("text")
+    this.raw(paint(this.options.color, "dim", "… "))
   }
 
   private reasoningDelta(messageId: string, text: string): void {
@@ -372,7 +448,7 @@ export class PrettyRenderer implements Sink {
     switch (error.kind) {
       case "provider":
         // A retryable failure is explained by the retry line, a final one by the failure line.
-        this.setError(error.error.kind)
+        this.setError(error.error.kind, error.error.requestId)
         return
       case "interrupted":
         return
@@ -387,9 +463,23 @@ export class PrettyRenderer implements Sink {
     }
   }
 
+  private settingsChanged(next: SessionSettings): void {
+    const previous = this.settings
+    this.settings = next
+    const changes: string[] = []
+    if (previous === null || previous.model !== next.model) changes.push(previous === null ? `model ${next.model}` : `model ${previous.model} → ${next.model}`)
+    if (previous === null || previous.reasoningEffort !== next.reasoningEffort)
+      changes.push(`effort ${previous === null ? "" : `${previous.reasoningEffort ?? "default"} → `}${next.reasoningEffort ?? "default"}`)
+    this.line("info", [seg(`${SYMBOL.settings} `, "cyan"), seg(changes.join(" · ")), seg(" · from the next step", "dim")])
+  }
+
   private syntheticAppended(origin: string): void {
     switch (origin) {
       case "interrupt":
+        return
+      case "continuation":
+        this.continuing = true
+        this.line("info", [seg(`${SYMBOL.retry} `, "yellow"), seg("asking the model to continue where it was cut off", "dim")])
         return
       case "output_limit":
         this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("the response hit the output limit"), seg(" · asking the model to continue", "dim")])
@@ -417,8 +507,8 @@ export class PrettyRenderer implements Sink {
       if (this.options.echoPrompts) this.prompt(text)
       return
     }
-    const when = data.delivery === "queue" ? "queued: " : "steer: "
-    const later = data.delivery === "queue" ? " · runs when this turn is done" : " · delivered at the next step"
+    const when = data.delivery === "queue" ? "queued: " : "sent: "
+    const later = data.delivery === "queue" ? " · the agent will see it when the current work is done" : " · the agent will see it after the current step"
     this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg(when, "dim"), seg(quote(text)), seg(later, "dim")])
   }
 
@@ -446,14 +536,18 @@ export class PrettyRenderer implements Sink {
     }
   }
 
-  private setError(kind: string): void {
-    if (this.turn !== null) this.turn.lastError = kind
+  private setError(kind: string, requestId: string | null = null): void {
+    if (this.turn === null) return
+    this.turn.lastError = kind
+    this.turn.requestId = requestId
   }
 
   private endTurn(): Turn | null {
     const turn = this.turn
     this.turn = null
     this.executing = false
+    this.stop = null
+    this.continuing = false
     this.openStep = null
     this.retrying = false
     this.compacting = false
@@ -523,6 +617,7 @@ export class PrettyRenderer implements Sink {
 
   /** Draws the status line, or redraws it when it changed. Permanent output clears it first (see `raw`). */
   private drawStatus(): void {
+    if (this.options.status !== undefined) return this.options.status(this.computeStatus())
     if (!this.options.live) return
     const next = this.atLineStart ? this.computeStatus() : null
     if (this.statusDrawn && next === this.status) return
@@ -575,6 +670,10 @@ export class JsonSink implements Sink {
     this.writeError(`${brand.binary}: ${text}\n`)
   }
 
+  interruptRequested(): void {
+    this.notice("stopping; press Ctrl-C again to exit now")
+  }
+
   close(): void {}
 }
 
@@ -582,6 +681,7 @@ export class JsonSink implements Sink {
 export class QuietSink implements Sink {
   private readonly texts = new Map<string, string[]>()
   private lastMessage: string | null = null
+  private requestId: string | null = null
 
   constructor(
     private readonly write: (text: string) => void,
@@ -593,6 +693,7 @@ export class QuietSink implements Sink {
       case "execution.started":
         this.texts.clear()
         this.lastMessage = null
+        this.requestId = null
         return
       case "text.ended": {
         if (event.data.text === "") return
@@ -606,9 +707,17 @@ export class QuietSink implements Sink {
         if (text !== "") this.write(text.endsWith("\n") ? text : `${text}\n`)
         return
       }
-      case "execution.failed":
-        this.writeError(`${brand.binary}: failed: ${event.data.message}\n`)
+      case "step.failed":
+        if (event.data.error.kind === "provider") this.requestId = event.data.error.error.requestId
         return
+      case "retry.scheduled":
+        this.requestId = event.data.error.requestId
+        return
+      case "execution.failed": {
+        const requestId = this.requestId === null ? "" : ` (request ${this.requestId})`
+        this.writeError(`${brand.binary}: failed: ${event.data.message}${requestId}\n`)
+        return
+      }
       case "execution.interrupted":
         if (event.data.reason === "user") this.writeError(`${brand.binary}: interrupted\n`)
         return
@@ -617,6 +726,10 @@ export class QuietSink implements Sink {
 
   notice(text: string): void {
     this.writeError(`${brand.binary}: ${text}\n`)
+  }
+
+  interruptRequested(): void {
+    this.notice("stopping; press Ctrl-C again to exit now")
   }
 
   close(): void {}
@@ -660,6 +773,7 @@ export function usageText(usage: Usage): string {
 }
 
 function errorLabel(error: ProviderError): string {
+  if (error.kind === "transport" && error.reason === "stalled") return "the connection stalled"
   const labels: Record<ProviderError["kind"], string> = {
     rate_limit: "rate limited",
     provider_internal: "server error",
@@ -714,6 +828,16 @@ function wrap(text: string, width: number): string[] {
   }
   if (current !== "") out.push(current)
   return out
+}
+
+/** An instruction source key as a person reads it: `agents:<path>` is the file. */
+function sourceLabel(source: string): string {
+  return source.startsWith("agents:") ? source.slice("agents:".length) : source
+}
+
+/** The part of a text block that is printed: leading blank lines and spaces are not. */
+function shown(text: string): string {
+  return text.replace(/^\s+/, "")
 }
 
 function quote(text: string): string {

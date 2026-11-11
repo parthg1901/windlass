@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { type Options, helpText, parseArgs } from "../src/args.ts"
-import { brand } from "../src/brand.ts"
+import { brand } from "@light-harness/core"
 
 const options = (argv: string[]): Options => {
   const parsed = parseArgs(argv)
@@ -20,6 +20,7 @@ describe("parseArgs", () => {
       continue: false,
       model: null,
       effort: null,
+      maxSteps: null,
       cwd: null,
       output: "pretty",
       showReasoning: false,
@@ -60,10 +61,20 @@ describe("parseArgs", () => {
     expect(errorOf(["--demo", "1", "--demo-speed", "fast"])).toBe("--demo-speed must be a number of at least 0")
     expect(errorOf(["--demo-speed", "2"])).toBe("--demo-speed and --demo-grace only apply with --demo")
     expect(errorOf(["-i", "--json"])).toBe("interactive mode cannot be combined with --json or --quiet")
+    for (const value of ["0", "-1", "2.5", "many"]) expect(errorOf(["--max-steps", value, "hi"]), value).toBe(value.startsWith("-") ? "--max-steps needs a value" : "--max-steps must be a whole number of at least 1")
+    expect(errorOf(["--list-sessions", "--models"])).toBe("--list-sessions and --models cannot be combined")
+    expect(errorOf(["--models", "hello"])).toBe("--models takes no prompt")
+  })
+
+  test("--max-steps, --list-sessions and --models", () => {
+    expect(options(["--max-steps", "12", "go"]).maxSteps).toBe(12)
+    expect(options(["--max-steps=1", "go"]).maxSteps).toBe(1)
+    expect(parseArgs(["--list-sessions", "--json"])).toMatchObject({ kind: "list", what: "sessions", options: { output: "json" } })
+    expect(parseArgs(["--models"])).toMatchObject({ kind: "list", what: "models" })
   })
 
   test("help text uses the brand's binary name", () => {
     expect(helpText()).toContain(`  ${brand.binary} [options] <prompt...>`)
-    expect(helpText()).toContain("Exit codes: 0 done, 1 failed, 2 usage error, 130 interrupted.")
+    expect(helpText()).toContain("Exit codes: 0 done, 1 failed, 2 usage error, 130 interrupted (Ctrl-C),\n141 output closed (a pipe reader left), 143 terminated (SIGTERM).")
   })
 })

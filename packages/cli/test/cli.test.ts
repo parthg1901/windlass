@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { brand } from "../src/brand.ts"
+import { brand } from "@light-harness/core"
 import { findScenario } from "../src/demo/scenarios.ts"
 import { FakeEngine } from "../src/fake-engine.ts"
 import { CLI, runCli } from "./helpers.ts"
@@ -64,10 +64,11 @@ describe("commands", () => {
     expect(findScenario("a-plain")?.name).toBe("a-plain-answer")
   })
 
-  test("without an engine in this build a prompt fails clearly", async () => {
-    const result = await runCli(["hello"])
-    expect(result.code).toBe(1)
-    expect(result.err).toContain("the engine is not part of this build yet")
+  test("without the real engine in this build a prompt is a usage error, with one line saying so", async () => {
+    const result = await runCli(["hello"], { realEngineModule: "./no-such-engine.ts" })
+    expect(result.code).toBe(2)
+    expect(result.out).toBe("")
+    expect(result.err).toBe(`${brand.binary}: the real engine is not available in this build; try \`${brand.binary} --demo list\`\n`)
   })
 
   test("the package's bin entry is the brand's binary name", async () => {
@@ -100,7 +101,7 @@ describe("prompts and sessions reach the engine", () => {
     const result = await runCli(["--model", "m1", "--effort", "low", "explain", "this"], { engine: () => r.engine })
     expect(result.code).toBe(0)
     expect(r.sent).toEqual(["explain this"])
-    expect(r.opened).toEqual([{ session: { kind: "new" }, cwd: process.cwd(), model: "m1", effort: "low" }])
+    expect(r.opened).toEqual([{ session: { kind: "new" }, cwd: process.cwd(), model: "m1", effort: "low", maxSteps: null }])
     // The typed prompt replaces the scripted one; it is not echoed, because the user just typed it.
     expect(result.out.startsWith("∴ thought")).toBe(true)
   })

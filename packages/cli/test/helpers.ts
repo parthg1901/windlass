@@ -1,5 +1,5 @@
 import type { NewEvent, SessionId, StoredEvent } from "@light-harness/core"
-import type { Scenario } from "../../core/test/scenarios/script.ts"
+import type { Scenario } from "@light-harness/core/testing/scenarios"
 import type { Engine, EngineEvent } from "../src/engine.ts"
 import { type Io, run } from "../src/main.ts"
 import { PrettyRenderer, type PrettyOptions } from "../src/renderer.ts"
@@ -40,7 +40,18 @@ export interface CliRun {
 /** Runs the CLI in-process with captured output. */
 export async function runCli(
   argv: readonly string[],
-  options: { stdin?: string; stdinTTY?: boolean; stdoutTTY?: boolean; env?: Record<string, string>; columns?: number; engine?: () => Engine } = {},
+  options: {
+    stdin?: string
+    stdinTTY?: boolean
+    stdoutTTY?: boolean
+    env?: Record<string, string>
+    columns?: number
+    engine?: () => Engine
+    realEngineModule?: string
+    /** Keyboard input for the interactive mode: called with the function that types into it. */
+    keys?: (type: (data: string) => void) => void
+    onSignal?: Io["onSignal"]
+  } = {},
 ): Promise<CliRun> {
   let out = ""
   let err = ""
@@ -60,12 +71,20 @@ export async function runCli(
         err += text
       },
     },
-    stdin: { isTTY: options.stdinTTY ?? false, readAll: async () => options.stdin ?? "" },
-    onInterrupt: () => () => {},
+    stdin: {
+      isTTY: options.stdinTTY ?? false,
+      readAll: async () => options.stdin ?? "",
+      listen: (onData) => {
+        options.keys?.(onData)
+        return () => {}
+      },
+    },
+    onSignal: options.onSignal ?? (() => () => {}),
     exit: (code) => {
       throw new Error(`unexpected exit ${code}`)
     },
     ...(options.engine === undefined ? {} : { engine: options.engine }),
+    ...(options.realEngineModule === undefined ? {} : { realEngineModule: options.realEngineModule }),
   }
   const code = await run(io)
   return { code, out, err }

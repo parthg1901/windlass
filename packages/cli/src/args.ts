@@ -1,5 +1,5 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
-import { brand } from "./brand.ts"
+import { brand } from "@light-harness/core"
 
 export interface Options {
   /** The prompt given as arguments, joined with spaces; `null` when none was given. */
@@ -8,6 +8,8 @@ export interface Options {
   readonly continue: boolean
   readonly model: string | null
   readonly effort: string | null
+  /** `--max-steps <n>`: model calls per turn before the final answer without tools; `null` is the engine's default. */
+  readonly maxSteps: number | null
   readonly cwd: string | null
   readonly output: "pretty" | "json" | "quiet"
   readonly showReasoning: boolean
@@ -21,9 +23,11 @@ export type Parsed =
   | { readonly kind: "run"; readonly options: Options }
   | { readonly kind: "help" }
   | { readonly kind: "version" }
+  /** `--list-sessions` or `--models`: print a listing from the engine and exit. */
+  | { readonly kind: "list"; readonly what: "sessions" | "models"; readonly options: Options }
   | { readonly kind: "error"; readonly message: string }
 
-const VALUE_FLAGS = ["--session", "--model", "--effort", "--cwd", "--demo", "--demo-speed", "--demo-grace"] as const
+const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--cwd", "--demo", "--demo-speed", "--demo-grace"] as const
 type ValueFlag = (typeof VALUE_FLAGS)[number]
 
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
@@ -53,7 +57,7 @@ export function parseArgs(argv: readonly string[]): Parsed {
       continue
     }
     if (inline !== null) return error(`${name} does not take a value`)
-    if (!["--help", "--version", "--continue", "--json", "--quiet", "--show-reasoning", "--interactive"].includes(name))
+    if (!["--help", "--version", "--continue", "--json", "--quiet", "--show-reasoning", "--interactive", "--list-sessions", "--models"].includes(name))
       return error(`unknown option ${rawName}`)
     flags.add(name)
   }
@@ -67,26 +71,31 @@ export function parseArgs(argv: readonly string[]): Parsed {
   const grace = values["--demo-grace"] === undefined ? null : Number(values["--demo-grace"])
   if (grace !== null && (!Number.isInteger(grace) || grace < 0)) return error("--demo-grace must be a whole number of milliseconds")
   if ((values["--demo-speed"] !== undefined || grace !== null) && values["--demo"] === undefined) return error("--demo-speed and --demo-grace only apply with --demo")
+  const maxSteps = values["--max-steps"] === undefined ? null : Number(values["--max-steps"])
+  if (maxSteps !== null && (!Number.isInteger(maxSteps) || maxSteps < 1)) return error("--max-steps must be a whole number of at least 1")
   const output = flags.has("--json") ? "json" : flags.has("--quiet") ? "quiet" : "pretty"
   if (flags.has("--interactive") && output !== "pretty") return error("interactive mode cannot be combined with --json or --quiet")
+  const listing = flags.has("--list-sessions") ? "sessions" : flags.has("--models") ? "models" : null
+  if (flags.has("--list-sessions") && flags.has("--models")) return error("--list-sessions and --models cannot be combined")
+  if (listing !== null && (words.length > 0 || flags.has("--interactive")))
+    return error(`--${listing === "sessions" ? "list-sessions" : "models"} takes no prompt`)
 
-  return {
-    kind: "run",
-    options: {
-      prompt: words.length === 0 ? null : words.join(" "),
-      session: values["--session"] ?? null,
-      continue: flags.has("--continue"),
-      model: values["--model"] ?? null,
-      effort: values["--effort"] ?? null,
-      cwd: values["--cwd"] ?? null,
-      output,
-      showReasoning: flags.has("--show-reasoning"),
-      interactive: flags.has("--interactive"),
-      demo: values["--demo"] ?? null,
-      demoSpeed: speed,
-      demoGraceMs: grace,
-    },
+  const options: Options = {
+    prompt: words.length === 0 ? null : words.join(" "),
+    session: values["--session"] ?? null,
+    continue: flags.has("--continue"),
+    model: values["--model"] ?? null,
+    effort: values["--effort"] ?? null,
+    maxSteps,
+    cwd: values["--cwd"] ?? null,
+    output,
+    showReasoning: flags.has("--show-reasoning"),
+    interactive: flags.has("--interactive"),
+    demo: values["--demo"] ?? null,
+    demoSpeed: speed,
+    demoGraceMs: grace,
   }
+  return listing === null ? { kind: "run", options } : { kind: "list", what: listing, options }
 }
 
 function isValueFlag(name: string): name is ValueFlag {
@@ -111,11 +120,14 @@ Options:
   -c, --continue         resume the most recent session in this directory
   -m, --model <name>     model to use
   --effort <level>       reasoning effort, e.g. low, medium or high
+  --max-steps <n>        model calls per turn before a final answer without tools
   --cwd <dir>            working directory (default: the current one)
   --json                 write every event as one JSON line, nothing else on stdout
   -q, --quiet            print only the final answer
   --show-reasoning       show the model's reasoning instead of a one-line summary
   -i, --interactive      stay interactive after a prompt given as arguments
+  --list-sessions        list the sessions in the working directory (--json: one per line)
+  --models               list the models --model accepts (--json: one per line)
   -v, --version          print the version
   -h, --help             print this help
 
@@ -126,10 +138,16 @@ Demo (replays a scripted session; no model, no tools):
   --demo-grace <ms>      how long a stopped command takes to wind down
 
 Interactive keys:
-  Enter sends; end a line with \\ to continue it on the next one; Up and Down recall
-  earlier prompts. Ctrl-C while the agent works stops it (twice within 2 s exits);
-  Ctrl-C at the prompt clears the line; Ctrl-D exits.
+  Enter sends; end a line with \\ (or press Alt-Enter) to continue on a new line;
+  Up and Down recall earlier entries, whole. Ctrl-C while the agent works stops it
+  (twice within 2 s exits); Ctrl-C at the prompt clears the entry; Ctrl-D exits.
 
-Exit codes: 0 done, 1 failed, 2 usage error, 130 interrupted.
+While the agent works:
+  type and press Enter    sent at once; the agent sees it after the current step
+  /queue <message>        held until the agent would otherwise stop, then delivered
+  /exit                   leave (the running work is stopped as a shutdown)
+
+Exit codes: 0 done, 1 failed, 2 usage error, 130 interrupted (Ctrl-C),
+141 output closed (a pipe reader left), 143 terminated (SIGTERM).
 `
 }

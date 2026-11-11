@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { type EphemeralEvent, type NewEvent, type SessionId, event, text } from "@light-harness/core"
-import { c, m, opening, stepStarted } from "../../core/test/scenarios/script.ts"
+import { c, m, opening, stepStarted } from "@light-harness/core/testing/scenarios"
 import { demoScenarios } from "../src/demo/scenarios.ts"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { displayWidth, stripAnsi } from "../src/text.ts"
@@ -110,7 +110,7 @@ describe("tool calls", () => {
         settle("a1", "c1", "success", "x"),
       ]),
     )
-    expect(out).toContain('↳ steer: "Also b.ts" · delivered at the next step\n  ✓ read a.ts · 1 line · 200ms\n')
+    expect(out).toContain('↳ sent: "Also b.ts" · the agent will see it after the current step\n  ✓ read a.ts · 1 line · 200ms\n')
   })
 
   test("edits show their diff summary, failures their reason, and loop-decided outcomes their own wording", () => {

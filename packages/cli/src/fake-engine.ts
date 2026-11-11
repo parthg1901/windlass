@@ -5,31 +5,42 @@
  * The scenario's durable events are replayed as written. Around them the fake
  * adds what a live engine would stream: text and reasoning deltas before each
  * `text.ended` / `reasoning.ended`, argument deltas before `tool.called`, and
- * progress while a command runs. `interrupt()` stops the replay and writes the
- * cancel sequence the step loop must write (cancel rules 3, 4 and 6): partial
- * text flushed, every recorded call settled once, the step failed as
- * interrupted, the marker, and `execution.interrupted`.
+ * progress while a command runs.
+ *
+ * `interrupt()` and `close()` stop the replay and write the cancel sequence the
+ * step loop writes: `execution.interrupt_requested` at once, then the visible
+ * partial text, every recorded call settled once (after a grace period when a
+ * command was running), the open step failed as interrupted, the interrupt
+ * marker, and `execution.interrupted`. `interrupt()` stops for the user;
+ * `close()` stops as a shutdown, which keeps the claim.
+ *
+ * `send` while a turn plays admits the message at once (`inbox.enqueued`) and
+ * delivers it the way the loop does: a steer at the next step boundary, a
+ * queued message when the session would otherwise go idle. The script cannot
+ * react to it, so a message delivered after the script's last step gets a short
+ * scripted answer of its own; one delivered earlier is answered by the
+ * script's next step.
  *
  * A scenario is split into turns at the points where the session goes idle;
- * each `send` plays the next one. Once the script is used up (or diverged
- * because of an interrupt), `send` answers with a short generic turn.
+ * each `send` while idle plays the next one. Once the script is used up (or
+ * diverged because of an interrupt), `send` answers with a short generic turn.
  */
 import {
   type CallId,
   type EphemeralEvent,
   type ExecutionId,
+  type InterruptReason,
   type MessageId,
   type NewEvent,
   type SessionId,
   type StoredEvent,
   type ToolEffect,
+  brand,
   event,
   text,
 } from "@light-harness/core"
-// The scenarios and the loop's frozen wording live with the core tests; there is no package export for them yet.
-import { EFFECT_UNKNOWN, INTERRUPTED_READ, NOT_STARTED, type Scenario } from "../../core/test/scenarios/script.ts"
-import { brand } from "./brand.ts"
-import type { Engine, EngineEvent, OpenRequest, Session } from "./engine.ts"
+import { EFFECT_UNKNOWN, INTERRUPTED_READ, NOT_STARTED, type Scenario } from "@light-harness/core/testing/scenarios"
+import type { Engine, EngineEvent, OpenRequest, SendOptions, Session } from "./engine.ts"
 
 export interface FakeOptions {
   /** Playback speed: 1 is real time, 2 twice as fast, 0 instant (no waiting at all). */
@@ -38,6 +49,8 @@ export interface FakeOptions {
   readonly graceMs?: number
   /** Start of the virtual clock that stamps event times. Default: the wall clock when the session opens. */
   readonly clockStart?: number
+  /** Told `close` when `close` is called and `closed` when it has finished; for tests of the CLI's exit paths. */
+  readonly trace?: (line: string) => void
 }
 
 /** One turn of a scenario: what the user typed to start it (if anything) and the events until the session is idle. */
@@ -73,10 +86,15 @@ export function scriptTurns(scenario: Scenario): { preamble: NewEvent[]; turns: 
       if (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted") current = null
     })
   }
-  // A script may stop with the execution still open (it ends "at next start-up"). Close it the way a process that
-  // exits there would, as a shutdown that keeps the claim, so the turn ends instead of waiting forever.
+  // A script may stop with the execution open (it ends "at next start-up", right after the resume, with no step open).
+  // Close it the way a process that exits there would, as a shutdown that keeps the claim, so the turn ends instead
+  // of waiting forever.
   const open = openExecution(turns.at(-1)?.events ?? [])
-  if (open !== null) turns.at(-1)!.events.push({ event: event("execution.interrupted", { executionId: open, reason: "shutdown" }), phaseStart: false })
+  if (open !== null)
+    turns.at(-1)!.events.push(
+      { event: event("execution.interrupt_requested", { executionId: open, reason: "shutdown" }), phaseStart: false },
+      { event: event("execution.interrupted", { executionId: open, reason: "shutdown" }), phaseStart: false },
+    )
   return { preamble, turns }
 }
 
@@ -111,6 +129,19 @@ interface CallState {
   progress: string
 }
 
+interface InboxItem {
+  readonly id: MessageId
+  delivery: "steer" | "queue"
+  readonly text: string
+  /** Admitted by `send` during a turn, rather than written by the script. */
+  readonly live: boolean
+}
+
+/** The last work event after which the loop may deliver input: a step boundary that is not part of a retry or a wind-down. */
+const DELIVERY_POINTS = new Set(["step.ended", "execution.started", "execution.resumed", "baseline.set", "inbox.delivered", "instruction.appended", "compaction.ended"])
+/** Events about the session or its inbox, written whenever the user acts; they do not move the turn on. */
+const SESSION_SCOPED = new Set(["inbox.enqueued", "inbox.delivery_changed", "inbox.cancelled", "settings.changed", "session.created", "session.renamed", "session.archived", "session.unarchived"])
+
 export class FakeSession implements Session {
   readonly events: AsyncIterable<EngineEvent>
   private readonly channel = new Channel<EngineEvent>()
@@ -120,15 +151,27 @@ export class FakeSession implements Session {
   private readonly speed: number
   private cursor = 0
   private playing: Promise<void> | null = null
-  private interruptRequested = false
+  /** The stop that was asked for (`interrupt` or `close`); the first wins. */
+  private stopWanted: InterruptReason | null = null
+  /** The stop is in effect: its request is in the log and the replay winds down. */
+  private stopping = false
   private wake: (() => void) | null = null
+  private closing: Promise<void> | null = null
   private closed = false
   private generic = 0
-  // What the replay has written so far, for the cancel sequence.
+  private live = 0
+  // What the log holds so far, for the cancel sequence and for deliveries.
+  private model = "demo"
   private execution: ExecutionId | null = null
+  private interrupting: InterruptReason | null = null
   private step: MessageId | null = null
+  private compaction: MessageId | null = null
+  private lastWork: string | null = null
   private calls = new Map<string, CallState>()
   private partialText: { messageId: MessageId; sent: string } | null = null
+  private readonly inbox: InboxItem[] = []
+  /** A live message was delivered and no step has ended since: the model still has to answer it. */
+  private unanswered: InboxItem[] = []
 
   constructor(
     readonly id: SessionId,
@@ -155,8 +198,9 @@ export class FakeSession implements Session {
     await this.playing
   }
 
-  async send(prompt: string): Promise<MessageId | null> {
-    if (this.closed || this.playing !== null) return null
+  async send(prompt: string, options: SendOptions = {}): Promise<MessageId | null> {
+    if (this.closed || this.closing !== null) return null
+    if (this.playing !== null) return this.admit(prompt, options.delivery ?? "steer")
     const turn = this.turns[this.cursor] ?? this.genericTurn(prompt)
     this.cursor = Math.min(this.cursor + 1, this.turns.length)
     const events = turn.events.map((planned, index) =>
@@ -164,7 +208,8 @@ export class FakeSession implements Session {
         ? { ...planned, event: event("inbox.enqueued", { ...planned.event.data, content: text(prompt) }) }
         : planned,
     )
-    this.interruptRequested = false
+    this.stopWanted = null
+    this.stopping = false
     this.playing = this.play(events).finally(() => {
       this.playing = null
     })
@@ -173,17 +218,93 @@ export class FakeSession implements Session {
   }
 
   interrupt(): void {
-    if (this.playing === null || this.interruptRequested) return
-    this.interruptRequested = true
-    this.wake?.()
+    this.requestStop("user")
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return
-    this.interrupt()
-    await this.playing
-    this.closed = true
-    this.channel.close()
+  close(): Promise<void> {
+    this.closing ??= (async () => {
+      this.options.trace?.("close")
+      this.requestStop("shutdown")
+      await this.playing
+      this.closed = true
+      this.channel.close()
+      this.options.trace?.("closed")
+    })()
+    return this.closing
+  }
+
+  // ---------------------------------------------------------------- input during a turn
+
+  /** Admits a message while a turn plays. It waits in the inbox for its delivery point. */
+  private admit(value: string, delivery: "steer" | "queue"): MessageId {
+    this.live += 1
+    const messageId = `u_live_${this.live}` as MessageId
+    this.emitDurable(event("inbox.enqueued", { messageId, origin: null, delivery, content: text(value) }), true)
+    return messageId
+  }
+
+  /** Delivers waiting live input that is due before `next`. Returns `false` when interrupted. */
+  private async deliverBefore(next: NewEvent): Promise<boolean> {
+    if (!this.atDeliveryPoint()) return true
+    if (next.type === "inbox.delivered") {
+      // Live steers admitted before the scripted item go first: within a mode the oldest is delivered first.
+      const target = this.inbox.find((item) => item.id === next.data.messageId)
+      if (target === undefined) return true
+      for (let first = this.firstOf(target.delivery); first !== undefined && first !== target && first.live; first = this.firstOf(target.delivery))
+        if (!(await this.deliver(first))) return false
+      return true
+    }
+    if (next.type !== "step.started" && next.type !== "execution.succeeded") return true
+    for (let first = this.firstOf("steer"); first?.live === true; first = this.firstOf("steer")) if (!(await this.deliver(first))) return false
+    if (next.type !== "execution.succeeded") return true
+    // The session would go idle: answer what was delivered, then take queued items one at a time.
+    for (;;) {
+      if (this.unanswered.length > 0) {
+        if (!(await this.answer())) return false
+        continue
+      }
+      const queued = this.firstOf("queue")
+      if (this.firstOf("steer") !== undefined || queued?.live !== true) return true
+      if (!(await this.deliver(queued))) return false
+    }
+  }
+
+  private atDeliveryPoint(): boolean {
+    return (
+      this.execution !== null &&
+      this.interrupting === null &&
+      !this.stopping &&
+      this.step === null &&
+      this.compaction === null &&
+      this.lastWork !== null &&
+      DELIVERY_POINTS.has(this.lastWork)
+    )
+  }
+
+  private firstOf(delivery: "steer" | "queue"): InboxItem | undefined {
+    return this.inbox.find((item) => item.delivery === delivery)
+  }
+
+  private async deliver(item: InboxItem): Promise<boolean> {
+    if (!(await this.replay(event("inbox.delivered", { messageId: item.id })))) return false
+    this.unanswered.push(item)
+    return true
+  }
+
+  /** A scripted answer to live input the script could not have known about. */
+  private async answer(): Promise<boolean> {
+    this.live += 1
+    const messageId = `a_live_${this.live}` as MessageId
+    const quoted = this.unanswered.map((item) => `"${oneLine(item.text)}"`).join(" and ")
+    const reply = `Got ${quoted}. This is a scripted demo, so the replay cannot act on it; with the real engine the model would answer it here.`
+    const usage = { inputTokens: 1200, cachedInputTokens: 1024, outputTokens: 30, reasoningTokens: 0 }
+    for (const item of [
+      event("step.started", { messageId, attempt: 1, model: this.model }),
+      event("text.ended", { messageId, text: reply, providerData: null }),
+      event("step.ended", { messageId, finish: "stop", usage }),
+    ])
+      if (!(await this.replay(item))) return false
+    return true
   }
 
   // ---------------------------------------------------------------- replay
@@ -191,6 +312,7 @@ export class FakeSession implements Session {
   private async play(events: readonly Planned[]): Promise<void> {
     for (const [index, planned] of events.entries()) {
       if (planned.phaseStart && index > 0 && !(await this.wait(700))) return this.cancel()
+      if (!(await this.deliverBefore(planned.event))) return this.cancel()
       if (!(await this.replay(planned.event))) return this.cancel()
     }
   }
@@ -267,29 +389,58 @@ export class FakeSession implements Session {
     }
   }
 
-  /** What the step loop writes when the user interrupts (see the cancel scenarios). */
+  // ---------------------------------------------------------------- stopping
+
+  private requestStop(reason: InterruptReason): void {
+    if (this.playing === null || this.stopWanted !== null) return
+    this.stopWanted = reason
+    this.beginStop()
+  }
+
+  /**
+   * Puts a wanted stop into effect: the request is durable the moment the abort
+   * fires, before anything is stopped. Before the turn's execution exists the
+   * stop waits for it (see `emitDurable`).
+   */
+  private beginStop(): void {
+    if (this.stopWanted === null || this.stopping || this.execution === null) return
+    this.stopping = true
+    if (this.interrupting === null) this.emitDurable(event("execution.interrupt_requested", { executionId: this.execution, reason: this.stopWanted }))
+    this.wake?.()
+  }
+
+  /** What the step loop writes after the interrupt request (see the cancel and shutdown scenarios). */
   private async cancel(): Promise<void> {
-    const tail: NewEvent[] = []
+    const reason = this.interrupting ?? this.stopWanted ?? "user"
+    // The visible partial text is kept, at once.
     if (this.partialText !== null && this.partialText.sent !== "")
-      tail.push(event("text.ended", { messageId: this.partialText.messageId, text: this.partialText.sent, providerData: null }))
+      this.emitDurable(event("text.ended", { messageId: this.partialText.messageId, text: this.partialText.sent, providerData: null }))
     this.partialText = null
     const open = [...this.calls.entries()].filter(([, call]) => !call.settled)
     // A running command is killed and given a grace period before its output is collected.
-    const winding = open.some(([, call]) => call.started && call.effect !== "read")
-    await sleep(this.real(winding ? (this.options.graceMs ?? 600) : 60))
-    this.virtual += winding ? (this.options.graceMs ?? 600) : 60
+    const winding = this.step !== null && open.some(([, call]) => call.started && call.effect !== "read")
+    const grace = winding ? (this.options.graceMs ?? 600) : 60
+    await sleep(this.real(grace))
+    this.virtual += grace
+    const cutShort = this.step !== null
     if (this.step !== null) {
       const messageId = this.step
-      for (const [callId, call] of open) tail.push(stopped(messageId, callId as CallId, call, this.now()))
-      tail.push(event("step.failed", { messageId, error: { kind: "interrupted", reason: "user" }, usage: null }))
+      for (const [callId, call] of open) this.emitDurable(stopped(messageId, callId as CallId, call, this.now(), reason))
+      this.emitDurable(event("step.failed", { messageId, error: { kind: "interrupted", reason }, usage: null }))
     }
+    if (this.compaction !== null) this.emitDurable(event("compaction.failed", { messageId: this.compaction, error: { kind: "interrupted", reason } }))
     if (this.execution !== null) {
-      tail.push(
-        event("synthetic.appended", { messageId: `s_interrupt_${this.seq + 1}` as MessageId, origin: "interrupt", content: text("The user stopped the previous response before it finished.") }),
-        event("execution.interrupted", { executionId: this.execution, reason: "user" }),
-      )
+      // After a user cancel the model is always told; after a shutdown only when a response was cut short.
+      if (reason === "user" || cutShort)
+        this.emitDurable(
+          event("synthetic.appended", {
+            messageId: `s_interrupt_${this.seq + 1}` as MessageId,
+            origin: "interrupt",
+            content: text(reason === "user" ? "The user stopped the previous response before it finished." : "The previous response was cut short when the harness restarted."),
+          }),
+        )
+      this.emitDurable(event("execution.interrupted", { executionId: this.execution, reason }))
     }
-    for (const item of tail) this.emitDurable(item)
     // The script assumed the turn would finish; from here on it no longer matches the session.
     this.cursor = this.turns.length
   }
@@ -305,7 +456,7 @@ export class FakeSession implements Session {
       event("inbox.enqueued", { messageId: message, origin: null, delivery: "steer", content: text(prompt === "" ? "(empty)" : prompt) }),
       event("execution.started", { executionId: execution }),
       event("inbox.delivered", { messageId: message }),
-      event("step.started", { messageId: answer, attempt: 1, model: "demo" }),
+      event("step.started", { messageId: answer, attempt: 1, model: this.model }),
       event("text.ended", { messageId: answer, text: `This demo has no more scripted turns. Run \`${brand.binary} --demo list\` to pick another scenario.`, providerData: null }),
       event("step.ended", { messageId: answer, finish: "stop", usage }),
       event("execution.succeeded", { executionId: execution }),
@@ -315,36 +466,75 @@ export class FakeSession implements Session {
 
   // ---------------------------------------------------------------- emitting
 
-  emitDurable(item: NewEvent): void {
-    this.track(item)
+  emitDurable(item: NewEvent, live = false): void {
+    this.track(item, live)
     this.seq += 1
     const stored = { ...item, sessionId: this.id, seq: this.seq, time: this.now() } as StoredEvent
     this.emit(stored)
+    // A stop asked for before the execution existed takes effect as soon as it does.
+    if (item.type === "execution.started" || item.type === "execution.resumed") this.beginStop()
   }
 
   private emit(item: EngineEvent | EphemeralEvent): void {
     if (!this.closed) this.channel.push(item)
   }
 
-  private track(item: NewEvent): void {
+  private track(item: NewEvent, live: boolean): void {
+    if (!SESSION_SCOPED.has(item.type)) this.lastWork = item.type
     switch (item.type) {
+      case "session.created":
+        this.model = item.data.settings.model
+        return
+      case "settings.changed":
+        this.model = item.data.model
+        return
+      case "inbox.enqueued":
+        this.inbox.push({ id: item.data.messageId, delivery: item.data.delivery, text: promptText(item), live })
+        return
+      case "inbox.delivery_changed": {
+        const found = this.inbox.find((entry) => entry.id === item.data.messageId)
+        if (found !== undefined) found.delivery = item.data.delivery
+        return
+      }
+      case "inbox.delivered":
+      case "inbox.cancelled": {
+        const index = this.inbox.findIndex((entry) => entry.id === item.data.messageId)
+        if (index !== -1) this.inbox.splice(index, 1)
+        return
+      }
       case "execution.started":
       case "execution.resumed":
         this.execution = item.data.executionId
+        this.interrupting = null
+        return
+      case "execution.interrupt_requested":
+        this.interrupting = item.data.reason
         return
       case "execution.succeeded":
       case "execution.failed":
       case "execution.interrupted":
         this.execution = null
+        this.interrupting = null
+        this.unanswered = []
         return
       case "step.started":
         this.step = item.data.messageId
         this.calls = new Map()
         return
       case "step.ended":
+        this.step = null
+        this.unanswered = []
+        return
       case "step.failed":
       case "step.refused":
         this.step = null
+        return
+      case "compaction.started":
+        this.compaction = item.data.messageId
+        return
+      case "compaction.ended":
+      case "compaction.failed":
+        this.compaction = null
         return
       case "tool.called":
         this.calls.set(item.data.callId, { name: item.data.name, effect: null, started: false, settled: false, startedAt: 0, progress: "" })
@@ -374,9 +564,9 @@ export class FakeSession implements Session {
     return this.speed <= 0 ? 0 : ms / this.speed
   }
 
-  /** Waits `ms` of script time (advancing the virtual clock by `virtualMs`). Resolves `false` if interrupted. */
+  /** Waits `ms` of script time (advancing the virtual clock by `virtualMs`). Resolves `false` once a stop is in effect. */
   private async wait(ms: number, virtualMs = ms): Promise<boolean> {
-    if (this.interruptRequested) return false
+    if (this.stopping) return false
     this.virtual += virtualMs
     const real = this.real(ms)
     if (real > 0)
@@ -390,12 +580,12 @@ export class FakeSession implements Session {
       })
     else await Promise.resolve()
     this.wake = null
-    return !this.interruptRequested
+    return !this.stopping
   }
 }
 
 /** The settled event the loop writes for a call it stops (cancel rule 4). */
-function stopped(messageId: MessageId, callId: CallId, call: CallState, now: number): NewEvent {
+function stopped(messageId: MessageId, callId: CallId, call: CallState, now: number, reason: InterruptReason): NewEvent {
   const settle = (outcome: "error" | "not_started" | "effect_unknown", output: string, display: NewEvent<"tool.settled">["data"]["display"] = null) =>
     event("tool.settled", { messageId, callId, outcome, output, truncation: null, attachments: [], display })
   if (!call.started) return settle("not_started", NOT_STARTED)
@@ -404,8 +594,9 @@ function stopped(messageId: MessageId, callId: CallId, call: CallState, now: num
       return settle("error", INTERRUPTED_READ)
     case "exec": {
       const seconds = Math.max(1, Math.round((now - call.startedAt) / 1000))
-      const output = `Stopped by the user after ${seconds} s. Output so far:\n${call.progress === "" ? "(no output)" : call.progress}\n`
-      return settle("error", output, { exitCode: null, signal: "SIGTERM", timedOut: false, interrupted: "user", durationMs: now - call.startedAt })
+      const why = reason === "user" ? `Stopped by the user after ${seconds} s.` : "Stopped because the harness was shutting down."
+      const output = `${why} Output so far:\n${call.progress === "" ? "(no output)" : call.progress}\n`
+      return settle("error", output, { exitCode: null, signal: "SIGTERM", timedOut: false, interrupted: reason, durationMs: now - call.startedAt })
     }
     case "write":
     case "network":
@@ -425,6 +616,11 @@ function openExecution(events: readonly Planned[]): ExecutionId | null {
     if (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted") open = null
   }
   return open
+}
+
+function oneLine(value: string): string {
+  const flat = value.replace(/\s+/g, " ").trim()
+  return flat.length > 60 ? `${flat.slice(0, 57)}...` : flat
 }
 
 function promptText(item: NewEvent<"inbox.enqueued">): string {

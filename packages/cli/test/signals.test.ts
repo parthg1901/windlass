@@ -71,7 +71,8 @@ describe("Ctrl-C while a turn runs", () => {
     cli.proc.kill("SIGINT")
     expect(await cli.proc.exited).toBe(130)
     await cli.done
-    expect(cli.output.text.split("■ stopping").length - 1).toBe(2)
+    expect(cli.output.text.split("■ stopping…").length - 1).toBe(1)
+    expect(cli.output.text).toContain("■ still stopping… press Ctrl-C again to exit now\n")
     expect(cli.output.text).toContain("· stopped · ")
     expect(cli.output.text).toContain("■ interrupted")
   }, 30_000)

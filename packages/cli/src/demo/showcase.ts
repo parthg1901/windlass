@@ -14,7 +14,7 @@ import {
   say,
   stepStarted,
   think,
-} from "../../../core/test/scenarios/script.ts"
+} from "@light-harness/core/testing/scenarios"
 
 const EFFECTS: Record<string, ToolEffect> = { read: "read", grep: "read", glob: "read", ls: "read", edit: "write", write: "write", shell: "exec" }
 

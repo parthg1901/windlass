@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { NewEvent, StoredEvent } from "@light-harness/core"
 import { loopViolations } from "../../core/test/scenarios/loop-rules.ts"
-import { fold } from "../../core/test/scenarios/script.ts"
+import { fold } from "@light-harness/core/testing/scenarios"
 import { findScenario } from "../src/demo/scenarios.ts"
 import type { EngineEvent } from "../src/engine.ts"
 import { FakeEngine, scriptTurns } from "../src/fake-engine.ts"
@@ -12,7 +12,7 @@ const strip = (item: StoredEvent): NewEvent => ({ type: item.type, v: item.v, da
 /** Plays the first turn of a scenario at high speed and interrupts at the first event `when` matches. */
 async function interruptAt(name: string, when: (item: EngineEvent) => boolean) {
   const engine = new FakeEngine(findScenario(name)!.scenario, { speed: 20, graceMs: 100 })
-  const session = await engine.open({ session: { kind: "new" }, cwd: "/repo", model: null, effort: null })
+  const session = await engine.open({ session: { kind: "new" }, cwd: "/repo", model: null, effort: null, maxSteps: null })
   const seen: EngineEvent[] = []
   await session.send("")
   let interrupted = false
@@ -30,11 +30,16 @@ async function interruptAt(name: string, when: (item: EngineEvent) => boolean) {
 
 describe("the fake engine's cancel sequence", () => {
   const cases: [string, string, (item: EngineEvent) => boolean, string[]][] = [
-    ["while text streams", "a-plain-answer", (item) => item.type === "text.delta", ["text.ended", "step.failed", "synthetic.appended", "execution.interrupted"]],
-    ["after the first call is recorded, before any starts", "two-parallel-tool-calls", (item) => item.type === "tool.called", ["tool.called", "tool.settled", "step.failed", "synthetic.appended", "execution.interrupted"]],
-    ["while a command runs", "a-long-build-command", (item) => item.type === "tool.progress", ["tool.settled", "step.failed", "synthetic.appended", "execution.interrupted"]],
-    ["while waiting to retry", "a-retryable-failure-before-any-output", (item) => item.type === "retry.scheduled", ["step.failed", "synthetic.appended", "execution.interrupted"]],
-    ["between steps", "one-tool-call-then-an-answer", (item) => item.type === "step.ended", ["synthetic.appended", "execution.interrupted"]],
+    ["while text streams", "a-plain-answer", (item) => item.type === "text.delta", ["execution.interrupt_requested", "text.ended", "step.failed", "synthetic.appended", "execution.interrupted"]],
+    [
+      "after the first call is recorded, before any starts",
+      "two-parallel-tool-calls",
+      (item) => item.type === "tool.called",
+      ["tool.called", "execution.interrupt_requested", "tool.settled", "step.failed", "synthetic.appended", "execution.interrupted"],
+    ],
+    ["while a command runs", "a-long-build-command", (item) => item.type === "tool.progress", ["execution.interrupt_requested", "tool.settled", "step.failed", "synthetic.appended", "execution.interrupted"]],
+    ["while waiting to retry", "a-retryable-failure-before-any-output", (item) => item.type === "retry.scheduled", ["retry.scheduled", "execution.interrupt_requested", "step.failed", "synthetic.appended", "execution.interrupted"]],
+    ["between steps", "one-tool-call-then-an-answer", (item) => item.type === "step.ended", ["step.ended", "execution.interrupt_requested", "synthetic.appended", "execution.interrupted"]],
   ]
   for (const [label, name, when, tail] of cases) {
     test(`${label}: a log the reducer accepts, ending the way the cancel scenarios do`, async () => {
