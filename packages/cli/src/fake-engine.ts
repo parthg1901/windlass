@@ -72,6 +72,10 @@ export function scriptTurns(scenario: Scenario): { preamble: NewEvent[]; turns: 
       if (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted") current = null
     })
   }
+  // A script may stop with the execution still open (it ends "at next start-up"). Close it the way a process that
+  // exits there would, as a shutdown that keeps the claim, so the turn ends instead of waiting forever.
+  const open = openExecution(turns.at(-1)?.events ?? [])
+  if (open !== null) turns.at(-1)!.events.push({ event: event("execution.interrupted", { executionId: open, reason: "shutdown" }), phaseStart: false })
   return { preamble, turns }
 }
 
@@ -413,6 +417,15 @@ function effectOf(name: string): "read" | "write" | "exec" {
 /** Splits text the way a model streams it: a word or two at a time, keeping whitespace. */
 function chunks(value: string): string[] {
   return value.match(/\S+\s*\S*\s*|\s+/g) ?? []
+}
+
+function openExecution(events: readonly Planned[]): ExecutionId | null {
+  let open: ExecutionId | null = null
+  for (const { event: item } of events) {
+    if (item.type === "execution.started" || item.type === "execution.resumed") open = item.data.executionId
+    if (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted") open = null
+  }
+  return open
 }
 
 function promptText(item: NewEvent<"inbox.enqueued">): string {
