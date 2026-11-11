@@ -6,9 +6,10 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { type EngineEvent, EventChannel } from "../../src/engine/channel.ts"
 import { FAILURE_TEXT, NOTE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
-import { EngineError } from "../../src/engine/engine.ts"
+import { EngineError, createEngine } from "../../src/engine/engine.ts"
 import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
-import { script } from "../../src/testing/fake-provider.ts"
+import { openSqliteStore } from "../../src/store/sqlite.ts"
+import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { Harness, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
@@ -247,6 +248,31 @@ describe("sessions", () => {
     }))
 })
 
+describe("settings are checked against the models the provider offers", () => {
+  const engineWith = (listModels: (() => Promise<readonly string[]>) | undefined) => {
+    const store = openSqliteStore({ path: ":memory:" })
+    const engine = createEngine({ store, provider: new FakeProvider(), tools: [], dataDir: "/nonexistent", snapshots: null, loadConfig: null, ...(listModels === undefined ? {} : { listModels }) })
+    return { engine, store }
+  }
+
+  test("an unknown model is refused with the valid choices", async () => {
+    const { engine, store } = engineWith(async () => ["gpt-6-luna", "gpt-6.1-sol"])
+    const refused = await engine.validateSettings({ model: "gpt-6-lunar", reasoningEffort: null }).catch((error: unknown) => error)
+    expect(refused).toBeInstanceOf(EngineError)
+    expect(refused).toMatchObject({ code: "unknown_model", message: "model gpt-6-lunar is not available; choose one of: gpt-6-luna, gpt-6.1-sol" })
+    await engine.validateSettings({ model: "gpt-6-luna", reasoningEffort: "low" })
+    store.close()
+  })
+
+  test("without a listing, or when it cannot be fetched, nothing is refused", async () => {
+    for (const listModels of [undefined, async () => Promise.reject(new Error("offline")), async () => []]) {
+      const { engine, store } = engineWith(listModels)
+      await engine.validateSettings({ model: "anything", reasoningEffort: null })
+      store.close()
+    }
+  })
+})
+
 describe("sign-in", () => {
   test("an auth error refreshes the sign-in once and sends the same request again", async () => {
     let refreshes = 0
@@ -415,6 +441,20 @@ describe("model output the scenarios leave open", () => {
       expect(types(h).slice(-3)).toEqual(["text.ended", "step.ended", "execution.succeeded"])
     }))
 
+  test("a response that holds only reasoning says nothing, and is nudged like an empty one", () =>
+    withHarness(async (h) => {
+      const thought = () => [script.reasoning("Thinking about it.", { providerData: { encrypted_content: "gAAAA" } })]
+      h.provider.enqueue(thought(), [script.text("   ")])
+      h.create().send("Go.")
+      await h.settled()
+      expect(types(h).slice(-8)).toEqual(["step.started", "reasoning.ended", "step.ended", "synthetic.appended", "step.started", "text.ended", "step.ended", "execution.failed"])
+      expect(h.log().findLast((item) => item.type === "synthetic.appended")).toMatchObject({ data: { origin: "empty_response" } })
+      expect(h.log().at(-1)).toMatchObject({ data: { message: FAILURE_TEXT.emptyTwice } })
+      // The reasoning-only message renders nothing, so the request after it is still valid for the provider.
+      expect(h.provider.requests[1]!.input.map((item) => item.type)).toEqual(["message", "message"])
+      h.verify()
+    }))
+
   test("after the nudge a model that answers carries on normally", () =>
     withHarness(async (h) => {
       h.provider.enqueue([], [script.text("Sorry. Done.")])
@@ -518,6 +558,33 @@ describe("when the harness itself is wrong", () => {
       )
     }
   })
+
+  test("a diagnostic about a session is an event of its stream, so a client can show it", () =>
+    withHarness(
+      async (h) => {
+        h.provider.enqueue([script.text("One.")], [script.text("Two.")])
+        h.create().send("First.")
+        await h.settled()
+        const row = h.store.readRequests(h.session.id)[0]!
+        h.store.beginRequest({
+          id: "req_forged" as RequestId,
+          sessionId: row.sessionId,
+          messageId: row.messageId,
+          attempt: row.attempt,
+          purpose: "step",
+          model: row.model,
+          blocks: row.blocks.map((block, index) => (index === 0 ? { ...block, hash: "0".repeat(64) } : block)),
+        })
+        const from = h.seenEvents.length
+        h.session.send("Second.")
+        await h.settled()
+        const shown = h.seenEvents.slice(from).filter((item) => item.type === "diagnostic")
+        expect(shown).toEqual([{ type: "diagnostic", sessionId: h.session.id, kind: "prefix_violation", message: expect.stringContaining("does not extend the previous one") }])
+        // It is not part of the log.
+        expect(types(h)).not.toContain("diagnostic")
+      },
+      { strict: false },
+    ))
 
   test("an internal failure closes the step and releases the claim, and the session stays usable", () =>
     withHarness(async (h) => {

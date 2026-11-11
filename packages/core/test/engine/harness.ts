@@ -408,6 +408,12 @@ export class Harness {
     return this.adopt(session)
   }
 
+  /** `boot` without opening the session: for a look at the log a dead process left. Returns the harness. */
+  restartForLog(): this {
+    this.boot()
+    return this
+  }
+
   /** `boot` and `open`: the next start of the process. */
   restart(resume: ResumeMode = "start"): EngineSession {
     this.boot()

@@ -13,6 +13,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { StoredEvent } from "../../src/event/durable.ts"
+import { brand } from "../../src/brand.ts"
+import { loadConfig } from "../../src/config/load.ts"
 import { TOOL_TEXT } from "../../src/engine/constants.ts"
 import { type ProbePoint, createEngine } from "../../src/engine/engine.ts"
 import { buildRequest } from "../../src/request/build.ts"
@@ -31,19 +33,29 @@ afterAll(() => {
   for (const directory of directories) rmSync(directory, { recursive: true, force: true })
 })
 
-function place() {
+/** A workspace for the child. With `check`, a project: its configuration declares that command as the check `exists`. */
+function place(check?: string) {
   const directory = mkdtempSync(join(tmpdir(), "lh-engine-crash-"))
   directories.push(directory)
   const workspace = join(directory, "workspace")
   mkdirSync(workspace)
   writeFileSync(join(workspace, "a.txt"), "alpha\n")
   writeFileSync(join(workspace, "b.txt"), "old\n")
-  return { database: join(directory, "store.db"), workspace }
+  const where = { directory, database: join(directory, "store.db"), workspace, project: check !== undefined }
+  if (check !== undefined) configure(where, check)
+  return where
+}
+
+type Place = ReturnType<typeof place>
+
+function configure(where: Pick<Place, "workspace">, check: string) {
+  mkdirSync(join(where.workspace, `.${brand.directory}`), { recursive: true })
+  writeFileSync(join(where.workspace, `.${brand.directory}`, "config.json"), JSON.stringify({ checks: [{ name: "exists", command: check }] }))
 }
 
 /** Runs the child until it kills itself at the crash point. */
-async function crashAt(name: string, point: ProbePoint, nth: number) {
-  const where = place()
+async function crashAt(name: string, point: ProbePoint, nth: number, check?: string) {
+  const where = place(check)
   const child = Bun.spawn([process.execPath, FIXTURE, where.database, where.workspace, name, point, String(nth)], { stdout: "ignore", stderr: "pipe" })
   children.push(child)
   await child.exited
@@ -53,7 +65,7 @@ async function crashAt(name: string, point: ProbePoint, nth: number) {
 }
 
 /** Opens the store a dead process left, recovers its session and lets the loop finish the turn. */
-async function recoverAndContinue(where: { database: string; workspace: string }) {
+async function recoverAndContinue(where: Pick<Place, "database" | "workspace"> & Partial<Place>) {
   const store = openSqliteStore({ path: where.database })
   try {
     const [summary] = store.listSessions()
@@ -67,17 +79,19 @@ async function recoverAndContinue(where: { database: string; workspace: string }
       store,
       provider,
       tools: createStandardTools({ spillDir: join(where.workspace, ".spill") }),
-      dataDir: where.workspace,
       discover: () => [],
-      snapshots: null,
-      loadConfig: null,
+      ...(where.project && where.directory !== undefined
+        ? { dataDir: join(where.directory, "data"), loadConfig: (cwd: string) => loadConfig({ cwd, env: {}, home: join(where.directory!, "home") }) }
+        : { dataDir: where.workspace, snapshots: null, loadConfig: null }),
       log: (line) => diagnostics.push(line),
       strict: true,
     })
     const session = engine.openSession(id)
     // Recovery is one synchronous append while opening.
     const recovery = store.readEvents(id, { afterSeq: died.at(-1)!.seq }).filter((item) => !["baseline.set", "inbox.delivered", "step.started"].includes(item.type))
-    const recovered = recovery.slice(0, recovery.findIndex((item) => item.type.startsWith("execution.")) + 1)
+    // A claim is recovered up to the event that decides it; a revert has no claim and is finished in the background.
+    const decided = recovery.findIndex((item) => item.type.startsWith("execution."))
+    const recovered = decided === -1 ? [] : recovery.slice(0, decided + 1)
     await session.settled()
     await engine.close()
 
@@ -232,4 +246,82 @@ describe("no tool subprocess outlives the engine's process", () => {
     },
     30_000,
   )
+})
+
+describe("a process killed inside a run of checks", () => {
+  const verification = (log: readonly StoredEvent[]) => log.findLast((item) => item.type === "execution.succeeded")?.data.verification
+
+  for (const [point, what] of [
+    ["checks.started", "the run's start is durable and no command has run"],
+    ["checks.finished", "the command has finished and its result is not written"],
+  ] as const)
+    test(`${point}: ${what}`, async () => {
+      const result = await recoverAndContinue(await crashAt("checks", point, 1, "test -f b.txt"))
+      expect(types(result.died).at(-1)).toBe("checks.started")
+      expect(types(result.recovered)).toEqual(["checks.failed", "execution.resumed"])
+      expect(result.recovered[0]).toMatchObject({ data: { run: 1, error: { kind: "crashed" } } })
+      // The model's answer stands, so it is not called again: the checks run once more and the turn ends on their result.
+      expect(result.calls).toBe(0)
+      expect(types(result.log).filter((type) => type === "checks.started")).toHaveLength(2)
+      expect(verification(result.log)).toMatchObject({ status: "passed", evidence: { run: 1, changedFiles: ["b.txt"], checks: [{ name: "exists", status: "passed", exitCode: 0 }] } })
+    })
+
+  test(
+    "killing the process group while a check command runs ends the command too, and the next start runs the checks again",
+    async () => {
+      const where = place("echo $$ > check.pid; sleep 300")
+      const child = Bun.spawn([process.execPath, FIXTURE, where.database, where.workspace, "checks"], { stdout: "ignore", stderr: "pipe", detached: true })
+      children.push(child)
+      const pidFile = join(where.workspace, "check.pid")
+      const deadline = Date.now() + 15_000
+      while (!(existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "") && Date.now() < deadline) await Bun.sleep(20)
+      const pid = Number(readFileSync(pidFile, "utf8").trim())
+      const alive = () => {
+        try {
+          process.kill(pid, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      expect(alive()).toBe(true)
+      process.kill(-child.pid, "SIGKILL")
+      await child.exited
+      const gone = Date.now() + 5000
+      while (alive() && Date.now() < gone) await Bun.sleep(20)
+      expect(alive()).toBe(false)
+
+      // The configuration is read when an execution starts: the project's check is fixed before the restart.
+      rmSync(pidFile)
+      configure(where, "test -f b.txt")
+      const result = await recoverAndContinue(where)
+      expect(types(result.recovered)).toEqual(["checks.failed", "execution.resumed"])
+      expect(verification(result.log)).toMatchObject({ status: "passed" })
+      expect(result.calls).toBe(0)
+    },
+    30_000,
+  )
+})
+
+describe("a process killed inside a revert", () => {
+  for (const [point, what, changed] of [
+    ["revert.started", "the restore is announced and no file was touched", 1],
+    ["revert.restored", "the files are restored and the revert is not recorded", 0],
+  ] as const)
+    test(`${point}: ${what}`, async () => {
+      const where = await crashAt("revert", point, 1, "test -f b.txt")
+      expect(readFileSync(join(where.workspace, "b.txt"), "utf8")).toBe(point === "revert.started" ? "new\n" : "old\n")
+      const result = await recoverAndContinue(where)
+      expect(types(result.died).slice(-2)).toEqual(["snapshot.taken", "revert.started"])
+      // Opening the session finishes the revert: the workspace is as it was before the turn and the turn has left history.
+      const after = result.log.slice(result.died.length)
+      expect(types(after)).toEqual(["snapshot.taken", "history.reverted"])
+      const started = result.died.at(-1)!
+      if (started.type !== "revert.started") throw new Error("the child did not announce the revert")
+      expect(after[1]).toMatchObject({ data: { restore: { target: started.data.target, before: started.data.before, changed } } })
+      expect(readFileSync(join(where.workspace, "b.txt"), "utf8")).toBe("old\n")
+      expect(result.projection.messages.every((message) => message.excluded === "reverted")).toBe(true)
+      expect(result.projection.session.reverts).toHaveLength(1)
+      expect(result.calls).toBe(0)
+    })
 })

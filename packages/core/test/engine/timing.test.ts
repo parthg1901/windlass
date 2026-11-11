@@ -234,3 +234,60 @@ describe("a tool that does not stop", () => {
     }
   })
 })
+
+describe("the wall-clock limit of one model call", () => {
+  test("a call that is still running at the limit is stopped and retried like any transport failure", async () => {
+    const h = new Harness({ limits: { modelCallTimeoutMs: 600_000 } })
+    try {
+      h.clock.auto = false
+      h.provider.enqueue([script.text("Still wri", { partial: true }), script.hang()], [script.text("Done.")])
+      h.create().send("Go.")
+      await h.clock.waiting()
+      expect(h.clock.slept).toEqual([600_000])
+      h.clock.advance(599_999)
+      await turn()
+      expect(types(h).at(-1)).toBe("step.started")
+
+      h.clock.advance(1)
+      await h.clock.waiting()
+      // The partial text is kept, the step fails as a timeout, and the retry waits its backoff.
+      expect(types(h).slice(-4)).toEqual(["text.ended", "step.failed", "retry.scheduled", "synthetic.appended"])
+      expect(h.log().find((item) => item.type === "step.failed")).toMatchObject({
+        data: { error: { kind: "provider", error: { kind: "transport", reason: "timeout", retryable: true, message: "The model call did not finish within 10 minutes" } } },
+      })
+      // The provider's request was aborted, not left running.
+      expect(h.provider.calls[0]!.outcome).not.toBe("running")
+      h.clock.advance(2000)
+      await h.settled()
+      expect(types(h).at(-1)).toBe("execution.succeeded")
+      expect(h.clock.pending).toBe(0)
+      expect(h.store.readRequests(h.session.id).map((row) => [row.outcome, row.errorKind])).toEqual([
+        ["error", "transport"],
+        ["ok", null],
+      ])
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("a call that finishes in time leaves no timer behind, and a limit of 0 sets none", async () => {
+    for (const limit of [600_000, 0]) {
+      const h = new Harness({ limits: { modelCallTimeoutMs: limit } })
+      try {
+        h.clock.auto = false
+        h.provider.enqueue([script.text("Quick.")])
+        h.create().send("Go.")
+        await h.settled()
+        expect(types(h).at(-1)).toBe("execution.succeeded")
+        expect(h.clock.pending).toBe(0)
+        expect(h.clock.slept).toEqual(limit === 0 ? [] : [limit])
+      } finally {
+        await h.dispose()
+      }
+    }
+  })
+
+  test("the default is generous", () => {
+    expect(ENGINE_LIMITS.modelCallTimeoutMs).toBe(30 * 60_000)
+  })
+})
