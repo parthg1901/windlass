@@ -172,6 +172,8 @@ export interface HarnessOptions {
   readonly settings?: SessionSettings
   readonly random?: () => number
   readonly refreshAuth?: () => Promise<boolean>
+  /** Whether a prefix violation throws. Defaults to `true`, as every test wants; `false` is what a user's session does. */
+  readonly strict?: boolean
 }
 
 export class Harness {
@@ -231,7 +233,7 @@ export class Harness {
       hooks: { probe: (point) => [...this.probes].forEach((probe) => probe(point)) },
       onDiagnostic: (diagnostic) => this.diagnostics.push(diagnostic),
       log: () => {},
-      strict: true,
+      strict: this.options.strict ?? true,
     })
   }
 
