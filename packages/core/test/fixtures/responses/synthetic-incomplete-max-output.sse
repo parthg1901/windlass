@@ -1,0 +1,12 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_TEST1","object":"response","status":"in_progress","model":"gpt-6-luna","output":[],"error":null,"incomplete_details":null,"usage":null,"store":false}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"fc_TEST1","call_id":"call_TEST1","name":"write_file","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_TEST1","output_index":0,"delta":"{\"path\":\"a.txt\",\"content\":\"lorem"}
+
+event: response.incomplete
+data: {"type":"response.incomplete","sequence_number":3,"response":{"id":"resp_TEST1","object":"response","status":"incomplete","model":"gpt-6-luna","output":[{"type":"function_call","id":"fc_TEST1","call_id":"call_TEST1","name":"write_file","arguments":"{\"path\":\"a.txt\",\"content\":\"lorem","status":"incomplete"}],"error":null,"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":4096,"output_tokens_details":{"reasoning_tokens":4000},"total_tokens":4216},"store":false}}
+

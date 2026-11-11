@@ -1,0 +1,6 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_TEST1","object":"response","status":"in_progress","model":"gpt-6-luna","output":[],"error":null,"incomplete_details":null,"usage":null,"store":false}}
+
+event: response.incomplete
+data: {"type":"response.incomplete","sequence_number":1,"response":{"id":"resp_TEST1","object":"response","status":"incomplete","model":"gpt-6-luna","output":[],"error":null,"incomplete_details":{"reason":"content_filter"},"usage":null,"store":false}}
+

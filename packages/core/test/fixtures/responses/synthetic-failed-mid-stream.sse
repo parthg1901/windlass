@@ -1,0 +1,20 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_TEST1","object":"response","status":"in_progress","model":"gpt-6-luna","output":[],"error":null,"incomplete_details":null,"usage":null,"store":false}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_TEST1","role":"assistant","status":"in_progress","content":[],"phase":"final_answer"}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","sequence_number":2,"item_id":"msg_TEST1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_TEST1","output_index":0,"content_index":0,"delta":"Café — 東京 "}
+
+: keep-alive
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_TEST1","output_index":0,"content_index":0,"delta":"🌧️ is"}
+
+event: response.failed
+data: {"type":"response.failed","sequence_number":5,"response":{"id":"resp_TEST1","object":"response","status":"failed","model":"gpt-6-luna","output":[],"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"You have reached your ChatGPT plan usage limit."},"incomplete_details":null,"usage":null,"store":false}}
+
