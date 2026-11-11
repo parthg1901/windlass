@@ -49,10 +49,14 @@ if (mode === "replay") {
   process.exit(exitWith)
 }
 
-durable("session.created", { cwd, title: null, lineage: null })
+durable("session.created", { cwd, title: null, lineage: null, settings: { model, reasoningEffort: null } })
 durable("inbox.enqueued", { messageId: user, origin: null, delivery: "steer", content: text(prompt) })
 durable("execution.started", { executionId })
-durable("baseline.set", { instructions: "You are a stand-in agent.", tools: [{ name: "shell", description: "Run a command", inputSchema: { type: "object" } }] })
+durable("baseline.set", {
+  instructions: "You are a stand-in agent.",
+  tools: [{ name: "shell", description: "Run a command", inputSchema: { type: "object" } }],
+  sources: [],
+})
 durable("inbox.delivered", { messageId: user })
 durable("step.started", { messageId: step1, attempt: 1, model })
 
@@ -86,7 +90,7 @@ if (mode === "hang" || mode === "stubborn") {
     messageId: step2,
     attempt: 2,
     delayMs: 0,
-    error: { kind: "rate_limit", retryable: true, message: "slow down", status: 429, code: null, retryAfterMs: null },
+    error: { kind: "rate_limit", retryable: true, message: "slow down", status: 429, code: null, retryAfterMs: null, requestId: null },
   })
   durable("step.started", { messageId: step2, attempt: 2, model })
   emit({ type: "text.delta", sessionId, messageId: step2, text: "Done." })
