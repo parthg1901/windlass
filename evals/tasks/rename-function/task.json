@@ -1,0 +1,8 @@
+{
+  "id": "rename-function",
+  "title": "Rename a function across several files",
+  "prompt": "getUsr is a terrible name. Rename it to getUserById everywhere it's used, docs included. Leave getUsrsByTeam alone for now.",
+  "tags": ["refactor", "rename", "multi-file"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

@@ -1,0 +1,8 @@
+{
+  "id": "fix-failing-test",
+  "title": "Fix a failing unit test caused by a bug in the code",
+  "prompt": "bun test is failing on the duration formatter. The tests are right, the bug is in the code. Can you fix it?",
+  "tags": ["fix", "unit-test", "typescript"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

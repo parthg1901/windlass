@@ -1,0 +1,9 @@
+{
+  "id": "large-log",
+  "title": "Answer a question about a very large log file",
+  "prompt": "How many different users got an ERROR-level E42 in data/events.log? Write just the number to answer.txt.",
+  "tags": ["large-file", "shell", "question"],
+  "timeoutSeconds": 300,
+  "maxSteps": 10,
+  "setup": ["bun", "gen.ts"]
+}

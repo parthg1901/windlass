@@ -1,0 +1,1 @@
+{ "create": "users", "columns": ["id", "email", "created_at"] }

@@ -1,0 +1,16 @@
+import { expect, test } from "bun:test"
+import { Cart } from "./cart.ts"
+
+test("empty cart totals zero", () => {
+  expect(new Cart().total()).toBe(0)
+})
+
+test("total sums price times quantity", () => {
+  const cart = new Cart().add("mug", 1200, 2).add("tea", 650)
+  expect(cart.total()).toBe(3050)
+  expect(cart.count()).toBe(3)
+})
+
+test("rejects bad quantities", () => {
+  expect(() => new Cart().add("mug", 1200, 0)).toThrow(RangeError)
+})

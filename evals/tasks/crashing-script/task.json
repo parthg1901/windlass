@@ -1,0 +1,8 @@
+{
+  "id": "crashing-script",
+  "title": "Fix a script that crashes, using its error output",
+  "prompt": "bun report.ts crashes for me instead of printing the order summary. Can you fix the script? Don't edit orders.json, it's an export from the shop and some older orders really don't have tags.",
+  "tags": ["fix", "debugging", "runtime-error"],
+  "timeoutSeconds": 300,
+  "maxSteps": 12
+}

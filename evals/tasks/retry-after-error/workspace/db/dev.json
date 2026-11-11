@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "tables": {
+    "users": ["id", "email", "created_at"]
+  },
+  "applied": [{ "name": "001_users", "checksum": "6a3c2f8e0b1d" }]
+}

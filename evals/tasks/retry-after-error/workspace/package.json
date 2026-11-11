@@ -1,0 +1,8 @@
+{
+  "name": "pantry-db",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "migrate": "bun migrate.ts"
+  }
+}

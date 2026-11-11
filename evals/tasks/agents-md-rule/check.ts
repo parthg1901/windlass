@@ -1,0 +1,32 @@
+import { join } from "node:path"
+import { fail, importFrom, pass, readTree, workspaceArg } from "../../grader.ts"
+
+const workspace = workspaceArg()
+const api = join(workspace, "packages/api")
+const files = await readTree(api)
+const source = files.get("src/routes/health.route.ts")
+if (source === undefined) fail("there is no packages/api/src/routes/health.route.ts, as the api AGENTS.md requires")
+if (/new\s+Response\b|Response\.json\(/.test(source)) fail("health.route.ts builds a Response directly instead of using json()")
+const module = await importFrom<{ default?: unknown }>(api, "src/routes/health.route.ts")
+if (typeof module.default !== "function") fail("health.route.ts has no default-exported function")
+if (module.default.name !== "handleHealth") fail(`the default export is named ${module.default.name || "(anonymous)"}, not handleHealth`)
+
+const index = await importFrom<{ routes: { method: string; path: string; handler: unknown }[] }>(api, "src/routes/index.ts")
+const paths = index.routes.map((route) => route.path)
+const health = index.routes.find((route) => route.path === "/health")
+if (!health) fail("/health is not registered in src/routes/index.ts")
+if (health.method !== "GET") fail(`/health is registered for ${health.method}, not GET`)
+if (health.handler !== module.default) fail("/health is not registered with the handler from health.route.ts")
+if (paths.join() !== [...paths].sort().join()) fail(`routes are not sorted by path: ${paths.join(", ")}`)
+
+const server = await importFrom<{ dispatch: (method: string, path: string) => Response | Promise<Response> }>(api, "src/server.ts")
+const response = await server.dispatch("GET", "/health")
+if (response.status !== 200) fail(`GET /health returned status ${response.status}`)
+if (!response.headers.get("content-type")?.includes("application/json")) fail("GET /health is not served as JSON")
+const body = await response.text()
+if (JSON.stringify(JSON.parse(body)) !== '{"status":"ok"}') fail(`GET /health returned ${body}`)
+const users = await server.dispatch("GET", "/users")
+if (users.status !== 200) fail("GET /users broke")
+const web = await readTree(join(workspace, "packages/web"))
+if (web.size !== 1) fail("the web package was changed")
+pass("/health follows the api package conventions and responds correctly")

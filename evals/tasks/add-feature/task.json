@@ -1,0 +1,8 @@
+{
+  "id": "add-feature",
+  "title": "Add a percentage discount to a cart, with tests",
+  "prompt": "Can you add percentage discounts to the cart? Something like cart.applyDiscount(15) should take 15% off what total() returns (subtotal stays the same). Anything below 0 or above 100 should throw a RangeError. Please add tests for it too.",
+  "tags": ["feature", "unit-test", "typescript"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

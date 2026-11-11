@@ -1,0 +1,8 @@
+{
+  "id": "answer-question",
+  "title": "Answer a question about the code without changing it",
+  "prompt": "Quick question, don't change any code: when the app's shared client keeps getting 500s, what's the longest single wait between two attempts, in milliseconds? Put just the number in answer.txt at the project root.",
+  "tags": ["question", "read-only", "reasoning"],
+  "timeoutSeconds": 300,
+  "maxSteps": 12
+}

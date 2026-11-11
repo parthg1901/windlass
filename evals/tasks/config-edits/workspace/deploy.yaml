@@ -1,0 +1,18 @@
+# Deployment for pantry. Owned by the platform team; ask in #platform before changing images.
+services:
+  api:
+    image: pantry/api:stable
+    replicas: 2 # keep >= 2 for zero-downtime deploys
+    env:
+      DATABASE_URL: postgres://db.internal/pantry
+      CACHE_TTL: "300"
+  worker:
+    image: pantry/worker:stable
+    replicas: 2
+    env:
+      QUEUE: default
+
+# Health checks are shared by every service.
+healthcheck:
+  path: /healthz
+  intervalSeconds: 15

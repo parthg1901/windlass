@@ -1,0 +1,6 @@
+{
+  "name": "larder",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"]
+}

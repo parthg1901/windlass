@@ -1,0 +1,8 @@
+{
+  "id": "noisy-test-suite",
+  "title": "Find and fix the one failure in a long, noisy test run",
+  "prompt": "bun run test fails but it prints so much that I can't even find what's failing. Can you track it down and fix it? Don't change the tests.",
+  "tags": ["fix", "long-output", "shell"],
+  "timeoutSeconds": 420,
+  "maxSteps": 15
+}

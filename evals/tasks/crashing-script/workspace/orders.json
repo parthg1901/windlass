@@ -1,0 +1,8 @@
+[
+  { "id": "o-100", "customer": "fern", "totalCents": 4599, "tags": ["gift", "express"] },
+  { "id": "o-101", "customer": "otis", "totalCents": 1250, "tags": ["express"] },
+  { "id": "o-102", "customer": "fern", "totalCents": 899 },
+  { "id": "o-103", "customer": "juno", "totalCents": 30000, "tags": ["wholesale"] },
+  { "id": "o-104", "customer": "otis", "totalCents": 2001, "tags": ["express", "gift"] },
+  { "id": "o-105", "customer": "pia", "totalCents": 5000, "tags": [] }
+]

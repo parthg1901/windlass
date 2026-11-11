@@ -1,0 +1,9 @@
+{
+  "name": "member-directory",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "seed": "bun scripts/seed.ts"
+  }
+}

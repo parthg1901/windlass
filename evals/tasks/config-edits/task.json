@@ -1,0 +1,8 @@
+{
+  "id": "config-edits",
+  "title": "Edit a JSON and a YAML config, preserving everything else",
+  "prompt": "Release prep: bump the version in settings.json to 2.4.0 and switch telemetry on. In deploy.yaml, give the api service 4 replicas and add LOG_LEVEL=debug to its env. Leave everything else exactly as it is, comments included.",
+  "tags": ["config", "json", "yaml", "edit"],
+  "timeoutSeconds": 240,
+  "maxSteps": 10
+}

@@ -1,0 +1,8 @@
+{
+  "name": "order-report",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "report": "bun report.ts"
+  }
+}

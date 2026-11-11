@@ -1,0 +1,8 @@
+{
+  "id": "retry-after-error",
+  "title": "Run a command that fails until its errors are read and acted on",
+  "prompt": "Can you run the database migrations on dev? Nobody else is migrating right now.",
+  "tags": ["shell", "error-recovery", "retry"],
+  "timeoutSeconds": 240,
+  "maxSteps": 12
+}

@@ -1,0 +1,14 @@
+{
+  "name": "pantry",
+  "version": "2.3.7",
+  "features": {
+    "telemetry": false,
+    "darkMode": true,
+    "betaSearch": false
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "plugins": ["auth", "cache"]
+}

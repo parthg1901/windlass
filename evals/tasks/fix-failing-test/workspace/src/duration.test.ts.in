@@ -1,0 +1,23 @@
+import { expect, test } from "bun:test"
+import { formatDuration } from "./duration.ts"
+
+test("seconds only", () => {
+  expect(formatDuration(0)).toBe("0s")
+  expect(formatDuration(42_000)).toBe("42s")
+})
+
+test("minutes and seconds", () => {
+  expect(formatDuration(90_000)).toBe("1m 30s")
+})
+
+test("hours, minutes and seconds", () => {
+  expect(formatDuration(3_723_000)).toBe("1h 2m 3s")
+})
+
+test("whole hours skip zero parts", () => {
+  expect(formatDuration(7_200_000)).toBe("2h")
+})
+
+test("rejects negative input", () => {
+  expect(() => formatDuration(-1)).toThrow(RangeError)
+})

@@ -1,0 +1,8 @@
+{
+  "id": "agents-md-rule",
+  "title": "Add an API route following a nested AGENTS.md convention",
+  "prompt": "Add a GET /health endpoint to the api that responds with {\"status\":\"ok\"}.",
+  "tags": ["feature", "agents-md", "conventions", "monorepo"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}
