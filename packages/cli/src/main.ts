@@ -183,10 +183,11 @@ export async function run(io: Io): Promise<number> {
     // From here a Ctrl-C or SIGTERM leaves at once instead of waiting for the engine.
     control.leaving = true
     const closed = await within(CLOSE_TIMEOUT_MS, Promise.all([session.close(), turns.ended]))
-    if (!closed) io.stderr.write(`${brand.binary}: the engine did not stop within ${formatDuration(CLOSE_TIMEOUT_MS)}; exiting anyway\n`)
     for (const off of unsubscribe) off?.()
     sink.close()
+    // The terminal is put back before anything else is written, so nothing lands inside the input footer.
     terminal?.restore()
+    if (!closed) io.stderr.write(`${brand.binary}: the engine did not stop within ${formatDuration(CLOSE_TIMEOUT_MS)}; exiting anyway\n`)
   }
 }
 

@@ -211,11 +211,14 @@ export class PrettyRenderer implements Sink {
         this.retrying = true
         const error = event.data.error
         this.setError(error.kind, error.requestId)
-        this.line("info", [
-          seg(`${SYMBOL.retry} `, "yellow"),
-          seg(`retrying in ${formatDuration(event.data.delayMs)} (attempt ${event.data.attempt})`, "yellow"),
-          seg(` · ${errorLabel(error)}: ${error.message}`, "dim"),
-        ])
+        const head = [seg(`${SYMBOL.retry} `, "yellow"), seg(`retrying in ${formatDuration(event.data.delayMs)} (attempt ${event.data.attempt})`, "yellow")]
+        const why = `${errorLabel(error)}: ${flatten(error.message)}`
+        // On a narrow terminal the reason goes on its own lines rather than being cut.
+        if (displayWidth(`↻ retrying in ${formatDuration(event.data.delayMs)} (attempt ${event.data.attempt}) · ${why}`) <= this.width) this.line("info", [...head, seg(` · ${why}`, "dim")])
+        else {
+          this.line("info", head)
+          for (const line of wrap(why, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        }
         return
       }
       case "compaction.started":
@@ -432,7 +435,10 @@ export class PrettyRenderer implements Sink {
     const adjacent = call.after === this.lines && this.open.size === 1 && this.open.has(id)
     this.open.delete(id)
     const duration = call.startedAt === null ? null : formatDuration(time - call.startedAt)
-    const outcome = describeOutcome(call.name, data)
+    const described = describeOutcome(call.name, data)
+    // On a narrow terminal the loop-decided outcomes drop their explanation before the call's argument is cut short.
+    const room = this.width - displayWidth(`  ✓ ${call.name} · ${described.text}${suffix([duration])}`)
+    const outcome = !adjacent && room < 16 && described.short !== undefined ? { ...described, text: described.short } : described
     const head: Segment[] = [seg("  "), seg(`${outcome.symbol} `, outcome.tone)]
     const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), seg(suffix([duration]), "dim")]
     if (adjacent) this.line("info", [...head, ...trimLeadingDot(tail, outcome.text)])
@@ -482,13 +488,13 @@ export class PrettyRenderer implements Sink {
         this.line("info", [seg(`${SYMBOL.retry} `, "yellow"), seg("asking the model to continue where it was cut off", "dim")])
         return
       case "output_limit":
-        this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("the response hit the output limit"), seg(" · asking the model to continue", "dim")])
+        this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("output limit reached"), seg(" · asking the model to continue", "dim")])
         return
       case "empty_response":
-        this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("the model returned an empty response"), seg(" · nudging it once", "dim")])
+        this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("empty response"), seg(" · nudging the model once", "dim")])
         return
       case "step_limit":
-        this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("step limit reached"), seg(" · asking for a final answer without tools", "dim")])
+        this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("step limit reached"), seg(" · one last answer, without tools", "dim")])
         return
       default:
         this.line("info", [seg(`${SYMBOL.note} note to the model (${origin})`, "dim")])
@@ -567,7 +573,7 @@ export class PrettyRenderer implements Sink {
     this.line("summary", segments)
     for (const line of more) this.line("summary", line)
     const usage = turn?.usage
-    if (usage !== null && usage !== undefined) this.line("summary", [seg(`  ${usageText(usage)}`, "dim")])
+    if (usage !== null && usage !== undefined) this.line("summary", [seg(`  ${usageText(usage, this.width - 2)}`, "dim")])
   }
 
   // ---------------------------------------------------------------- output
@@ -629,7 +635,8 @@ export class PrettyRenderer implements Sink {
     this.clearStatus()
     this.status = next
     if (next === null) return
-    this.options.write(renderLine([seg(next, "dim")], this.width - 1, this.options.color))
+    // Two columns stay free for the terminal's own "^C" echo, so it lands on this line and is cleared with it.
+    this.options.write(renderLine([seg(next, "dim")], this.width - 3, this.options.color))
     this.statusDrawn = true
   }
 
@@ -646,9 +653,12 @@ export class PrettyRenderer implements Sink {
       const call = first === undefined ? undefined : this.calls.get(first)
       const progress = first === undefined ? undefined : this.progress.get(first)
       const tail = progress === undefined ? "" : ` · ${progress.split("\n").filter((line) => line.trim() !== "").at(-1) ?? ""}`
+      if (this.stop === "shown")
+        return `⋯ waiting for ${this.running.size > 1 ? `${this.running.size} tools` : `${call?.name ?? "the tool"} ${call?.arg ?? ""}`.trimEnd()} to stop`
       const what = this.running.size > 1 ? `${this.running.size} tools running` : `running ${call?.name ?? "tool"} ${call?.arg ?? ""}`.trimEnd()
       return `⋯ ${what}${tail}`
     }
+    if (this.stop === "shown") return "⋯ stopping"
     if (this.compacting) return "⋯ compacting the conversation"
     if (this.retrying) return "⋯ waiting to retry"
     if (this.openStep !== null) {
@@ -746,16 +756,16 @@ function key(messageId: string, callId: string) {
   return `${messageId}\u0000${callId}`
 }
 
-function describeOutcome(name: string, data: EventData<"tool.settled">): { symbol: string; tone: Tone; text: string } {
+function describeOutcome(name: string, data: EventData<"tool.settled">): { symbol: string; tone: Tone; text: string; short?: string } {
   switch (data.outcome) {
     case "success":
       return { symbol: SYMBOL.ok, tone: "green", text: successSummary(name, data) }
     case "error":
       return { symbol: SYMBOL.fail, tone: "red", text: errorSummary(name, data) }
     case "not_started":
-      return { symbol: SYMBOL.notRun, tone: "yellow", text: "not run · stopped before it started" }
+      return { symbol: SYMBOL.notRun, tone: "yellow", text: "not run · stopped before it started", short: "not run" }
     case "effect_unknown":
-      return { symbol: SYMBOL.unknown, tone: "yellow", text: "outcome unknown · it may have taken effect" }
+      return { symbol: SYMBOL.unknown, tone: "yellow", text: "outcome unknown · it may have taken effect", short: "outcome unknown" }
   }
 }
 
@@ -770,11 +780,13 @@ function suffix(parts: readonly (string | null)[]): string {
   return present.length === 0 ? "" : ` · ${present.join(" · ")}`
 }
 
-export function usageText(usage: Usage): string {
+/** The token line of a turn; when `width` is too small for it, the short form without the cached and reasoning counts. */
+export function usageText(usage: Usage, width = Number.POSITIVE_INFINITY): string {
   const n = (value: number) => value.toLocaleString("en-US")
   const share = usage.inputTokens === 0 ? 0 : Math.round((usage.cachedInputTokens / usage.inputTokens) * 100)
   const reasoning = usage.reasoningTokens > 0 ? ` (${n(usage.reasoningTokens)} reasoning)` : ""
-  return `tokens · ${n(usage.inputTokens)} in · ${n(usage.cachedInputTokens)} cached (${share}%) · ${n(usage.outputTokens)} out${reasoning}`
+  const full = `tokens · ${n(usage.inputTokens)} in · ${n(usage.cachedInputTokens)} cached (${share}%) · ${n(usage.outputTokens)} out${reasoning}`
+  return displayWidth(full) <= width ? full : `tokens · ${n(usage.inputTokens)} in · ${share}% cached · ${n(usage.outputTokens)} out`
 }
 
 function errorLabel(error: ProviderError): string {

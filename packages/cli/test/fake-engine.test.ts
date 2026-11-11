@@ -82,3 +82,24 @@ describe("scriptTurns", () => {
     expect(turns.at(-1)?.events.at(-1)?.event).toMatchObject({ type: "execution.interrupted", data: { reason: "shutdown" } })
   })
 })
+
+describe("every demo", () => {
+  test("replays as a log the reducer accepts", async () => {
+    const { demoScenarios } = await import("../src/demo/scenarios.ts")
+    for (const entry of demoScenarios) {
+      const engine = new FakeEngine(entry.scenario, { speed: 0 })
+      const session = await engine.open({ session: { kind: "new" }, cwd: "/repo", model: null, effort: null, maxSteps: null })
+      const log: StoredEvent[] = []
+      const reading = (async () => {
+        for await (const item of session.events) if (durable(item)) log.push(item)
+      })()
+      while (session.remaining > 0) {
+        await session.send(session.nextPrompt ?? "")
+        await session.idle()
+      }
+      await session.close()
+      await reading
+      expect(() => fold(null, log.map(strip)), entry.name).not.toThrow()
+    }
+  })
+})
