@@ -10,6 +10,7 @@ import type { webcrypto } from "node:crypto"
 import { chmod, mkdir, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { brand } from "../brand.ts"
 
 const ISSUER = "https://auth.openai.com"
 const AUTHORIZE_URL = `${ISSUER}/api/accounts/authorize`
@@ -19,7 +20,7 @@ export const RESOURCE = "https://api.openai.com/v1"
 const REGISTRATION_CLIENT_ID = "dynamic_agent_client"
 const PLAN_USAGE_SCOPE = "chatgpt.tokens.use.direct"
 const SCOPES = `openid profile email offline_access resource.invoke ${PLAN_USAGE_SCOPE}`
-const AGENT_NAME = "light-harness"
+const AGENT_NAME = brand.name
 const DEFAULT_PORT = 1455
 // Refresh this long before expiry so a request never starts with a token about to lapse.
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
@@ -57,7 +58,7 @@ export class AuthError extends Error {
 }
 
 export function dataDir() {
-  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "light-harness")
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), brand.directory)
 }
 
 export const credentialsPath = () => join(dataDir(), "auth.json")
