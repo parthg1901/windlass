@@ -13,6 +13,7 @@ import {
   opening,
   ran,
   say,
+  settingsChanged,
   settled,
   stepEnded,
   stepStarted,
@@ -212,4 +213,50 @@ export const twoTurns: Scenario = {
   ],
 }
 
-export const happyPaths = [plainAnswer, oneToolCall, parallelToolCalls, severalSteps, twoTurns]
+export const modelSwitch: Scenario = {
+  title: "The user switches the model in the middle of a turn",
+  description:
+    "While the first step's tool runs, the user picks another model. The change is a durable event of its own, written at the step boundary; from then on every step calls the new model, and the request builder takes its parameters from the stored settings. The next request no longer extends the previous one (its first block changed), and the prefix check is told why by this event.",
+  provider: "step 1 (gpt-test) finishes with a read call; the user switches to gpt-other; step 2 (gpt-other) answers",
+  phases: [
+    {
+      label: "the first step runs on the session's model",
+      events: [
+        ...opening(),
+        stepStarted("a1"),
+        called("a1", "call_1", "read", '{"path":"a.ts"}'),
+        toolStarted("a1", "call_1", "read"),
+      ],
+      rejects: [
+        {
+          event: settingsChanged("gpt-other"),
+          code: "invalid_transition",
+          why: "the request in flight was built from the old settings: they change only at a step boundary",
+        },
+      ],
+    },
+    {
+      label: "the step ends and the change is recorded",
+      events: [settled("a1", "call_1", "success", "export const a = 1"), stepEnded("a1", "tool_calls"), settingsChanged("gpt-other")],
+      rejects: [
+        {
+          event: stepStarted("a2"),
+          code: "invalid_transition",
+          why: "a step calls the model the session's settings name, which is gpt-other now",
+        },
+        { event: settingsChanged("gpt-other"), code: "invalid_transition", why: "an event that changes nothing records no fact" },
+      ],
+    },
+    {
+      label: "the turn continues on the new model",
+      events: [stepStarted("a2", 1, "gpt-other"), say("a2", "a is 1."), stepEnded("a2"), executionSucceeded()],
+      expect: {
+        ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 read success"] }, { id: "a2", status: "completed" }],
+        history: ["u1", "a1", "a2"],
+        execution: null,
+      },
+    },
+  ],
+}
+
+export const happyPaths = [plainAnswer, oneToolCall, parallelToolCalls, severalSteps, twoTurns, modelSwitch]
