@@ -58,7 +58,7 @@ interface ItemOptions {
   /** Maximum characters per delta. Defaults to 8. */
   readonly chunkSize?: number
   readonly providerData?: Json
-  /** Send the deltas but never the end event. Follow it with `fail`, `cut` or `hang`. */
+  /** Send the deltas but never the end event. Follow it with `fail`, `cut`, `hang` or `finish("length")`. */
   readonly partial?: boolean
 }
 
@@ -294,8 +294,10 @@ function check(items: readonly ScriptItem[]): readonly ScriptItem[] {
     throw new Error(`FakeProvider: nothing may follow a ${items[terminal]!.type} item`)
   const last = items.at(-1)
   const partial = items.some((item) => "partial" in item && item.partial)
-  if (partial && (last === undefined || last.type === "finish" || !TERMINAL.includes(last.type)))
-    throw new Error("FakeProvider: a response with a partial item must end with fail, cut or hang")
+  // The output limit is the one way a call succeeds with an item unfinished (a tool call cut off mid-arguments).
+  const cutByLimit = last?.type === "finish" && last.reason === "length"
+  if (partial && !cutByLimit && (last === undefined || last.type === "finish" || !TERMINAL.includes(last.type)))
+    throw new Error("FakeProvider: a response with a partial item must end with fail, cut, hang or finish(\"length\")")
   return items
 }
 

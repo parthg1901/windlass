@@ -159,6 +159,14 @@ describe("FakeProvider", () => {
     expect(() => computed.stream(request, never)).toThrow("nothing may follow")
   })
 
+  test("a response cut off by the output limit ends with finish length and never ends the call it was writing", async () => {
+    const provider = new FakeProvider([
+      [script.text("Writing it."), script.toolCall("call_1", "write", '{"path":"m.ts","content":"export', { partial: true, chunkSize: 40 }), script.finish("length")],
+    ])
+    expect(types(await collectStream(provider.stream(request, never)))).toEqual(["text.delta", "text.delta", "text.end", "tool_call.delta", "finish"])
+    expect(provider.calls[0]!.outcome).toBe("finished")
+  })
+
   describe("request recording", () => {
     test("records every request it receives, in order", async () => {
       const provider = new FakeProvider([[script.text("one")], [script.text("two")]])
