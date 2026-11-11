@@ -23,13 +23,25 @@ export type StoreErrorCode =
   | "seq_conflict"
   /** The ledger row named by `finishRequest` does not exist or is already finished. */
   | "request_not_pending"
+  /** `beginRequest` was given a request ID the ledger already has. A request ID names one model call. */
+  | "duplicate_request"
+  /**
+   * The database is locked by another writer. At open: another store (in this
+   * or another process) already has the file open for writing. During a write:
+   * some other connection held the write lock longer than the store waits.
+   * Either way nothing was written.
+   */
+  | "locked"
+  /** The file was written with another schema version, or is not a store database. It was not touched. */
+  | "schema_mismatch"
 
 export class StoreError extends Error {
   constructor(
     readonly code: StoreErrorCode,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message)
+    super(message, options)
     this.name = "StoreError"
   }
 }
@@ -115,7 +127,8 @@ export interface Store {
    * starting state, and the fork's first `seq` is `throughSeq + 1`.
    *
    * Throws `EventDecodeError` (invalid event), `ReduceError` (the event would
-   * break a log invariant) or `StoreError`. When it throws, nothing was written.
+   * break a log invariant) or `StoreError` (`session_not_found`,
+   * `seq_conflict`, `locked`). When it throws, nothing was written.
    */
   readonly append: (
     sessionId: SessionId,
@@ -184,7 +197,10 @@ export interface Store {
 
   // ---- request ledger ----
 
-  /** Records a model call that is about to be sent. */
+  /**
+   * Records a model call that is about to be sent. Throws `StoreError`
+   * `session_not_found`, or `duplicate_request` when the ID was used before.
+   */
   readonly beginRequest: (start: RequestStart) => RequestRecord
 
   /** Records how a model call ended. Throws `StoreError` unless the row exists and is unfinished. */
@@ -219,5 +235,9 @@ export interface OpenStoreOptions {
   readonly now?: () => number
 }
 
-/** The shape of the storage track's entry point, so other tracks can be written against it now. */
+/**
+ * The shape of the storage track's entry point, so other tracks can be written
+ * against it now. Opening throws `StoreError` `locked` when another writer has
+ * the file, and `schema_mismatch` when the file is from another schema version.
+ */
 export type OpenStore = (options: OpenStoreOptions) => Store

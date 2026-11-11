@@ -346,8 +346,15 @@ describe("persistence", () => {
     store.database.run("PRAGMA user_version = 99")
     store.close()
     expect(() => open(path)).toThrow(StoreSchemaError)
-    // The failed open released the writer lock.
-    expect(() => open(path)).toThrow(StoreSchemaError)
+    // The failed open released the writer lock, and the error is the store's own, with a code.
+    let error: unknown
+    try {
+      open(path)
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toBeInstanceOf(StoreError)
+    expect((error as StoreError).code).toBe("schema_mismatch")
   }, FILE_TIMEOUT)
 })
 
@@ -456,6 +463,13 @@ describe("request ledger", () => {
     expect((rejection(() => store.beginRequest(start("req_2", "ses_missing"))) as StoreError).code).toBe(
       "session_not_found",
     )
+    // A request ID names one model call: a second row with it is the store's error, not a raw SQLite one.
+    const duplicate = rejection(() => store.beginRequest(start("req_1")))
+    expect(duplicate).toBeInstanceOf(StoreError)
+    expect((duplicate as StoreError).code).toBe("duplicate_request")
+    store.append(sid("ses_2"), [created()])
+    expect((rejection(() => store.beginRequest(start("req_1", "ses_2"))) as StoreError).code).toBe("duplicate_request")
+    expect(store.readRequests(sid("ses_1")).map((record) => record.id as string)).toEqual(["req_1"])
     store.beginRequest(start("req_3"))
     expect(() => store.finishRequest("req_3" as RequestId, { outcome: "ok", usage: null, errorKind: "auth" })).toThrow(
       TypeError,

@@ -18,13 +18,19 @@
  * writers lock two different inodes.
  */
 import { Database, SQLiteError } from "bun:sqlite"
+import { StoreError } from "./store.ts"
 
-/** Another process (or another store in this process) already writes to this database. */
-export class StoreLockedError extends Error {
+/** Another process (or another store in this process) already writes to this database. A `StoreError` with code `locked`. */
+export class StoreLockedError extends StoreError {
   constructor(readonly path: string) {
-    super(`${path} is already open for writing by another store; only one writer may open it at a time`)
+    super("locked", `${path} is already open for writing by another store; only one writer may open it at a time`)
     this.name = "StoreLockedError"
   }
+}
+
+/** Whether `error` is SQLite reporting that another connection holds a lock it needs. */
+export function isBusy(error: unknown): error is SQLiteError {
+  return error instanceof SQLiteError && (error.code?.startsWith("SQLITE_BUSY") ?? false)
 }
 
 /** Takes the writer lock for `path`. Returns the connection that holds it; closing it releases the lock. */
@@ -42,7 +48,7 @@ export function acquireWriterLock(path: string): Database {
     lock.run("COMMIT")
   } catch (error) {
     lock.close()
-    if (error instanceof SQLiteError && error.code?.startsWith("SQLITE_BUSY")) throw new StoreLockedError(path)
+    if (isBusy(error)) throw new StoreLockedError(path)
     throw error
   }
   return lock

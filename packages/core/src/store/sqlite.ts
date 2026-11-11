@@ -14,10 +14,13 @@
  * - One writer per file, enforced at open by `acquireWriterLock`
  *   (`sqlite-lock.ts`): a second writer gets `StoreLockedError` at once.
  *   Other connections that touch the file (a reader, the sqlite3 shell) can
- *   hold SQLite's write lock briefly; an append waits for it at most
- *   `busyTimeoutMs` and then throws `SQLITE_BUSY`, having written nothing.
+ *   hold SQLite's write lock briefly; a write waits for it at most
+ *   `busyTimeoutMs` and then throws `StoreError` `locked`, having written nothing.
+ * - No raw SQLite error leaves a write for a condition the contract names: a
+ *   lock that is not released is `locked`, a reused request ID is
+ *   `duplicate_request`, a file from another schema version is `schema_mismatch`.
  */
-import { Database } from "bun:sqlite"
+import { Database, SQLiteError } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import type { BlobRef } from "../content.ts"
 import { decodeEvent, encodeEventData, validateEvent } from "../event/decode.ts"
@@ -46,7 +49,7 @@ import {
   oneOf,
 } from "../validate.ts"
 import { CONNECTION_PRAGMAS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema.ts"
-import { acquireWriterLock } from "./sqlite-lock.ts"
+import { acquireWriterLock, isBusy } from "./sqlite-lock.ts"
 import {
   type AppendOptions,
   type OpenStore,
@@ -64,8 +67,8 @@ export { StoreLockedError } from "./sqlite-lock.ts"
 
 export interface SqliteStoreOptions extends OpenStoreOptions {
   /**
-   * How long an append waits for SQLite's write lock when some other
-   * connection holds it, before it throws `SQLITE_BUSY`. Default 5000 ms.
+   * How long a write waits for SQLite's write lock when some other
+   * connection holds it, before it throws `StoreError` `locked`. Default 5000 ms.
    */
   readonly busyTimeoutMs?: number
   /** Called when a `subscribe` listener throws. Defaults to `console.error`. The append stays committed. */
@@ -77,11 +80,22 @@ export interface SqliteStore extends Store {
   readonly database: Database
 }
 
-/** The database was created by a different schema version, or is not a store database. */
-export class StoreSchemaError extends Error {
+/** The database was created by a different schema version, or is not a store database. A `StoreError` with code `schema_mismatch`. */
+export class StoreSchemaError extends StoreError {
   constructor(message: string) {
-    super(message)
+    super("schema_mismatch", message)
     this.name = "StoreSchemaError"
+  }
+}
+
+/** Runs a write and reports a lock that was not released in time as the store's own error. */
+function writing<T>(what: string, write: () => T): T {
+  try {
+    return write()
+  } catch (error) {
+    if (isBusy(error))
+      throw new StoreError("locked", `${what}: the database is locked by another writer; nothing was written`, { cause: error })
+    throw error
   }
 }
 
@@ -180,7 +194,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     sessionIdValidator(id, "sessionId")
     // Validation is pure, so it runs before the transaction is opened.
     const validated = events.map((event) => validateEvent(event))
-    const result = appendTransaction.immediate(id, validated, options)
+    const result = writing(`append to session ${id}`, () => appendTransaction.immediate(id, validated, options))
     if (result === null) return []
     remember(id, result.state)
     for (const listener of [...listeners]) {
@@ -235,33 +249,43 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     const checked = requestStart(start, "request")
     if (sql.head.get(checked.sessionId) === null)
       throw new StoreError("session_not_found", `session ${checked.sessionId} does not exist`)
-    return requestRecord(
-      sql.insertRequest.get(
-        checked.id,
-        checked.sessionId,
-        checked.messageId,
-        checked.attempt,
-        checked.purpose,
-        checked.model,
-        JSON.stringify(checked.blocks),
-        clock(),
-      )!,
-    )
+    const row = writing(`begin request ${checked.id}`, () => {
+      try {
+        return sql.insertRequest.get(
+          checked.id,
+          checked.sessionId,
+          checked.messageId,
+          checked.attempt,
+          checked.purpose,
+          checked.model,
+          JSON.stringify(checked.blocks),
+          clock(),
+        )
+      } catch (error) {
+        // `request.id` is the only unique column an insert can collide on (`ordinal` is assigned).
+        if (error instanceof SQLiteError && error.code === "SQLITE_CONSTRAINT_UNIQUE")
+          throw new StoreError("duplicate_request", `request ${checked.id} is already in the ledger`, { cause: error })
+        throw error
+      }
+    })
+    return requestRecord(row!)
   }
 
   const finishRequest: Store["finishRequest"] = (id, finish) => {
     const checked = requestFinish(finish, "finish")
     if ((checked.outcome === "error") !== (checked.errorKind !== null))
       throw new TypeError("errorKind is set exactly when the outcome is error")
-    const row = sql.finishRequest.get(
-      clock(),
-      checked.outcome,
-      checked.errorKind,
-      checked.usage?.inputTokens ?? null,
-      checked.usage?.cachedInputTokens ?? null,
-      checked.usage?.outputTokens ?? null,
-      checked.usage?.reasoningTokens ?? null,
-      id,
+    const row = writing(`finish request ${id}`, () =>
+      sql.finishRequest.get(
+        clock(),
+        checked.outcome,
+        checked.errorKind,
+        checked.usage?.inputTokens ?? null,
+        checked.usage?.cachedInputTokens ?? null,
+        checked.usage?.outputTokens ?? null,
+        checked.usage?.reasoningTokens ?? null,
+        id,
+      ),
     )
     if (row === null) throw new StoreError("request_not_pending", `request ${id} does not exist or is already finished`)
     return requestRecord(row)
@@ -270,7 +294,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
   const putBlob: Store["putBlob"] = (bytes, mediaType) => {
     nonEmptyString(mediaType, "mediaType")
     const hash = createHash("sha256").update(bytes).digest("hex")
-    sql.insertBlob.run(hash, mediaType, bytes.byteLength, bytes, clock())
+    writing(`store blob ${hash}`, () => sql.insertBlob.run(hash, mediaType, bytes.byteLength, bytes, clock()))
     // The first media type stored for these bytes wins, so the same bytes always give the same reference.
     return { hash, mediaType: sql.blobMediaType.get(hash)!.media_type } satisfies BlobRef
   }

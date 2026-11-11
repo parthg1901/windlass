@@ -7,8 +7,9 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionId } from "../../src/id.ts"
+import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
 import { StoreLockedError, openSqliteStore } from "../../src/store/sqlite.ts"
+import { StoreError } from "../../src/store/store.ts"
 import { expectStoreConsistent } from "./consistency.ts"
 import { recoverClaimedSessions } from "./recovery.ts"
 import { baselineSet, created, enqueue } from "./scripted.ts"
@@ -89,12 +90,23 @@ describe("crash safety", () => {
   )
 })
 
+/** The `StoreError` code a call throws, or what it threw instead. */
+function codeOf(call: () => unknown): unknown {
+  try {
+    call()
+  } catch (error) {
+    return error instanceof StoreError ? error.code : error
+  }
+  return "no error"
+}
+
 describe("single writer", () => {
   test("a second store on the same file is refused at once, in this process and in another", async () => {
     const path = temporaryPath()
     const first = openSqliteStore({ path })
     first.append("ses_1" as SessionId, [created()])
     expect(() => openSqliteStore({ path })).toThrow(StoreLockedError)
+    expect(codeOf(() => openSqliteStore({ path }))).toBe("locked")
 
     const startedAt = performance.now()
     const refused = await tryOpenInChild(path)
@@ -135,9 +147,26 @@ describe("single writer", () => {
     } catch (caught) {
       error = caught
     }
-    expect(error).toBeInstanceOf(SQLiteError)
-    expect((error as SQLiteError).code).toStartWith("SQLITE_BUSY")
+    // The store's own error, not a raw SQLite one; the SQLite error is kept as the cause.
+    expect(error).toBeInstanceOf(StoreError)
+    expect((error as StoreError).code).toBe("locked")
+    expect(((error as StoreError).cause as SQLiteError).code).toStartWith("SQLITE_BUSY")
     expect(performance.now() - startedAt).toBeLessThan(5_000)
+    // The ledger and the blob table are written under the same lock and fail the same way.
+    expect(
+      codeOf(() =>
+        store.beginRequest({
+          id: "req_1" as RequestId,
+          sessionId: "ses_1" as SessionId,
+          messageId: "a1" as MessageId,
+          attempt: 1,
+          purpose: "step",
+          model: "gpt-test",
+          blocks: [],
+        }),
+      ),
+    ).toBe("locked")
+    expect(codeOf(() => store.putBlob(new Uint8Array([1]), "application/octet-stream"))).toBe("locked")
     intruder.run("ROLLBACK")
     intruder.close()
     expect(store.getSession("ses_1" as SessionId)!.lastSeq).toBe(1)
