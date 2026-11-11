@@ -10,6 +10,27 @@ const callId = "call_1" as CallId
 const executionId = "exe_1" as ExecutionId
 const usage = { inputTokens: 10, cachedInputTokens: 4, outputTokens: 3, reasoningTokens: 1 }
 
+const evidence = {
+  run: 1,
+  afterSeq: 11,
+  changedFiles: ["src/a.ts"],
+  checks: [
+    {
+      name: "test",
+      command: "bun test",
+      status: "failed" as const,
+      exitCode: 1,
+      signal: null,
+      durationMs: 420,
+      files: ["src/a.ts"],
+      fingerprint: "f0",
+      outputPath: "/data/spill/check-test-0a.log",
+      outputBytes: 120,
+      outputLines: 4,
+    },
+  ],
+}
+
 /** One valid example of every durable event type. Adding an event type without adding it here fails to compile. */
 const examples: { [T in EventType]: NewEvent<T> } = {
   "session.created": event("session.created", {
@@ -47,7 +68,10 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   }),
   "execution.started": event("execution.started", { executionId }),
   "execution.resumed": event("execution.resumed", { executionId }),
-  "execution.succeeded": event("execution.succeeded", { executionId }),
+  "execution.succeeded": event("execution.succeeded", {
+    executionId,
+    verification: { status: "unresolved", reason: "acknowledged", failing: ["test"], acknowledgement: { checks: ["test"], reason: "The fixture is missing." }, evidence },
+  }),
   "execution.failed": event("execution.failed", { executionId, message: "gave up" }),
   "execution.interrupt_requested": event("execution.interrupt_requested", { executionId, reason: "shutdown" }),
   "execution.interrupted": event("execution.interrupted", { executionId, reason: "user" }),
@@ -81,7 +105,26 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "compaction.started": event("compaction.started", { messageId, trigger: "auto" }),
   "compaction.ended": event("compaction.ended", { messageId, summary: "So far: ...", keepFromSeq: 12, usage: null }),
   "compaction.failed": event("compaction.failed", { messageId, error: { kind: "crashed" } }),
-  "history.reverted": event("history.reverted", { fromSeq: 7 }),
+  "snapshot.taken": event("snapshot.taken", { id: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", point: "step_start", messageId }),
+  "snapshot.unavailable": event("snapshot.unavailable", { reason: "git_not_found", message: "git was not found on PATH" }),
+  "snapshot.coverage": event("snapshot.coverage", {
+    skipped: [
+      { path: "big.bin", reason: "too_large", bytes: 3_000_000 },
+      { path: "secret/", reason: "unreadable", bytes: null },
+    ],
+    nestedRepositories: ["vendor/lib"],
+  }),
+  "checks.started": event("checks.started", { run: 1, checks: ["test"] }),
+  "checks.finished": event("checks.finished", { run: 1, evidence }),
+  "checks.failed": event("checks.failed", { run: 1, error: { kind: "interrupted", reason: "user" } }),
+  "revert.started": event("revert.started", { fromSeq: 7, target: "aaa1", before: "bbb2", keep: ["notes.md"] }),
+  "history.reverted": event("history.reverted", {
+    fromSeq: 7,
+    restore: { target: "aaa1", before: "bbb2", after: "aaa1", changed: 2, kept: [{ path: "notes.md", reason: "hand_edited" }], keptOmitted: 0 },
+  }),
+  "revert.undo_started": event("revert.undo_started", { revertSeq: 20, target: "bbb2", before: "aaa1", keep: [] }),
+  "history.restored": event("history.restored", { revertSeq: 20, restore: null }),
+  "revert.failed": event("revert.failed", { message: "git refused: a file changed while the restore ran" }),
 }
 
 const row = (stored: NewEvent, overrides: Partial<EventRow> = {}): EventRow => ({

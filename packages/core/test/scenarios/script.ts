@@ -58,7 +58,7 @@ export interface Expect {
     /** The reason of a requested interrupt that has not completed. Defaults to `null`. */
     readonly interrupting?: InterruptReason
   }
-  /** The open step or compaction, by message ID, or `null` at a boundary. */
+  /** What is open (see `openLabel`): a step or compaction by message ID, `checks:<run>`, `revert`, `undo`, or `null` at a boundary. */
   readonly open?: string | null
   /** Inbox items still waiting, by message ID. */
   readonly inbox?: readonly string[]
@@ -156,7 +156,7 @@ export const continuationNote = (id: string) =>
 
 export const executionStarted = (id = "exe_1") => event("execution.started", { executionId: x(id) })
 export const executionResumed = (id = "exe_1") => event("execution.resumed", { executionId: x(id) })
-export const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id) })
+export const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" } })
 export const executionFailed = (message: string, id = "exe_1") =>
   event("execution.failed", { executionId: x(id), message })
 /** The cancel or the shutdown signal arrives: durable before anything is stopped. */
@@ -305,6 +305,14 @@ export function view(projection: Projection): MessageView[] {
         }
     }
   })
+}
+
+/** What is open, as a scenario names it: the message ID of a step or compaction, `checks:<run>`, `revert` or `undo`; `null` at a boundary. */
+export function openLabel(projection: Projection): string | null {
+  const open = projection.session.open
+  if (open === null) return null
+  if (open.kind === "step" || open.kind === "compaction") return open.messageId
+  return open.kind === "checks" ? `checks:${open.run}` : open.kind
 }
 
 export const historyIds = (projection: Projection) => selectModelHistory(projection).messages.map((message) => message.id as string)

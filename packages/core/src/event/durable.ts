@@ -14,6 +14,8 @@
  * - Text that the model will see is frozen in the event at write time and is
  *   never rendered again (storage rule 4).
  * - Nothing is deleted. Revert, compaction and fork are ranges of `seq`.
+ * - What the harness did to the workspace is recorded as snapshot IDs, never
+ *   as file lists: the snapshot store answers "what changed" from two IDs.
  *
  * Nothing has been released and no stored session exists yet, so every event
  * is at version 1 and its shape was still changed in place. From the first
@@ -27,6 +29,8 @@ import { interruptReason } from "../interrupt.ts"
 import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
 import { toolEffect, toolSpec, truncation } from "../tool/tool.ts"
+import { acknowledgement } from "../verify/acknowledge.ts"
+import { verificationEvidence } from "../verify/evidence.ts"
 import {
   type Infer,
   type Validator,
@@ -109,6 +113,79 @@ export const stepError = variant("kind", {
 export type StepError = Infer<typeof stepError>
 
 /**
+ * A workspace snapshot: the hash of the git tree the snapshot module recorded
+ * in its private repository. Equal IDs mean equal workspace contents.
+ */
+export const snapshotId = nonEmptyString
+
+/**
+ * The moment a snapshot was taken at. Every pair the harness brackets its own
+ * work with is named, so a change that falls between two snapshots that are
+ * not such a pair was made by someone else (the user, by hand).
+ * - `delivery`: right before input is delivered. The state a revert to before that input restores.
+ * - `step_start` / `step_end`: around the tools of one step. Taken only for a
+ *   step with a call that can change files; `messageId` names the step.
+ * - `checks_start` / `checks_end`: around one run of the configured checks.
+ * - `restore_start` / `restore_end`: around a restore (a revert, or the undo of one).
+ */
+export const snapshotPoint = oneOf(["delivery", "step_start", "step_end", "checks_start", "checks_end", "restore_start", "restore_end"])
+export type SnapshotPoint = Infer<typeof snapshotPoint>
+
+/** A file a snapshot left out, so it can be neither diffed nor restored. `bytes` is its size when it was too large. */
+export const skippedFile = object({ path: string, reason: oneOf(["too_large", "unreadable"]), bytes: nullable(integer(0)) })
+export type SkippedFile = Infer<typeof skippedFile>
+
+/** Why no snapshot can be taken. The first four are the snapshot module's; `snapshot_failed` is a snapshot that threw. */
+export const snapshotUnavailableReason = oneOf(["git_not_found", "git_too_old", "workspace_invalid", "storage_failed", "snapshot_failed"])
+
+/**
+ * What a restore did to the workspace.
+ * - `target`: the snapshot that was restored.
+ * - `before`: the workspace just before the restore. Restoring it undoes the restore.
+ * - `after`: the workspace just after it; equal to `target` unless something was kept. `null` when it could not be taken.
+ * - `changed`: how many files the restore wrote or removed.
+ * - `kept`: paths the restore left as they were, and why: ignored, in a nested
+ *   repository or never captured (the snapshot module's reasons), or edited by
+ *   hand since and kept on request. At most `KEPT_LIMIT` are listed; `keptOmitted` counts the rest.
+ */
+export const restoreRecord = object({
+  target: snapshotId,
+  before: snapshotId,
+  after: nullable(snapshotId),
+  changed: integer(0),
+  kept: array(object({ path: string, reason: oneOf(["ignored", "nested_repository", "not_captured", "hand_edited"]) })),
+  keptOmitted: integer(0),
+})
+export type RestoreRecord = Infer<typeof restoreRecord>
+export const KEPT_LIMIT = 200
+
+/**
+ * What the verification gate found when an execution ended as done.
+ * - `not_configured`: verification is off, or no check is configured. Nothing was verified.
+ * - `not_needed`: checks are configured and none applied: nothing they cover
+ *   changed since the last verification that passed.
+ * - `passed`: every check that applied passed; `evidence` is that run.
+ * - `unresolved`: checks still fail and the execution ended anyway. `reason`
+ *   says why it was allowed to: the model reported with the acknowledgement
+ *   tool that it cannot fix them (`acknowledgement` is what it said), the
+ *   model had been sent back `maxRounds` times, or the mode is `report`, which
+ *   never sends the model back.
+ */
+export const verificationOutcome = variant("status", {
+  not_configured: object({ status: literal("not_configured") }),
+  not_needed: object({ status: literal("not_needed") }),
+  passed: object({ status: literal("passed"), evidence: verificationEvidence }),
+  unresolved: object({
+    status: literal("unresolved"),
+    reason: oneOf(["acknowledged", "max_rounds", "report_mode"]),
+    failing: array(nonEmptyString),
+    acknowledgement: nullable(acknowledgement),
+    evidence: verificationEvidence,
+  }),
+})
+export type VerificationOutcome = Infer<typeof verificationOutcome>
+
+/**
  * The `origin` of the messages the step loop appends with `synthetic.appended`.
  * Any other non-empty string is a valid origin too (a background command, a
  * wake-up); these are the ones the loop and the reducer agree on.
@@ -132,6 +209,13 @@ export const HARNESS_ORIGIN = {
   emptyResponse: "empty_response",
   /** The step limit was reached; the next call is the last and runs without tools. */
   stepLimit: "step_limit",
+  /**
+   * The report of a run of checks that did not pass, as the model is shown
+   * it. In `gate` mode the model is sent back to fix them. When the execution
+   * ends unresolved in the same append (`report` mode, or the last allowed
+   * round), it is the one harness message that may be left unanswered.
+   */
+  checkReport: "check_report",
 } as const
 
 function define<const V extends number, D>(v: V, data: Validator<D>) {
@@ -242,8 +326,11 @@ export const durableEvents = {
   /**
    * The session ran until it had nothing left to do: the inbox is empty and
    * the model has answered everything it was given. Releases the claim.
+   * `verification` is what the gate found at that point, so "done" always
+   * says what it rests on: passing checks, no checks, or failing checks that
+   * were left unresolved and why.
    */
-  "execution.succeeded": define(1, object({ executionId })),
+  "execution.succeeded": define(1, object({ executionId, verification: verificationOutcome })),
   /** The execution gave up (a non-retryable error, attempts exhausted). Releases the claim. */
   "execution.failed": define(1, object({ executionId, message: string })),
   /**
@@ -365,13 +452,84 @@ export const durableEvents = {
   /** The compaction did not complete. Model history is unchanged. */
   "compaction.failed": define(1, object({ messageId, error: stepError })),
 
-  // ---- history ranges ----
+  // ---- workspace snapshots ----
 
   /**
-   * The user rewound the session: every message from `fromSeq` up to this
-   * event is excluded from model history. The rows stay.
+   * The workspace was recorded as snapshot `id` at this moment. `messageId`
+   * names the open step for `step_start` and `step_end` and is `null`
+   * otherwise. From these events alone: a step changed what differs between
+   * its `step_start` and `step_end` (a step without them could not change
+   * files; a step cut short has no `step_end`, and the next snapshot in the
+   * log bounds it); a turn changed what differs between the `delivery`
+   * snapshot before its input and the last snapshot of the turn; and the
+   * snapshot current when a message was delivered is the `delivery` snapshot
+   * right before its `inbox.delivered`.
    */
-  "history.reverted": define(1, object({ fromSeq: integer(1) })),
+  "snapshot.taken": define(1, object({ id: snapshotId, point: snapshotPoint, messageId: nullable(messageId) })),
+  /**
+   * No snapshot can be taken from here on, so the session works without undo
+   * until a later `snapshot.taken`. Written once per change, not per attempt.
+   */
+  "snapshot.unavailable": define(1, object({ reason: snapshotUnavailableReason, message: string })),
+  /**
+   * What snapshots leave out, from here on: files too large or unreadable
+   * (they cannot be undone) and directories holding their own git repository
+   * (nothing inside them is tracked). Written when the set changes, not with
+   * every snapshot.
+   */
+  "snapshot.coverage": define(1, object({ skipped: array(skippedFile), nestedRepositories: array(string) })),
+
+  // ---- verification ----
+
+  /**
+   * The harness began run `run` of the project's checks (1 for the first run
+   * of a turn), because the session would otherwise go idle. Its `seq` is the
+   * position in the log the checks ran at. Nothing else happens until the
+   * run's terminal event, `checks.finished` or `checks.failed`.
+   */
+  "checks.started": define(1, object({ run: integer(1), checks: array(nonEmptyString) })),
+  /** Every check of the run has a result. `evidence` is the record of them. */
+  "checks.finished": define(1, object({ run: integer(1), evidence: verificationEvidence })),
+  /**
+   * The run did not produce results: the execution was interrupted, the
+   * process died (recorded by recovery), or the harness failed. It says
+   * nothing about the code, and the gate treats it as if the checks had not run.
+   */
+  "checks.failed": define(1, object({ run: integer(1), error: stepError })),
+
+  // ---- history ranges and the workspace that goes with them ----
+
+  /**
+   * A revert to the state before `fromSeq` began, and its restore is about to
+   * run: the write-ahead record of it. `target` is the snapshot the workspace
+   * is restored to, `before` the workspace as it is now (the undo point), and
+   * `keep` the paths edited by hand since `target` that the user chose to
+   * keep. A session that is opened with a revert still open finishes it from
+   * these fields. Accepted only while idle.
+   */
+  "revert.started": define(1, object({ fromSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) })),
+  /**
+   * The user rewound the session: every message from `fromSeq` up to this
+   * event is excluded from model history. The rows stay. `restore` is what
+   * happened to the workspace: `null` when no file was restored (no snapshot
+   * was current at that point), otherwise the record of the restore that
+   * `revert.started` announced.
+   */
+  "history.reverted": define(1, object({ fromSeq: integer(1), restore: nullable(restoreRecord) })),
+  /**
+   * The undo of the revert recorded at `revertSeq` began: the workspace is
+   * about to be restored to `target`, the snapshot taken before that revert.
+   * `before` is the workspace now. The write-ahead record, like `revert.started`.
+   */
+  "revert.undo_started": define(1, object({ revertSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) })),
+  /**
+   * The revert recorded at `revertSeq` was undone: the messages it excluded
+   * are part of model history again. `restore` is what happened to the
+   * workspace, as in `history.reverted`.
+   */
+  "history.restored": define(1, object({ revertSeq: integer(1), restore: nullable(restoreRecord) })),
+  /** The open revert, or undo of one, could not restore the workspace. Nothing changed in history. */
+  "revert.failed": define(1, object({ message: string })),
 } as const
 
 export type EventType = keyof typeof durableEvents

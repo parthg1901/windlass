@@ -7,8 +7,17 @@
  * sit beside the log and are never sent to the model as rows.
  */
 
-/** Stored in `PRAGMA user_version`. Bump it with every change to `SCHEMA_SQL`. */
-export const SCHEMA_VERSION = 1
+/**
+ * Stored in `PRAGMA user_version`. Bump it with every change to `SCHEMA_SQL`,
+ * and, until the first release, with every change to the shape of the JSON
+ * the rows hold (an event's data, `SessionState`, a message): a file written
+ * before the change is then refused as `schema_mismatch` instead of failing
+ * to decode halfway through a read.
+ *
+ * 2: snapshots, verification and revert (new events, `execution.succeeded`
+ *    and `history.reverted` data, workspace and verification state in `SessionState`).
+ */
+export const SCHEMA_VERSION = 2
 
 /**
  * Run on every connection, before anything else.

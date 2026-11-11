@@ -95,7 +95,7 @@ const enqueue = (id: string, value = "hello", delivery: "steer" | "queue" = "ste
   event("inbox.enqueued", { messageId: m(id), origin, delivery, content: text(value) })
 const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
 const executionStarted = (id = "exe_1") => event("execution.started", { executionId: x(id) })
-const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id) })
+const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" } })
 const executionResumed = (id = "exe_1") => event("execution.resumed", { executionId: x(id) })
 const executionFailed = (id = "exe_1") => event("execution.failed", { executionId: x(id), message: "gave up" })
 const interruptRequested = (reason: "user" | "shutdown" = "user", id = "exe_1") =>
@@ -134,7 +134,7 @@ const instruction = (id: string, value = "Today is Thursday.", fingerprint: stri
 const compactionStarted = (id: string) => event("compaction.started", { messageId: m(id), trigger: "auto" })
 const compactionEnded = (id: string, keepFromSeq: number) =>
   event("compaction.ended", { messageId: m(id), summary: "Summary so far.", keepFromSeq, usage: null })
-const reverted = (fromSeq: number) => event("history.reverted", { fromSeq })
+const reverted = (fromSeq: number) => event("history.reverted", { fromSeq, restore: null })
 
 /** A session with a delivered prompt `u1` and a running execution: seq 1..5. */
 function running(): Log {
@@ -196,6 +196,9 @@ describe("session lifecycle", () => {
         execution: null,
         open: null,
         compaction: null,
+        workspace: { snapshot: null, unavailable: null, skipped: [], nestedRepositories: [] },
+        verification: { verified: null, latest: null },
+        reverts: [],
       },
       baseline: null,
       messages: [],
@@ -1544,7 +1547,9 @@ describe("reducer properties", () => {
     const revertedState = log.apply(reverted(6))
     const revertChanges = projectionChanges(idle, revertedState)
     expect(ids(revertChanges.messages)).toEqual(["a1", "u2", "a2"])
-    expect(revertChanges.session).toBeNull()
+    // The session row changes too: it remembers the revert so that it can be undone.
+    expect(revertChanges.session).toBe(revertedState.session)
+    expect(revertedState.session.reverts).toEqual([{ seq: revertedState.lastSeq, fromSeq: 6, before: null, after: null, excluded: [6, 11, 12] }])
   })
 
   test("projectionChanges from nothing returns everything, and reports a baseline change", () => {

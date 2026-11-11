@@ -464,7 +464,7 @@ export class FakeSession implements Session {
       event("step.started", { messageId: answer, attempt: 1, model: this.model }),
       event("text.ended", { messageId: answer, text: `This demo has no more scripted turns. Run \`${brand.binary} --demo list\` to pick another scenario.`, providerData: null }),
       event("step.ended", { messageId: answer, finish: "stop", usage }),
-      event("execution.succeeded", { executionId: execution }),
+      event("execution.succeeded", { executionId: execution, verification: { status: "not_configured" } }),
     ]
     return { prompt, events: events.map((item) => ({ event: item, phaseStart: false })) }
   }

@@ -26,6 +26,11 @@
  * - A step calls the model the session's settings name; settings change only
  *   at a step boundary.
  * - Revert and refusal ranges never reach back past the latest compaction.
+ * - Checks start only when the session would otherwise go idle, and a run has
+ *   one terminal event. An execution ends as done with what the gate found.
+ * - A revert and its undo happen only while idle; one that restores files is
+ *   announced first and closed by exactly one event. Only the latest revert
+ *   can be undone, and only until new work starts.
  *
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
@@ -36,11 +41,13 @@ import { releasesClaim } from "../interrupt.ts"
 import {
   type AssistantMessage,
   type Exclusion,
+  INITIAL_TRACKING,
   type Message,
   type MessageKind,
   type Projection,
   type SessionState,
   type ToolCallPart,
+  describeOpen,
   settleOutcomes,
 } from "./message.ts"
 
@@ -108,6 +115,8 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     execution: null,
     open: null,
     compaction: null,
+    // A fork starts untracked too: its snapshots, verification and undo history are its own.
+    ...INITIAL_TRACKING,
   }
   const lineage = event.data.lineage
   if (lineage === null) {
@@ -178,6 +187,17 @@ const SCOPE = {
   "compaction.started": "work",
   "compaction.ended": "work",
   "history.reverted": "work",
+  // A snapshot is a fact about the working tree, whatever the execution is doing.
+  "snapshot.taken": "session",
+  "snapshot.unavailable": "session",
+  "snapshot.coverage": "session",
+  "checks.started": "work",
+  "checks.finished": "work",
+  "checks.failed": "wind_down",
+  "revert.started": "work",
+  "revert.undo_started": "work",
+  "history.restored": "work",
+  "revert.failed": "work",
 } as const satisfies Record<AppliedEvent["type"], "session" | "wind_down" | "work">
 
 function apply(state: Projection, event: AppliedEvent): Projection {
@@ -211,8 +231,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
   }
   const session = (patch: Partial<SessionState>): Projection => ({ ...state, session: { ...state.session, ...patch } })
   const atBoundary = () => {
-    if (state.session.open !== null)
-      fail("invalid_transition", `${state.session.open.kind} ${state.session.open.messageId} is still open`)
+    if (state.session.open !== null) fail("invalid_transition", `${describeOpen(state.session.open)} is still open`)
   }
   /** The execution that holds a running claim. */
   const claimed = () => {
@@ -230,11 +249,15 @@ function apply(state: Projection, event: AppliedEvent): Projection {
    * harness or assistant message, or when the latest of them is a completed
    * step that did not ask for tools.
    */
-  const wouldGoIdle = (startedSeq: number) => {
-    const latest = state.messages.findLast(
+  const wouldGoIdle = (startedSeq: number, unansweredReport = false) => {
+    const spoken = state.messages.filter(
       (message) =>
         message.seq > startedSeq && (message.kind === "user" || message.kind === "synthetic" || message.kind === "assistant"),
     )
+    // The report of checks left unresolved is told to the model without sending it back.
+    const last = spoken.at(-1)
+    const reported = unansweredReport && last?.kind === "synthetic" && last.delivery === null && last.origin === HARNESS_ORIGIN.checkReport
+    const latest = reported ? spoken.at(-2) : last
     return (
       latest === undefined || (latest.kind === "assistant" && latest.status === "completed" && latest.finish !== "tool_calls")
     )
@@ -265,6 +288,26 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     if (open === null || open.kind !== "step" || open.messageId !== id)
       fail("invalid_transition", `step ${id} is not the open step`)
     return edit(id, "assistant", change)
+  }
+  /** The open run of checks numbered `run`. */
+  const checking = (run: number) => {
+    const open = state.session.open
+    if (open === null || open.kind !== "checks" || open.run !== run) return fail("invalid_transition", `checks run ${run} is not open`)
+    return open
+  }
+  /** Closes the open restore with what it did to the workspace, which must be the restore that was announced. */
+  const restored = (kind: "revert" | "undo", restore: { readonly target: string; readonly before: string } | null) => {
+    const open = state.session.open
+    if (open === null) {
+      if (restore !== null) fail("invalid_transition", `a restore of the workspace is announced first (${kind === "revert" ? "revert.started" : "revert.undo_started"})`)
+      return
+    }
+    if (open.kind !== kind) return fail("invalid_transition", `${describeOpen(open)} is still open`)
+    if (restore === null || restore.target !== open.target || restore.before !== open.before)
+      fail("invalid_transition", `${describeOpen(open)} restores ${open.target} from ${open.before}, and its record must say so`)
+  }
+  const idle = () => {
+    if (state.session.execution !== null) fail("invalid_transition", "a session can be reverted only while idle")
   }
   const call = (id: MessageId, callId: string, change: (part: ToolCallPart) => ToolCallPart): Projection =>
     step(id, (message) => {
@@ -418,6 +461,8 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       atBoundary()
       return session({
         execution: { id: event.data.executionId, status: "running", crashResumes: 0, startedSeq: event.seq, nextAttempt: 1, interrupting: null },
+        // New work on top of a revert makes it final.
+        reverts: state.session.reverts.length === 0 ? state.session.reverts : [],
       })
     }
     case "execution.resumed": {
@@ -431,9 +476,15 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       const waiting = state.inbox[0]
       if (waiting !== undefined)
         fail("invalid_transition", `inbox item ${waiting.messageId} is waiting: deliver it instead of going idle`)
-      if (!wouldGoIdle(current.startedSeq))
+      const outcome = event.data.verification
+      if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
         fail("invalid_transition", "the model has not answered everything it was given under this execution")
-      return session({ execution: null })
+      // With nothing to check, what is there now is what later checks are selected against.
+      const verification =
+        outcome.status === "not_needed"
+          ? { ...state.session.verification, verified: { seq: event.seq, snapshot: state.session.workspace.snapshot?.id ?? null } }
+          : state.session.verification
+      return session({ execution: null, verification })
     }
     case "execution.failed":
       execution(event.data.executionId, ["running", "suspended"])
@@ -529,7 +580,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       const error = event.data.error
       if (!error.retryable) fail("invalid_transition", `a ${error.kind} error is never retried unchanged`)
       const open = state.session.open
-      if (open?.kind === "compaction") fail("invalid_transition", `compaction ${open.messageId} is still open`)
+      if (open !== null && open.kind !== "step") return fail("invalid_transition", `${describeOpen(open)} is still open`)
       // One attempt budget per logical step: only the step in progress can be retried.
       const target =
         open?.messageId ??
@@ -667,11 +718,108 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       }
     }
 
-    case "history.reverted": {
-      if (state.session.execution !== null) fail("invalid_transition", "a session can be reverted only while idle")
+    case "snapshot.taken": {
+      const stepPoint = event.data.point === "step_start" || event.data.point === "step_end"
+      const open = state.session.open
+      if (stepPoint && (open === null || open.kind !== "step" || open.messageId !== event.data.messageId))
+        fail("invalid_transition", `a ${event.data.point} snapshot names the open step`)
+      if (!stepPoint && event.data.messageId !== null) fail("invalid_transition", `a ${event.data.point} snapshot belongs to no step`)
+      const snapshot = { id: event.data.id, seq: event.seq }
+      const verification = state.session.verification
+      return session({
+        workspace: { ...state.session.workspace, snapshot, unavailable: null },
+        // The first snapshot is the state before the agent did anything: what the first checks are selected against.
+        verification: verification.verified === null ? { ...verification, verified: { seq: event.seq, snapshot: event.data.id } } : verification,
+      })
+    }
+    case "snapshot.unavailable":
+      return session({ workspace: { ...state.session.workspace, snapshot: null, unavailable: event.data } })
+    case "snapshot.coverage":
+      return session({
+        workspace: { ...state.session.workspace, skipped: event.data.skipped, nestedRepositories: event.data.nestedRepositories },
+      })
+
+    case "checks.started": {
+      const current = claimed()
+      atBoundary()
+      if (event.data.checks.length === 0) fail("invalid_transition", "a run of checks names at least one check")
+      // Checks answer "is it done?", so they run only once the model says it is and nobody has said anything since.
+      const waiting = state.inbox[0]
+      if (waiting !== undefined) fail("invalid_transition", `inbox item ${waiting.messageId} is waiting: deliver it before checking`)
+      if (!wouldGoIdle(current.startedSeq))
+        fail("invalid_transition", "checks run only when the session would otherwise go idle")
+      return session({ open: { kind: "checks", run: event.data.run, seq: event.seq } })
+    }
+    case "checks.finished": {
+      checking(event.data.run)
+      if (event.data.evidence.run !== event.data.run) fail("invalid_transition", `the evidence is of run ${event.data.evidence.run}`)
+      const snapshot = state.session.workspace.snapshot?.id ?? null
+      const passed = event.data.evidence.checks.every((check) => check.status === "passed")
+      return session({
+        open: null,
+        verification: {
+          verified: passed ? { seq: event.seq, snapshot } : state.session.verification.verified,
+          latest: { run: event.data.run, seq: event.seq, snapshot, evidence: event.data.evidence },
+        },
+      })
+    }
+    case "checks.failed":
+      checking(event.data.run)
+      closing(event.data.error)
+      return session({ open: null })
+
+    case "revert.started": {
+      idle()
       atBoundary()
       range(event.data.fromSeq, state.lastSeq)
-      return { ...state, messages: exclude(state.messages, event.data.fromSeq, "reverted") }
+      return session({ open: { kind: "revert", ...event.data } })
+    }
+    case "history.reverted": {
+      idle()
+      restored("revert", event.data.restore)
+      range(event.data.fromSeq, state.lastSeq)
+      const excluded = state.messages.filter((message) => message.seq >= event.data.fromSeq && message.excluded === null).map((message) => message.seq)
+      const entry = {
+        seq: event.seq,
+        fromSeq: event.data.fromSeq,
+        before: event.data.restore?.before ?? null,
+        after: event.data.restore?.after ?? null,
+        excluded,
+      }
+      return {
+        ...state,
+        session: { ...state.session, open: null, reverts: [...state.session.reverts, entry] },
+        messages: exclude(state.messages, event.data.fromSeq, "reverted"),
+      }
+    }
+    case "revert.undo_started": {
+      idle()
+      atBoundary()
+      const last = state.session.reverts.at(-1)
+      if (last === undefined || last.seq !== event.data.revertSeq)
+        fail("invalid_transition", `only the latest revert can be undone, and only until new work starts`)
+      else if (last.before !== event.data.target) fail("invalid_transition", `the undo of that revert restores ${last.before}`)
+      return session({ open: { kind: "undo", ...event.data } })
+    }
+    case "history.restored": {
+      idle()
+      restored("undo", event.data.restore)
+      const last = state.session.reverts.at(-1)
+      if (last === undefined || last.seq !== event.data.revertSeq)
+        return fail("invalid_transition", `only the latest revert can be undone, and only until new work starts`)
+      if (last.before !== null && event.data.restore === null)
+        fail("invalid_transition", "that revert restored files, so undoing it restores them too")
+      const back = new Set(last.excluded)
+      return {
+        ...state,
+        session: { ...state.session, open: null, reverts: state.session.reverts.slice(0, -1) },
+        messages: state.messages.map((message) => (back.has(message.seq) && message.excluded === "reverted" ? { ...message, excluded: null } : message)),
+      }
+    }
+    case "revert.failed": {
+      const open = state.session.open
+      if (open === null || (open.kind !== "revert" && open.kind !== "undo")) fail("invalid_transition", "no revert is open")
+      return session({ open: null })
     }
 
     default:

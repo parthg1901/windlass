@@ -13,6 +13,9 @@ import {
   instructionFingerprint,
   lineage,
   sessionSettings,
+  skippedFile,
+  snapshotId,
+  snapshotUnavailableReason,
   stepError,
   toolOutcome,
 } from "../event/durable.ts"
@@ -21,6 +24,7 @@ import { interruptReason } from "../interrupt.ts"
 import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
 import { type ToolEffect, toolEffect, toolSpec, truncation } from "../tool/tool.ts"
+import { verificationEvidence } from "../verify/evidence.ts"
 import {
   type Infer,
   array,
@@ -213,6 +217,40 @@ export const baseline = object({
 })
 export type Baseline = Infer<typeof baseline>
 
+/**
+ * What has started and not yet reached its terminal event. While something
+ * is open the session is not at a boundary: no message enters history, no
+ * execution starts or ends, the settings do not change.
+ * - `step` / `compaction`: a model call, under assistant or compaction message `messageId`.
+ * - `checks`: run `run` of the configured checks.
+ * - `revert` / `undo`: a restore of the workspace announced by
+ *   `revert.started` / `revert.undo_started`, with the fields recovery needs
+ *   to finish it. The only kinds that are open while the session is idle.
+ */
+export const openWork = variant("kind", {
+  step: object({ kind: literal("step"), messageId }),
+  compaction: object({ kind: literal("compaction"), messageId }),
+  checks: object({ kind: literal("checks"), run: integer(1), seq: integer(1) }),
+  revert: object({ kind: literal("revert"), fromSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) }),
+  undo: object({ kind: literal("undo"), revertSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) }),
+})
+export type OpenWork = Infer<typeof openWork>
+
+/** What is open, for a message: `step a1`, `checks run 2`, `a revert`. */
+export function describeOpen(open: OpenWork): string {
+  switch (open.kind) {
+    case "step":
+    case "compaction":
+      return `${open.kind} ${open.messageId}`
+    case "checks":
+      return `checks run ${open.run}`
+    case "revert":
+      return `the revert to before seq ${open.fromSeq}`
+    case "undo":
+      return `the undo of the revert at seq ${open.revertSeq}`
+  }
+}
+
 export const sessionState = object({
   id: sessionId,
   cwd: nonEmptyString,
@@ -263,11 +301,61 @@ export const sessionState = object({
       interrupting: nullable(interruptReason),
     }),
   ),
-  /** The step or compaction that has started and not yet reached its terminal event. */
-  open: nullable(object({ kind: oneOf(["step", "compaction"]), messageId })),
+  /** The step, compaction, check run or restore that has started and not yet reached its terminal event. */
+  open: nullable(openWork),
   /** The latest completed compaction. Model history starts from it. */
   compaction: nullable(object({ messageId, seq: integer(1), keepFromSeq: integer(1) })),
+  /**
+   * What the log says about the working tree.
+   * - `snapshot`: the latest recorded snapshot and the `seq` of its event;
+   *   `null` before the first one and while snapshots are unavailable.
+   * - `unavailable`: why no snapshot can be taken right now, else `null`.
+   * - `skipped`, `nestedRepositories`: what snapshots currently leave out.
+   */
+  workspace: object({
+    snapshot: nullable(object({ id: snapshotId, seq: integer(1) })),
+    unavailable: nullable(object({ reason: snapshotUnavailableReason, message: string })),
+    skipped: array(skippedFile),
+    nestedRepositories: array(string),
+  }),
+  /**
+   * What the verification gate decides from.
+   * - `verified`: the workspace state checks are selected against: the
+   *   session's first snapshot, then the state at each verification that
+   *   passed or found nothing to check. `snapshot` is `null` when none could
+   *   be taken; `seq` is where in the log that was.
+   * - `latest`: the most recent run of checks that produced results, with the
+   *   snapshot taken right after it (so files a check itself wrote do not
+   *   count as a change by the model).
+   */
+  verification: object({
+    verified: nullable(object({ seq: integer(1), snapshot: nullable(snapshotId) })),
+    latest: nullable(object({ run: integer(1), seq: integer(1), snapshot: nullable(snapshotId), evidence: verificationEvidence })),
+  }),
+  /**
+   * The reverts that can still be undone, oldest first: each with the `seq`
+   * of its `history.reverted`, its range, the snapshots to restore and to
+   * compare against (`null` when it restored no file), and the `seq` of every
+   * message it excluded. Undoing pops the last one. Emptied when an execution
+   * starts: new work on top of a revert makes it final.
+   */
+  reverts: array(
+    object({
+      seq: integer(1),
+      fromSeq: integer(1),
+      before: nullable(snapshotId),
+      after: nullable(snapshotId),
+      excluded: array(integer(1)),
+    }),
+  ),
 })
+
+/** The workspace, verification and undo state of a session nothing has happened in yet. */
+export const INITIAL_TRACKING = {
+  workspace: { snapshot: null, unavailable: null, skipped: [], nestedRepositories: [] },
+  verification: { verified: null, latest: null },
+  reverts: [],
+} as const satisfies Pick<Infer<typeof sessionState>, "workspace" | "verification" | "reverts">
 export type SessionState = Infer<typeof sessionState>
 
 /**

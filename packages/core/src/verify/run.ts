@@ -22,15 +22,10 @@ import type { Json } from "../json.ts"
 import { type CapSource, countLines } from "../tool/cap.ts"
 import { type ToolResult, noBlobStore } from "../tool/tool.ts"
 import { shellTool } from "../tools/shell.ts"
-import { boolean, integer, nullable, object, oneOf, safeDecode, string, type Infer } from "../validate.ts"
+import { boolean, integer, nullable, object, safeDecode, string, type Infer } from "../validate.ts"
+import type { CheckStatus } from "./status.ts"
 
-export const checkStatus = oneOf(["passed", "failed", "timed_out", "could_not_start", "interrupted"])
-export type CheckStatus = Infer<typeof checkStatus>
-
-/** A status that means the check did not pass. `interrupted` is not one: the check did not finish. */
-export function isFailure(status: CheckStatus): boolean {
-  return status === "failed" || status === "timed_out" || status === "could_not_start"
-}
+export { type CheckStatus, checkStatus, isFailure } from "./status.ts"
 
 export interface CheckOutput {
   /** Everything the command printed, stdout and stderr interleaved as they arrived. */

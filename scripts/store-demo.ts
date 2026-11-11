@@ -125,7 +125,7 @@ append(
     providerData: null,
   }),
   event("step.ended", { messageId: m("msg_a2"), finish: "stop", usage }),
-  event("execution.succeeded", { executionId: x("exe_1") }),
+  event("execution.succeeded", { executionId: x("exe_1"), verification: { status: "not_configured" } }),
 )
 
 // Turn 2: the user stops a step mid-answer, then rewinds it away.
@@ -145,7 +145,7 @@ append(
   }),
   event("execution.interrupted", { executionId: x("exe_2"), reason: "user" }),
 )
-append(event("history.reverted", { fromSeq: seqOf("msg_u2") }))
+append(event("history.reverted", { fromSeq: seqOf("msg_u2"), restore: null }))
 
 // Turn 3: compact, keeping the last answer verbatim, then continue.
 append(
@@ -162,7 +162,7 @@ append(
   event("step.started", { messageId: m("msg_a4"), attempt: 1, model: "gpt-test" }),
   event("text.ended", { messageId: m("msg_a4"), text: "Removed the offset; the forecast now shows today.", providerData: null }),
   event("step.ended", { messageId: m("msg_a4"), finish: "stop", usage }),
-  event("execution.succeeded", { executionId: x("exe_3") }),
+  event("execution.succeeded", { executionId: x("exe_3"), verification: { status: "not_configured" } }),
 )
 
 // Waiting input stays in the inbox until a step boundary delivers it.

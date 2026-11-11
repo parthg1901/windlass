@@ -70,7 +70,7 @@ export function recover(
   }
   if (events.length === 0 && wouldGoIdle(projection) && projection.inbox.length === 0) {
     // The answer was durable and nothing waits: only the release was missing.
-    return { events: [event("execution.succeeded", { executionId: execution.id })], claim: "none" }
+    return { events: [event("execution.succeeded", { executionId: execution.id, verification: { status: "not_configured" } })], claim: "none" }
   }
   events.push(event("execution.resumed", { executionId: execution.id }))
   return { events, claim: "running" }

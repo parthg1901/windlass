@@ -153,7 +153,7 @@ describe("append", () => {
         stepStarted(`a${turn}`),
         textEnded(`a${turn}`, "done"),
         stepEnded(`a${turn}`),
-        event("execution.succeeded", { executionId: `exe_${turn}` as never }),
+        event("execution.succeeded", { executionId: `exe_${turn}` as never, verification: { status: "not_configured" } }),
       )
     d.add(enqueue("u_last", "go"), executionStarted("exe_last"), deliver("u_last"), stepStarted("a_last"))
     const changes = () => store.database.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n

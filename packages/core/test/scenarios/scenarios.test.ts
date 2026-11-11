@@ -10,7 +10,7 @@ import type { Projection } from "../../src/message/message.ts"
 import { ReduceError, reduce } from "../../src/message/reducer.ts"
 import { families } from "./index.ts"
 import { SCENARIOS_END, SCENARIOS_START, renderScenarios } from "./render.ts"
-import { type Expect, allEvents, fold, historyIds, position, view } from "./script.ts"
+import { type Expect, allEvents, fold, historyIds, openLabel, position, view } from "./script.ts"
 
 for (const [family, scenarios] of Object.entries(families)) {
   describe(family, () => {
@@ -75,7 +75,7 @@ function check(state: Projection, expected: Expect, label: string) {
           },
       label,
     ).toEqual(expected.execution === null ? null : { interrupting: null, ...expected.execution })
-  if (expected.open !== undefined) expect((state.session.open?.messageId as string | undefined) ?? null, label).toBe(expected.open)
+  if (expected.open !== undefined) expect(openLabel(state), label).toBe(expected.open)
   if (expected.inbox !== undefined) expect(state.inbox.map((item) => item.messageId as string), label).toEqual([...expected.inbox])
 }
 

@@ -177,7 +177,7 @@ export class Script {
   /** Ends the execution normally, if one is running. */
   release() {
     const execution = this.projection.session.execution
-    if (execution !== null) this.apply(event("execution.succeeded", { executionId: execution.id }))
+    if (execution !== null) this.apply(event("execution.succeeded", { executionId: execution.id, verification: { status: "not_configured" } }))
   }
 
   /** Records that an interrupt was asked for, unless one already was. From here the execution only winds down. */
@@ -333,7 +333,7 @@ export class Script {
 
   /** Rewinds an idle session. */
   revert(fromSeq: number) {
-    this.apply(event("history.reverted", { fromSeq }))
+    this.apply(event("history.reverted", { fromSeq, restore: null }))
   }
 }
 

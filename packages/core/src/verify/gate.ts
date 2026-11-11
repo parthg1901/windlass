@@ -19,7 +19,7 @@
  */
 import type { VerifyMode } from "../config/schema.ts"
 import type { Acknowledgement } from "./acknowledge.ts"
-import { type CheckStatus, isFailure } from "./run.ts"
+import { type CheckStatus, isFailure } from "./status.ts"
 
 export interface GateInput {
   readonly mode: VerifyMode

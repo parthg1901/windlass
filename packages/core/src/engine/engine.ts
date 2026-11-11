@@ -660,7 +660,7 @@ class LiveSession implements EngineSession {
       const queued = before.inbox.find((item) => item.delivery === "queue")
       if (idle && steers.length === 0 && queued === undefined) {
         this.probe("execution.ending")
-        this.write([event("execution.succeeded", { executionId: run.executionId })])
+        this.write([event("execution.succeeded", { executionId: run.executionId, verification: { status: "not_configured" } })])
         return
       }
 

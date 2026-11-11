@@ -7,7 +7,8 @@
 import type { CheckConfig } from "../config/schema.ts"
 import { type Infer, array, integer, nonEmptyString, nullable, object, string } from "../validate.ts"
 import { filesFor } from "./select.ts"
-import { type CheckResult, checkStatus } from "./run.ts"
+import type { CheckResult } from "./run.ts"
+import { checkStatus } from "./status.ts"
 
 export const checkEvidence = object({
   name: nonEmptyString,

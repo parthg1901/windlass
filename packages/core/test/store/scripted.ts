@@ -51,7 +51,7 @@ export const changeDelivery = (id: string, delivery: "steer" | "queue") =>
 export const cancel = (id: string) => event("inbox.cancelled", { messageId: m(id) })
 export const executionStarted = (id: string) => event("execution.started", { executionId: x(id) })
 export const executionResumed = (id: string) => event("execution.resumed", { executionId: x(id) })
-export const executionSucceeded = (id: string) => event("execution.succeeded", { executionId: x(id) })
+export const executionSucceeded = (id: string) => event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" } })
 export const executionFailed = (id: string, message: string) =>
   event("execution.failed", { executionId: x(id), message })
 export const interruptRequested = (id: string, reason: "user" | "shutdown") =>
@@ -108,7 +108,7 @@ export const compactionFailed = (id: string) =>
     messageId: m(id),
     error: { kind: "provider", error: makeProviderError("transport", "connection reset") },
   })
-export const reverted = (fromSeq: number) => event("history.reverted", { fromSeq })
+export const reverted = (fromSeq: number) => event("history.reverted", { fromSeq, restore: null })
 
 /** Drives one session of a store. */
 export class Driver {

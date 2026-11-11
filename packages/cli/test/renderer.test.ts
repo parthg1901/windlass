@@ -236,7 +236,7 @@ describe("turn summary", () => {
         stepStarted("a2"),
         said("a2", "Done."),
         event("step.ended", { messageId: m("a2"), finish: "stop", usage: usage(10_500, 9_984, 40) }),
-        event("execution.succeeded", { executionId: "exe_1" as never }),
+        event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_configured" } }),
       ]),
     )
     expect(out.split("\n").slice(-3)).toEqual(["✓ done · 2 steps · 800ms", "  tokens · 20,500 in · 9,984 cached (49%) · 240 out", ""])
