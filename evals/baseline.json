@@ -1,0 +1,114 @@
+{
+  "note": "SINGLE-REPEAT SEED: one run per task from the first real run (2026-11-11), so every statistical comparison reports not enough data until this is regenerated from at least 3 repeats (bun evals/gate.ts <dirs> --update-baseline). add-feature failed here because of a grader bug fixed in b8ab434; retry-after-error fails on model caution (it will not remove a stale lock without confirmation).",
+  "configuration": {
+    "model": "gpt-6-luna",
+    "effort": "low"
+  },
+  "date": "2026-11-11",
+  "commit": "a1b9d1f",
+  "repeats": 1,
+  "sources": [
+    "eval-run-1"
+  ],
+  "summary": {
+    "runs": 10,
+    "passes": 8,
+    "passRate": 0.8,
+    "medianSteps": 6.5,
+    "medianWallMs": 18623,
+    "medianInputTokens": 15862.5,
+    "cachedShare": 0.7460464916087703
+  },
+  "tasks": {
+    "add-feature": {
+      "runs": 1,
+      "passes": 0,
+      "passRate": 0,
+      "medianSteps": 8,
+      "medianWallMs": 25168,
+      "medianInputTokens": 19530,
+      "cachedShare": 0.6554019457245264
+    },
+    "agents-md-rule": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 9,
+      "medianWallMs": 30981,
+      "medianInputTokens": 23675,
+      "cachedShare": 0.8163885955649419
+    },
+    "answer-question": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 4,
+      "medianWallMs": 10959,
+      "medianInputTokens": 10065,
+      "cachedShare": 0.6613015399900646
+    },
+    "config-edits": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 6,
+      "medianWallMs": 17884,
+      "medianInputTokens": 13595,
+      "cachedShare": 0.6025744759102611
+    },
+    "crashing-script": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 6,
+      "medianWallMs": 15714,
+      "medianInputTokens": 14171,
+      "cachedShare": 0.5780819984475337
+    },
+    "fix-failing-test": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 7,
+      "medianWallMs": 19362,
+      "medianInputTokens": 17554,
+      "cachedShare": 0.7802210322433634
+    },
+    "large-log": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 4,
+      "medianWallMs": 9148,
+      "medianInputTokens": 8590,
+      "cachedShare": 0.4470314318975553
+    },
+    "noisy-test-suite": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 9,
+      "medianWallMs": 34548,
+      "medianInputTokens": 143352,
+      "cachedShare": 0.7982588314080027
+    },
+    "rename-function": {
+      "runs": 1,
+      "passes": 1,
+      "passRate": 1,
+      "medianSteps": 7,
+      "medianWallMs": 19812,
+      "medianInputTokens": 19373,
+      "cachedShare": 0.7796417694729778
+    },
+    "retry-after-error": {
+      "runs": 1,
+      "passes": 0,
+      "passRate": 0,
+      "medianSteps": 4,
+      "medianWallMs": 10314,
+      "medianInputTokens": 8898,
+      "cachedShare": 0.6473364801078895
+    }
+  }
+}
