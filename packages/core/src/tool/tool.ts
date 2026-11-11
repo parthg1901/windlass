@@ -103,6 +103,13 @@ export interface Tool<Input = Json> extends ToolSpec {
   readonly execute: (input: Input, context: ToolContext) => Promise<ToolResult>
 }
 
+/**
+ * A tool of any input type, for registries and the runtime. `Tool<{ path: string }>`
+ * is assignable to it. The runtime validates the model's arguments against
+ * `inputSchema` and then makes the one cast needed to call `execute`.
+ */
+export type AnyTool = Tool<never>
+
 /** Extracts the model-facing part of a tool. */
 export function specOf(tool: ToolSpec): ToolSpec {
   return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema }
