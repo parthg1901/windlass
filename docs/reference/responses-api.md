@@ -112,6 +112,9 @@ requests in total.
     miss, miss, hit, miss), which looks like requests landing on different cache shards. With the header, every
     request after the cold one hit (3 of 3, with and without a matching body key). The first probe's "a body key alone
     never hit" was too strong [cache] [cache2] [re-probe].
+19b. `tool_choice` does not affect the cache. One run with a stable `session-id`: cold 0, same request 4,992 of 5,159,
+    then the same prefix with `tool_choice: "none"` 4,992, then back to `"auto"` with a new last message 4,992. So a
+    final step that forbids tools while keeping the tool list does not cost the prefix [re-probe].
 19a. A cold prefix is not readable straight away. Two re-runs with a 2 s gap missed on the second request even with
     a stable `session-id`, then hit on the third. With a 10 s gap the second request hit. Expect the first follow-up
     after a cold write to miss if it is sent within a few seconds [re-probe].
