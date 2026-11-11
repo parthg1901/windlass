@@ -68,7 +68,9 @@ describe.skipIf(prefixlens === null)(withPrefixlens("prefix gate"), () => {
   test("a revert or refusal may not change the tools or instructions", () => {
     const { pairs } = gate(SCRIPTS.find((script) => script.name === "revert")!)
     const reverted = pairs.find((pair) => pair.causes.includes("revert"))!
-    expect(reverted.allowBreak).toEqual({ after: "system", reason: "revert" })
+    // The revert's own declaration: prefixlens's "revert" reason keeps the tools and system prompt by default.
+    expect(reverted.allowBreak).toEqual({ reason: "revert" })
+    expect(reverted.allowBreak).toEqual({ reason: reverted.next.declared[0]!.reason })
     const next = { ...reverted.next.request, blocks: reverted.next.request.blocks.toReversed() }
     expect(() => prefixlens!.test.assertPrefixStable(reverted.previous.request, next, options(reverted))).toThrow(
       "a break was allowed (revert) only after block",

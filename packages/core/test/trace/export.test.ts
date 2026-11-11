@@ -14,7 +14,7 @@ import type { SqliteStore } from "../../src/store/sqlite.ts"
 import { type ExportResult, describeUnverified, exportSession } from "../../src/trace/export.ts"
 import { canonicalResponsesRequest, serializeTrace, traceHash } from "../../src/trace/format.ts"
 import { NOT_HARNESS, loadPrefixlens, report, withPrefixlens } from "./prefixlens.ts"
-import { COMPACTION_PROMPT, type Loop, SCRIPTS, openTestStore, record } from "./sessions.ts"
+import { COMPACTION_PROMPT, type Loop, SCRIPTS, type StepBuilder, openTestStore, record } from "./sessions.ts"
 import { validateTrace } from "./spec.ts"
 
 const prefixlens = await loadPrefixlens()
@@ -135,8 +135,20 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
       result.calls.flatMap((call, index) => (call.breaks.length > 0 ? [[index, call.breaks]] : [])),
     )
     expect(marked).toEqual(script.breaks as never)
-    for (const call of result.calls)
-      expect(call.record?.x_light_harness?.prefix_break?.causes ?? []).toEqual(call.record === null ? [] : call.breaks)
+    for (const call of result.calls) {
+      if (call.record === null) continue
+      // Declared in the spec's own hint now (format 1.1), not in the extension field.
+      expect(Object.keys(call.record.x_light_harness!)).not.toContain("prefix_break")
+      expect(call.record.hints?.filter((hint) => hint.kind === "prefix_break") ?? []).toEqual(call.declared as never)
+      if (call.breaks.length === 0) expect(call.declared).toEqual([])
+    }
+    const declared = Object.fromEntries(
+      result.records.flatMap((entry, index) => {
+        const reasons = (entry.hints ?? []).flatMap((hint) => (hint.kind === "prefix_break" ? [hint.reason] : []))
+        return reasons.length > 0 ? [[index, reasons]] : []
+      }),
+    )
+    expect(declared).toEqual(script.intentional as never)
   })
 
   test.skipIf(prefixlens === null)(
@@ -184,23 +196,26 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
   test.skipIf(prefixlens === null)(
     withPrefixlens(
       script.clean
-        ? "prefixlens report shows one lane and no harness-caused miss"
-        : "prefixlens report shows one lane and misses only at calls marked as legitimate breaks",
+        ? "prefixlens report shows one lane and no avoidable miss"
+        : "prefixlens report shows one lane, no avoidable miss, and each declared break as an intentional break",
     ),
     async () => {
-      const file = join(directory, `${session(name).loop.id}.trace.jsonl`)
-      await Bun.write(file, session(name).trace)
-      const { json } = report(prefixlens!.cli, file)
+      const { json } = await reportOn(session(name).loop.id, session(name).trace)
       expect(json.report).toBe("prefixlens")
       expect(json.summary.lanes).toEqual(["main"])
       expect(json.summary.fidelity.usage_only).toBe(0)
-      const records = session(name).result.records
       const missed = json.turns.filter((turn) => turn.status === "miss" || turn.status === "partial")
-      if (script.clean) {
-        expect(missed.filter((turn) => !NOT_HARNESS.has(turn.cause?.group ?? "unknown causes"))).toEqual([])
-        expect(json.summary.misses).toBe(0)
-      }
-      for (const turn of missed) expect(records[turn.turn - 1]!.x_light_harness?.prefix_break).toBeDefined()
+      const avoidable = missed.filter((turn) => !turn.declared_break?.intentional)
+      expect(avoidable.filter((turn) => !NOT_HARNESS.has(turn.cause?.group ?? "unknown causes"))).toEqual([])
+      expect(json.summary.misses).toBe(avoidable.length)
+      expect(json.summary.misses).toBe(0)
+      const intentional = Object.fromEntries(
+        missed.flatMap((turn) => (turn.declared_break?.intentional ? [[turn.turn - 1, turn.declared_break.reasons]] : [])),
+      )
+      expect(intentional).toEqual(script.intentional as never)
+      // Every declaration was checked against two full requests, not taken at its word.
+      for (const turn of missed) if (turn.declared_break) expect(turn.declared_break.checked).toBe(true)
+      expect(json.summary.intentional.breaks).toBe(Object.keys(script.intentional).length)
     },
   )
 })
@@ -303,24 +318,104 @@ describe("a request that cannot be shown to be the one sent", () => {
 })
 
 describe("hints", () => {
-  test("a compaction marks the compaction call and the call after it", () => {
+  test("a compaction marks the compaction call, and the call after it names and declares the compaction", () => {
     const hints = session("compaction").result.records.map((entry) => entry.hints ?? [])
     expect(hints[2]).toEqual([{ kind: "compaction_call" }])
-    expect(hints[3]).toEqual([{ kind: "compaction", detail: "compaction c1" }])
+    expect(hints[3]).toEqual([
+      { kind: "compaction", detail: "compaction c1" },
+      { kind: "prefix_break", reason: "compaction", detail: "compaction c1" },
+    ])
     expect(hints[0]).toEqual([])
     expect(hints[1]).toEqual([])
   })
 
-  test("a model change is a model switch; an effort change is only in the extension field", () => {
+  test("a model change declares a model switch, an effort change a settings change", () => {
     const records = session("settings changes").result.records
-    expect(records[1]!.hints).toEqual([{ kind: "model_switch", detail: "gpt-test → gpt-other" }])
-    expect(records[2]!.hints).toBeUndefined()
-    expect(records[2]!.x_light_harness!.prefix_break).toEqual({ causes: ["settings"], events: [{ type: "settings.changed", seq: expect.any(Number) }] })
+    expect(records[1]!.hints).toEqual([{ kind: "prefix_break", reason: "model_switch", detail: "gpt-test → gpt-other" }])
+    expect(records[2]!.hints).toEqual([{ kind: "prefix_break", reason: "settings_change", detail: "effort medium → high" }])
   })
 
-  test("a revert and a refusal are marked in the extension field", () => {
-    expect(session("revert").result.records[2]!.x_light_harness!.prefix_break!.causes).toEqual(["revert"])
-    expect(session("refusal").result.records[3]!.x_light_harness!.prefix_break!.causes).toEqual(["refusal"])
+  test("a revert and a refusal declare a break that keeps the tools and system prompt", () => {
+    const revert = session("revert")
+    expect(revert.result.records[2]!.hints).toEqual([
+      { kind: "prefix_break", reason: "revert", detail: `reverted from seq ${revert.loop.seqOf("u2")}` },
+    ])
+    expect(session("refusal").result.records[3]!.hints).toEqual([{ kind: "prefix_break", reason: "refusal", detail: "refused step a3" }])
+  })
+
+  test("a revert that removes a leading developer message keeps only the tools and instructions, and says so", () => {
+    const { result } = session("revert to the start")
+    const blocks = (index: number) => result.records[index]!.request!.blocks.map((entry) => entry.kind)
+    // The previous request leads its input with the instruction message, a system block in the trace.
+    expect(blocks(1)).toEqual(["tool", "tool", "system", "system", "message"])
+    expect(blocks(2).slice(0, 4)).toEqual(["tool", "tool", "system", "message"])
+    expect(result.records[1]!.hints).toEqual([expect.objectContaining({ kind: "prefix_break", reason: "revert" })])
+    expect(result.records[1]!.hints![0]).not.toHaveProperty("after")
+    expect(result.records[2]!.hints).toEqual([expect.objectContaining({ kind: "prefix_break", reason: "revert", after: 3 })])
+  })
+})
+
+/** `prefixlens report --json` on `trace`, written under the test directory. */
+async function reportOn(name: string, trace: string) {
+  const file = join(directory, `${name}.trace.jsonl`)
+  await Bun.write(file, trace)
+  return report(prefixlens!.cli, file)
+}
+
+describe.skipIf(prefixlens === null)(withPrefixlens("declared breaks in prefixlens report"), () => {
+  test("a seeded bug is still a real miss when the session also declares a break on another call", async () => {
+    // The tool list reversed from the second request on: a harness bug at call 1. The revert at call 2 is declared.
+    const reorder: StepBuilder = (projection, build) => {
+      const request = buildRequest(projection, build)
+      return request.input.length > 1 ? { ...request, tools: request.tools.toReversed() } : request
+    }
+    const local = openTestStore()
+    const loop = record(local, SCRIPTS.find((script) => script.name === "revert")!, reorder)
+    const result = exportSession(local, loop.id, { buildStep: reorder })
+    local.close()
+    expect(result.unverified).toEqual([])
+    const { json } = await reportOn(`${loop.id}_reorder`, serializeTrace(result.records))
+    const status = (turn: number) => json.turns[turn - 1]!
+    expect(status(2).status).toBe("miss")
+    expect(status(2).declared_break).toBeUndefined()
+    expect(status(2).prefix_change?.cause ?? status(2).cause?.cause).toBe("tools_reordered")
+    expect(status(3).declared_break).toMatchObject({ reasons: ["revert"], intentional: true })
+    expect(json.summary.misses).toBe(1)
+    expect(json.summary.intentional.breaks).toBe(1)
+  })
+
+  test("without its after, the revert that removes a leading developer message would not be excused", async () => {
+    const { result, loop } = session("revert to the start")
+    const records = result.records.map((entry, index) =>
+      index === 2 ? { ...entry, hints: [{ kind: "prefix_break" as const, reason: "revert" as const }] } : entry,
+    )
+    const { json } = await reportOn(`${loop.id}_default_after`, serializeTrace(records))
+    expect(json.turns[2]!.declared_break).toMatchObject({ reasons: ["revert"], intentional: false, checked: true })
+    expect(json.summary.misses).toBe(1)
+  })
+
+  test("a declared break excuses only its own call, not a second break on the next one", async () => {
+    const { result, loop } = session("revert")
+    const declared = result.records[2]!
+    // A fourth call that rewrites the last message of the call that carried the declaration, with no declaration of its own.
+    const blocks = declared.request!.blocks
+    const last = blocks.at(-1)!
+    const rewritten = { ...last, hash: traceHash({ changed: true }), content: { changed: true } }
+    const prompt = declared.usage.input_tokens + declared.usage.cache_read_tokens
+    const next = {
+      ...declared,
+      id: `${declared.id}_again`,
+      ts: new Date(Date.parse(declared.ts) + 2000).toISOString(),
+      request: { blocks: [...blocks.slice(0, -1), rewritten] },
+      usage: { ...declared.usage, input_tokens: prompt, cache_read_tokens: 0 },
+      hints: undefined,
+    }
+    const { json } = await reportOn(`${loop.id}_again`, serializeTrace([...result.records, next]))
+    expect(json.turns[2]!.declared_break).toMatchObject({ reasons: ["revert"], intentional: true })
+    expect(json.turns[3]!.status).toBe("miss")
+    expect(json.turns[3]!.declared_break).toBeUndefined()
+    expect(json.summary.misses).toBe(1)
+    expect(json.summary.intentional.breaks).toBe(1)
   })
 })
 

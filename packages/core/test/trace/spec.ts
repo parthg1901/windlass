@@ -1,6 +1,6 @@
 /**
  * A validator for prefixlens trace files, written from prefixlens SPEC.md
- * (format version 1) alone, without its code. It checks every rule a reader
+ * (format version 1.1) alone, without its code. It checks every rule a reader
  * enforces and the writer duties the spec states with MUST or SHOULD, and
  * resolves `request.reuse` and omitted content so the full block list of
  * each record can be compared with what was exported.
@@ -71,6 +71,7 @@ export function validateTrace(text: string): Validation {
         value.hints.forEach((hint, position) => {
           if (!isObject(hint) || typeof hint.kind !== "string") at(`hints[${position}] needs a string kind`)
           else if (hint.detail !== undefined && typeof hint.detail !== "string") at(`hints[${position}].detail must be a string`)
+          else if (hint.kind === "prefix_break") checkDeclaration(hint, (problem) => at(`hints[${position}] (prefix_break) ${problem}`))
         })
     }
     if (value.headers !== undefined) {
@@ -126,6 +127,26 @@ export function validateTrace(text: string): Validation {
     records.push({ record: value, blocks })
   })
   return { errors, records, redacted: hashOnly }
+}
+
+/**
+ * SPEC 6.1. A reader drops a malformed declaration, so a writer that emits one
+ * hides nothing but excuses nothing either: it is an error here. A writer
+ * should use the reasons the spec names when one fits; these are the ones a
+ * harness declares.
+ */
+const REASONS = ["compaction", "revert", "refusal", "model_switch", "settings_change"]
+
+function checkDeclaration(hint: Record<string, unknown>, at: (problem: string) => void) {
+  if (typeof hint.reason !== "string" || hint.reason === "") return at("needs a non-empty string reason")
+  if (!REASONS.includes(hint.reason)) at(`reason ${hint.reason} is not one SPEC 6.1 names`)
+  if (hint.after !== undefined && !isPosition(hint.after)) at('after must be "start", "tools", "system", {"message": n} or an integer >= 0')
+}
+
+function isPosition(value: unknown) {
+  if (value === "start" || value === "tools" || value === "system") return true
+  if (isCount(value)) return true
+  return isObject(value) && Object.keys(value).length === 1 && isCount(value.message)
 }
 
 function checkUsage(usage: unknown, at: (problem: string) => void) {

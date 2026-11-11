@@ -1,5 +1,5 @@
 /**
- * Exports a stored session as a prefixlens trace (prefixlens SPEC.md, v1).
+ * Exports a stored session as a prefixlens trace (prefixlens SPEC.md, format 1.1).
  *
  * The ledger keeps, per model call, only the block hashes of the request and
  * the usage. The request itself is rebuilt: it is a pure function of the log
@@ -16,9 +16,8 @@
  *
  * Legitimate prefix breaks (`compaction.ended`, `history.reverted`,
  * `step.refused`, `settings.changed`, see build-break.ts) between two calls
- * are marked on the later call: as SPEC hints where the spec has a kind
- * (`compaction`, `model_switch`), and always in the `x_light_harness`
- * extension field.
+ * are declared on the later call with `prefix_break` hints (SPEC 6.1), so
+ * prefixlens reports the miss that follows as an intentional break.
  *
  * Nothing from the sign-in is read. The only header written is `session-id`,
  * which is the session's prompt-cache key (the ID of its root session).
@@ -30,13 +29,14 @@ import type { Projection } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { blobRefs, encodeRequest } from "../provider/openai-responses-encode.ts"
 import { type BuildOptions, type CallOptions, buildCompactionRequest, buildRequest } from "../request/build.ts"
-import { PREFIX_BREAK_CAUSES, type PrefixBreakCause } from "../request/build-break.ts"
+import { type PrefixBreakCause, prefixBreakCauses } from "../request/build-break.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
 import type { ModelRequest } from "../request/request.ts"
 import type { RequestRecord, Store } from "../store/store.ts"
 import {
   type CanonicalTraceRequest,
   type HarnessExtension,
+  type PrefixBreakHint,
   TRACE_VERSION,
   type TraceHint,
   type TraceRecord,
@@ -100,6 +100,8 @@ export interface ExportedCall {
   readonly unverified: Unverified | null
   /** Legitimate prefix breaks among the events since the previous call's start event. */
   readonly breaks: readonly PrefixBreakCause[]
+  /** What the record declares for them (SPEC 6.1). A `settings.changed` that changed nothing declares nothing. */
+  readonly declared: readonly PrefixBreakHint[]
   /** The trace record, or `null` when the call has no usage to report (it is in `skipped`). */
   readonly record: TraceRecord | null
 }
@@ -121,29 +123,33 @@ export function exportSession(store: Store, sessionId: SessionId, options: Expor
   const rows = store.readRequests(sessionId)
   const starts = startPoints(events)
   // The first call has nothing before it to break; later ones look at the events since the previous call started.
-  let previousStart: number | null = null
+  let previousStart: StartPoint | null = null
+  // The call prefixlens compares with: the previous one that has a record in the lane.
+  let previousRecorded: ExportedCall | null = null
   const calls = rows.map((row, index): ExportedCall => {
     const start = starts.points.get(startKey(row.purpose, row.messageId, row.attempt)) ?? null
-    const since =
-      start === null || previousStart === null
-        ? []
-        : events.filter((event) => event.seq > previousStart! && event.seq <= start.seq)
-    if (start !== null) previousStart = start.seq
-    const breakEvents = since.filter((event) => event.type in PREFIX_BREAK_CAUSES)
-    const breaks = [...new Set(breakEvents.map((event) => PREFIX_BREAK_CAUSES[event.type as keyof typeof PREFIX_BREAK_CAUSES]))]
+    const before = previousStart
+    const since = start === null || before === null ? [] : events.filter((event) => event.seq > before.seq && event.seq <= start.seq)
+    if (start !== null) previousStart = start
+    const breaks = prefixBreakCauses(since)
+    const declared = declare(since, { row, start }, { row: rows[index - 1] ?? null, start: before }, previousRecorded?.request ?? null)
     const rebuilt = rebuild(store, row, start, starts.failure, options)
-    const record =
-      row.usage === null
-        ? null
-        : toRecord(row, rebuilt, breakEvents, hintsFor(row, rows[index - 1] ?? null, since), options, sessionId)
-    return {
+    const hints: TraceHint[] = [
+      ...(row.purpose === "compaction" ? [{ kind: "compaction_call" as const }] : []),
+      ...declared.filter((hint) => hint.reason === "compaction").map((hint) => ({ kind: "compaction" as const, detail: hint.detail })),
+      ...declared,
+    ]
+    const call: ExportedCall = {
       row,
       startSeq: start?.seq ?? null,
       request: "request" in rebuilt ? rebuilt.request : null,
       unverified: "unverified" in rebuilt ? rebuilt.unverified : null,
       breaks,
-      record,
+      declared,
+      record: row.usage === null ? null : toRecord(row, rebuilt, hints, options, sessionId),
     }
+    if (call.record !== null) previousRecorded = call
+    return call
   })
   return {
     sessionId,
@@ -289,7 +295,6 @@ function attempt<T>(run: () => T): { readonly value: T } | { readonly error: str
 function toRecord(
   row: RequestRecord,
   rebuilt: Rebuilt,
-  breakEvents: readonly StoredEvent[],
   hints: readonly TraceHint[],
   options: ExportOptions,
   sessionId: SessionId,
@@ -303,14 +308,6 @@ function toRecord(
     outcome: row.outcome,
     verified: request !== null,
     ...("unverified" in rebuilt ? { unverified_reason: rebuilt.unverified.message } : {}),
-    ...(breakEvents.length > 0
-      ? {
-          prefix_break: {
-            causes: [...new Set(breakEvents.map((event) => PREFIX_BREAK_CAUSES[event.type as keyof typeof PREFIX_BREAK_CAUSES]))],
-            events: breakEvents.map((event) => ({ type: event.type, seq: event.seq })),
-          },
-        }
-      : {}),
     params_omitted: ["tool_choice"],
   }
   const cacheKey = request?.params.prompt_cache_key
@@ -345,20 +342,68 @@ function withoutToolChoice(params: CanonicalTraceRequest["params"]) {
 }
 
 /**
- * SPEC 6 hints for the breaks the spec has a kind for: `compaction` after a
- * completed compaction, `model_switch` when the model differs from the
- * previous call's after a `settings.changed`, and `compaction_call` on the
- * compaction request itself. Reverts, refusals and effort-only changes have
- * no kind and are only in the extension field.
+ * The `prefix_break` hints (SPEC 6.1) for the break events since the previous
+ * call, in the order they happened. A `compaction` hint (SPEC 6, it names the
+ * cause) is written next to the compaction declaration by the caller.
+ *
+ * `settings.changed` declares what actually changed between the settings the
+ * two calls were built from: a `model_switch` for the model, a
+ * `settings_change` for the reasoning effort, nothing when neither changed.
+ *
+ * A revert or a refusal only excludes messages: the baseline (tools and
+ * instructions) is untouched. But a developer instruction message that leads
+ * the input is a system block in the trace (SPEC 4.2), and a revert or
+ * refusal can remove one (a revert past every user message, after an
+ * instruction change). The default `after: "system"` would then say a
+ * system block survives that did not, so the declaration names the part
+ * that does survive: the tools and the instructions block.
  */
-function hintsFor(row: RequestRecord, previous: RequestRecord | null, since: readonly StoredEvent[]): TraceHint[] {
-  const compactions = since.flatMap((event): TraceHint[] =>
-    event.type === "compaction.ended" ? [{ kind: "compaction", detail: `compaction ${event.data.messageId}` }] : [],
-  )
-  const switched = previous !== null && previous.model !== row.model && since.some((event) => event.type === "settings.changed")
+function declare(
+  since: readonly StoredEvent[],
+  current: { readonly row: RequestRecord; readonly start: StartPoint | null },
+  previous: { readonly row: RequestRecord | null; readonly start: StartPoint | null },
+  previousRequest: CanonicalTraceRequest | null,
+): PrefixBreakHint[] {
+  const tools = previousRequest?.blocks.filter((block) => block.kind === "tool").length ?? 0
+  const leadingDeveloper = (previousRequest?.blocks.filter((block) => block.kind === "system").length ?? 0) > 1
+  const removal = (reason: "revert" | "refusal", detail: string): PrefixBreakHint => ({
+    kind: "prefix_break",
+    reason,
+    ...(leadingDeveloper ? { after: tools + 1 } : {}),
+    detail,
+  })
+  const removals = since.flatMap((event): PrefixBreakHint[] => {
+    if (event.type === "compaction.ended") return [{ kind: "prefix_break", reason: "compaction", detail: `compaction ${event.data.messageId}` }]
+    if (event.type === "history.reverted") return [removal("revert", `reverted from seq ${event.data.fromSeq}`)]
+    if (event.type === "step.refused") return [removal("refusal", `refused step ${event.data.messageId}`)]
+    return []
+  })
+  return [...removals, ...(since.some((event) => event.type === "settings.changed") ? settingsChanges(current, previous) : [])]
+}
+
+/**
+ * The model and effort changes between the settings two calls were built
+ * from. Without both start points only the ledger's model can be compared.
+ */
+function settingsChanges(
+  current: { readonly row: RequestRecord; readonly start: StartPoint | null },
+  previous: { readonly row: RequestRecord | null; readonly start: StartPoint | null },
+): PrefixBreakHint[] {
+  if (previous.row === null) return []
+  const before = previous.start?.projection.session.settings
+  const after = current.start?.projection.session.settings
+  const model = { from: before?.model ?? previous.row.model, to: after?.model ?? current.row.model }
+  const effort = (value: string | null) => value ?? "default"
   return [
-    ...(row.purpose === "compaction" ? [{ kind: "compaction_call" as const }] : []),
-    ...compactions,
-    ...(switched ? [{ kind: "model_switch" as const, detail: `${previous.model} → ${row.model}` }] : []),
+    ...(model.from !== model.to ? [{ kind: "prefix_break" as const, reason: "model_switch" as const, detail: `${model.from} → ${model.to}` }] : []),
+    ...(before !== undefined && after !== undefined && before.reasoningEffort !== after.reasoningEffort
+      ? [
+          {
+            kind: "prefix_break" as const,
+            reason: "settings_change" as const,
+            detail: `effort ${effort(before.reasoningEffort)} → ${effort(after.reasoningEffort)}`,
+          },
+        ]
+      : []),
   ]
 }

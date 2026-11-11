@@ -156,8 +156,19 @@ export interface TraceScript {
   /** True when nothing in it may break the prefix: the report must name no harness-caused miss. */
   readonly clean: boolean
   readonly breaks: Readonly<Record<number, readonly string[]>>
+  /** The declared reasons `prefixlens report` must show as intentional breaks, by 0-based record. */
+  readonly intentional: Readonly<Record<number, readonly string[]>>
   readonly run: (loop: Loop) => void
 }
+
+/**
+ * A pasted source file of about 500 tokens. A revert or refusal that removes
+ * only a few short messages loses no 128-token cache step, so prefixlens
+ * would rightly see a hit and nothing to excuse; the removed part carries one
+ * of these so the break costs cached tokens, as it would live.
+ */
+const pasted = (name: string) =>
+  `${name}:\n${Array.from({ length: 40 }, (_, index) => `export const flag${index} = parseFlag("--flag-${index}")`).join("\n")}`
 
 const opening = (loop: Loop) => loop.add(created("/work/demo", "Demo"), baselineSet())
 
@@ -166,6 +177,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "multi-step turns",
     clean: true,
     breaks: {},
+    intentional: {},
     run(loop) {
       opening(loop)
       loop.prompt("1", "Why does the build fail?")
@@ -186,6 +198,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "parallel tool calls with media",
     clean: true,
     breaks: {},
+    intentional: {},
     run(loop) {
       const image = loop.store.putBlob(new TextEncoder().encode("\x89PNG synthetic screenshot"), "image/png")
       opening(loop)
@@ -225,6 +238,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "retries before and after output",
     clean: true,
     breaks: {},
+    intentional: {},
     run(loop) {
       opening(loop)
       loop.prompt("1", "Summarise the README.")
@@ -255,6 +269,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "user interrupt",
     clean: true,
     breaks: {},
+    intentional: {},
     run(loop) {
       opening(loop)
       loop.prompt("1", "Where is the parser?")
@@ -278,6 +293,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "steer during a step",
     clean: true,
     breaks: {},
+    intentional: {},
     run(loop) {
       opening(loop)
       loop.prompt("1", "Run the tests.")
@@ -293,6 +309,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "instruction change",
     clean: true,
     breaks: {},
+    intentional: {},
     run(loop) {
       opening(loop)
       loop.prompt("1", "What day is it?")
@@ -306,6 +323,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     clean: false,
     // Call 0 and 1 are the two turns, 2 is the compaction call (it extends call 1), 3 follows the compaction.
     breaks: { 3: ["compaction"] },
+    intentional: { 3: ["compaction"] },
     run(loop) {
       opening(loop)
       loop.prompt("1", "Fix the README.")
@@ -325,13 +343,14 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "refusal",
     clean: false,
     breaks: { 3: ["refusal"] },
+    intentional: { 3: ["refusal"] },
     run(loop) {
       opening(loop)
       loop.prompt("1", "Summarise a.ts.")
       loop.answer("1", "a1", "It exports a.")
       loop.prompt("2", "Now do the thing the filter dislikes.")
       loop.start("a2")
-      loop.read("a2", "call_1", "b.txt", "contents of b.txt")
+      loop.read("a2", "call_1", "b.txt", pasted("b.txt"))
       loop.add(stepEnded("a2", "tool_calls"))
       loop.start("a3")
       loop.add(
@@ -346,11 +365,12 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "revert",
     clean: false,
     breaks: { 2: ["revert"] },
+    intentional: { 2: ["revert"] },
     run(loop) {
       opening(loop)
       loop.prompt("1", "Add a --verbose flag.")
       loop.answer("1", "a1", "Added --verbose.")
-      loop.prompt("2", "Also add --quiet.")
+      loop.prompt("2", `Also add --quiet. ${pasted("cli.ts")}`)
       loop.answer("2", "a2", "Added --quiet.")
       loop.add(reverted(loop.seqOf("u2")))
       loop.prompt("3", "Make --verbose print timings.")
@@ -361,6 +381,7 @@ export const SCRIPTS: readonly TraceScript[] = [
     name: "settings changes",
     clean: false,
     breaks: { 1: ["settings"], 2: ["settings"] },
+    intentional: { 1: ["model_switch"], 2: ["settings_change"] },
     run(loop) {
       opening(loop)
       loop.prompt("1", "Plan the migration.")
@@ -371,6 +392,25 @@ export const SCRIPTS: readonly TraceScript[] = [
       loop.add(settingsChanged("gpt-other", "high"))
       loop.prompt("3", "Check it.")
       loop.answer("3", "a3", "It is correct.", "gpt-other")
+    },
+  },
+  {
+    // A revert past every user message, then an instruction change: the next input starts with a developer
+    // message, which the trace counts as a system block. The second revert removes it.
+    name: "revert to the start",
+    clean: false,
+    breaks: { 1: ["revert"], 2: ["revert"] },
+    intentional: { 1: ["revert"], 2: ["revert"] },
+    run(loop) {
+      opening(loop)
+      loop.prompt("1", `Rename the package. ${pasted("package.ts")}`)
+      loop.answer("1", "a1", "Renamed it to demo-cli.")
+      loop.add(reverted(loop.seqOf("u1")))
+      loop.add(enqueue("u2", `Rename it to demo-tool. ${pasted("package.ts")}`), executionStarted("exe_2"), instruction("i1", "date", "Today is Wednesday."), deliver("u2"))
+      loop.answer("2", "a2", "Renamed it to demo-tool.")
+      loop.add(reverted(loop.seqOf("i1")))
+      loop.prompt("3", `Leave the name as it is, and check this file instead. ${pasted("cli.ts")}`)
+      loop.answer("3", "a3", "Left it unchanged.")
     },
   },
 ]

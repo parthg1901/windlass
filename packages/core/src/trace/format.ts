@@ -1,5 +1,5 @@
 /**
- * The prefixlens trace format, version 1 (prefixlens SPEC.md), as far as a
+ * The prefixlens trace format, version 1.1 (prefixlens SPEC.md), as far as a
  * Responses API harness writes it: the record and block types, the canonical
  * block view of a Responses request body, usage conversion, and a serializer
  * that writes each block's content once per file and reuses the previous
@@ -12,6 +12,7 @@ import type { Json } from "../json.ts"
 import type { Usage } from "../provider/usage.ts"
 import { canonicalJson } from "../request/canonical.ts"
 
+/** The major version every 1.x record carries in `v`; this file writes format 1.1. */
 export const TRACE_VERSION = 1
 
 export type TraceBlockKind = "tool" | "system" | "message"
@@ -37,17 +38,30 @@ export interface TraceUsage {
 }
 
 /** SPEC 6. Only the kinds the spec defines are written. */
-export interface TraceHint {
-  readonly kind: "compaction" | "compaction_call" | "tool_output_pruned" | "agent_switch" | "model_switch"
+export type TraceHint =
+  | { readonly kind: "compaction" | "compaction_call" | "tool_output_pruned" | "agent_switch" | "model_switch"; readonly detail?: string }
+  | PrefixBreakHint
+
+/**
+ * SPEC 6.1 (format 1.1): the harness broke its own prefix on purpose before
+ * this call. `after` is the last part of the previous request the break
+ * leaves unchanged; without it the reason's default applies (`"system"` for
+ * `revert` and `refusal`, `"start"` for the others).
+ */
+export interface PrefixBreakHint {
+  readonly kind: "prefix_break"
+  readonly reason: "compaction" | "revert" | "refusal" | "model_switch" | "settings_change"
+  readonly after?: "start" | "tools" | "system" | { readonly message: number } | number
   readonly detail?: string
 }
 
 /**
  * The harness's own facts about a call, in a field readers ignore (SPEC 2:
- * "Readers MUST ignore fields they do not know"). SPEC.md has no way to say
- * that a prefix break was intended for a revert, a refusal or an effort
- * change, so the reason for every legitimate break is recorded here as well as
- * in `hints` where the spec has a kind for it.
+ * "Readers MUST ignore fields they do not know"). Prefix breaks are declared
+ * in `hints` (SPEC 6.1); what is left here has no place in the spec: the
+ * ledger row's identity within the session (ordinal, message, attempt),
+ * its outcome, whether the rebuilt request was verified against the ledger
+ * and why not, and which wire fields the export could not reproduce.
  */
 export interface HarnessExtension {
   readonly ordinal: number
@@ -59,15 +73,6 @@ export interface HarnessExtension {
   readonly verified: boolean
   /** Why the request could not be shown to be the one that was sent. */
   readonly unverified_reason?: string
-  /**
-   * Legitimate prefix breaks since the previous call of the session
-   * (`compaction`, `revert`, `refusal`, `settings`), with the events that
-   * caused them. Absent when there was none.
-   */
-  readonly prefix_break?: {
-    readonly causes: readonly string[]
-    readonly events: readonly { readonly type: string; readonly seq: number }[]
-  }
   /**
    * Wire fields left out of `params` because the log does not record them.
    * `tool_choice` is one: it is not part of the cached prefix, so the ledger

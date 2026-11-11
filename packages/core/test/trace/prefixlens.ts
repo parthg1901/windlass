@@ -31,7 +31,7 @@ export interface Explanation {
 
 export interface PrefixOptions {
   readonly provider?: "openai"
-  readonly allowBreak?: string | { readonly after?: "start" | "tools" | "system" | number; readonly reason?: string }
+  readonly allowBreak?: string | { readonly after?: "start" | "tools" | "system" | { readonly message: number } | number; readonly reason?: string }
   readonly ignoreParams?: readonly string[]
 }
 
@@ -82,9 +82,11 @@ export interface ReportJson {
     readonly turns: number
     readonly lanes: readonly string[]
     readonly fidelity: { readonly full_request: number; readonly usage_only: number }
+    /** Calls that lost cached tokens and were not declared as intentional breaks: the avoidable misses. */
     readonly misses: number
     readonly hit_rate: number
     readonly headline: string
+    readonly intentional: { readonly breaks: number; readonly by_reason: readonly { readonly reason: string; readonly breaks: number }[] }
   }
   readonly turns: readonly {
     readonly turn: number
@@ -95,6 +97,8 @@ export interface ReportJson {
     readonly prompt_tokens: number
     readonly cause?: { readonly cause: string; readonly group: string; readonly summary: string; readonly confidence: string }
     readonly prefix_change?: { readonly cause: string; readonly summary: string }
+    /** On a miss: the breaks the record declared, and whether they excuse it (SPEC 6.1). */
+    readonly declared_break?: { readonly reasons: readonly string[]; readonly intentional: boolean; readonly checked: boolean; readonly note?: string }
   }[]
   readonly warnings: readonly string[]
 }
