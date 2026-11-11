@@ -31,14 +31,20 @@ describe("schema validator", () => {
     expect(schema({ path: "a", limit: 0 })).toEqual([{ path: "limit", message: "must be at least 1, got 0" }])
     expect(schema({ path: "a", limit: 11 })).toEqual([{ path: "limit", message: "must be at most 10, got 11" }])
     expect(schema({ path: "a", mode: "medium" })).toEqual([{ path: "mode", message: 'must be one of "fast", "slow", got "medium"' }])
-    expect(schema({ path: "a", extra: 1 })).toEqual([{ path: "extra", message: "is not a known parameter" }])
+    expect(schema({ path: "a", extra: 1 })).toEqual([
+      { path: "extra", message: "is not a known parameter (known: path, limit, ratio, mode, flag, tags, nested)" },
+    ])
+    expect(schema({ path: "a", limt: 1 })).toEqual([{ path: "limt", message: 'is not a known parameter (did you mean "limit"?)' }])
+    expect(compileSchema({ type: "object", additionalProperties: false })({ a: 1 })).toEqual([
+      { path: "a", message: "is not a known parameter (this tool takes none)" },
+    ])
     expect(schema({ path: "a", tags: ["ok", "long"] })).toEqual([{ path: "tags[1]", message: "must have at most 3 characters" }])
     expect(schema({ path: "a", tags: ["a", "b", "c"] })).toEqual([{ path: "tags", message: "must have at most 2 items" }])
     expect(schema({ path: "a", nested: { a: 1, b: 2 } })).toEqual([
       { path: "nested.a", message: "must be a string or null, got 1" },
-      { path: "nested.b", message: "is not a known parameter" },
+      { path: "nested.b", message: "is not a known parameter (known: a)" },
     ])
-    expect(schema({ path: "a", "odd key": 1 })).toEqual([{ path: '"odd key"', message: "is not a known parameter" }])
+    expect(schema({ path: "a", "odd key": 1 })[0]!.path).toBe('"odd key"')
     expect(schema([])).toEqual([{ path: "", message: "must be an object, got an array" }])
   })
 

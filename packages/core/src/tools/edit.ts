@@ -47,7 +47,7 @@ export function editTool(): Tool<EditInput> {
       const starts = lineStarts(before)
       if (occurrences.length > 1 && input.replace_all !== true)
         return failure(
-          `old_string occurs ${occurrences.length} times in ${shown} (${linesLabel(occurrences.map((index) => lineOf(starts, index) + 1))}). Include more surrounding lines to make it unique, or set replace_all to true to replace every occurrence.`,
+          `old_string occurs ${occurrences.length} times in ${shown} (on ${linesLabel(occurrences.map((index) => lineOf(starts, index) + 1))}). Include more surrounding lines to make it unique, or set replace_all to true to replace every occurrence.`,
         )
       const after = replaceAt(before, occurrences, oldText.length, newText)
       await Bun.write(path, after)
@@ -93,13 +93,14 @@ function linesLabel(lines: readonly number[]): string {
 
 /** Explains a miss when the text is there apart from indentation or trailing whitespace. */
 function nearMatch(text: string, search: string): string {
-  const wanted = search.split(/\r?\n/).map((line) => line.trim())
+  const normalize = (line: string) => line.trim().replace(/\s+/g, " ")
+  const wanted = search.split(/\r?\n/).map(normalize)
   while (wanted.length > 1 && wanted[wanted.length - 1] === "") wanted.pop()
-  const lines = text.split(/\r?\n/).map((line) => line.trim())
+  const lines = text.split(/\r?\n/).map(normalize)
   const at = lines.findIndex((_, start) => wanted.every((line, offset) => lines[start + offset] === line))
   if (wanted.every((line) => line === "") || at === -1)
     return " It must match the file exactly, including whitespace and indentation. Read the file to see its current content."
-  return ` Text matching it apart from whitespace or indentation starts at line ${at + 1}; read the file and copy the text exactly.`
+  return ` Text that differs from it only in whitespace starts at line ${at + 1}; read the file and copy the text exactly.`
 }
 
 function lineStarts(text: string): number[] {

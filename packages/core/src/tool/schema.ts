@@ -108,11 +108,29 @@ function compile(schema: Json, at: string): Node {
       for (const [key, child] of Object.entries(value)) {
         const property = properties.get(key)
         if (property !== undefined) property(child, join(path, key), issues)
-        else if (additional === false) issues.push({ path: join(path, key), message: "is not a known parameter" })
+        else if (additional === false) issues.push({ path: join(path, key), message: unknownKeyMessage(key, [...properties.keys()]) })
         else if (additional !== true) additional(child, join(path, key), issues)
       }
     }
   }
+}
+
+function unknownKeyMessage(key: string, known: readonly string[]): string {
+  const close = known.filter((name) => editDistance(name.toLowerCase(), key.toLowerCase()) <= Math.min(2, Math.floor(name.length / 3)))
+  if (close.length === 1) return `is not a known parameter (did you mean "${close[0]}"?)`
+  if (known.length === 0) return "is not a known parameter (this tool takes none)"
+  return `is not a known parameter (known: ${known.join(", ")})`
+}
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i]
+    for (let j = 1; j <= b.length; j += 1)
+      current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    previous = current
+  }
+  return previous[b.length]!
 }
 
 function readTypes(type: Json | undefined, at: string): TypeName[] | null {

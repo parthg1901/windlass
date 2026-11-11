@@ -95,7 +95,7 @@ describe("write", () => {
       settlement: { outcome: "success", output: "Created deep/er/a.ts (2 lines, 4 bytes).", display: { created: true } },
     })
     expect(ws.read("deep/er/a.ts")).toBe("a\nb\n")
-    expect(outputOf(await ws.call("write", { path: "deep/er/a.ts", content: "é" }))).toBe("Overwrote deep/er/a.ts (1 lines, 2 bytes).")
+    expect(outputOf(await ws.call("write", { path: "deep/er/a.ts", content: "é" }))).toBe("Overwrote deep/er/a.ts (1 line, 2 bytes).")
     expect(ws.read("deep/er/a.ts")).toBe("é")
   })
 
@@ -128,10 +128,10 @@ describe("edit", () => {
       output: "old_string was not found in a.ts. It must match the file exactly, including whitespace and indentation. Read the file to see its current content.",
     })
     expect(outputOf(await ws.call("edit", { path: "a.ts", old_string: "foo()\n    bar", new_string: "x" }))).toBe(
-      "old_string was not found in a.ts. Text matching it apart from whitespace or indentation starts at line 1; read the file and copy the text exactly.",
+      "old_string was not found in a.ts. Text that differs from it only in whitespace starts at line 1; read the file and copy the text exactly.",
     )
     expect(outputOf(await ws.call("edit", { path: "a.ts", old_string: "foo()", new_string: "x" }))).toBe(
-      "old_string occurs 2 times in a.ts (lines 1, 3). Include more surrounding lines to make it unique, or set replace_all to true to replace every occurrence.",
+      "old_string occurs 2 times in a.ts (on lines 1, 3). Include more surrounding lines to make it unique, or set replace_all to true to replace every occurrence.",
     )
     expect(ws.read("a.ts")).toBe("  foo()\nbar\n  foo()\n")
   })

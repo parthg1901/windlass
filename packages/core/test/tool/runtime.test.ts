@@ -82,7 +82,7 @@ describe("tool runtime", () => {
     const outcome = await run("echo", '{"text": 1, "delayMs": -1, "x": true}')
     expect(outcome).toMatchObject({ kind: "refused", reason: "invalid_arguments" })
     expect(outcome.settlement.output).toBe(
-      "Invalid arguments for echo:\n- text: must be a string, got 1\n- delayMs: must be at least 0, got -1\n- x: is not a known parameter\nFix them and call echo again.",
+      "Invalid arguments for echo:\n- text: must be a string, got 1\n- delayMs: must be at least 0, got -1\n- x: is not a known parameter (known: text, delayMs)\nFix them and call echo again.",
     )
   })
 

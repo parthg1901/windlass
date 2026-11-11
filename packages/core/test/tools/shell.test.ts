@@ -87,8 +87,9 @@ describe("shell", () => {
     expect(outputOf(quiet)).toMatch(/^pid=\d+\ndone\n$/)
     await expectAllGone(pidsIn(outputOf(quiet)))
 
-    const stubborn = await ws.call("shell", { command: "(trap '' TERM; echo pid=$BASHPID; exec sleep 300) & sleep 0.2; echo parent=$$" })
+    const stubborn = await ws.call("shell", { command: "(trap '' TERM; exec sh -c 'echo pid=$$; exec sleep 300') & sleep 0.2; echo parent=$$" })
     expect(stubborn.settlement.outcome).toBe("success")
+    expect(pidsIn(outputOf(stubborn))).toHaveLength(1)
     await expectAllGone([...pidsIn(outputOf(stubborn)), Number(/parent=(\d+)/.exec(outputOf(stubborn))![1])])
   }, 10_000)
 

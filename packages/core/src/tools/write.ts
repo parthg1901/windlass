@@ -39,7 +39,7 @@ export function writeTool(): Tool<WriteInput> {
       )
       if (written instanceof Error) return failure(`Cannot write ${shown}: ${written.message}`)
       const lines = input.content === "" ? 0 : input.content.split("\n").length - (input.content.endsWith("\n") ? 1 : 0)
-      return success(`${before === null ? "Created" : "Overwrote"} ${shown} (${lines} lines, ${written} bytes).`, {
+      return success(`${before === null ? "Created" : "Overwrote"} ${shown} (${lines} ${lines === 1 ? "line" : "lines"}, ${written} bytes).`, {
         path: shown,
         created: before === null,
         bytes: written,
