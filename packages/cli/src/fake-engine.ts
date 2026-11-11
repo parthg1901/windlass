@@ -22,6 +22,7 @@ import {
   type NewEvent,
   type SessionId,
   type StoredEvent,
+  type ToolEffect,
   event,
   text,
 } from "@light-harness/core"
@@ -102,6 +103,8 @@ export class FakeEngine implements Engine {
 
 interface CallState {
   readonly name: string
+  /** The effect class recorded with `tool.started`; it decides how a stopped call settles. */
+  effect: ToolEffect | null
   started: boolean
   settled: boolean
   startedAt: number
@@ -272,7 +275,7 @@ export class FakeSession implements Session {
     this.partialText = null
     const open = [...this.calls.entries()].filter(([, call]) => !call.settled)
     // A running command is killed and given a grace period before its output is collected.
-    const winding = open.some(([, call]) => call.started && effectOf(call.name) !== "read")
+    const winding = open.some(([, call]) => call.started && call.effect !== "read")
     await sleep(this.real(winding ? (this.options.graceMs ?? 600) : 60))
     this.virtual += winding ? (this.options.graceMs ?? 600) : 60
     if (this.step !== null) {
@@ -344,12 +347,13 @@ export class FakeSession implements Session {
         this.step = null
         return
       case "tool.called":
-        this.calls.set(item.data.callId, { name: item.data.name, started: false, settled: false, startedAt: 0, progress: "" })
+        this.calls.set(item.data.callId, { name: item.data.name, effect: null, started: false, settled: false, startedAt: 0, progress: "" })
         return
       case "tool.started": {
         const call = this.calls.get(item.data.callId)
         if (call !== undefined) {
           call.started = true
+          call.effect = item.data.effect
           call.startedAt = this.now()
         }
         return
@@ -395,7 +399,7 @@ function stopped(messageId: MessageId, callId: CallId, call: CallState, now: num
   const settle = (outcome: "error" | "not_started" | "effect_unknown", output: string, display: NewEvent<"tool.settled">["data"]["display"] = null) =>
     event("tool.settled", { messageId, callId, outcome, output, truncation: null, attachments: [], display })
   if (!call.started) return settle("not_started", NOT_STARTED)
-  switch (effectOf(call.name)) {
+  switch (call.effect ?? "exec") {
     case "read":
       return settle("error", INTERRUPTED_READ)
     case "exec": {
@@ -404,14 +408,9 @@ function stopped(messageId: MessageId, callId: CallId, call: CallState, now: num
       return settle("error", output, { exitCode: null, signal: "SIGTERM", timedOut: false, interrupted: "user", durationMs: now - call.startedAt })
     }
     case "write":
+    case "network":
       return settle("effect_unknown", EFFECT_UNKNOWN)
   }
-}
-
-function effectOf(name: string): "read" | "write" | "exec" {
-  if (name === "read" || name === "ls" || name === "glob" || name === "grep") return "read"
-  if (name === "write" || name === "edit") return "write"
-  return "exec"
 }
 
 /** Splits text the way a model streams it: a word or two at a time, keeping whitespace. */

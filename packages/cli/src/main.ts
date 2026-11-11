@@ -90,10 +90,14 @@ export async function run(io: Io): Promise<number> {
   const turns = new TurnWatcher(session, sink)
   const control = { running: false, lastInterrupt: 0 }
   const onCtrlC = () => {
-    if (!control.running) return io.exit(130)
+    if (!control.running) {
+      sink.close()
+      return io.exit(130)
+    }
     const now = Date.now()
     if (now - control.lastInterrupt < DOUBLE_INTERRUPT_MS) {
       sink.notice("exiting without waiting for the stop", "warn")
+      sink.close()
       return io.exit(130)
     }
     control.lastInterrupt = now
@@ -121,6 +125,7 @@ export async function run(io: Io): Promise<number> {
     unsubscribe()
     await session.close()
     await turns.ended
+    sink.close()
   }
 }
 

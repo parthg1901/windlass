@@ -17,6 +17,8 @@ export interface Sink {
   event(event: EngineEvent): void
   /** A message from the CLI itself, such as "stopping". Never on stdout in `--json` mode. */
   notice(text: string, tone?: "info" | "warn" | "error"): void
+  /** Leaves the terminal tidy (no transient status line, cursor at a line start). Called before the CLI exits. */
+  close(): void
 }
 
 export interface PrettyOptions {
@@ -100,30 +102,30 @@ export class PrettyRenderer implements Sink {
   constructor(private readonly options: PrettyOptions) {}
 
   event(event: EngineEvent): void {
-    this.clearStatus()
     this.handle(event)
     this.drawStatus()
   }
 
   notice(text: string, tone: "info" | "warn" | "error" = "info"): void {
-    this.clearStatus()
     this.line("info", [seg(text, tone === "error" ? "red" : tone === "warn" ? "yellow" : "dim")])
     this.drawStatus()
   }
 
-  /** Echoes a prompt as if typed: `› text`. */
-  prompt(text: string): void {
+  close(): void {
     this.clearStatus()
     this.endLine()
+  }
+
+  /** Echoes a prompt as if typed: `› text`. */
+  prompt(text: string): void {
+    this.endLine()
     this.gap("prompt")
-    const [first = "", ...rest] = text.split("\n")
-    this.writeLine([seg(`${SYMBOL.prompt} `, "dim"), seg(first, "bold")])
-    for (const more of rest) this.writeLine([seg("  "), seg(more, "bold")])
+    const lines = text.split("\n").flatMap((line) => wrap(flatten(line), this.width - 2))
+    lines.forEach((line, index) => this.writeLine([seg(index === 0 ? `${SYMBOL.prompt} ` : "  ", "dim"), seg(line, "bold")]))
   }
 
   /** Call before an interactive prompt is drawn: finishes the line and leaves one blank line. Returns what to write. */
   beforePrompt(): void {
-    this.clearStatus()
     this.endLine()
     if (this.last !== null) this.raw("\n")
     this.last = "prompt"
@@ -511,6 +513,7 @@ export class PrettyRenderer implements Sink {
 
   private raw(text: string): void {
     if (text === "") return
+    this.clearStatus()
     this.options.write(text)
     for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) this.lines += 1
     this.atLineStart = text.endsWith("\n")
@@ -518,11 +521,15 @@ export class PrettyRenderer implements Sink {
 
   // ---------------------------------------------------------------- transient status line (terminals only)
 
+  /** Draws the status line, or redraws it when it changed. Permanent output clears it first (see `raw`). */
   private drawStatus(): void {
     if (!this.options.live) return
-    this.status = this.computeStatus()
-    if (this.status === null || !this.atLineStart) return
-    this.options.write(renderLine([seg(this.status, "dim")], this.width - 1, this.options.color))
+    const next = this.atLineStart ? this.computeStatus() : null
+    if (this.statusDrawn && next === this.status) return
+    this.clearStatus()
+    this.status = next
+    if (next === null) return
+    this.options.write(renderLine([seg(next, "dim")], this.width - 1, this.options.color))
     this.statusDrawn = true
   }
 
@@ -567,6 +574,8 @@ export class JsonSink implements Sink {
   notice(text: string): void {
     this.writeError(`${brand.binary}: ${text}\n`)
   }
+
+  close(): void {}
 }
 
 /** Only the final assistant text of each turn on stdout; failures on stderr. */
@@ -609,6 +618,8 @@ export class QuietSink implements Sink {
   notice(text: string): void {
     this.writeError(`${brand.binary}: ${text}\n`)
   }
+
+  close(): void {}
 }
 
 // ---------------------------------------------------------------- helpers

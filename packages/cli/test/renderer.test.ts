@@ -12,7 +12,8 @@ const thinking = (messageId: string, value: string): EphemeralEvent => ({ type: 
 const said = (messageId: string, value: string) => event("text.ended", { messageId: m(messageId), text: value, providerData: null })
 const call = (messageId: string, callId: string, name: string, input: object) =>
   event("tool.called", { messageId: m(messageId), callId: c(callId), name, input: JSON.stringify(input), providerData: null })
-const start = (messageId: string, callId: string) => event("tool.started", { messageId: m(messageId), callId: c(callId) })
+const start = (messageId: string, callId: string, effect: "read" | "write" | "exec" = "read") =>
+  event("tool.started", { messageId: m(messageId), callId: c(callId), effect })
 const settle = (messageId: string, callId: string, outcome: "success" | "error" | "not_started" | "effect_unknown", output: string, display: NewEvent<"tool.settled">["data"]["display"] = null) =>
   event("tool.settled", { messageId: m(messageId), callId: c(callId), outcome, output, truncation: null, attachments: [], display })
 const SGR = /\x1b\[[0-9;]*m/

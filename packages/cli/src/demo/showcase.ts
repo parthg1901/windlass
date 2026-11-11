@@ -4,7 +4,7 @@
  * what a real session looks like: searches, a failing command, an edit with a
  * diff, parallel calls, usage on every step, and output capped to a spill file.
  */
-import { type Json, type NewEvent, type Truncation, event } from "@light-harness/core"
+import { type Json, type NewEvent, type ToolEffect, type Truncation, event } from "@light-harness/core"
 import {
   type Scenario,
   c,
@@ -14,11 +14,14 @@ import {
   say,
   stepStarted,
   think,
-  toolStarted,
 } from "../../../core/test/scenarios/script.ts"
+
+const EFFECTS: Record<string, ToolEffect> = { read: "read", grep: "read", glob: "read", ls: "read", edit: "write", write: "write", shell: "exec" }
 
 const called = (id: string, callId: string, name: string, input: Record<string, Json>) =>
   event("tool.called", { messageId: m(id), callId: c(callId), name, input: JSON.stringify(input), providerData: null })
+
+const toolStarted = (id: string, callId: string, name: string) => event("tool.started", { messageId: m(id), callId: c(callId), effect: EFFECTS[name] ?? "exec" })
 
 const settled = (
   id: string,
@@ -76,8 +79,8 @@ export const fixFailingTest: Scenario = {
         say("a1", "I'll find the code and run the failing test."),
         called("a1", "call_1", "grep", { pattern: "add\\(", path: "src" }),
         called("a1", "call_2", "shell", { command: "bun test src/add.test.ts" }),
-        toolStarted("a1", "call_1"),
-        toolStarted("a1", "call_2"),
+        toolStarted("a1", "call_1", "grep"),
+        toolStarted("a1", "call_2", "shell"),
         settled(
           "a1",
           "call_1",
@@ -89,18 +92,18 @@ export const fixFailingTest: Scenario = {
         ended("a1", "tool_calls", 8_214, 0, 196, 64),
         stepStarted("a2"),
         called("a2", "call_1", "read", { path: "src/add.ts" }),
-        toolStarted("a2", "call_1"),
+        toolStarted("a2", "call_1", "read"),
         settled("a2", "call_1", "success", "1\texport function add(a: number, b: number) {\n2\t  return a - b\n3\t}", { path: "src/add.ts", offset: 1, lines: 3, totalLines: 3 }),
         ended("a2", "tool_calls", 8_870, 8_192, 41),
         stepStarted("a3"),
         say("a3", "`add` subtracts instead of adding. Fixing it."),
         called("a3", "call_1", "edit", { path: "src/add.ts", old_string: "  return a - b", new_string: "  return a + b" }),
-        toolStarted("a3", "call_1"),
+        toolStarted("a3", "call_1", "edit"),
         settled("a3", "call_1", "success", "Edited src/add.ts: replaced 1 occurrence (line 2).", { path: "src/add.ts", replacements: 1, diff: DIFF }),
         ended("a3", "tool_calls", 9_012, 8_704, 77),
         stepStarted("a4"),
         called("a4", "call_1", "shell", { command: "bun test src/add.test.ts" }),
-        toolStarted("a4", "call_1"),
+        toolStarted("a4", "call_1", "shell"),
         settled("a4", "call_1", "success", PASSING_RUN, { exitCode: 0, signal: null, timedOut: false, interrupted: null, durationMs: 540 }),
         ended("a4", "tool_calls", 9_240, 8_960, 30),
         stepStarted("a5"),
@@ -148,7 +151,7 @@ export const longBuild: Scenario = {
         stepStarted("a1"),
         say("a1", "Running the build and the test suite."),
         called("a1", "call_1", "shell", { command: "bun run build && bun test" }),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "shell"),
         settled(
           "a1",
           "call_1",
