@@ -105,9 +105,16 @@ requests in total.
     server ids (`msg_`, `fc_`), so the keys cannot be matched to the request by id, only by order.
     `attribution.request_fields.tools` bills the tool definitions (38 tokens for one small tool) [usage] [cache].
 18. `cache_write_tokens` was 0 in every response, including cold ones [cache].
-19. Prompt caching hits only with a `session-id` request header. The server overwrites `prompt_cache_key`: the echoed
-    value is the `session-id` header when present, otherwise a fresh random UUID per request. A body
-    `prompt_cache_key` alone never hit (two attempts, 2 s and 6 s apart) [cache] [cache2].
+19. Prompt caching is only reliable with a stable `session-id` request header. The server overwrites
+    `prompt_cache_key`: the echoed value is the `session-id` header when present, otherwise a fresh random UUID per
+    request. Correction (orchestrator re-probe, same day, one run of four requests per condition, 10 s apart):
+    without the header a hit is possible but erratic (no key: miss, hit, miss, miss; body `prompt_cache_key` only:
+    miss, miss, hit, miss), which looks like requests landing on different cache shards. With the header, every
+    request after the cold one hit (3 of 3, with and without a matching body key). The first probe's "a body key alone
+    never hit" was too strong [cache] [cache2] [re-probe].
+19a. A cold prefix is not readable straight away. Two re-runs with a 2 s gap missed on the second request even with
+    a stable `session-id`, then hit on the third. With a 10 s gap the second request hit. Expect the first follow-up
+    after a cold write to miss if it is sent within a few seconds [re-probe].
 20. With a stable `session-id`: a repeat request cached 3,072 of about 3,260 input tokens (twice). Changing only the
     last user message still cached 3,072. Changing one tool description cached 0. The same prefix under a different
     `session-id` cached 0, so the cache is scoped to the session-id [cache] [cache2].
@@ -296,8 +303,9 @@ Field shapes come from [docs:API-CREATE] [docs:G-FC] [docs:G-REASON]. `include` 
 - `Authorization: Bearer <ACCESS_TOKEN>` and `Content-Type: application/json` [docs:SIWC-MI].
 - opencode also sends `session-id`, `thread-id` and `x-client-request-id` on this flow. Its comment says "ChatGPT
   derives prompt-cache affinity from session-id" [oc:CG:285-288]. The docs do not mention these headers.
-  Live: `session-id` is required for any cache hit. The server uses its value as the echoed `prompt_cache_key`, and a
-  different `session-id` misses a warm prefix. Send one stable `session-id` per conversation (section 6) [live].
+  Live: `session-id` is needed for reliable cache hits (without it hits are erratic, see "Verified live" item 19).
+  The server uses its value as the echoed `prompt_cache_key`, and a different `session-id` misses a warm prefix.
+  Send one stable `session-id` per conversation (section 6) [live].
   `thread-id` and `x-client-request-id` were not probed.
 - Live: a `Content-Encoding: zstd` body is accepted [live]. The ~1 MiB uncompressed limit below was not probed.
 - opencode compresses request bodies with `zstd` (`content-encoding`) on this flow. Its comment says "ChatGPT sign-in
@@ -896,14 +904,15 @@ occur when generation reaches the context window limit [docs:G-REASON].
 
 Live, on this flow (overrides the general-API claims below) [live]:
 
-- Caching works only with a `session-id` request header. The server overwrites `prompt_cache_key` with the
-  `session-id` value, or with a fresh random UUID when the header is absent. A body `prompt_cache_key` alone never
-  produced a hit.
+- Caching is reliable only with a stable `session-id` request header. The server overwrites `prompt_cache_key` with
+  the `session-id` value, or with a fresh random UUID when the header is absent. Without the header a hit is possible
+  but erratic (see "Verified live" item 19).
 - The cache is scoped to the `session-id`. A warm prefix under a different `session-id` cached 0 tokens.
 - With a stable `session-id`, a repeat cached 3,072 of about 3,260 tokens. Changing only the last user message kept
   the 3,072. Changing one tool description dropped it to 0, so tools render before the developer prefix.
 - `cached_tokens` was 3,072 every time, not the exact message boundary (about 3,250). Granularity is unknown.
-- Hits appeared 2 seconds after the cold request.
+- A hit 2 seconds after the cold request is not guaranteed: two re-runs missed at 2 s and hit on the next request.
+  At 10 s the second request hit.
 
 `prompt_cache_key`:
 
@@ -1207,7 +1216,7 @@ The example values are illustrative; field names and types come from the decodin
 8. Read usage from the terminal event's `response.usage` (4.5).
 9. Classify errors per 7.6. Never auto-retry usage-limit, auth, policy or invalid-request failures. Pre-stream
    bodies come as `{"detail": "..."}` or `{"error": {...}}`, and `error.code` can be null [live].
-10. Send one stable `session-id` header per conversation. Without it no prompt caching happens [live].
+10. Send one stable `session-id` header per conversation. Without it prompt caching is erratic [live].
 11. Do not require `function_call_arguments.delta` events; take arguments from `.done` or `output_item.done`.
     Ignore `response.metadata` and SSE comment lines [live].
 
