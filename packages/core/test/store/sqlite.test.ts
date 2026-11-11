@@ -268,6 +268,9 @@ describe("fork", () => {
   })
 })
 
+// File-backed tests fsync every commit (synchronous = FULL), so they are slow on a busy disk.
+const FILE_TIMEOUT = 30_000
+
 describe("persistence", () => {
   const snapshot = (store: SqliteStore, ids: readonly SessionId[]) => ({
     sessions: store.listSessions({ includeArchived: true }),
@@ -315,7 +318,7 @@ describe("persistence", () => {
     )
     expect(expectStoreConsistent(second)).toBe(ids.length)
     second.close()
-  })
+  }, FILE_TIMEOUT)
 
   test("events are decoded through the boundary on read", () => {
     const path = temporaryPath()
@@ -329,7 +332,7 @@ describe("persistence", () => {
     expect(error).toBeInstanceOf(EventDecodeError)
     expect((error as EventDecodeError).reason).toBe("unknown_version")
     store.close()
-  })
+  }, FILE_TIMEOUT)
 
   test("a database from another schema version is refused", () => {
     const path = temporaryPath()
@@ -339,7 +342,7 @@ describe("persistence", () => {
     expect(() => open(path)).toThrow(StoreSchemaError)
     // The failed open released the writer lock.
     expect(() => open(path)).toThrow(StoreSchemaError)
-  })
+  }, FILE_TIMEOUT)
 })
 
 describe("reads", () => {
