@@ -4,7 +4,17 @@
  * crash test can keep appending to sessions a killed writer left open.
  */
 import { type NewEvent, event } from "../../src/event/durable.ts"
+import { type ToolCallState, hasSideEffect } from "../../src/message/message.ts"
 import type { Store } from "../../src/store/store.ts"
+
+/** How an orphaned call settles, from the effect class its start recorded and nothing else. */
+function orphanOutcome(state: Exclude<ToolCallState, { status: "settled" }>) {
+  if (state.status === "pending")
+    return { outcome: "not_started", output: "Not run: the harness stopped before this call started." } as const
+  if (!hasSideEffect(state.effect))
+    return { outcome: "error", output: "The harness stopped while this call was running. Nothing was changed." } as const
+  return { outcome: "effect_unknown", output: "The harness stopped while this call was running; its effect is unknown." } as const
+}
 
 export function recoverClaimedSessions(store: Store): number {
   const claimed = store.listClaimedSessions()
@@ -21,11 +31,7 @@ export function recoverClaimedSessions(store: Store): number {
             event("tool.settled", {
               messageId: message.id,
               callId: part.callId,
-              outcome: part.state.status === "running" ? "effect_unknown" : "not_started",
-              output:
-                part.state.status === "running"
-                  ? "The harness stopped while this call was running; its effect is unknown."
-                  : "Not run: the harness stopped before this call started.",
+              ...orphanOutcome(part.state),
               truncation: null,
               attachments: [],
               display: null,

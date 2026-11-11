@@ -11,6 +11,7 @@ import type { AssistantMessage, Projection } from "../../src/message/message.ts"
 import { makeProviderError } from "../../src/provider/error.ts"
 import type { BlockHash } from "../../src/request/prefix.ts"
 import type { Store } from "../../src/store/store.ts"
+import type { ToolEffect } from "../../src/tool/tool.ts"
 
 const m = (id: string) => id as MessageId
 const c = (id: string) => id as CallId
@@ -71,7 +72,8 @@ export const reasoningEnded = (id: string, value: string) =>
   event("reasoning.ended", { messageId: m(id), text: value, providerData: { encrypted_content: "gAAAAB-synthetic" } })
 export const called = (id: string, callId: string, name: string, input: string) =>
   event("tool.called", { messageId: m(id), callId: c(callId), name, input, providerData: { item_id: `fc_${callId}` } })
-export const started = (id: string, callId: string) => event("tool.started", { messageId: m(id), callId: c(callId) })
+export const started = (id: string, callId: string, effect: ToolEffect = "read") =>
+  event("tool.started", { messageId: m(id), callId: c(callId), effect })
 export const settled = (id: string, callId: string, outcome: ToolOutcome, output: string, attachments: BlobRef[] = []) =>
   event("tool.settled", {
     messageId: m(id),
@@ -224,7 +226,7 @@ export const SCRIPTS: Record<string, Script> = {
       called("a2", "call_1", "shell", '{"cmd":"npm test"}'),
       called("a2", "call_3", "shell", '{"cmd":"rm -rf /"}'),
       settled("a2", "call_3", "error", "Refused: this command is not allowed in this mode."),
-      started("a2", "call_1"),
+      started("a2", "call_1", "exec"),
       settled("a2", "call_1", "error", "1 test failed"),
       stepEnded("a2", "tool_calls"),
     )
@@ -246,7 +248,7 @@ export const SCRIPTS: Record<string, Script> = {
       textEnded("a1", "Running the tests now"),
       called("a1", "call_1", "shell", '{"cmd":"bun test"}'),
       called("a1", "call_2", "read", '{"path":"package.json"}'),
-      started("a1", "call_1"),
+      started("a1", "call_1", "exec"),
     )
     d.request("r1", "a1", "step", "aborted")
     // The user pressed stop: the running call reports what it saw, the pending one never began.

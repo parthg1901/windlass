@@ -31,7 +31,7 @@ export const steerAtNextBoundary: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "read", '{"path":"a.ts"}'),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "read"),
         enqueue("u2", "Also check b.ts.", "steer"),
       ],
       expect: { open: "a1", inbox: ["u2"], history: ["u1", "a1"] },

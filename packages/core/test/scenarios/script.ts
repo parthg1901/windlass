@@ -188,9 +188,14 @@ export const think = (id: string, value: string) =>
 
 // ---------------------------------------------------------------- tools
 
-export const called = (id: string, callId: string, name: ToolName, input: string) =>
+export const called = (id: string, callId: string, name: ToolName | (string & {}), input: string) =>
   event("tool.called", { messageId: m(id), callId: c(callId), name, input, providerData: null })
-export const toolStarted = (id: string, callId: string) => event("tool.started", { messageId: m(id), callId: c(callId) })
+/** The tool begins. `name` picks the effect class the loop records with the start (see `TOOLS`). */
+export const toolStarted = (id: string, callId: string, name: ToolName) =>
+  event("tool.started", { messageId: m(id), callId: c(callId), effect: TOOLS[name] })
+/** The start of a call to a tool outside `TOOLS`, with the effect class its registry entry had when it ran. */
+export const toolStartedAs = (id: string, callId: string, effect: ToolEffect) =>
+  event("tool.started", { messageId: m(id), callId: c(callId), effect })
 export const settled = (id: string, callId: string, outcome: ToolOutcome, output: string) =>
   event("tool.settled", {
     messageId: m(id),
@@ -205,7 +210,7 @@ export const settled = (id: string, callId: string, outcome: ToolOutcome, output
 /** A call that runs and succeeds: called, started, settled. */
 export const ran = (id: string, callId: string, name: ToolName, input: string, output: string) => [
   called(id, callId, name, input),
-  toolStarted(id, callId),
+  toolStarted(id, callId, name),
   settled(id, callId, "success", output),
 ]
 
@@ -341,7 +346,7 @@ export function describeEvent(item: NewEvent): string {
     case "tool.called":
       return `tool.called ${d.messageId}/${d.callId} ${d.name} ${d.input}`
     case "tool.started":
-      return `tool.started ${d.messageId}/${d.callId}`
+      return `tool.started ${d.messageId}/${d.callId} effect=${d.effect}`
     case "tool.settled":
       return `tool.settled ${d.messageId}/${d.callId} ${d.outcome} ${quote(d.output)}`
     case "execution.failed":

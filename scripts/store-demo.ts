@@ -88,8 +88,8 @@ append(
     input: '{"cmd":"git log -1 --oneline"}',
     providerData: null,
   }),
-  event("tool.started", { messageId: m("msg_a1"), callId: c("call_1") }),
-  event("tool.started", { messageId: m("msg_a1"), callId: c("call_2") }),
+  event("tool.started", { messageId: m("msg_a1"), callId: c("call_1"), effect: "read" }),
+  event("tool.started", { messageId: m("msg_a1"), callId: c("call_2"), effect: "exec" }),
   event("tool.settled", {
     messageId: m("msg_a1"),
     callId: c("call_1"),

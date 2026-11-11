@@ -46,7 +46,7 @@ function* session(): Generator<NewEvent> {
     yield called(t("a"), "call_1", "read", `{"path":"src/app.ts","line":${turn}}`)
     yield called(t("a"), "call_2", "shell", '{"cmd":"git diff --stat"}')
     yield started(t("a"), "call_1")
-    yield started(t("a"), "call_2")
+    yield started(t("a"), "call_2", "exec")
     yield settled(t("a"), "call_1", "success", "x".repeat(2000))
     yield settled(t("a"), "call_2", "success", " src/app.ts | 2 +-")
     yield stepEnded(t("a"), "tool_calls")

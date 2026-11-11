@@ -55,7 +55,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "text.ended": event("text.ended", { messageId, text: "Done.", providerData: { phase: "final_answer" } }),
   "reasoning.ended": event("reasoning.ended", { messageId, text: "", providerData: { encrypted_content: "gAAAA" } }),
   "tool.called": event("tool.called", { messageId, callId, name: "read", input: '{"path":"a.ts"}', providerData: null }),
-  "tool.started": event("tool.started", { messageId, callId }),
+  "tool.started": event("tool.started", { messageId, callId, effect: "exec" }),
   "tool.settled": event("tool.settled", {
     messageId,
     callId,

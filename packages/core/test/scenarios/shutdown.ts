@@ -35,7 +35,7 @@ export const shutdownMidStep: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "shell", '{"command":"bun test"}'),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "shell"),
         settled("a1", "call_1", "error", "Stopped because the harness was shutting down. Output so far:\n12 pass\n"),
         stepInterrupted("a1", "shutdown"),
         interruptMarker("s1", "shutdown"),

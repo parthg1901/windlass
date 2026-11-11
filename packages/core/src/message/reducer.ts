@@ -18,7 +18,7 @@
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
  */
-import type { StoredEvent, ToolOutcome } from "../event/durable.ts"
+import type { StoredEvent } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
 import {
@@ -29,7 +29,7 @@ import {
   type Projection,
   type SessionState,
   type ToolCallPart,
-  SETTLE_FROM,
+  settleOutcomes,
 } from "./message.ts"
 
 export type ReduceErrorCode =
@@ -387,13 +387,15 @@ function apply(state: Projection, event: Exclude<StoredEvent, { type: "session.c
       return call(event.data.messageId, event.data.callId, (part) => {
         if (part.state.status !== "pending")
           fail("invalid_transition", `tool call ${part.callId} is ${part.state.status}, not pending`)
-        return { ...part, state: { status: "running" } }
+        return { ...part, state: { status: "running", effect: event.data.effect } }
       })
     case "tool.settled":
       return call(event.data.messageId, event.data.callId, (part) => {
-        const allowed: readonly ToolOutcome[] = part.state.status === "settled" ? [] : SETTLE_FROM[part.state.status]
-        if (!allowed.includes(event.data.outcome))
-          fail("invalid_transition", `a ${part.state.status} tool call cannot settle as ${event.data.outcome}`)
+        if (!settleOutcomes(part.state).includes(event.data.outcome))
+          fail(
+            "invalid_transition",
+            `a ${part.state.status}${part.state.status === "running" ? ` ${part.state.effect}` : ""} tool call cannot settle as ${event.data.outcome}`,
+          )
         return {
           ...part,
           state: {

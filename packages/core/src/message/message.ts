@@ -11,7 +11,7 @@ import { delivery, finishReason, lineage, stepError, toolOutcome } from "../even
 import { callId, executionId, messageId, sessionId } from "../id.ts"
 import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
-import { toolSpec, truncation } from "../tool/tool.ts"
+import { type ToolEffect, toolEffect, toolSpec, truncation } from "../tool/tool.ts"
 import {
   type Infer,
   array,
@@ -52,11 +52,14 @@ const base = {
  *   pending --tool.settled--> settled   (outcome: not_started | error)
  *   running --tool.settled--> settled   (outcome: success | error | effect_unknown)
  *
+ * A running call carries the effect class it started with. A `read` call has
+ * no side effect, so it cannot settle as `effect_unknown`.
+ *
  * A step cannot end while any of its calls is not settled.
  */
 export const toolCallState = variant("status", {
   pending: object({ status: literal("pending") }),
-  running: object({ status: literal("running") }),
+  running: object({ status: literal("running"), effect: toolEffect }),
   settled: object({
     status: literal("settled"),
     outcome: toolOutcome,
@@ -74,6 +77,18 @@ export const SETTLE_FROM = {
   pending: ["not_started", "error"],
   running: ["success", "error", "effect_unknown"],
 } as const satisfies Record<"pending" | "running", readonly Infer<typeof toolOutcome>[]>
+
+/** The outcomes `tool.settled` may record for a call in `state`. Empty once it is settled. */
+export function settleOutcomes(state: ToolCallState): readonly Infer<typeof toolOutcome>[] {
+  if (state.status === "settled") return []
+  if (state.status === "pending") return SETTLE_FROM.pending
+  return SETTLE_FROM.running.filter((outcome) => outcome !== "effect_unknown" || hasSideEffect(state.effect))
+}
+
+/** Whether a started call of this effect class may have changed something. */
+export function hasSideEffect(effect: ToolEffect): boolean {
+  return effect !== "read"
+}
 
 /** One piece of an assistant message, in the order the model produced it. */
 export const assistantPart = variant("type", {

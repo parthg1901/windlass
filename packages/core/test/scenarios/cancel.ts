@@ -134,7 +134,7 @@ export const whileOneToolRuns: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "shell", '{"command":"bun test"}'),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "shell"),
       ],
       expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 shell running"] }] },
     },
@@ -168,8 +168,8 @@ export const whileParallelToolsRunOneDone: Scenario = {
         stepStarted("a1"),
         called("a1", "call_1", "read", '{"path":"a.ts"}'),
         called("a1", "call_2", "shell", '{"command":"bun test"}'),
-        toolStarted("a1", "call_1"),
-        toolStarted("a1", "call_2"),
+        toolStarted("a1", "call_1", "read"),
+        toolStarted("a1", "call_2", "shell"),
         settled("a1", "call_1", "success", "export const a = 1"),
       ],
       expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 read success", "call_2 shell running"] }] },
@@ -210,7 +210,7 @@ export const beforeSideEffectReports: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "write", '{"path":"a.ts","content":"export const a = 2"}'),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "write"),
       ],
       rejects: [
         {
@@ -245,12 +245,12 @@ export const beforeReadReports: Scenario = {
   phases: [
     {
       label: "the read has started",
-      events: [...opening(), stepStarted("a1"), called("a1", "call_1", "read", '{"path":"a.ts"}'), toolStarted("a1", "call_1")],
-      gaps: [
+      events: [...opening(), stepStarted("a1"), called("a1", "call_1", "read", '{"path":"a.ts"}'), toolStarted("a1", "call_1", "read")],
+      rejects: [
         {
-          gap: "G8",
           event: settled("a1", "call_1", "effect_unknown", EFFECT_UNKNOWN),
-          why: "a read has no side effect, so effect_unknown is wrong for it; the reducer cannot tell because the effect class is not in the log",
+          code: "invalid_transition",
+          why: "the call started with effect class read, which has no side effect, so there is nothing unknown about it",
         },
       ],
     },

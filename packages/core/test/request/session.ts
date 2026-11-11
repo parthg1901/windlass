@@ -239,7 +239,9 @@ export class Script {
     for (const call of calls.toReversed()) {
       const outcome = call.outcome ?? "success"
       const callId = call.call as CallId
-      if (call.started ?? outcome !== "not_started") this.apply(event("tool.started", { messageId, callId }))
+      // The effect class the loop would record. Only a call that started with a side effect can end `effect_unknown`.
+      const effect = (call.name ?? "read") === "read" && outcome !== "effect_unknown" ? "read" : "exec"
+      if (call.started ?? outcome !== "not_started") this.apply(event("tool.started", { messageId, callId, effect }))
       this.apply(
         event("tool.settled", {
           messageId,

@@ -24,7 +24,7 @@ import { callId, executionId, messageId, sessionId, type SessionId } from "../id
 import { interruptReason } from "../interrupt.ts"
 import { providerError } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
-import { toolSpec, truncation } from "../tool/tool.ts"
+import { toolEffect, toolSpec, truncation } from "../tool/tool.ts"
 import {
   type Infer,
   type Validator,
@@ -236,9 +236,12 @@ export const durableEvents = {
   /**
    * The tool began executing. From here a side effect may have happened, so a
    * call that is started but never settled is settled as `effect_unknown` (or
-   * `error`), never as `not_started`.
+   * `error`), never as `not_started`. `effect` is the tool's effect class at
+   * the moment it started: a `read` call has no side effect and can never
+   * settle as `effect_unknown`, and crash recovery settles an orphan from this
+   * field, never from the tool registry of the build that restarts.
    */
-  "tool.started": define(1, object({ messageId, callId })),
+  "tool.started": define(1, object({ messageId, callId, effect: toolEffect })),
   /**
    * The call's one terminal result. `output` is the text for the model, capped
    * once when produced and replayed byte for byte, including the text that

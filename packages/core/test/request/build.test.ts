@@ -531,7 +531,7 @@ describe("states the reducer cannot produce", () => {
     const messages = s.projection.messages.map((message) =>
       message.kind !== "assistant"
         ? message
-        : { ...message, parts: message.parts.map((part) => (part.type === "tool_call" ? { ...part, state: { status: "running" as const } } : part)) },
+        : { ...message, parts: message.parts.map((part) => (part.type === "tool_call" ? { ...part, state: { status: "running" as const, effect: "read" as const } } : part)) },
     )
     expect(() => buildRequest({ ...s.projection, messages }, OPTIONS)).toThrow("tool call call_1")
   })

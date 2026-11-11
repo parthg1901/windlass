@@ -292,7 +292,7 @@ describe("persistence", () => {
     const ids = Object.entries(SCRIPTS).flatMap(([name, script]) => script(first, name))
     const claimed = new Driver(first, sid("claimed"))
     claimed.add(created(), baselineSet(), enqueue("u1", "hi"), executionStarted("exe_1"), deliver("u1"))
-    claimed.add(stepStarted("a1"), called("a1", "call_1", "shell", "{}"), started("a1", "call_1"))
+    claimed.add(stepStarted("a1"), called("a1", "call_1", "shell", "{}"), started("a1", "call_1", "exec"))
     ids.push(claimed.id)
     const blob = first.putBlob(new Uint8Array([1, 2, 3, 4]), "application/octet-stream")
     const before = snapshot(first, ids)

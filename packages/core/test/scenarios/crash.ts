@@ -24,6 +24,7 @@ import {
   stepEnded,
   stepStarted,
   toolStarted,
+  toolStartedAs,
 } from "./script.ts"
 
 const crashedClaim = { execution: { status: "running" as const, resumes: 0 } }
@@ -72,13 +73,18 @@ export const crashWhileReadRuns: Scenario = {
   phases: [
     {
       label: "the process dies while the read runs",
-      events: [...opening(), stepStarted("a1"), called("a1", "call_1", "read", '{"path":"a.ts"}'), toolStarted("a1", "call_1")],
+      events: [...opening(), stepStarted("a1"), called("a1", "call_1", "read", '{"path":"a.ts"}'), toolStarted("a1", "call_1", "read")],
       expect: { ...crashedClaim, open: "a1" },
       rejects: [
         {
           event: settled("a1", "call_1", "not_started", NOT_STARTED),
           code: "invalid_transition",
           why: "a call that was started cannot be settled as not started",
+        },
+        {
+          event: settled("a1", "call_1", "effect_unknown", CRASH_EFFECT_UNKNOWN),
+          code: "invalid_transition",
+          why: "the start recorded effect class read, so recovery knows nothing can have changed",
         },
       ],
     },
@@ -120,7 +126,7 @@ export const crashWhileSideEffectRuns: Scenario = {
         stepStarted("a1"),
         called("a1", "call_1", "shell", '{"command":"bun run migrate"}'),
         called("a1", "call_2", "read", '{"path":"schema.sql"}'),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "shell"),
       ],
       expect: { ...crashedClaim, ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 shell running", "call_2 read pending"] }] },
     },
@@ -159,6 +165,46 @@ export const crashWhileSideEffectRuns: Scenario = {
   ],
 }
 
+export const crashOfToolTheRegistryLost: Scenario = {
+  title: "The process dies while a tool runs that the next build no longer has",
+  description:
+    "A `fetch` tool that talks to the network had started when the process died, and the build that starts next has no tool of that name (an upgrade renamed it). Its registry cannot say whether the call had a side effect, and recovery never asks it: the effect class was recorded with `tool.started`. A `network` call whose outcome nobody observed settles as `effect_unknown`, whatever the tool is called today.",
+  provider: "step 1 finishes with one fetch call; the process is killed while it runs; the restarted build has no fetch tool",
+  phases: [
+    {
+      label: "the process dies while the request is in flight",
+      events: [
+        ...opening("Post the release notes."),
+        stepStarted("a1"),
+        called("a1", "call_1", "fetch", '{"url":"https://example.com/releases","method":"POST"}'),
+        toolStartedAs("a1", "call_1", "network"),
+      ],
+      expect: { ...crashedClaim, ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 fetch running"] }] },
+      rejects: [
+        {
+          event: settled("a1", "call_1", "not_started", NOT_STARTED),
+          code: "invalid_transition",
+          why: "the start is durable, so the request may have been sent",
+        },
+      ],
+    },
+    {
+      label: "at next start-up",
+      events: [
+        settled("a1", "call_1", "effect_unknown", CRASH_EFFECT_UNKNOWN),
+        stepCrashed("a1"),
+        interruptMarker("s1", "crash"),
+        executionResumed(),
+      ],
+      expect: {
+        ui: [{ id: "u1" }, { id: "a1", status: "failed", error: "crashed", calls: ["call_1 fetch effect_unknown"] }, { id: "s1" }],
+        history: ["u1", "a1", "s1"],
+        execution: { status: "running", resumes: 1 },
+      },
+    },
+  ],
+}
+
 export const crashAfterToolBeforeResult: Scenario = {
   title: "The process dies after a tool finished but before its result was written",
   description:
@@ -171,7 +217,7 @@ export const crashAfterToolBeforeResult: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "write", '{"path":"a.ts","content":"export const a = 2"}'),
-        toolStarted("a1", "call_1"),
+        toolStarted("a1", "call_1", "write"),
       ],
       expect: { ...crashedClaim, ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 write running"] }] },
     },
@@ -274,6 +320,7 @@ export const crashScenarios = [
   crashWhileStreaming,
   crashWhileReadRuns,
   crashWhileSideEffectRuns,
+  crashOfToolTheRegistryLost,
   crashAfterToolBeforeResult,
   crashBetweenSteps,
   crashBeforeRelease,

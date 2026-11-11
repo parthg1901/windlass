@@ -15,6 +15,7 @@ import {
 } from "../../src/message/message.ts"
 import { ReduceError, type ReduceErrorCode, reduce, reduceAll } from "../../src/message/reducer.ts"
 import { makeProviderError } from "../../src/provider/error.ts"
+import type { ToolEffect } from "../../src/tool/tool.ts"
 
 const m = (id: string) => id as MessageId
 const c = (id: string) => id as CallId
@@ -103,7 +104,8 @@ const reasoningEnded = (id: string, value: string) =>
   event("reasoning.ended", { messageId: m(id), text: value, providerData: { encrypted_content: "gAAAA" } })
 const called = (id: string, callId: string, input = "{}") =>
   event("tool.called", { messageId: m(id), callId: c(callId), name: "read", input, providerData: null })
-const started = (id: string, callId: string) => event("tool.started", { messageId: m(id), callId: c(callId) })
+const started = (id: string, callId: string, effect: ToolEffect = "exec") =>
+  event("tool.started", { messageId: m(id), callId: c(callId), effect })
 const settled = (id: string, callId: string, outcome: ToolOutcome = "success", output = "ok") =>
   event("tool.settled", {
     messageId: m(id),
@@ -495,13 +497,30 @@ describe("tool-call state machine", () => {
   })
 
   test("a running call settles only as success, error or effect_unknown", () => {
+    for (const effect of ["write", "exec", "network"] as const)
+      for (const outcome of outcomes) {
+        const log = inStep()
+        log.apply(called("a1", "call_1"), started("a1", "call_1", effect))
+        expect(log.call("a1", "call_1").state).toEqual({ status: "running", effect })
+        const allowed = outcome !== "not_started"
+        expect(log.reject(settled("a1", "call_1", outcome))).toBe(allowed ? "accepted" : "invalid_transition")
+      }
+  })
+
+  test("a running read-only call has no unknown effect: it settles only as success or error", () => {
     for (const outcome of outcomes) {
       const log = inStep()
-      log.apply(called("a1", "call_1"), started("a1", "call_1"))
-      expect(log.call("a1", "call_1").state).toEqual({ status: "running" })
-      const allowed = outcome !== "not_started"
+      log.apply(called("a1", "call_1"), started("a1", "call_1", "read"))
+      const allowed = outcome === "success" || outcome === "error"
       expect(log.reject(settled("a1", "call_1", outcome))).toBe(allowed ? "accepted" : "invalid_transition")
     }
+  })
+
+  test("the effect class comes from tool.started, not from the tool's name", () => {
+    const log = inStep()
+    // `called` names the tool "read"; what counts is the class the start recorded.
+    log.apply(called("a1", "call_1"), started("a1", "call_1", "network"))
+    expect(log.reject(settled("a1", "call_1", "effect_unknown"))).toBe("accepted")
   })
 
   test("a call settles exactly once and cannot restart", () => {
