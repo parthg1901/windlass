@@ -57,7 +57,7 @@ export function bwrapArgv(policy: SandboxPolicy, command: readonly string[], cwd
       return real ? ["--bind", real, real] : []
     }),
     // Last, so they cover anything above, including paths inside writable roots.
-    ...policy.hiddenPaths.flatMap((path) => hideArgs(path, options)),
+    ...outermost(policy.hiddenPaths.map(existingRealpath).filter((path) => path !== null)).flatMap((path) => hideArgs(path, options)),
     "--chdir",
     cwd,
   ]
@@ -79,11 +79,15 @@ function readArgs(policy: SandboxPolicy) {
 }
 
 /** A directory becomes an empty mode-000 tmpfs; anything else (file, socket) is covered by the mode-000 mask file. */
-function hideArgs(path: string, options: BwrapOptions) {
-  const real = existingRealpath(path)
-  if (!real) return []
+function hideArgs(real: string, options: BwrapOptions) {
   if (statSync(real).isDirectory()) return ["--perms", "0000", "--tmpfs", real]
   return ["--ro-bind", options.maskFile ?? processMaskFile(), real]
+}
+
+/** Drops duplicates and paths inside another hidden path: mounting them would recreate their parents inside the mask. */
+function outermost(paths: string[]) {
+  const unique = [...new Set(paths)]
+  return unique.filter((path) => !unique.some((other) => other !== path && (path.startsWith(`${other}/`) || other === "/")))
 }
 
 let maskFile: string | null = null
