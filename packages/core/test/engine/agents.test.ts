@@ -327,7 +327,9 @@ describe("what an agent's session keeps", () => {
       expect(h.session.projection().session.agent).toEqual(record)
       h.session.send("Three: write it.")
       await h.settled()
-      expect(denials(h).at(-1)!.data).toMatchObject({ reason: "policy", agent: "reviewer", stop: false })
+      // The record says why in fields, so a client words the refusal without knowing the tools: the rule, the call's effect class, a sentence.
+      expect(denials(h).at(-1)!.data).toMatchObject({ reason: "policy", agent: "reviewer", stop: false, refusal: { rule: "effect", effect: "write", text: 'The agent "reviewer" may use only tools that read. "write" changes files.' } })
+      expect(h.session.projection().messages.flatMap((message) => (message.kind === "assistant" ? message.parts : [])).flatMap((part) => (part.type === "tool_call" && part.approval?.kind === "denied" ? [part.approval.refusal?.rule] : [])).at(-1)).toBe("effect")
       expect(h.tools.ran).toEqual([])
 
       // A fork inherits the agent with the history.

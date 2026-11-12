@@ -574,7 +574,7 @@ The user's answer to the question of this call: the choice, a note if they wrote
 
 Version 1.
 
-The call was refused without anyone being asked: by the policy (`policy`), or because it needed approval and nobody was present (`unattended`; `needs` is what it needed). `agent` is set when the policy that refused it is the restrictions of the agent the session runs as, and names that agent: they are checked before the approval layer, so `paths` is empty (nothing about the call was looked at) and `mode` is the mode in force then. `stop`: the run ends with it. The call's `tool.settled` follows in the same append, with the text the model sees.
+The call was refused without anyone being asked: by the policy (`policy`), or because it needed approval and nobody was present (`unattended`; `needs` is what it needed). `agent` is set when the policy that refused it is the restrictions of the agent the session runs as, and names that agent: they are checked before the approval layer, so `paths` is empty (nothing about the call was looked at) and `mode` is the mode in force then. `refusal` is set exactly then: which rule of the agent's refused the call (`rule`), the effect class the tool declares (`effect`), and a sentence for the user (`text`), so that a client shows the reason without knowing the tools. `stop`: the run ends with it. The call's `tool.settled` follows in the same append, with the text the model sees.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -587,6 +587,7 @@ The call was refused without anyone being asked: by the policy (`policy`), or be
 | `needs` | list of [storedNeed](#storedneed) | yes |
 | `stop` | boolean | yes |
 | `agent` | string, not empty | may be absent |
+| `refusal` | [agentRefusal](#agentrefusal) | may be absent |
 
 ### `taint.noticed`
 
@@ -1009,6 +1010,18 @@ What a session (or a child) runs as, as the log should store it: the definition 
 | `effort` | string, not empty, or `null` | yes |
 
 Declared in `packages/core/src/agents/use.ts`.
+
+### `agentRefusal`
+
+Why an agent's restrictions refused a call, as the log keeps it: the rule, the effect class the tool declares (for an MCP tool that is what the rule does not trust), and a sentence for the user. The model reads another sentence, the call's result.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `rule` | one of `"denied_tool"`, `"not_listed"`, `"effect"`, `"mcp_tool"` | yes |
+| `effect` | one of `"read"`, `"write"`, `"exec"`, `"network"` | yes |
+| `text` | string, not empty | yes |
+
+Declared in `packages/core/src/agents/restrictions.ts`.
 
 ### `blobRef`
 

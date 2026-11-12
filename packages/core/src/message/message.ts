@@ -6,6 +6,7 @@
  * Every type here is declared as a validator, because projection rows are
  * also read back from SQLite JSON.
  */
+import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
 import { choiceId, storedNeed, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
@@ -152,8 +153,8 @@ export const callApproval = variant("kind", {
     then: storedRunDecision,
     answer: nullable(object({ seq: integer(1), choice: choiceId, approve: boolean, note: nullable(string) })),
   }),
-  /** `agent`: the agent whose restrictions refused the call, when it was those and not the approval policy. */
-  denied: object({ kind: literal("denied"), seq: integer(1), reason: oneOf(["policy", "unattended"]), stop: boolean, agent: optional(nonEmptyString) }),
+  /** `agent`: the agent whose restrictions refused the call, when it was those and not the approval policy; `refusal` is then which rule, the call's effect class and a sentence for the user. */
+  denied: object({ kind: literal("denied"), seq: integer(1), reason: oneOf(["policy", "unattended"]), stop: boolean, agent: optional(nonEmptyString), refusal: optional(agentRefusal) }),
 })
 export type CallApproval = Infer<typeof callApproval>
 

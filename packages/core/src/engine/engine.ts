@@ -53,7 +53,7 @@ import type { AgentDefinition } from "../agents/discover.ts"
 import type { CommandDefinition } from "../commands/discover.ts"
 import { type BuiltinCommand, type CommandListing, type CommandLookup, listCommands, lookupCommand } from "../commands/lookup.ts"
 import { NO_AGENT } from "../agents/definition.ts"
-import { checkAgentCall, effectiveApprovalMode, unknownToolNames } from "../agents/restrictions.ts"
+import { type CallVerdict, checkAgentCall, effectiveApprovalMode, unknownToolNames } from "../agents/restrictions.ts"
 import { AGENT_KEY, type AgentRecord, agentRecordOf, agentSettings, agentSource, agentSwitch, childAgent, findAgent, resolveStartAgent } from "../agents/use.ts"
 import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
 import { type Grant, stampGrants } from "../approval/grants.ts"
@@ -3497,10 +3497,10 @@ class LiveSession implements EngineSession {
     // The agent the session runs as, as of this step: a switch is made at a boundary, never between two calls.
     const runsAs = before.session.agent ?? null
     /** A call the agent may not make: refused before anything about it is decided, and recorded as the agent's refusal. */
-    const refuseAsAgent = (call: ToolCallPart, agent: AgentRecord, reason: string) =>
+    const refuseAsAgent = (call: ToolCallPart, agent: AgentRecord, verdict: Extract<CallVerdict, { kind: "refuse" }>) =>
       this.write([
-        event("approval.denied", { messageId, callId: call.callId, mode: approvals === null ? "full" : this.policy().policy.mode, paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: agent.name }),
-        event("tool.settled", { messageId, callId: call.callId, outcome: "error", output: reason, truncation: null, attachments: [], display: null }),
+        event("approval.denied", { messageId, callId: call.callId, mode: approvals === null ? "full" : this.policy().policy.mode, paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: agent.name, refusal: verdict.refusal }),
+        event("tool.settled", { messageId, callId: call.callId, outcome: "error", output: verdict.reason, truncation: null, attachments: [], display: null }),
       ])
     const place = this.tempContext()
     // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it too.
@@ -3669,7 +3669,7 @@ class LiveSession implements EngineSession {
         // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
         if (runsAs !== null && effect !== undefined) {
           const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
-          if (verdict.kind === "refuse") return refuseAsAgent(call, runsAs, verdict.reason) && []
+          if (verdict.kind === "refuse") return refuseAsAgent(call, runsAs, verdict) && []
         }
         // A read changes nothing, and a tool nobody knows is refused before it could: both go at once. So does a
         // call that hands its work to a subagent: several of them in one response are meant to run side by side.

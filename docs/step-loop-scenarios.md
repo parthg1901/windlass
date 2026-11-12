@@ -3544,7 +3544,7 @@ A webhook wake-up fires with the body of the request in its message. The body is
 
 #### 102. A session starts as a read-only agent, and a write is refused with the reason
 
-The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, and the call's result is the sentence that says so and what to do instead. The model reads it and answers.
+The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, with which of its rules it was, the call's effect class and a sentence a client shows the user, and the call's result is the sentence that tells the model so and what to do instead. The model reads it and answers.
 
 *Provider:* step 1 calls write; step 2 answers.
 
@@ -3577,6 +3577,7 @@ The user starts the session as the agent `reviewer`, whose definition allows onl
 *The reducer rejects:*
 - after "the session is created as the agent, and its first baseline carries the agent's instructions": `agent.switched null` (invalid_transition). The baseline is frozen: from here a switch is announced by an instruction message.
 - after "the session is created as the agent, and its first baseline carries the agent's instructions": `approval.denied a1/call_1 policy` (invalid_transition). A call is refused by the restrictions of the agent the session runs as, and that is the reviewer.
+- after "the session is created as the agent, and its first baseline carries the agent's instructions": `approval.denied a1/call_1 policy` (invalid_transition). An agent's refusal says which of its rules refused the call, the call's effect class and a sentence for the user.
 
 #### 103. The user switches the agent in the middle of a session: an appended message, never a new baseline
 

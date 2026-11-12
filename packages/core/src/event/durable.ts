@@ -23,6 +23,7 @@
  * decoder for the old version, and converting old to new in `decodeEvent`.
  * Adding a value to an enum or adding a new event type needs no version bump.
  */
+import { agentRefusal } from "../agents/restrictions.ts"
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
 import { approvalMode } from "../approval/policy.ts"
@@ -795,7 +796,10 @@ export const durableEvents = {
    * policy that refused it is the restrictions of the agent the session runs
    * as, and names that agent: they are checked before the approval layer, so
    * `paths` is empty (nothing about the call was looked at) and `mode` is
-   * the mode in force then. `stop`: the run ends with it.
+   * the mode in force then. `refusal` is set exactly then: which rule of the
+   * agent's refused the call (`rule`), the effect class the tool declares
+   * (`effect`), and a sentence for the user (`text`), so that a client shows
+   * the reason without knowing the tools. `stop`: the run ends with it.
    * The call's `tool.settled` follows in the same append, with the text the
    * model sees.
    */
@@ -811,6 +815,7 @@ export const durableEvents = {
       needs: array(storedNeed),
       stop: boolean,
       agent: optional(nonEmptyString),
+      refusal: optional(agentRefusal),
     }),
   ),
   /**

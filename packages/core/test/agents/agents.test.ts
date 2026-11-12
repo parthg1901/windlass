@@ -269,6 +269,8 @@ describe("restrictions", () => {
     expect(refused).toEqual({
       kind: "refuse",
       reason: 'Not run: you are working as the agent "reviewer", which may use only tools that read. "edit" changes files. Carry on without it, or tell the user what you would need and why.',
+      // For the record: the rule, the call's effect class, and the same rule said about the agent, for the user.
+      refusal: { rule: "effect", effect: "write", text: 'The agent "reviewer" may use only tools that read. "edit" changes files.' },
     })
     expect(checkAgentCall(reviewer, { name: "shell", effect: "exec" }).kind).toBe("refuse")
     expect(checkAgentCall(reviewer, { name: "subagent", effect: "exec" }).kind).toBe("refuse")
@@ -277,6 +279,7 @@ describe("restrictions", () => {
   test("a denied tool is refused even when its effect is allowed; names compare ignoring case", () => {
     const verdict = checkAgentCall(reviewer, { name: "Background_Output", effect: "read" })
     expect(verdict.kind === "refuse" && verdict.reason).toContain('may not use the tool "Background_Output"')
+    expect(verdict.kind === "refuse" && verdict.refusal).toEqual({ rule: "denied_tool", effect: "read", text: 'The agent "reviewer" may not use the tool "Background_Output".' })
   })
 
   test("an allowlist refuses every other tool and lists the allowed ones", () => {
@@ -284,12 +287,18 @@ describe("restrictions", () => {
     expect(checkAgentCall(agent, { name: "grep", effect: "read" }).kind).toBe("pass")
     const verdict = checkAgentCall(agent, { name: "glob", effect: "read" })
     expect(verdict.kind === "refuse" && verdict.reason).toContain("may use only these tools: Read, Grep")
+    expect(verdict.kind === "refuse" && verdict.refusal).toEqual({ rule: "not_listed", effect: "read", text: 'The agent "searcher" may use only these tools: Read, Grep. "glob" is not one of them.' })
   })
 
   test("an MCP tool's effect is not trusted: under an effects restriction it runs only when named", () => {
     const loose = { name: "r", restrictions: restrictionsOf("effects: read") }
     const verdict = checkAgentCall(loose, { name: "docs_search", effect: "read", origin: "mcp" })
     expect(verdict.kind === "refuse" && verdict.reason).toContain("comes from an MCP server")
+    expect(verdict.kind === "refuse" && verdict.refusal).toEqual({
+      rule: "mcp_tool",
+      effect: "read",
+      text: 'The agent "r" may use only tools that read. "docs_search" comes from an MCP server, so what it does cannot be known; such a tool runs under this agent only when the agent\'s definition names it in `tools`.',
+    })
     const named = { name: "r", restrictions: restrictionsOf("effects: read\ntools: read, docs_search") }
     expect(checkAgentCall(named, { name: "docs_search", effect: "network", origin: "mcp" }).kind).toBe("pass")
     expect(checkAgentCall({ name: "r", restrictions: NO_RESTRICTIONS }, { name: "docs_search", effect: "network", origin: "mcp" }).kind).toBe("pass")

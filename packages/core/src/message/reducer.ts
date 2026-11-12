@@ -839,7 +839,9 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         const agent = event.data.agent
         if (agent !== undefined && (event.data.reason !== "policy" || agent !== state.session.agent?.name))
           fail("invalid_transition", `a call is refused by the restrictions of the agent the session runs as, which is ${state.session.agent == null ? "none" : `"${state.session.agent.name}"`}`)
-        return { ...part, approval: { kind: "denied", seq: event.seq, reason: event.data.reason, stop: event.data.stop, ...(agent === undefined ? {} : { agent }) } }
+        const refusal = event.data.refusal
+        if ((agent === undefined) !== (refusal === undefined)) fail("invalid_transition", "an agent's refusal says which rule refused the call, and only an agent's refusal does")
+        return { ...part, approval: { kind: "denied", seq: event.seq, reason: event.data.reason, stop: event.data.stop, ...(agent === undefined ? {} : { agent }), ...(refusal === undefined ? {} : { refusal }) } }
       })
     case "taint.noticed": {
       const approval = state.session.approval ?? { grants: [], taint: null }

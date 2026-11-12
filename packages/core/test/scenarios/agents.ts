@@ -74,7 +74,7 @@ const refusedByAgent = (id: string, callId: string, agent: AgentRecord, tool: st
   const verdict = checkAgentCall(agent, { name: tool, effect })
   if (verdict.kind !== "refuse") throw new Error(`${agent.name} allows ${tool}`)
   return [
-    event("approval.denied", { messageId: m(id), callId: c(callId), mode: "full", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: agent.name }),
+    event("approval.denied", { messageId: m(id), callId: c(callId), mode: "full", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: agent.name, refusal: verdict.refusal }),
     settled(id, callId, "error", verdict.reason),
   ]
 }
@@ -85,7 +85,7 @@ export const WRITE_FIX = '{"path":"a.test.ts","content":"expect(add(1, 1)).toBe(
 export const startsAsAgent: Scenario = {
   title: "A session starts as a read-only agent, and a write is refused with the reason",
   description:
-    "The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, and the call's result is the sentence that says so and what to do instead. The model reads it and answers.",
+    "The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, with which of its rules it was, the call's effect class and a sentence a client shows the user, and the call's result is the sentence that tells the model so and what to do instead. The model reads it and answers.",
   provider: "step 1 calls write; step 2 answers",
   features: { agents: true },
   phases: [
@@ -96,9 +96,14 @@ export const startsAsAgent: Scenario = {
       rejects: [
         { event: switched(null, "reviewer", CAPTAIN), code: "invalid_transition", why: "the baseline is frozen: from here a switch is announced by an instruction message" },
         {
-          event: event("approval.denied", { messageId: m("a1"), callId: c("call_1"), mode: "full", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "captain" }),
+          event: event("approval.denied", { messageId: m("a1"), callId: c("call_1"), mode: "full", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "captain", refusal: { rule: "effect", effect: "write", text: 'The agent "captain" may use only tools that read. "write" changes files.' } }),
           code: "invalid_transition",
           why: "a call is refused by the restrictions of the agent the session runs as, and that is the reviewer",
+        },
+        {
+          event: event("approval.denied", { messageId: m("a1"), callId: c("call_1"), mode: "full", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer" }),
+          code: "invalid_transition",
+          why: "an agent's refusal says which of its rules refused the call, the call's effect class and a sentence for the user",
         },
       ],
     },

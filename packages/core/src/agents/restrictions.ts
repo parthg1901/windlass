@@ -12,7 +12,8 @@
  * comes from, can only take away from what the user's approval mode allows.
  * The approval mode itself can only be tightened (`effectiveApprovalMode`).
  */
-import type { ToolEffect } from "../tool/tool.ts"
+import { type ToolEffect, toolEffect } from "../tool/tool.ts"
+import { type Infer, nonEmptyString, object, oneOf } from "../validate.ts"
 import { APPROVAL_MODES, type AgentApprovalMode, type AgentRestrictions, EFFECTS } from "./definition.ts"
 
 /** The facts about a call the check needs: what the tool contract says about the tool called. */
@@ -23,7 +24,27 @@ export interface CallFacts {
   readonly origin?: "builtin" | "mcp"
 }
 
-export type CallVerdict = { readonly kind: "pass" } | { readonly kind: "refuse"; readonly reason: string }
+/**
+ * Which rule of an agent's restrictions refused a call.
+ * - `denied_tool`: the definition names the tool among the ones it may not use.
+ * - `not_listed`: the definition lists the tools it may use, and this is not one.
+ * - `effect`: the tool's effect class is not one the definition allows.
+ * - `mcp_tool`: the definition allows effect classes only, and the tool
+ *   comes from an MCP server, whose declared effect is not trusted.
+ */
+export const agentRule = oneOf(["denied_tool", "not_listed", "effect", "mcp_tool"])
+export type AgentRule = Infer<typeof agentRule>
+
+/**
+ * Why an agent's restrictions refused a call, as the log keeps it: the
+ * rule, the effect class the tool declares (for an MCP tool that is what
+ * the rule does not trust), and a sentence for the user. The model reads
+ * another sentence, the call's result.
+ */
+export const agentRefusal = object({ rule: agentRule, effect: toolEffect, text: nonEmptyString })
+export type AgentRefusal = Infer<typeof agentRefusal>
+
+export type CallVerdict = { readonly kind: "pass" } | { readonly kind: "refuse"; readonly reason: string; readonly refusal: AgentRefusal }
 
 export interface CheckOptions {
   /**
@@ -44,26 +65,41 @@ const DO: Readonly<Record<ToolEffect, string>> = { read: "read", write: "change 
 /**
  * Whether the agent lets the call go on to the approval layer. The reason of
  * a refusal is the text of the call's result: it names the agent, the rule,
- * and what the model can do instead.
+ * and what the model can do instead. `refusal` is the same rule for the
+ * record: which rule it was, the call's effect class, and a sentence about
+ * the agent for the user.
  */
 export function checkAgentCall(agent: { readonly name: string; readonly restrictions: AgentRestrictions }, call: CallFacts, options: CheckOptions = {}): CallVerdict {
   const r = agent.restrictions
   const wanted = call.name.toLowerCase()
   if ((options.exempt ?? []).some((name) => name.toLowerCase() === wanted)) return PASS
   const after = "Carry on without it, or tell the user what you would need and why."
+  // One rule in two voices: the result's text, to the model, which is the agent; and a sentence about the agent, for the user.
+  const working = `Not run: you are working as the agent "${agent.name}"`
+  const about = `The agent "${agent.name}"`
+  const refuse = (rule: AgentRule, reason: string, text: string): CallVerdict => ({ kind: "refuse", reason, refusal: { rule, effect: call.effect, text } })
   if (r.deniedTools.some((name) => name.toLowerCase() === wanted))
-    return { kind: "refuse", reason: `Not run: you are working as the agent "${agent.name}", which may not use the tool "${call.name}". ${after}` }
+    return refuse("denied_tool", `${working}, which may not use the tool "${call.name}". ${after}`, `${about} may not use the tool "${call.name}".`)
   const named = r.tools !== null && r.tools.some((name) => name.toLowerCase() === wanted)
   if (r.tools !== null && !named)
-    return { kind: "refuse", reason: `Not run: you are working as the agent "${agent.name}", which may use only these tools: ${r.tools.join(", ")}. "${call.name}" is not one of them. ${after}` }
+    return refuse(
+      "not_listed",
+      `${working}, which may use only these tools: ${r.tools.join(", ")}. "${call.name}" is not one of them. ${after}`,
+      `${about} may use only these tools: ${r.tools.join(", ")}. "${call.name}" is not one of them.`,
+    )
   if (r.effects !== null) {
     if (call.origin === "mcp" && !named)
-      return {
-        kind: "refuse",
-        reason: `Not run: you are working as the agent "${agent.name}", which may use only tools that ${allowedText(r.effects)}. "${call.name}" comes from an MCP server, so what it does cannot be known; such a tool runs under this agent only when its definition names it in \`tools\`. ${after}`,
-      }
+      return refuse(
+        "mcp_tool",
+        `${working}, which may use only tools that ${allowedText(r.effects)}. "${call.name}" comes from an MCP server, so what it does cannot be known; such a tool runs under this agent only when its definition names it in \`tools\`. ${after}`,
+        `${about} may use only tools that ${allowedText(r.effects)}. "${call.name}" comes from an MCP server, so what it does cannot be known; such a tool runs under this agent only when the agent's definition names it in \`tools\`.`,
+      )
     if (call.origin !== "mcp" && !r.effects.includes(call.effect))
-      return { kind: "refuse", reason: `Not run: you are working as the agent "${agent.name}", which may use only tools that ${allowedText(r.effects)}. "${call.name}" ${DOES[call.effect]}. ${after}` }
+      return refuse(
+        "effect",
+        `${working}, which may use only tools that ${allowedText(r.effects)}. "${call.name}" ${DOES[call.effect]}. ${after}`,
+        `${about} may use only tools that ${allowedText(r.effects)}. "${call.name}" ${DOES[call.effect]}.`,
+      )
   }
   return PASS
 }
