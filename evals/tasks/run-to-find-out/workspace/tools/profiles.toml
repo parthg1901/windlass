@@ -10,3 +10,8 @@ forbidden_prefixes = []
 max_qty = 500
 require_location = true
 forbidden_prefixes = ["TMP"]
+
+[ci-late]
+max_qty = 200
+require_location = true
+forbidden_prefixes = ["TMP", "OLD"]

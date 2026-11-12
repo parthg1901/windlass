@@ -5,6 +5,9 @@ stages:
     allow_failure: true
   - name: validate
     run: python3 tools/validate.py --profile ci data/
+  - name: validate-late
+    # Late arrivals are re-palletised by hand, so they get the stricter limits.
+    run: python3 tools/validate.py --profile ci-late data/late/
   - name: publish
     run: ./publish.sh data/
     only: main

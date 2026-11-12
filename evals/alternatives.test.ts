@@ -319,6 +319,15 @@ const MORE_CASES: Case[] = [
     },
     pass: false,
   },
+  {
+    task: "run-to-find-out",
+    name: "rejects data/late checked under the ci profile instead of ci-late",
+    change: async (dir) => {
+      const script = 'import json, sys\nfrom pathlib import Path\nsys.path.insert(0, "tools")\nfrom validate import Invalid, load_profile, validate_record\np = load_profile("ci")\nfor d in ["data", "data/late"]:\n    for f in sorted(Path(d).glob("*.json")):\n        r = json.loads(f.read_text())\n        try:\n            validate_record(r, p)\n        except Invalid:\n            print(r["id"])\n'
+      await write(dir, "rejected.txt", (await run(["python3", "-B", "-c", script], dir)).stdout)
+    },
+    pass: false,
+  },
 
   // audit-every-handler: auditing deleted rows after the loop is fine; auditing an update that changed nothing is not.
   {
