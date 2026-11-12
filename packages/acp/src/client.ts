@@ -138,6 +138,9 @@ export interface ConnectOptions {
   readonly updates?: boolean
 }
 
+/** How long a cancel waits for the server's interrupt before it answers a pending question `cancelled` anyway. */
+const CANCEL_ANSWER_MS = 1000
+
 /** How long a server may take to start and answer `initialize`. */
 export const START_TIMEOUT_MS = 20_000
 
@@ -373,8 +376,10 @@ export class HarnessConnection {
     if (this.stopping !== null) return new ClientError("the connection to the engine was closed", "closed")
     const data = errorData(error)
     const holder = typeof data?.holderPid === "number" ? data.holderPid : null
-    if (typeof data?.message === "string") return new ClientError(data.message, typeof data.reason === "string" ? data.reason : null, holder)
-    return new ClientError(describe(error), typeof data?.reason === "string" ? data.reason : null, holder)
+    // ACP's own "resource not found" carries no reason of the harness's.
+    const reason = typeof data?.reason === "string" ? data.reason : (error as { code?: unknown } | null)?.code === -32002 ? "session_not_found" : null
+    if (typeof data?.message === "string") return new ClientError(data.message, reason, holder)
+    return new ClientError(describe(error), reason, holder)
   }
 
   forget(sessionId: string): void {
@@ -432,6 +437,8 @@ export class ClientSession {
   private readonly listeners = new Set<(signal: SessionSignal) => void>()
   private readonly pendingAsks = new Set<AbortController>()
   private closing: Promise<void> | null = null
+  /** Answers the pending questions `cancelled`, once the cancel has reached the engine. */
+  private interrupted: (() => void) | null = null
   /** The session's config options as the server last reported them (model, effort, approval). */
   configOptions: readonly SessionConfigOption[] = []
   /** Answers tool-call approval questions; without one they are declined. `signal` aborts when the question is withdrawn (a cancel). */
@@ -478,6 +485,7 @@ export class ClientSession {
 
   push(item: EventItem): void {
     this.queue.push(item)
+    if (item.event.type === "execution.interrupt_requested" && !item.replay) this.interrupted?.()
   }
 
   signal(signal: SessionSignal): void {
@@ -507,8 +515,18 @@ export class ClientSession {
 
   /** `session/cancel`. A pending approval or hand-edit question is answered `cancelled` at once, as ACP asks. */
   cancel(): void {
-    for (const pending of this.pendingAsks) pending.abort()
-    if (this.link.gone) return
+    const abort = () => {
+      this.interrupted = null
+      for (const pending of this.pendingAsks) pending.abort()
+    }
+    if (this.link.gone || this.pendingAsks.size === 0) {
+      if (!this.link.gone) this.link.agent.notify(methods.agent.session.cancel, { sessionId: this.id }).catch(() => {})
+      return abort()
+    }
+    // The question is answered `cancelled` once the server has withdrawn it (its interrupt is in the log): answered
+    // sooner, the answer can overtake the cancel inside the server and be recorded as a refusal.
+    this.interrupted = abort
+    setTimeout(() => this.interrupted === abort && abort(), CANCEL_ANSWER_MS)
     this.link.agent.notify(methods.agent.session.cancel, { sessionId: this.id }).catch(() => {})
   }
 
@@ -586,6 +604,8 @@ export class ClientSession {
         const approver = this.approver
         if (approver === null) return { outcome: { outcome: "cancelled" } }
         const reply = await Promise.race([approver(approval, controller.signal).catch(() => null), cancelled])
+        // Backed out of with a cancel on its way (Ctrl-C): answered once the server has withdrawn the question.
+        if (reply === null && this.interrupted !== null) await cancelled
         if (reply === null || controller.signal.aborted) return { outcome: { outcome: "cancelled" } }
         return { outcome: { outcome: "selected", optionId: reply.choice }, ...(reply.note === undefined || reply.note === "" ? {} : { _meta: { [NS]: { note: reply.note } } }) }
       }

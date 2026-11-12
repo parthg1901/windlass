@@ -311,15 +311,17 @@ class ConnectionState {
     // event either is in the log read here or arrives after it, never both and never neither.
     const history = session.readEvents()
     const lastSeq = history.at(-1)?.seq ?? 0
-    const view = this.attach(session, cwd, lastSeq, changes, (translator) => {
-      // Without a replay the log is still folded, so the translator knows the model and the calls in it.
-      const outputs = translator.replay(history)
-      return replay ? outputs.filter((output) => output.type === "update" || (output.type === "ext" && output.method === EXT.turn)) : []
+    const view = this.attach(session, cwd, lastSeq, changes, (prime) => {
+      // Without a replay the log is still folded, so the translator knows the model and the calls in it. A
+      // full-fidelity client gets the log as it is, each event before what it translates to (a turn's ending after
+      // the turn): all of it on a load (marked as a replay up to this open), and on either the events this open
+      // appended, which are what a live session would have streamed.
+      for (const item of history) {
+        if (this.fidelity.events && (replay || item.seq > openedAt)) prime.queueEvent(item, item.seq <= openedAt)
+        const outputs = prime.translator.translate(item, true)
+        if (replay) prime.queueOutputs(outputs.filter((output) => output.type === "update" || (output.type === "ext" && output.method === EXT.turn)), true)
+      }
     })
-    // A full-fidelity client gets the log as it is: all of it on a load (marked as a replay up to this open), and on
-    // either the events this open appended, which are what a live session would have streamed.
-    if (this.fidelity.events)
-      for (const item of history) if (replay || item.seq > openedAt) view.queueEvent(item, item.seq <= openedAt)
     view.syncState(history)
     // As the command line does on --session and --continue: the model or effort named is switched to, durably.
     if (asked.model !== null || asked.effort !== null) {
@@ -767,9 +769,15 @@ class ConnectionState {
     if (this.views.get(view.session.id) === view) this.views.delete(view.session.id)
   }
 
-  private attach(session: EngineSession, cwd: string, fromSeq: number, changes: ReadonlyMap<string, readonly string[]>, prime?: (translator: Translator) => Output[]): SessionView {
+  private attach(
+    session: EngineSession,
+    cwd: string,
+    fromSeq: number,
+    changes: ReadonlyMap<string, readonly string[]>,
+    prime?: (view: SessionView) => void,
+  ): SessionView {
     const view = new SessionView(this, session, cwd, fromSeq, changes)
-    if (prime !== undefined) view.queueOutputs(prime(view.translator), true)
+    prime?.(view)
     view.listen()
     this.views.set(session.id, view)
     return view
