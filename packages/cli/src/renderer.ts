@@ -131,6 +131,13 @@ export class PrettyRenderer implements Sink {
   private checking: { readonly names: readonly string[]; readonly startedAt: number; progress: string | null } | null = null
   /** A failing run was reported to the model and its next step has not started: the line that says so is still owed. */
   private sentBack = 0
+  /**
+   * The spawned work that is running, by its ID: a subagent (with what was
+   * seen of it so far: its task, its steps and its tool calls) or a
+   * background command. A child's own events are not printed; they are
+   * counted, and the count is in the status line and on the line that ends it.
+   */
+  private readonly spawned = new Map<string, { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; title: string | null; steps: number; tools: number; asking: boolean }>()
 
   constructor(private readonly options: PrettyOptions) {}
 
@@ -205,6 +212,57 @@ export class PrettyRenderer implements Sink {
       case "checks.progress":
         if (this.checking !== null) this.checking.progress = event.text
         return
+      case "child.event":
+        return this.childEvent(event.spawnId, event.title, event.event)
+      case "spawn.started": {
+        const work = event.data.work
+        const where = [...(event.data.background ? ["in the background"] : []), ...(work.kind === "subagent" && work.worktree !== null ? ["in its own worktree"] : [])]
+        if (work.kind === "subagent") {
+          const label = `subagent ${shortId(work.sessionId)}`
+          this.spawned.set(event.data.spawnId, { kind: "subagent", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false })
+          this.line("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(` started${where.length === 0 ? "" : ` ${where.join(", ")}`}`, "dim")])
+        } else {
+          const label = `background ${event.data.spawnId}`
+          this.spawned.set(event.data.spawnId, { kind: "command", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false })
+          this.lineWithArg("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(" · ", "dim")], flatten(work.command), [])
+        }
+        return
+      }
+      case "spawn.ended": {
+        const known = this.spawned.get(event.data.spawnId)
+        this.spawned.delete(event.data.spawnId)
+        const { outcome, merge } = event.data
+        const label = known?.label ?? `background work ${event.data.spawnId}`
+        const failed = outcome === "failed" || (known?.kind === "command" && outcome === "completed" && event.data.exitCode !== 0)
+        const [symbol, tone] = outcome === "completed" ? (failed ? [SYMBOL.fail, "red" as const] : [SYMBOL.ok, "green" as const]) : outcome === "failed" ? [SYMBOL.fail, "red" as const] : outcome === "stopped" ? [SYMBOL.stop, "yellow" as const] : [SYMBOL.unknown, "yellow" as const]
+        const word = known?.kind === "command" ? (outcome === "completed" ? `exited with code ${event.data.exitCode}` : outcome) : outcome === "completed" ? "finished" : outcome
+        const counted = known?.kind === "subagent" && known.steps + known.tools > 0 ? `${plural(known.steps, "step")}, ${plural(known.tools, "tool call")}` : null
+        const tokens = event.data.usage === null ? null : `${compactTokens(event.data.usage.inputTokens + event.data.usage.outputTokens)} tokens`
+        const took = known === undefined ? null : formatDuration(event.time - known.startedAt)
+        this.line("info", [seg(`  ${symbol} `, tone), seg(label, "bold"), seg(` ${word}`, failed || outcome === "failed" ? "red" : undefined), seg(suffix([counted, tokens, took]), "dim")])
+        // Why, when it did not simply finish; and what became of its worktree.
+        if (outcome !== "completed" && known?.kind !== "command") for (const line of wrap(flatten(event.data.detail), this.width - 4)) this.line("info", [seg(`    ${line}`, "dim")])
+        if (merge !== null) {
+          if (merge.status === "merged") this.lineWithArg("info", [seg(`    merged ${plural(merge.files.length, "file")} into the workspace: `, "dim")], fileList(merge.files, 4), [])
+          else if (merge.status === "conflicts") {
+            this.lineWithArg("info", [seg(`    ${SYMBOL.unknown} not merged, conflicts in: `, "yellow")], fileList(merge.conflicts, 4), [])
+            this.uncut("info", `    its work is on branch ${merge.branch}; nothing was changed in the workspace`, "dim")
+          } else if (merge.kept) this.uncut("info", `    not merged; its work is on branch ${merge.branch}`, "dim")
+        }
+        if (event.data.tainted) this.line("info", [seg(`    ${SYMBOL.unknown} its result may carry untrusted content`, "yellow")])
+        return
+      }
+      case "replay.call":
+        return
+      case "replay.diverged":
+        this.line("info", [seg(`${SYMBOL.note} replay left its recording (${event.data.divergence.replaceAll("_", " ")}) · continuing in a copy`, "dim")])
+        this.uncut("info", `  ${event.data.workspace}`, "dim")
+        return
+      case "replay.ended": {
+        const outcome = event.data.outcome
+        this.line("info", [seg(`${outcome === "identical" ? SYMBOL.ok : outcome === "diverged" ? SYMBOL.unknown : SYMBOL.fail} `, outcome === "identical" ? "green" : outcome === "diverged" ? "yellow" : "red"), seg(`replay ${outcome}`), seg(` · ${flatten(event.data.reason)}`, "dim")])
+        return
+      }
       case "workspace.changes":
         // The files this turn changed, right before its outcome line.
         this.lineWithArg("info", [seg(`${SYMBOL.note} changed ${plural(event.files.length, "file")}: `, "dim")], fileList(event.files, 6), [])
@@ -706,10 +764,38 @@ export class PrettyRenderer implements Sink {
     }
   }
 
+  /**
+   * Something happened in a subagent. Its events are counted, not printed:
+   * the task is said once, a question it asks is said (it waits for the
+   * user), and the rest shows as a running count in the status line and on
+   * the line that ends it.
+   */
+  private childEvent(spawnId: string, title: string, event: EngineEvent): void {
+    const child = this.spawned.get(spawnId)
+    if (child === undefined) return
+    if (child.title === null) {
+      child.title = title
+      this.lineWithArg("info", [seg(`    ${child.label}: `, "dim")], flatten(title), [])
+    }
+    if (event.type === "step.ended") child.steps += 1
+    if (event.type === "tool.called") child.tools += 1
+    if (event.type === "approval.requested") {
+      child.asking = true
+      // A question waits for the user: it is wrapped, never cut.
+      wrap(`? ${child.label} asks: ${flatten(event.data.question.title)}`, this.width - 6).forEach((line, index) => this.line("info", [seg(`    ${index === 0 ? "" : "  "}${line}`, "yellow")]))
+    }
+    if (event.type === "approval.answered" || event.type === "tool.settled" || event.type === "step.failed") child.asking = false
+  }
+
   private enqueued(data: EventData<"inbox.enqueued">): void {
     const text = data.content.map((part) => (part.type === "text" ? part.text : "[image]")).join("")
     const midTurn = this.executing
     this.inbox.set(data.messageId, { text, delivery: data.delivery, midTurn, origin: data.origin })
+    // The end of spawned work was just said on its own line; what the model is sent about it is that line's detail.
+    if (data.origin === "background_command" || data.origin === "subagent_result" || data.origin === "spawn_lost") {
+      this.line("info", [seg(`  ${SYMBOL.inbox} `, "magenta"), seg(midTurn ? "its result is sent to the agent after the current step" : "its result is sent to the agent, which carries on", "dim")])
+      return
+    }
     if (data.origin !== null) {
       this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg(`${data.origin}: `, "dim"), seg(quote(text))])
       return
@@ -874,6 +960,13 @@ export class PrettyRenderer implements Sink {
       const what = this.running.size > 1 ? `${this.running.size} tools running` : `running ${call?.name ?? "tool"} ${call?.arg ?? ""}`.trimEnd()
       return `⋯ ${what}${tail}`
     }
+    // Subagents at work: what each has done so far, in one line.
+    const children = [...this.spawned.values()].filter((entry) => entry.kind === "subagent")
+    if (children.length > 0 && this.stop !== "shown") {
+      const asking = children.find((entry) => entry.asking)
+      if (asking !== undefined) return `? ${asking.label} waits for your answer · Ctrl-C stops the turn`
+      return `⋯ ${children.map((entry) => `${entry.label}: ${plural(entry.steps, "step")}, ${plural(entry.tools, "tool")}`).join(" · ")}`
+    }
     if (this.checking !== null) {
       const tail = this.checking.progress?.split("\n").filter((line) => line.trim() !== "").at(-1)
       const what = this.stop === "shown" ? "waiting for the checks to stop" : `running ${this.checking.names.length === 1 ? "check" : "checks"}: ${this.checking.names.join(", ")}`
@@ -1016,6 +1109,19 @@ function describeOutcome(name: string, data: EventData<"tool.settled">): { symbo
 function trimLeadingDot(tail: readonly Segment[], text: string): Segment[] {
   if (text !== "") return [...tail]
   return tail.map((part) => (part.text.startsWith(" · ") ? { ...part, text: part.text.slice(3) } : part))
+}
+
+/** A session ID short enough to say on a line: its prefix and the first eight characters after it. */
+function shortId(id: string): string {
+  const at = id.indexOf("_")
+  return at === -1 ? id.slice(0, 12) : id.slice(0, at + 9)
+}
+
+/** A token count as a person reads it: `940`, `12.3k`, `1.2M`. */
+function compactTokens(count: number): string {
+  if (count < 1000) return String(count)
+  if (count < 1_000_000) return `${(count / 1000).toFixed(count < 100_000 ? 1 : 0)}k`
+  return `${(count / 1_000_000).toFixed(1)}M`
 }
 
 function suffix(parts: readonly (string | null)[]): string {
