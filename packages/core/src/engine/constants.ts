@@ -157,8 +157,33 @@ export const NOTE_TEXT = {
 export const MANUAL_COMPACTION_TEXT = {
   nothingYet: "There is nothing to compact: the conversation has not started.",
   nothingToRemove: "There is nothing to compact: what is in the model's view is what the next request needs (the latest input, or a checkpoint and what followed it).",
-  tooSmall: (tokens: number, minimum: number) =>
-    `Not compacted: only about ${tokens.toLocaleString("en-US")} tokens of the conversation could be summarised, and a checkpoint takes about as much. A compaction is worth it from about ${minimum.toLocaleString("en-US")} tokens.`,
+  /** The whole conversation is within what a compaction keeps word for word for this model's window (`budget`), so there is no part to summarise. */
+  allRecent: (tokens: number, budget: number) =>
+    `There is nothing to compact yet: the whole conversation, about ${Math.round(tokens).toLocaleString("en-US")} tokens, is within what a compaction keeps word for word (up to about ${Math.round(budget).toLocaleString("en-US")} tokens with this model's context window). Ask again when the conversation has grown.`,
+  /**
+   * `tokens`: what is before the cut; `minimum`: from where a compaction is made. `kept` says what the rest is
+   * and why it stays word for word, so that the user knows what to do about it:
+   * - `recent`: the most recent part, within the `budget` a compaction keeps for this model's window;
+   * - `input`: input the model has not answered yet;
+   * - `response`: the model's last response with the results of its calls, which the next request answers;
+   * - `little`: there is no more: the conversation is short.
+   * `checkpoint`: how many of `tokens` are an earlier checkpoint (0: none).
+   */
+  tooSmall: (tokens: number, minimum: number, kept?: { readonly tokens: number; readonly why: "recent" | "input" | "response" | "little"; readonly budget: number; readonly checkpoint: number }) => {
+    const count = (value: number) => Math.round(value).toLocaleString("en-US")
+    const rest =
+      kept === undefined
+        ? ""
+        : kept.why === "little"
+          ? ` The conversation is short: about ${count(tokens + kept.tokens)} tokens in all.`
+          : kept.why === "recent"
+            ? ` The other ${count(kept.tokens)} tokens are the most recent part of the conversation, which a compaction keeps word for word (up to about ${count(kept.budget)} tokens with this model's context window), so there is nothing to gain yet: ask again when the conversation has grown.`
+            : kept.why === "input"
+              ? ` The other ${count(kept.tokens)} tokens are input the model has not answered yet, which is kept word for word: ask again after its answer.`
+              : ` The other ${count(kept.tokens)} tokens are the model's last response with the results of its calls, which is kept word for word because the next request answers it: ask again after the next turn.`
+    const earlier = kept === undefined || kept.checkpoint === 0 ? "" : ` (About ${count(kept.checkpoint)} of them are an earlier checkpoint, which is a summary already.)`
+    return `Not compacted: only about ${count(tokens)} tokens of the conversation could be summarised${earlier}, and a checkpoint takes about as much.${rest} A compaction is worth it from about ${minimum.toLocaleString("en-US")} tokens.`
+  },
   replay: "A replay session is not compacted.",
   reverting: "The session is being reverted; ask again when that is done.",
   closed: "The session was closed before the conversation could be compacted.",

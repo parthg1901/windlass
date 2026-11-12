@@ -778,7 +778,12 @@ is a new version with a decoder for the old one.
   the next turn is about to send a step. It resolves with the sizes before and after, or with `nothing` and the
   reason, and writes nothing, when there is nothing worth compacting: no conversation yet, only what the next
   request needs in view, or fewer than `manualCompactionMinTokens` (2,000) tokens to take out, which a checkpoint
-  would not undercut. A request that never reaches a boundary because the turn failed or was stopped first is
+  would not undercut. The answer then says what keeps the rest, in one sentence the user can act on: the
+  conversation's recent part is what a compaction keeps word for word anyway, with the size of that part for
+  the model's window (ask again when the conversation has grown); or the rest is input the model has not
+  answered, or its last response with the results of its calls, which the next request answers (ask again
+  after it); or the conversation is simply short. When the kept part holds the whole conversation it says that,
+  instead of that the next request needs all of it. A request that never reaches a boundary because the turn failed or was stopped first is
   answered with `failed`, never made later behind the user's back. The execution of an idle session's compaction
   is not a turn (`turnless` in `engine/state.ts`: nothing was said under its claim and nothing waits), and an
   interrupted one leaves nothing behind: the compaction fails as interrupted, no marker is left for the model, so

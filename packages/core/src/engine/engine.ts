@@ -73,7 +73,7 @@ import type { CheckConfig } from "../config/schema.ts"
 import { text } from "../content.ts"
 import { buildCheckpoint } from "../context/checkpoint.ts"
 import { IMAGE_RETIREMENT, retireImages, retirementSaves } from "../context/images.ts"
-import { ITEM_OVERHEAD, MEDIA_TOKENS, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool, estimatorMargin } from "../context/estimate.ts"
+import { ITEM_OVERHEAD, MEDIA_TOKENS, REQUEST_OVERHEAD, type SizeEstimate, estimateMessage, estimateNextInput, estimateTokens, estimateTool, estimatorMargin } from "../context/estimate.ts"
 import { HISTORY_READ, HISTORY_SEARCH } from "../context/history-tools.ts"
 import { type CompactionConfig, type CompactionDecision, DEFAULT_COMPACTION_CONFIG, decideAfterOverflow, decideCompaction, tailBudget } from "../context/policy.ts"
 import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPrompt, summaryRepairPrompt } from "../context/summary.ts"
@@ -2391,10 +2391,22 @@ class LiveSession implements EngineSession {
     const projection = this.projection()
     const prepared = this.prepare(projection, "auto")
     const budget = window === null ? 0 : this.aggressiveBudget(prepared, window)
-    const tail = chooseTail(selectModelHistory(projection).messages, { budget, mandatory: "always" })
-    if (tail.nothingToRemove) return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.nothingToRemove }
+    const view = selectModelHistory(projection).messages
+    const tail = chooseTail(view, { budget, mandatory: "always" })
+    // Nothing is before the cut: because the recent part a compaction keeps for this window holds all of it, or
+    // because all there is in view is what the next request needs (after an earlier checkpoint, say).
+    if (tail.nothingToRemove)
+      return { kind: "nothing", message: budget > 0 && !tail.overBudget && view[0]?.kind !== "compaction" ? MANUAL_COMPACTION_TEXT.allRecent(tail.keptTokens, budget) : MANUAL_COMPACTION_TEXT.nothingToRemove }
     const minimum = this.core.limits.manualCompactionMinTokens
-    if (tail.removedTokens < minimum) return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.tooSmall(Math.round(tail.removedTokens), minimum) }
+    if (tail.removedTokens < minimum) {
+      // What keeps the rest, so that the answer says more than a small number: the conversation is short; or its
+      // recent part fits what a compaction keeps word for word anyway; or it is what the next request has to answer.
+      const lastStep = view.findLastIndex((message) => message.kind === "assistant" && message.status !== "running" && message.status !== "refused" && message.parts.length > 0)
+      const unanswered = view.findLastIndex((message) => message.kind === "user" || (message.kind === "synthetic" && message.delivery !== null)) > lastStep
+      const why = tail.keptTokens < Math.max(minimum, 1) ? "little" : !tail.overBudget && budget > 0 ? "recent" : unanswered ? "input" : "response"
+      const checkpoint = view[0]?.kind === "compaction" ? estimateMessage(view[0]) : 0
+      return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.tooSmall(tail.removedTokens, minimum, { tokens: tail.keptTokens, why, budget, checkpoint }) }
+    }
     return { kind: "plan", plan: { trigger: "manual", mode: "normal", tailBudget: budget, tokensBefore: this.measure(prepared).total } }
   }
 
