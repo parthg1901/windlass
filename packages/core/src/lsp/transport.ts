@@ -176,6 +176,8 @@ export function openConnection(options: ConnectionOptions): Connection {
       await Promise.race([child.exited, Bun.sleep(graceMs)])
       await group.terminate()
       guard.release()
+      // After SIGKILL the process is gone in a moment; wait for it, so that a stopped registry has no live server.
+      await Promise.race([child.exited, Bun.sleep(graceMs)])
     })()
     return closing
   }
