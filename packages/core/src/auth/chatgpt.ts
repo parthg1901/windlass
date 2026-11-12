@@ -6,6 +6,7 @@
 // the callback. That issued ID, never the entrypoint, is used for token exchange,
 // refresh and later sign-ins.
 
+import { Database, SQLiteError } from "bun:sqlite"
 import type { webcrypto } from "node:crypto"
 import { chmod, mkdir, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -178,19 +179,59 @@ export async function finishLogin(callback: string, pending?: PendingLogin, conf
   return credentials
 }
 
-// One refresh at a time per process: refresh tokens rotate, so a second concurrent
-// refresh would present a token that the first one already consumed.
+// One refresh at a time, in this process and across processes: refresh tokens rotate, so a second
+// concurrent refresh would present a token that the first one already consumed.
 let refreshing: Promise<Credentials> | undefined
+
+const fresh = (credentials: Credentials) => credentials.expiresAt - Date.now() > REFRESH_MARGIN_MS
 
 /** Returns a usable access token, refreshing and saving the rotated tokens when needed. */
 export async function accessToken(config: AuthConfig = CHATGPT_AUTH): Promise<string> {
   const credentials = await loadCredentials(config)
   if (!credentials) throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
-  if (credentials.expiresAt - Date.now() > REFRESH_MARGIN_MS) return credentials.accessToken
-  refreshing ??= refresh(config, credentials).finally(() => {
+  if (fresh(credentials)) return credentials.accessToken
+  refreshing ??= refreshOnce(config).finally(() => {
     refreshing = undefined
   })
   return (await refreshing).accessToken
+}
+
+const REFRESH_LOCK_WAIT_MS = 30_000
+const REFRESH_LOCK_POLL_MS = 100
+
+/**
+ * Refreshes under `<data dir>/auth.lock`, an exclusive transaction on a SQLite database used only for that
+ * (the operating system drops it when the holder dies). Whoever waited for the lock reads the file again
+ * first: the process that held it has usually just saved the tokens this one needs.
+ */
+async function refreshOnce(config: AuthConfig): Promise<Credentials> {
+  await mkdir(config.dataDir(), { recursive: true, mode: 0o700 })
+  const lock = new Database(join(config.dataDir(), "auth.lock"), { create: true })
+  try {
+    lock.run("PRAGMA busy_timeout = 0")
+    const deadline = Date.now() + REFRESH_LOCK_WAIT_MS
+    for (;;) {
+      try {
+        lock.run("BEGIN EXCLUSIVE")
+        break
+      } catch (error) {
+        if (!(error instanceof SQLiteError && error.code?.startsWith("SQLITE_BUSY"))) throw error
+        if (Date.now() >= deadline)
+          throw new AuthError("refresh_locked", "Another process has been refreshing the sign-in for too long. Try again.")
+        await Bun.sleep(REFRESH_LOCK_POLL_MS)
+      }
+    }
+    try {
+      const credentials = await loadCredentials(config)
+      if (!credentials) throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
+      if (fresh(credentials)) return credentials
+      return await refresh(config, credentials)
+    } finally {
+      lock.run("ROLLBACK")
+    }
+  } finally {
+    lock.close()
+  }
 }
 
 async function refresh(config: AuthConfig, credentials: Credentials): Promise<Credentials> {
