@@ -10,6 +10,7 @@
  */
 import { type OptimizedBuffer, Renderable, type RenderContext } from "@opentui/core"
 import { truncate, width as textWidth, wrapLine, wrapText } from "./layout.ts"
+import { shorten } from "./panel.ts"
 import { type LayoutContext, gapBefore, isLive, layoutRow, pendingLines } from "./rows.ts"
 import { type Line, type Span, type Theme, span } from "./theme.ts"
 import { type Row, type Transcript, expandable } from "./transcript.ts"
@@ -427,18 +428,25 @@ export class Dialog extends Renderable {
     if (items.length === 0 && (spec.filterable || detail.length === 0)) drawLine(buffer, this.theme, x + 2, y + row, inner, [span(spec.filterable && this.filter !== "" ? "nothing matches" : "nothing to choose", "dim")])
     // What is said about each item starts in one column, after the longest name (of all the items, so the column
     // stays put while a filter narrows them); a name that would take more than half the row keeps its own.
-    const headOf = (item: DialogItem) => `${item.key === undefined ? "" : `[${item.key}] `}${item.label}${item.current === true ? " (current)" : ""}`
-    const column = Math.max(0, ...spec.items.filter((item) => item.detail !== undefined).map((item) => textWidth(headOf(item))).filter((w) => w <= Math.floor(inner / 2)))
+    // The column moves left when the longest detail would not fit after it; a name that then runs into the detail
+    // is shortened at a word: the detail (an ID, a model, an age) is what is compared, and is never cut.
+    const headOf = (item: DialogItem, label = item.label) => `${item.key === undefined ? "" : `[${item.key}] `}${label}${item.current === true ? " (current)" : ""}`
+    const detailed = spec.items.filter((item) => item.detail !== undefined)
+    const longestDetail = Math.max(0, ...detailed.map((item) => textWidth(item.detail!)))
+    const heads = Math.max(0, ...detailed.map((item) => textWidth(headOf(item))).filter((w) => w <= Math.floor(inner / 2)))
+    const column = inner - 4 - longestDetail >= 16 ? Math.min(heads, inner - 4 - longestDetail) : heads
     for (let index = first; index < first + visible; index += 1) {
       const item = items[index]!
       const chosen = index === this.index
       const keyLabel = item.key === undefined ? "" : `[${item.key}] `
+      const room = item.detail === undefined ? Infinity : inner - 4 - textWidth(item.detail) - (textWidth(headOf(item)) - textWidth(item.label))
+      const label = textWidth(item.label) > room && room >= 12 ? shorten(item.label, room) : item.label
       const line: Span[] = [
         span(chosen ? "› " : "  ", "accent"),
         span(keyLabel, "dim"),
-        span(item.label, chosen ? "selected" : undefined, { bold: chosen }),
+        span(label, chosen ? "selected" : undefined, { bold: chosen }),
         span(item.current === true ? " (current)" : "", "dim"),
-        span(item.detail === undefined ? "" : `${" ".repeat(Math.max(0, column - textWidth(headOf(item))))}  ${item.detail}`, "dim"),
+        span(item.detail === undefined ? "" : `${" ".repeat(Math.max(0, column - textWidth(headOf(item, label))))}  ${item.detail}`, "dim"),
       ]
       drawLine(buffer, this.theme, x + 2, y + row++, inner, line)
     }

@@ -991,6 +991,8 @@ export class App {
       return this.say(`could not list the sessions: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
     const current = this.session?.id ?? null
+    // The dialog's inner width (see `Dialog`): at most 120 columns, two less than the screen.
+    const sessionsInner = Math.max(20, Math.min(this.renderer.width - 2, 120)) - 4
     const answer = await this.dialog.show({
       title: `Sessions in ${truncate(this.options.cwd, 40)}`,
       detail: sessions.length === 0 ? [[span("No session yet in this directory.", "dim")]] : [],
@@ -1000,16 +1002,20 @@ export class App {
           id: row.id,
           // The ID first and long enough to tell a fork from its parent, which shares its title; a fork says so, and where it works when that is elsewhere.
           label: `${row.forkedFrom == null ? "" : "⑂ "}${row.title === null ? "(untitled)" : shorten(row.title, 34)}`,
-          detail: [
-            row.id.slice(0, 16),
-            row.forkedFrom == null ? null : `fork of ${row.forkedFrom.slice(0, 12)}`,
-            row.cwd === this.options.cwd ? null : `in ${middle(tilde(row.cwd, this.options.home), 30)}`,
-            ago(this.now() - row.updatedAt),
-            `${row.model}${row.effort === null ? "" : ` ${row.effort}`}`,
-            row.archived ? "archived" : null,
-          ]
-            .filter((part) => part !== null)
-            .join(" · "),
+          // What every row has comes first; a directory elsewhere is shortened in the middle to the room left,
+          // so the row fits the dialog beside a title of a few words.
+          detail: (() => {
+            const parts = [
+              row.id.slice(0, 16),
+              ago(this.now() - row.updatedAt),
+              `${row.model}${row.effort === null ? "" : ` ${row.effort}`}`,
+              row.archived ? "archived" : null,
+              row.forkedFrom == null ? null : `fork of ${row.forkedFrom.slice(0, 12)}`,
+            ].filter((part) => part !== null)
+            if (row.cwd === this.options.cwd) return parts.join(" · ")
+            const room = sessionsInner - 4 - 24 - textWidth(parts.join(" · ")) - 6
+            return [...parts, `in ${middle(tilde(row.cwd, this.options.home), Math.max(16, Math.min(40, room)))}`].join(" · ")
+          })(),
           current: row.id === current,
         })),
       ],

@@ -168,9 +168,29 @@ describe("forks", () => {
     mounted!.setup.mockInput.pressEnter()
     await mounted!.settle()
     const frame = flat(await mounted!.frame())
-    expect(frame).toContain("⑂ fix the login test (fork)")
-    expect(frame).toContain("ses_aaaa1111bbbb · fork of ses_aaaa9999 · in /data-work/work…bb2222cccc3333")
+    expect(frame).toContain("⑂ fix the login test")
+    // The directory elsewhere is shortened in the middle to the room the row has: its start and its end, whole.
+    expect(frame).toMatch(/ses_aaaa1111bbbb · just now · gpt-6-luna low · fork of ses_aaaa9999 · in \/data-\S*…\S*c3333 │/)
     expect(frame).toContain("ses_aaaa9999bbbb · 2 min ago")
+  })
+
+  test("/sessions never cuts what a row says about a session: a long title is shortened at a word instead", async () => {
+    const { backend } = await open(100, 30)
+    const now = mounted!.clock.now
+    Object.assign(backend, {
+      listSessions: async () => [
+        { id: "ses_aaaa1111bbbb2222cccc3333", title: "Explain why the login test fails on the second run", cwd: "/work", updatedAt: now - 1000, model: "gpt-6-luna", effort: "low", archived: false, forkedFrom: null },
+        { id: "ses_bbbb1111bbbb2222cccc3333", title: "a fork of it", cwd: "/elsewhere/a/long/path/to/a/copy", updatedAt: now - 120_000, model: "gpt-6-luna", effort: "medium", archived: false, forkedFrom: "ses_aaaa1111bbbb2222cccc3333" },
+      ],
+    })
+    await mounted!.setup.mockInput.typeText("/sessions")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    const rows = (await mounted!.frame()).split("\n")
+    expect(rows.some((row) => row.includes("ses_aaaa1111bbbb · just now · gpt-6-luna low"))).toBe(true)
+    expect(rows.some((row) => row.includes("· gpt-6-luna medium"))).toBe(true)
+    expect(rows.some((row) => /Explain why the login test\S*( \S+)*…/.test(row))).toBe(true)
+    expect(rows.find((row) => row.includes("ses_aaaa1111bbbb"))).toMatch(/gpt-6-luna low\s*│/)
   })
 
   test("/fork in a session without a turn is refused with a sentence", async () => {
