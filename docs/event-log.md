@@ -1025,6 +1025,13 @@ One of these, told apart by `kind`:
 | `kind` | `"tool"` | yes |
 | `tool` | string, not empty | yes |
 
+`kind: "records"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"records"` | yes |
+| `tool` | string, not empty | yes |
+
 Declared in `packages/core/src/approval/grants.ts`.
 
 ### `instructionDetail`
@@ -1414,6 +1421,13 @@ One of these, told apart by `kind`:
 | Field | Type | Required |
 | --- | --- | --- |
 | `kind` | `"tool"` | yes |
+| `tool` | string, not empty | yes |
+
+`kind: "records"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"records"` | yes |
 | `tool` | string, not empty | yes |
 
 Declared in `packages/core/src/approval/record.ts`.

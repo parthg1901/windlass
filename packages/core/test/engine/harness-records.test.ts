@@ -1,41 +1,26 @@
 /**
- * Known defect 2: `wake_cancel` and `memory_save` ask about a file.
+ * Tools that change only the harness's own records are not asked about as
+ * file writes.
  *
- * Observed: in the default mode `auto` they ask "Allow wake_cancel: writing
- * files? … The tool did not name a path that could be checked", and with
- * nobody present they are refused, while `wake_create` (an `exec` tool,
- * decided like a sandboxed command) runs. They change the harness's own
- * records (the wake store, the notes), not the workspace.
- *
- * The decision path: `engine.ts` `LiveSession.authorize` → `engine/approval.ts`
- * `callFacts` (the tool has no `touches`, so `paths` is `[]`) → `approval/decide.ts`
- * `decide` → `planCall` (effect `write`, mode not `full`) → `planWrite`:
- * `paths.length === 0` gives the need `{ kind: "write", path: null }`, which
- * no grant covers in `auto`; with nobody present `decide` returns `deny`
- * (`unattendedMessage`), and the engine writes `approval.denied` (`unattended`).
- *
- * RECOMMENDED (what these tests assert): a call that writes only the
- * harness's own records runs in `auto` and `full` without a question (it
- * cannot change the workspace or send anything out), and still asks in `ask`,
- * where every write asks. The smallest way there is a flag on the tool
- * (say `Tool.writes: "harness"`), passed through `callFacts` as a fact and
- * read by `planWrite`; the effect class stays `write`, so `effect_unknown`
- * after a crash and the snapshots around the step stay as they are.
- * ALTERNATIVES: a new effect class (changes the tool contract, the
- * `tool.started` schema, the reducer's `effect_unknown` rule and the taint
- * fold); or a path fact naming the harness's directory (the data directory
- * is a `hidden` place, and `planWrite` refuses writes to hidden paths
- * outright, so this would need a new place and would describe a store, not a
- * file the tool writes).
+ * `wake_cancel`, `memory_save` and `memory_retract` have the effect class
+ * `write` and name no path: they change the wake-up store and the notes,
+ * not the workspace. Each says so (`Tool.changes: "records"`), `callFacts`
+ * (`engine/approval.ts`) hands that to `decide` as a fact, and `planCall`
+ * (`approval/decide.ts`) reads it: such a call runs without a question in
+ * the modes `auto` and `full`, attended or not, and is asked about only in
+ * `ask`, where every change asks, as a change of the harness's records.
+ * The class stays `write`, so `effect_unknown` after a crash and the
+ * snapshots around the step stay as they are.
  */
 import { afterAll, describe, expect, test } from "bun:test"
+import { brand } from "../../src/brand.ts"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { Json } from "../../src/json.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
-import { Harness, type HarnessOptions, removeHarnessDirectories } from "../engine/harness.ts"
+import { Harness, type HarnessOptions, removeHarnessDirectories } from "./harness.ts"
 import { measured } from "../scenarios/script.ts"
 
 afterAll(removeHarnessDirectories)
@@ -66,8 +51,8 @@ async function withHarness(options: HarnessOptions, run: (h: Harness) => Promise
   }
 }
 
-describe("known defect 2: tools that write only the harness's own records ask about a file", () => {
-  test.failing("auto, nobody present: wake_create runs, and so does the wake_cancel of the wake-up it made", () =>
+describe("tools that change only the harness's own records", () => {
+  test("auto, nobody present: wake_create runs, and so does the wake_cancel of the wake-up it made", () =>
     withHarness({ approval: approval(), wake: {} }, async (h) => {
       h.provider.enqueue(
         [call("wake_create", { trigger: "after", seconds: 600, message: "Check the deploy." }), U],
@@ -83,13 +68,13 @@ describe("known defect 2: tools that write only the harness's own records ask ab
       const started = of(h, "tool.started").map((item) => item.data.effect)
       // wake_create is decided as a sandboxed command and runs.
       expect(started[0]).toBe("exec")
-      // The defect: wake_cancel is refused as unattended, asked about as a write without a checkable path.
+      // wake_cancel changes a record of the harness's own: it is not asked about as a write without a checkable path.
       expect(of(h, "approval.denied")).toEqual([])
       expect(of(h, "tool.settled").map((item) => item.data.outcome)).toEqual(["success", "success"])
       expect(h.engine.wake()!.store.list({ sessionId: h.session.id })).toEqual([])
     }))
 
-  test.failing("auto, nobody present: memory_save runs", () =>
+  test("auto, nobody present: memory_save runs", () =>
     withHarness({ approval: approval(), memory: {}, userConfig: { memory: { enabled: true } } }, async (h) => {
       h.provider.enqueue([call("memory_save", { text: "The deploy script is scripts/deploy-all.sh.", kind: "fact", scope: "project" }), U], answer("Saved."))
       h.create().send("Remember where the deploy script is: scripts/deploy-all.sh.")
@@ -98,16 +83,26 @@ describe("known defect 2: tools that write only the harness's own records ask ab
       expect(of(h, "tool.settled")[0]?.data.outcome).toBe("success")
     }))
 
-  // What the question says today, attended: the words of the report. Holds today; it documents the path, it is not the goal.
-  test("today, attended: the question is about writing files, and says no path could be checked", () =>
-    withHarness({ approval: approval(), wake: {}, attended: true }, async (h) => {
+  test("ask, attended: the question is about the harness's records, not about a file, and can be remembered for the tool", () =>
+    withHarness({ approval: approval({ user: { mode: "ask" } }), wake: {}, attended: true }, async (h) => {
       h.provider.enqueue([call("wake_cancel", { id: "wk_000000000000", reason: "not needed" }), U], answer("Done."))
       h.create().send("Cancel it.")
       const asked = (await h.seen((item) => item.type === "approval.requested")) as StoredEvent<"approval.requested">
-      expect(asked.data.needs).toEqual([{ kind: "write", path: null, root: null, protectedRoot: null }])
-      expect(asked.data.question.title).toBe("Allow wake_cancel: writing files?")
-      expect(asked.data.question.details).toContain("The tool did not name a path that could be checked.")
+      expect(asked.data.needs).toEqual([{ kind: "records", tool: "wake_cancel" }])
+      expect(asked.data.question.title).toBe(`Allow wake_cancel: changing ${brand.name}'s own records?`)
+      expect(asked.data.question.details.join("\n")).not.toContain("path")
+      expect(asked.data.question.choices.map((choice) => choice.id)).toEqual(["once", "session", "project", "deny"])
       h.session.interrupt()
       await h.settled()
+    }))
+
+  test("full, nobody present: wake_cancel runs, and its call is still recorded as a write", () =>
+    withHarness({ approval: approval({ user: { mode: "full" } }), wake: {} }, async (h) => {
+      h.provider.enqueue([call("wake_cancel", { id: "wk_000000000000", reason: "not needed" }), U], answer("There was none."))
+      h.create().send("Cancel it.")
+      await h.settled()
+      expect(of(h, "approval.denied")).toEqual([])
+      expect(of(h, "approval.requested")).toEqual([])
+      expect(of(h, "tool.started").map((item) => item.data.effect)).toEqual(["write"])
     }))
 })

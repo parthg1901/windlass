@@ -38,6 +38,8 @@ export type Need =
   | { readonly kind: "read-hidden"; readonly path: string }
   /** A network or MCP tool, by name. */
   | { readonly kind: "tool"; readonly tool: string }
+  /** `ask` mode: a tool that changes only the harness's own records (`Tool.changes`), by name. */
+  | { readonly kind: "records"; readonly tool: string }
 
 export const grantRule = variant("kind", {
   "exec-sandboxed": object({ kind: literal("exec-sandboxed") }),
@@ -46,6 +48,7 @@ export const grantRule = variant("kind", {
   "sandbox-write": object({ kind: literal("sandbox-write"), root: nonEmptyString }),
   write: object({ kind: literal("write"), root: nonEmptyString }),
   tool: object({ kind: literal("tool"), tool: nonEmptyString }),
+  records: object({ kind: literal("records"), tool: nonEmptyString }),
 })
 export type GrantRule = Infer<typeof grantRule>
 
@@ -80,7 +83,7 @@ export function isOutbound(need: Need | GrantRule): boolean {
 export function rememberableScopes(need: Need): readonly GrantScope[] {
   if (need.kind === "read-hidden") return []
   if (need.kind === "write") return need.root === null ? [] : ["session", "project"]
-  if (need.kind === "sandbox-write" || need.kind === "tool") return ["session", "project"]
+  if (need.kind === "sandbox-write" || need.kind === "tool" || need.kind === "records") return ["session", "project"]
   return ["session"]
 }
 
@@ -90,6 +93,7 @@ export function ruleFor(need: Need): GrantRule | null {
   if (need.kind === "write") return need.root === null ? null : { kind: "write", root: need.root }
   if (need.kind === "sandbox-write") return { kind: "sandbox-write", root: need.path }
   if (need.kind === "tool") return { kind: "tool", tool: need.tool }
+  if (need.kind === "records") return { kind: "records", tool: need.tool }
   return { kind: need.kind }
 }
 
@@ -120,6 +124,7 @@ function covers(rule: GrantRule, need: Need): boolean {
     )
   if (need.kind === "sandbox-write") return rule.kind === "sandbox-write" && isWithin(rule.root, need.path)
   if (need.kind === "tool") return rule.kind === "tool" && rule.tool === need.tool
+  if (need.kind === "records") return rule.kind === "records" && rule.tool === need.tool
   if (need.kind === "read-hidden") return false
   return rule.kind === need.kind
 }

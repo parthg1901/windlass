@@ -102,6 +102,8 @@ export function memorySaveTool(options: MemoryToolOptions): Tool<SaveInput> {
       additionalProperties: false,
     },
     effect: "write",
+    // The notes are the harness's own records: nothing in the workspace changes.
+    changes: "records",
     execute: async (input, context) => {
       const now = (options.now ?? (() => new Date()))()
       const userWords = input.userWords?.trim() || null
@@ -145,6 +147,8 @@ export function memoryRetractTool(options: MemoryToolOptions): Tool<RetractInput
       additionalProperties: false,
     },
     effect: "write",
+    // The notes are the harness's own records: nothing in the workspace changes.
+    changes: "records",
     execute: async (input, context) => {
       const now = (options.now ?? (() => new Date()))()
       const refused = (reason: string) => result("error", reason, { action: "retract", outcome: "refused", id: input.id })

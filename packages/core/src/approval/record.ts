@@ -34,6 +34,7 @@ export const storedNeed = variant("kind", {
   write: object({ kind: literal("write"), path: nullable(string), root: nullable(string), protectedRoot: nullable(string) }),
   "read-hidden": object({ kind: literal("read-hidden"), path: nonEmptyString }),
   tool: object({ kind: literal("tool"), tool: nonEmptyString }),
+  records: object({ kind: literal("records"), tool: nonEmptyString }),
 }) satisfies Validator<Need>
 
 export const storedRunDecision = variant("kind", {

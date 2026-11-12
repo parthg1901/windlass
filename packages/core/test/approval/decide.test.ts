@@ -19,6 +19,8 @@ const CASES: Record<string, CallFacts> = {
   exec: call({ tool: "shell", effect: "exec", command: "make test" }),
   "exec-net": call({ tool: "shell", effect: "exec", command: "npm install", escalation: { network: true, write: [] } }),
   net: call({ tool: "web_fetch", effect: "network" }),
+  // A write that changes only the harness's own records (`Tool.changes`): no path, no sandbox, nothing outbound.
+  records: call({ tool: "wake_cancel", effect: "write", changes: "records" }),
 }
 
 /** Every grant the cases could use, given at seq 5, before the taint at seq 10. */
@@ -29,6 +31,7 @@ const EARLY: Grant[] = [
   sessionGrant({ kind: "write", root: WS }, 5),
   sessionGrant({ kind: "write", root: "/o" }, 5),
   sessionGrant({ kind: "tool", tool: "web_fetch" }, 5),
+  sessionGrant({ kind: "records", tool: "wake_cancel" }, 5),
 ]
 
 // case       sandbox taint  grants | ask: present absent | auto: present absent | full: present absent
@@ -81,6 +84,14 @@ net        no  clean none   | A D | A D | R R
 net        no  clean early  | R R | R R | R R
 net        no  taint none   | A D | A D | A D
 net        no  taint early  | A D | A D | A D
+records    yes clean none   | A D | R R | R R
+records    yes clean early  | R R | R R | R R
+records    yes taint none   | A D | R R | R R
+records    yes taint early  | R R | R R | R R
+records    no  clean none   | A D | R R | R R
+records    no  clean early  | R R | R R | R R
+records    no  taint none   | A D | R R | R R
+records    no  taint early  | R R | R R | R R
 `
 
 const MODES: ApprovalMode[] = ["ask", "auto", "full"]
@@ -205,6 +216,29 @@ describe("paths", () => {
         stop: false,
       })
     }
+  })
+
+  test("a tool that changes only the harness's own records is asked about as that, in ask mode only, and can be remembered by name", () => {
+    const records = call({ tool: "memory_save", effect: "write", changes: "records" })
+    const ASK = { mode: "ask", unattended: "deny", taint: "enforce" } as const
+    expect(decide(input({ call: records })).kind).toBe("run")
+    expect(decide(input({ call: records, present: false, sandbox: { available: false, reason: "no bwrap" } })).kind).toBe("run")
+    const asked = ask(decide(input({ policy: ASK, call: records })))
+    expect(asked.needs).toEqual([{ kind: "records", tool: "memory_save" }])
+    expect(asked.question.title).toBe(`Allow memory_save: changing ${brand.name}'s own records?`)
+    expect(asked.question.details).toEqual([`It changes only what ${brand.name} keeps for itself (wake-ups, notes): no file of the workspace, and nothing is sent anywhere.`])
+    expect(asked.question.choices.map((choice) => [choice.id, choice.grants])).toEqual([
+      ["once", []],
+      ["session", [{ scope: "session", rule: { kind: "records", tool: "memory_save" } }]],
+      ["project", [{ scope: "project", rule: { kind: "records", tool: "memory_save" } }]],
+      ["deny", []],
+    ])
+    // The approval is for that tool: another one asks again.
+    const remembered = [sessionGrant({ kind: "records", tool: "memory_save" }, 5)]
+    expect(decide(input({ policy: ASK, call: records, grants: remembered })).kind).toBe("run")
+    expect(decide(input({ policy: ASK, call: call({ tool: "wake_cancel", effect: "write", changes: "records" }), grants: remembered })).kind).toBe("ask")
+    // An MCP server's tool is asked about by name whatever it declares.
+    expect(ask(decide(input({ call: { ...records, origin: "mcp" } }))).needs).toEqual([{ kind: "tool", tool: "memory_save" }])
   })
 
   test("a write tool that names no path, or a path that cannot be resolved, asks once only", () => {

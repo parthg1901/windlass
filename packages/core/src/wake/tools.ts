@@ -204,6 +204,8 @@ export function wakeCancelTool(options: WakeToolOptions): Tool<{ readonly id: st
       additionalProperties: false,
     },
     effect: "write",
+    // The wake-up store is the harness's own: nothing in the workspace changes.
+    changes: "records",
     execute: async (input, context) => {
       const cancelled = options.store(context).cancel(input.id.trim(), { by: "model", sessionId: context.sessionId, ...(input.reason === undefined ? {} : { reason: input.reason }) })
       if (!cancelled.ok) return result("error", cancelled.error, { action: "cancel", id: input.id })

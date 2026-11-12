@@ -33,6 +33,8 @@ export interface CallFacts {
   readonly command: string | null
   /** A shell call's `sandbox` argument, classified. */
   readonly escalation: Escalation | null
+  /** `records`: the call changes only the harness's own records, no file and nothing outside (`Tool.changes`). */
+  readonly changes?: "records"
   /** Facts about this call the question shows besides its own (`Tool.cautions`), one per line. */
   readonly cautions?: readonly string[]
 }
@@ -112,6 +114,9 @@ function planCall(input: DecisionInput, tainted: boolean): Plan {
       needs: call.paths.flatMap((path): Need[] => (path.place === "hidden" ? [{ kind: "read-hidden", path: path.real ?? path.given }] : [])),
     }
   }
+  // A write that changes only the harness's own records touches no file and sends nothing out: there is no path to
+  // check and nothing the sandbox would contain. Only the mode in which every change asks asks about it.
+  if (call.effect === "write" && call.changes === "records") return { run: RUN, needs: input.policy.mode === "ask" ? [{ kind: "records", tool: call.tool }] : [] }
   if (call.effect === "write") return full ? { run: RUN, needs: [] } : planWrite(input)
   return planExec(input, tainted)
 }
@@ -235,6 +240,7 @@ function detailsFor(input: DecisionInput, needs: readonly Need[], then: RunDecis
       return need.root === input.workspace ? [] : [`${need.path} is outside the workspace.`]
     }
     if (need.kind === "read-hidden") return [`${need.path} is in a credential store; what it reads is sent to the model provider.`]
+    if (need.kind === "records") return [`It changes only what ${brand.name} keeps for itself (wake-ups, notes): no file of the workspace, and nothing is sent anywhere.`]
     return input.call.origin === "mcp"
       ? ["MCP tools run outside the sandbox with your permissions; what it receives can leave this machine."]
       : ["It can send data from this conversation to the network."]

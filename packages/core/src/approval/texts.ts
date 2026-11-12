@@ -3,6 +3,7 @@
  * questions are built from. Short and factual: they say what happened and
  * what would be needed, nothing more.
  */
+import { brand } from "../brand.ts"
 import type { Need } from "./grants.ts"
 
 /** Refused by the policy, before anyone was asked. */
@@ -34,6 +35,7 @@ export function describeNeed(need: Need): string {
   if (need.kind === "sandbox-write") return `this command writing to ${need.path}`
   if (need.kind === "write") return need.path === null ? "writing files" : `writing ${need.path}`
   if (need.kind === "read-hidden") return `reading ${need.path}`
+  if (need.kind === "records") return `changing ${brand.name}'s own records`
   return `using ${need.tool}`
 }
 
@@ -45,6 +47,7 @@ export function describeRemembered(need: Need): string {
   if (need.kind === "sandbox-write") return `writes by sandboxed commands under ${need.path}`
   if (need.kind === "write") return `writes by file tools under ${need.root}`
   if (need.kind === "read-hidden") return `reading ${need.path}`
+  if (need.kind === "records") return `${need.tool} changing ${brand.name}'s own records`
   return `the tool ${need.tool}`
 }
 

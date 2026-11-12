@@ -238,6 +238,18 @@ export interface Tool<Input = Json> extends ToolSpec {
    */
   readonly subject?: (input: never) => string
   /**
+   * What a call can change, where that is less than its effect class says.
+   * `records`: only records the harness keeps for itself (the wake-up store,
+   * the notes of memory, which are in the project's harness directory only
+   * when the user's own configuration puts them there): no file the project
+   * works with, and nothing leaves the machine. The class stays `write`, so a crash is still `effect_unknown`
+   * and the step is still bracketed by snapshots; the approval layer reads
+   * this and does not treat the call as a file write: it runs without a
+   * question in the modes `auto` and `full`, and mode `ask` asks about it
+   * as what it is. Not part of the tool's spec.
+   */
+  readonly changes?: "records"
+  /**
    * What the user should know about a call with this input before approving
    * it, beyond what its class says: one fact per line, shown in the question
    * (a wake-up says that its command runs later, unattended, and how often).

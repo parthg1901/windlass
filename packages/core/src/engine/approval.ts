@@ -166,6 +166,8 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
       paths,
       command: tool.effect === "exec" && typeof record.command === "string" ? record.command : null,
       escalation,
+      // Only a built-in tool of class `write` is believed: an MCP server's tool is asked about by name whatever it says.
+      ...(tool.changes === "records" && tool.effect === "write" && (tool.origin ?? "builtin") === "builtin" ? { changes: "records" as const } : {}),
       ...(cautions.length === 0 ? {} : { cautions }),
     },
   }
