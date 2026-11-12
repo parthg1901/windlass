@@ -148,3 +148,14 @@ Reading a result:
 - Approvals of a project's MCP server are kept under `XDG_DATA_HOME`, so a fresh data directory asks again. A one-prompt run cannot approve: it prints how (`/mcp approve <name>` in an interactive run).
 - At a load average above 10 the killed-CLI subprocess test, the undo/redo test and the TUI crash test have each timed out and then passed alone. Re-run a failing file alone before treating it as a failure.
 
+## After the engine fixes (2026-11-12)
+
+- The store's schema version is 6: session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
+- A one-prompt run can search and call a tool of an untrusted MCP server with `--approval full`; only the call's result taints the session, the search does not.
+- `wake_cancel`, `memory_save` and `memory_retract` run unattended in `auto` and `full`; `ask` still asks.
+- A compaction's ending carries `calls`, the summary calls it took: count them with `bun evals/dogfood/events.ts <id> --type compaction.ended`. Model requests of a turn are its steps plus those calls.
+- A turn that did its work and then got two empty answers ends as done, with a `no_closing_answer` notice; with no work done it still fails.
+- A subagent's ending says `left_to_parent` for verification, not `not_configured`.
+- `evals/gate.test.ts` fails until the baseline is re-recorded on all 27 tasks.
+- Under load 15 or more, type-check a commit in a copy (`git archive <sha> | tar -x -C <dir>`) so edits can continue meanwhile.
+
