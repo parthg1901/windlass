@@ -165,7 +165,13 @@ export function childResult(events: readonly StoredEvent[]): ChildResult {
         if (item.data.finish !== "tool_calls" && said !== "") answer = said
         break
       }
-      case "step.failed":
+      case "step.failed": {
+        usage = addUsage(usage, item.data.usage)
+        // What a step that was cut short had said is still what the child last said.
+        const said = (texts.get(item.data.messageId) ?? []).join("").trim()
+        if (said !== "") lastWords = said
+        break
+      }
       case "step.refused":
       case "compaction.ended":
         usage = addUsage(usage, item.data.usage)

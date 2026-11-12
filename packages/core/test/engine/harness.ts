@@ -19,6 +19,9 @@ import type { Clock } from "../../src/engine/clock.ts"
 import type { CompactionConfig } from "../../src/context/policy.ts"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { EngineLimits } from "../../src/engine/constants.ts"
+import type { SpawnSettings } from "../../src/engine/spawn.ts"
+import type { ModelRequest } from "../../src/request/request.ts"
+import type { ScriptedResponse } from "../../src/testing/fake-provider.ts"
 import {
   type Diagnostic,
   type Engine,
@@ -335,6 +338,12 @@ export interface HarnessOptions {
   readonly approval?: ApprovalSetup
   /** Whether a person is there to answer questions, for the sessions this harness creates and opens. Default: nobody. */
   readonly attended?: boolean
+  /** Whether that person also answers the questions of the session's subagents. */
+  readonly attendedChildren?: boolean
+  /** Subagents and background work. Without it the engine offers none, as in every scenario that is not about them. */
+  readonly spawn?: Partial<SpawnSettings>
+  /** Writes a snapshot of the scripted workspace into a directory, for a fork with a copy and a replay that runs tools. */
+  readonly exportSnapshot?: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number }>
 }
 
 export class Harness {
@@ -360,7 +369,7 @@ export class Harness {
   toolNames: readonly string[]
   private readonly directory: string
   private readonly path: string
-  private readonly counters = { session: 0, message: 0, execution: 0, request: 0 }
+  private readonly counters = { session: 0, message: 0, execution: 0, request: 0, spawn: 0 }
   private probes: ((point: ProbePoint) => void)[] = []
   private waiters: { predicate: (event: EngineEvent) => boolean; resolve: (event: EngineEvent) => void }[] = []
   private alive = false
@@ -418,7 +427,10 @@ export class Harness {
         message: () => `msg_${++this.counters.message}` as MessageId,
         execution: () => `exe_${++this.counters.execution}` as ExecutionId,
         request: () => `req_${++this.counters.request}` as RequestId,
+        spawn: () => `bg_${++this.counters.spawn}`,
       },
+      ...(this.options.spawn === undefined ? {} : { spawn: this.options.spawn }),
+      ...(this.options.exportSnapshot === undefined ? {} : { exportSnapshot: this.options.exportSnapshot }),
       ...(this.options.refreshAuth === undefined ? {} : { refreshAuth: this.options.refreshAuth }),
       hooks: { probe: (point) => [...this.probes].forEach((probe) => probe(point)) },
       onDiagnostic: (diagnostic) => this.diagnostics.push(diagnostic),
@@ -456,7 +468,7 @@ export class Harness {
 
   private adopt(session: EngineSession): EngineSession {
     this.session = session
-    if (this.options.attended === true) session.setAttended(true)
+    if (this.options.attended === true) session.setAttended(true, { children: this.options.attendedChildren === true })
     session.subscribe((item) => {
       this.seenEvents.push(item)
       const ready = this.waiters.filter((waiter) => waiter.predicate(item))
@@ -540,6 +552,31 @@ export class Harness {
     this.store.close()
     this.alive = false
   }
+}
+
+/** The text of the first user message of a request: what tells one conversation from another when several call the model at once. */
+export function firstPrompt(request: ModelRequest): string {
+  const first = request.input.find((item) => item.type === "message" && item.role === "user")
+  return first?.type === "message" ? first.content.map((part) => (part.type === "text" ? part.text : "")).join("") : ""
+}
+
+/**
+ * Scripts the model per conversation, for tests in which a session and its
+ * subagents call it at the same time: each call takes the next response of
+ * the conversation whose first user message starts with one of the keys.
+ */
+export function converse(provider: FakeProvider, scripts: Record<string, readonly ScriptedResponse[]>): { readonly unused: () => number } {
+  const queues = new Map(Object.entries(scripts).map(([key, responses]) => [key, [...responses]]))
+  const total = [...queues.values()].reduce((sum, queue) => sum + queue.length, 0)
+  const next: ScriptedResponse = (request, callIndex) => {
+    const prompt = firstPrompt(request)
+    const key = [...queues.keys()].find((candidate) => prompt.startsWith(candidate))
+    const response = key === undefined ? undefined : queues.get(key)!.shift()
+    if (response === undefined) throw new Error(`the test scripted no response for this call of the conversation that starts ${JSON.stringify(prompt.slice(0, 60))}`)
+    return typeof response === "function" ? response(request, callIndex) : response
+  }
+  provider.enqueue(...Array.from({ length: total }, () => next))
+  return { unused: () => [...queues.values()].reduce((sum, queue) => sum + queue.length, 0) }
 }
 
 /**
