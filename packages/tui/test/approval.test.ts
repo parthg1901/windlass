@@ -383,6 +383,6 @@ describe("commands", () => {
     keys().pressEnter()
     await mounted.settle()
     const said = mounted.app.transcript.rows.flatMap((row) => (row.kind === "notice" ? [row.text.map((part) => part.text).join("")] : []))
-    expect(said.at(-1)).toBe("/rename is not available with this engine (script)")
+    expect(said.at(-1)).toBe("/rename is not available here: the engine this session runs on (script) does not offer it")
   })
 })

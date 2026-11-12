@@ -12,6 +12,7 @@ import type { Scenario } from "@windlass/core/testing/scenarios"
 export class DemoBackend implements Backend {
   readonly label: string
   readonly restartable = false
+  readonly demo = true
   onQuestion: QuestionHandler = async () => null
   onApproval: ApprovalHandler = async () => null
   onLog: (line: string, level: "warn" | "error" | "info") => void = () => {}

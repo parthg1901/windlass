@@ -178,6 +178,8 @@ export interface BackendSession {
 export interface Backend {
   /** Shown in the panel: how the engine is reached. */
   readonly label: string
+  /** A scripted demo: a recorded session replayed, with no model, files or stored sessions behind it. */
+  readonly demo?: boolean
   open(target: OpenTarget, cwd: string, settings: OpenSettings): Promise<BackendSession>
   listSessions?(cwd: string): Promise<SessionChoice[]>
   listModels?(): Promise<{ readonly defaultModel: string; readonly models: readonly ModelChoice[] }>

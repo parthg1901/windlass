@@ -34,6 +34,9 @@ import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable } from 
 import { forkPointOfTurn } from "@windlass/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
+/** What a demo offers in place of `/diff` and `/review`: its turn is a recording, with no real files behind it. */
+const DEMO_DIFFS = "Its turn changed no real file; Ctrl-O on the turn's ending row shows the diffs its tool calls reported"
+
 /** How long after a first Ctrl-C a second one exits instead of waiting for the stop. */
 export const DOUBLE_INTERRUPT_MS = 2000
 /** How long leaving waits for the session to close before it exits anyway. */
@@ -97,6 +100,8 @@ export class App {
   private lastInterrupt = 0
   /** The background commands the "still running" line was last said for, so a turn that ends with the same ones does not say it again. */
   private backgroundSaid = ""
+  /** A demo said once in full why a command does nothing in it; later answers are short. */
+  private demoExplained = false
   private leaving: Promise<number> | null = null
   private finish: ((code: number) => void) | null = null
   readonly done: Promise<number>
@@ -658,7 +663,7 @@ export class App {
    */
   private async stopCall(): Promise<void> {
     const session = this.session
-    if (session?.cancelCall === undefined) return this.say(`stopping one tool call is not available with this engine (${this.options.backend.label}); Ctrl-C stops the whole turn`, "warn")
+    if (session?.cancelCall === undefined) return this.unavailable("/stop", "Ctrl-C stops the whole turn")
     const row = this.stoppable()
     if (row === null) {
       const running = this.transcript.runningCalls().length
@@ -896,7 +901,7 @@ export class App {
   private async revert(undo: boolean): Promise<void> {
     const command = undo ? "/undo" : "/redo"
     const session = this.session
-    if (session?.revert === undefined || session.undoRevert === undefined) return this.say(`${command} is not available with this engine (${this.options.backend.label})`, "warn")
+    if (session?.revert === undefined || session.undoRevert === undefined) return this.unavailable(command)
     if (this.transcript.activity.executing) return this.say(`${command} works only while the agent is idle; stop it first (Ctrl-C)`, "warn")
     const act = (options: { dryRun?: boolean; handEdits?: "ask" | "abort" }) => (undo ? session.revert!(options) : session.undoRevert!(options))
     try {
@@ -937,7 +942,7 @@ export class App {
    */
   private async fork(rest: string): Promise<void> {
     const session = this.session
-    if (session?.fork === undefined) return this.say(`/fork is not available with this engine (${this.options.backend.label})`, "warn")
+    if (session?.fork === undefined) return this.unavailable("/fork")
     const words = rest.trim().toLowerCase().split(/\s+/).filter((word) => word !== "")
     const copy = words.includes("copy")
     const numbers = words.filter((word) => /^\d+$/.test(word))
@@ -979,7 +984,7 @@ export class App {
 
   private async pickSession(): Promise<void> {
     const backend = this.options.backend
-    if (backend.listSessions === undefined) return this.say(`listing sessions is not available with this engine (${backend.label})`, "warn")
+    if (backend.listSessions === undefined) return this.unavailable("/sessions")
     let sessions
     try {
       sessions = await backend.listSessions(this.options.cwd)
@@ -1021,7 +1026,7 @@ export class App {
   private async pickModel(): Promise<void> {
     const backend = this.options.backend
     const session = this.session
-    if (backend.listModels === undefined || session?.setConfig === undefined) return this.say(`choosing a model is not available with this engine (${backend.label})`, "warn")
+    if (backend.listModels === undefined || session?.setConfig === undefined) return this.unavailable("/model")
     let models: readonly ModelChoice[]
     try {
       models = (await backend.listModels()).models
@@ -1376,7 +1381,7 @@ export class App {
   private async featureCommand(name: "mcp" | "hooks" | "lsp" | "skills" | "wakeups" | "watch" | "memory" | "remember" | "forget", rest: string): Promise<void> {
     const session = this.session
     if (session === null) return this.say(`/${name} needs an open session`, "warn")
-    const missing = () => this.say(`/${name} is not available with this engine (${this.options.backend.label})`, "warn")
+    const missing = () => this.unavailable(`/${name}`)
     const words = rest.trim().split(/\s+/).filter((word) => word !== "")
     try {
       switch (name) {
@@ -1478,7 +1483,7 @@ export class App {
    * are shown once.
    */
   private async addWake(session: BackendSession, rest: string): Promise<void> {
-    if (session.createWake === undefined) return this.say(`/wakeups add is not available with this engine (${this.options.backend.label})`, "warn")
+    if (session.createWake === undefined) return this.unavailable("/wakeups add")
     if (rest.trim() === "") return this.showLines(wakeAddUsageLines())
     const entry = wakeAddEntry(rest, this.now())
     if ("problem" in entry) return this.say(entry.problem, "warn")
@@ -1532,7 +1537,7 @@ export class App {
   private async pickApproval(rest: string): Promise<void> {
     const session = this.session
     const choices = session?.configChoices?.("approval") ?? null
-    if (session?.setConfig === undefined || choices === null) return this.say("choosing the approval mode is not available with this engine", "warn")
+    if (session?.setConfig === undefined || choices === null) return this.unavailable("/approval")
     const current = this.approvalInfo?.mode ?? choices.current
     const named = rest.trim().toLowerCase()
     const chosen =
@@ -1566,7 +1571,7 @@ export class App {
   /** `/clear-taint`, after a confirmation that says what clearing means. */
   private async clearTaint(): Promise<void> {
     const session = this.session
-    if (session?.clearTaint === undefined) return this.say("/clear-taint is not available with this engine", "warn")
+    if (session?.clearTaint === undefined) return this.unavailable("/clear-taint")
     const taint = this.transcript.session.taint
     if (taint === null && this.approvalInfo?.tainted !== true) return this.say("there is nothing to clear: no untrusted content is in this conversation")
     const answer = await this.dialog.show({
@@ -1600,7 +1605,7 @@ export class App {
    */
   private async compact(rest: string): Promise<void> {
     const session = this.session
-    if (session?.compact === undefined) return this.say(`/compact is not available with this engine (${this.options.backend.label})`, "warn")
+    if (session?.compact === undefined) return this.unavailable("/compact")
     if (rest !== "") return this.say("/compact takes nothing after it", "warn")
     try {
       const said = compactText(await session.compact())
@@ -1617,7 +1622,7 @@ export class App {
    */
   private async pickAgent(rest: string): Promise<void> {
     const session = this.session
-    if (session?.agents === undefined || session.setConfig === undefined) return this.say(`choosing an agent is not available with this engine (${this.options.backend.label})`, "warn")
+    if (session?.agents === undefined || session.setConfig === undefined) return this.unavailable("/agent")
     let listed
     try {
       listed = await session.agents()
@@ -1668,7 +1673,7 @@ export class App {
   /** `/rename <title>`. */
   private async rename(title: string): Promise<void> {
     const session = this.session
-    if (session?.rename === undefined) return this.say(`/rename is not available with this engine (${this.options.backend.label})`, "warn")
+    if (session?.rename === undefined) return this.unavailable("/rename")
     if (title.trim() === "") return this.say("/rename needs a title, e.g. /rename fix the login test", "warn")
     try {
       this.transcript.session.title = await session.rename(title.trim())
@@ -1684,7 +1689,7 @@ export class App {
    */
   private async showDiff(): Promise<void> {
     const session = this.session
-    if (session?.diff === undefined) return this.say("per-file diffs are not available with this engine", "warn")
+    if (session?.diff === undefined) return this.unavailable("/diff", "", DEMO_DIFFS)
     const selected = this.conversation.selectedRow()
     // The server's diffs are of a whole run of work: a turn a queued message followed has only what its tool calls reported.
     if (selected?.kind === "outcome" && selected.continues) return this.say("the per-file diffs of a turn that a queued message followed are not kept apart from that message's turn: Ctrl-O on this row shows the diffs its tool calls reported", "warn")
@@ -1728,7 +1733,7 @@ export class App {
    */
   private async openReview(executionId: string | null = null): Promise<void> {
     const session = this.session
-    if (session?.diff === undefined) return this.say("reviewing a turn's changes is not available with this engine", "warn")
+    if (session?.diff === undefined) return this.unavailable("/review", "", DEMO_DIFFS)
     const delivery = () => (!this.transcript.activity.executing ? "sends it" : this.mode === "steer" ? "sends it into the running turn (steer)" : "queues it for after the running turn")
     const came = await this.review.run({ ...reviewTarget(this.transcript.rows, this.conversation.selectedRow(), executionId), sessionId: session.id, diff: (params) => session.diff!(params), delivery, asking: () => this.asking() })
     this.input.focus()
@@ -1862,6 +1867,20 @@ export class App {
 
   // ---------------------------------------------------------------- drawing
 
+  /**
+   * A command the engine behind this session does not offer. In a demo that is every command that needs a model, files
+   * or stored sessions: the answer says what a demo is and how to try the command for real (once in full, then in
+   * short), never "this engine", which a first-time user has no word for.
+   */
+  private unavailable(command: string, also = "", inDemo = also): void {
+    const backend = this.options.backend
+    if (backend.demo !== true) return this.say(`${command} is not available here: the engine this session runs on (${backend.label}) does not offer it${also === "" ? "" : `; ${also}`}`, "warn")
+    const more = inDemo === "" ? "" : ` ${inDemo}.`
+    const first = !this.demoExplained
+    this.demoExplained = true
+    this.say(first ? `${command} does nothing in a demo: a demo replays a recorded session and has no model, files or sessions of its own.${more} To try it for real, run ${brand.binary} tui in a project of yours (${brand.binary} login first).` : `${command} does nothing in a demo.${more}`, "warn")
+  }
+
   private say(text: string, tone: "dim" | "warn" | "error" = "dim"): void {
     this.transcript.note([span(text, tone === "dim" ? "dim" : tone)], tone, tone === "error" ? "✗" : tone === "warn" ? "!" : "·")
     this.redraw()
@@ -1911,7 +1930,7 @@ export class App {
   }
 
   private welcome(): string {
-    return this.options.suggest === undefined ? "Type a message and press Enter. /help lists keys and commands." : "Demo: the scripted prompt is in the input; press Enter to play it. /help lists keys."
+    return this.options.suggest === undefined ? "Type a message and press Enter. /help lists keys and commands." : "This is a demo: a recorded session, replayed without a model. Its prompt is in the input: press Enter to play it. /help lists keys."
   }
 
   private statusLine(columns: number): Span[] {

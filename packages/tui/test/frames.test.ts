@@ -5,6 +5,7 @@
  * read in them.
  */
 import { afterEach, describe, expect, test } from "bun:test"
+import { brand } from "@windlass/core"
 import { panelLines } from "../src/panel.ts"
 import { Theme } from "../src/theme.ts"
 import type { CallUsage } from "../src/transcript.ts"
@@ -130,6 +131,39 @@ describe("the usage panel", () => {
     expect(bars[2]).toContain("⚠")
     expect(bars[3]).toContain("C")
     expect(lines.at(-1)).toBe("⚠ diagnostic · C compaction")
+  })
+})
+
+describe("a command a demo cannot run", () => {
+  const run = async (command: string) => {
+    await mounted!.setup.mockInput.typeText(command)
+    await mounted!.settle()
+    mounted!.setup.mockInput.pressEscape()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+  }
+  const said = () => mounted!.app.transcript.rows.flatMap((row) => (row.kind === "notice" ? [row.text.map((part) => part.text).join("")] : []))
+
+  test("says what a demo is and how to try the command for real, once in full; /review and /diff say where the demo's diffs are", async () => {
+    await played("find-and-fix-a-failing-test", 120, 40)
+    await run("/review")
+    expect(said().at(-1)).toBe(
+      `/review does nothing in a demo: a demo replays a recorded session and has no model, files or sessions of its own. Its turn changed no real file; Ctrl-O on the turn's ending row shows the diffs its tool calls reported. To try it for real, run ${brand.binary} tui in a project of yours (${brand.binary} login first).`,
+    )
+    await run("/diff")
+    expect(said().at(-1)).toBe("/diff does nothing in a demo. Its turn changed no real file; Ctrl-O on the turn's ending row shows the diffs its tool calls reported.")
+    await run("/undo")
+    expect(said().at(-1)).toBe("/undo does nothing in a demo.")
+    await run("/sessions")
+    expect(said().at(-1)).toBe("/sessions does nothing in a demo.")
+    expect(said().join(" ")).not.toContain("this engine")
+  })
+
+  test("the first line of a demo says that it is one and what Enter does", async () => {
+    mounted = await mount({ width: 120, height: 30, scenario: "find-and-fix-a-failing-test" })
+    await mounted.settle()
+    expect((await mounted.frame()).replace(/\s*│[^\n]*/g, "").replace(/\s+/g, " ")).toContain("This is a demo: a recorded session, replayed without a model. Its prompt is in the input: press Enter to play it. /help lists keys.")
   })
 })
 
