@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { brand } from "../packages/core/src/brand.ts"
 import { parseEntryFile } from "../packages/core/src/memory/entry.ts"
+import { activeEntries } from "../packages/core/src/memory/hygiene.ts"
 import { memoryPaths, openMemoryStore } from "../packages/core/src/memory/store.ts"
 import { arrangeMemorySide, memoryTaskSource, notesOf } from "./memory-tasks/source.ts"
 import { TASKS_DIR, applySolution, grade, listTasks, loadTask, prepareWorkspace } from "./run-check.ts"
@@ -67,19 +68,23 @@ for (const id of memoryIds) {
       expect([before.pass, before.message.slice(0, 5), after.pass, after.message.slice(0, 3)]).toEqual([false, "fail:", true, "ok:"])
     }, 300_000)
 
-    test("its notes are valid project notes, found by the store once seeded, and in force today", async () => {
+    test("its notes are valid project notes, found by the store once seeded, and in force on the day of the run", async () => {
       const workspace = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
       const config = await mkdtemp(join(tmpdir(), "lh-eval-memory-config-"))
       dirs.push(workspace, config)
       await memoryTaskSource.prepare(id, workspace)
-      const env = await arrangeMemorySide("with", id, workspace, config)
-      expect(await Bun.file(join(env.XDG_CONFIG_HOME!, brand.directory, "config.json")).json()).toEqual({ memory: { enabled: true, inRepository: true } })
+      const now = new Date()
+      const arranged = await arrangeMemorySide("with", id, workspace, config, { XDG_DATA_HOME: join(config, "data") }, now)
+      expect(await Bun.file(join(arranged.env.XDG_CONFIG_HOME!, brand.directory, "config.json")).json()).toEqual({ memory: { enabled: true } })
       const notes = await notesOf(id)
       for (const note of notes) expect(parseEntryFile(await Bun.file(note).text(), note).scope).toBe("project")
-      const store = openMemoryStore({ paths: memoryPaths({ dataDir: join(config, "data"), projectDir: workspace, inRepository: true }), now: () => new Date("2026-11-12T12:00:00Z") })
+      const store = openMemoryStore({ paths: memoryPaths({ dataDir: join(config, "data", brand.directory), projectDir: workspace }), now: () => now })
       const loaded = await store.load()
       expect(loaded.problems).toEqual([])
       expect(loaded.entries.length).toBe(notes.length)
+      expect(activeEntries(loaded.entries, now).length).toBe(notes.length)
+      expect(await Bun.file(join(workspace, `.${brand.directory}`, "memory")).exists()).toBe(false)
+      await arranged.cleanup()
     }, 60_000)
   })
 }

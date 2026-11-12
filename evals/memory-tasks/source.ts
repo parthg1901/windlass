@@ -6,16 +6,20 @@
  *
  * `evals/run-agent.ts --memory with|without` reads its tasks from here and arranges each run (`arrangeMemorySide`):
  *
- * - `with`: a throwaway user configuration directory (`XDG_CONFIG_HOME`) whose `config.json` turns memory on with
- *   `inRepository`, and the task's notes copied into the workspace's `.<brand.directory>/memory/` after setup, so
- *   the session is given them as project notes. The sign-in and the session files stay in the data directory.
+ * - `with`: a throwaway user configuration directory (`XDG_CONFIG_HOME`) whose `config.json` turns memory on, and
+ *   the task's notes written where a user's project notes live by default: the agent's data directory, under
+ *   `memory/projects/<key of the workspace's project>/`, outside the workspace. The model is given them by delivery
+ *   and the memory tools only: no file listing, `git status` or grader sees them. They are re-dated on the way
+ *   (`redateNote`) and removed after the run (`cleanup`).
  * - `without`: the same kind of throwaway configuration with memory off, and no notes.
  *
  * Both sides get a configuration directory of their own, so a user file on the machine changes neither.
  */
-import { copyFile, mkdir, readdir } from "node:fs/promises"
+import { mkdir, readdir, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { brand } from "../../packages/core/src/brand.ts"
+import { findConfigFiles } from "../../packages/core/src/config/load.ts"
+import { defaultDataDir, memoryPaths } from "../../packages/core/src/memory/store.ts"
 import { lastLine, run } from "../grader.ts"
 import { type GradeResult, type Task, copyWorkspace } from "../run-check.ts"
 
@@ -89,19 +93,66 @@ export async function notesOf(id: string) {
 }
 
 /**
- * Arranges one run of a memory task: writes a user configuration under `configRoot` with memory on (`with`) or off
- * (`without`), seeds the task's notes into the prepared workspace on the `with` side, and returns the environment
- * the agent process needs.
+ * The notes in `memory/` are written as if today were this day. Seeding moves every date in a note's header by the
+ * time since then, so a note stays as old relative to the run as it was written (a note "from three weeks ago" is
+ * three weeks old whenever the comparison runs) and never lapses because the set was run late.
  */
-export async function arrangeMemorySide(side: MemorySide, id: string, workspace: string, configRoot: string): Promise<Record<string, string>> {
-  const memory = side === "with" ? { enabled: true, inRepository: true } : { enabled: false }
+export const NOTES_WRITTEN_AS_OF = "2026-11-12T12:00:00Z"
+
+/** A note's text with `created`, `confirmed` and a dated `expires` moved from `NOTES_WRITTEN_AS_OF` to `now`. */
+export function redateNote(text: string, now: Date): string {
+  const shift = now.getTime() - Date.parse(NOTES_WRITTEN_AS_OF)
+  const header = /^---\n[\s\S]*?\n---\n/.exec(text)
+  if (header === null) throw new Error("a note must start with a --- header")
+  const moved = header[0].replace(/^(created|confirmed|expires): (\S+)$/gm, (line, key: string, value: string) => {
+    if (key === "expires" && !/^\d{4}-\d{2}-\d{2}$/.test(value)) return line
+    const time = Date.parse(value)
+    if (Number.isNaN(time)) throw new Error(`a note's ${key} is not a date: ${value}`)
+    const iso = new Date(time + shift).toISOString()
+    return `${key}: ${key === "expires" ? iso.slice(0, 10) : iso.replace(/\.\d{3}Z$/, "Z")}`
+  })
+  return moved + text.slice(header[0].length)
+}
+
+export interface ArrangedSide {
+  /** What the agent process needs in its environment. */
+  readonly env: Record<string, string>
+  /** Where the notes were seeded (`with`), or `null`. */
+  readonly notesDir: string | null
+  /** Removes the seeded notes, and any the session saved beside them. */
+  readonly cleanup: () => Promise<void>
+}
+
+/**
+ * Arranges one run of a memory task: writes a user configuration under `configRoot` with memory on (`with`) or off
+ * (`without`) and, on the `with` side, seeds the task's notes as project notes of the prepared workspace in the data
+ * directory the agent will use (`agentEnv`'s `XDG_DATA_HOME`, or the default). Call it after setup, which may make
+ * the workspace a repository and so decide which directory is the project.
+ *
+ * Refused, rather than mixed in: user notes already in that data directory (they would be delivered too, and differ
+ * from one machine to the next), and a project notes directory that already exists (the runner removes only what it
+ * wrote).
+ */
+export async function arrangeMemorySide(side: MemorySide, id: string, workspace: string, configRoot: string, agentEnv: Readonly<Record<string, string | undefined>> = process.env, now = new Date()): Promise<ArrangedSide> {
+  const memory = { enabled: side === "with" }
   await Bun.write(join(configRoot, brand.directory, "config.json"), `${JSON.stringify({ memory }, null, 2)}\n`)
-  if (side === "with") {
-    const notes = await notesOf(id)
-    if (notes.length === 0) throw new Error(`memory-tasks/${id}/memory/ has no notes to seed`)
-    const target = join(workspace, `.${brand.directory}`, "memory")
-    await mkdir(target, { recursive: true })
-    for (const note of notes) await copyFile(note, join(target, note.split("/").at(-1)!))
+  const env = { XDG_CONFIG_HOME: configRoot }
+  if (side === "without") return { env, notesDir: null, cleanup: async () => {} }
+  const notes = await notesOf(id)
+  if (notes.length === 0) throw new Error(`memory-tasks/${id}/memory/ has no notes to seed`)
+  const { projectDir } = await findConfigFiles({ cwd: workspace, env: { ...agentEnv, ...env } })
+  const paths = memoryPaths({ dataDir: defaultDataDir(agentEnv), projectDir })
+  const userNotes = (await readdir(paths.user).catch(() => [] as string[])).filter((name) => name.endsWith(".md"))
+  if (userNotes.length > 0) throw new Error(`${paths.user} holds ${userNotes.length} user note(s), which would be delivered to the run too; use a data directory without user notes`)
+  const target = paths.project!
+  if (await stat(target).then(() => true, () => false)) throw new Error(`${target} already exists; the runner seeds only a directory it creates`)
+  const cleanup = () => rm(target, { recursive: true, force: true })
+  await mkdir(target, { recursive: true })
+  try {
+    for (const note of notes) await Bun.write(join(target, note.split("/").at(-1)!), redateNote(await Bun.file(note).text(), now))
+  } catch (error) {
+    await cleanup()
+    throw error
   }
-  return { XDG_CONFIG_HOME: configRoot }
+  return { env, notesDir: target, cleanup }
 }

@@ -9,7 +9,8 @@ import { classifySession, classifyTrace, prefixlensDir } from "./classify.ts"
 import { type RunOptions, computeMetrics, explainAnomalies, formatTable, parseRunnerArgs, runAgent, taskRunEnv } from "./run-agent.ts"
 import { TEST_CONTEXT_WINDOW_ENV } from "../packages/core/src/assembly.ts"
 import { brand } from "../packages/core/src/brand.ts"
-import { memoryTaskSource, notesOf } from "./memory-tasks/source.ts"
+import { NOTES_WRITTEN_AS_OF, arrangeMemorySide, memoryTaskSource, notesOf, redateNote } from "./memory-tasks/source.ts"
+import { projectKey } from "../packages/core/src/memory/store.ts"
 import { grade, prepareWorkspace } from "./run-check.ts"
 
 const STAND_IN = ["bun", join(import.meta.dir, "testing", "stand-in-agent.ts")]
@@ -482,21 +483,66 @@ describe("per-task run options and the memory A/B sides", () => {
     expect(await Bun.file(join(scratch.dir, "seen-plain")).text()).toBe("none\nwindow=unset\n")
   }, 60_000)
 
-  test("--memory with: memory on in the run's own configuration, the task's notes seeded in the workspace", async () => {
+  test("--memory with: memory on in the run's own configuration, the task's notes seeded outside the workspace and removed after", async () => {
     const id = (await memoryTaskSource.list())[0]!
-    const report = await run("nothing", { tasks: [id], memory: "with", keep: true, cli: spy("seen-with") })
+    const data = join(scratch.dir, "data")
+    // During the run: every note file under the agent's data directory, with its path and text.
+    const notesSpy = [
+      "sh",
+      "-c",
+      `find "$XDG_DATA_HOME/${brand.directory}/memory" -name '*.md' -type f | sort | while read -r f; do echo "== $f"; cat "$f"; done > "${join(scratch.dir, "seen-notes")}"; exec "$@"`,
+      "notes",
+      ...spy("seen-with"),
+    ]
+    const before = Date.now()
+    const report = await run("nothing", { tasks: [id], memory: "with", keep: true, cli: notesSpy })
     const result = report.results[0]!
     expect(report.memory).toBe("with")
     expect(result.status).toBe("failed")
     expect(result.reason).toStartWith("fail:")
-    expect(JSON.parse((await Bun.file(join(scratch.dir, "seen-with")).text()).split("\nwindow=")[0]!)).toEqual({ memory: { enabled: true, inRepository: true } })
+    expect(JSON.parse((await Bun.file(join(scratch.dir, "seen-with")).text()).split("\nwindow=")[0]!)).toEqual({ memory: { enabled: true } })
     const notes = await notesOf(id)
-    for (const note of notes) {
-      const seeded = Bun.file(join(result.workspace!, `.${brand.directory}`, "memory", note.split("/").at(-1)!))
-      expect(await seeded.text()).toBe(await Bun.file(note).text())
+    const seen = (await Bun.file(join(scratch.dir, "seen-notes")).text()).split(/^== /m).filter((part) => part !== "")
+    expect(seen.length).toBe(notes.length)
+    const projectDir = join(data, brand.directory, "memory", "projects", projectKey(result.workspace!))
+    for (const [index, note] of notes.entries()) {
+      const [path, ...text] = seen[index]!.split("\n")
+      expect(path).toBe(join(projectDir, note.split("/").at(-1)!))
+      // The same note, re-dated to the run: the body is unchanged and the created date has moved by the time since the notes were written.
+      const original = await Bun.file(note).text()
+      const seeded = text.join("\n")
+      expect(seeded.split("\n---\n").slice(1)).toEqual(original.split("\n---\n").slice(1))
+      const shift = Date.parse(/^created: (\S+)$/m.exec(seeded)![1]!) - Date.parse(/^created: (\S+)$/m.exec(original)![1]!)
+      expect(shift).toBeGreaterThanOrEqual(before - Date.parse(NOTES_WRITTEN_AS_OF) - 1000)
+      expect(shift).toBeLessThanOrEqual(Date.now() - Date.parse(NOTES_WRITTEN_AS_OF))
     }
+    expect(await Bun.file(join(result.workspace!, `.${brand.directory}`, "memory")).exists()).toBe(false)
+    expect(await readdir(projectDir).catch(() => "removed")).toBe("removed")
     await rm(join(result.workspace!, ".."), { recursive: true, force: true })
   }, 60_000)
+
+  test("--memory with refuses to mix in user notes or an existing notes directory", async () => {
+    const id = (await memoryTaskSource.list())[0]!
+    const data = join(scratch.dir, "data-with-user-notes")
+    await Bun.write(join(data, brand.directory, "memory", "user", "m_00000001.md"), "---\nid: m_00000001\nkind: preference\nscope: user\ncreated: 2026-11-01T00:00:00Z\n---\nShort answers.\n")
+    const report = await run("nothing", { tasks: [id], memory: "with" }, { XDG_DATA_HOME: data })
+    expect(report.results[0]!.status).toBe("error")
+    expect(report.results[0]!.reason).toContain("user note(s)")
+    const workspace = await mkdtemp(join(scratch.dir, "ws-"))
+    const config = await mkdtemp(join(scratch.dir, "cfg-"))
+    const env = { XDG_DATA_HOME: join(scratch.dir, "data-existing") }
+    const first = await arrangeMemorySide("with", id, workspace, config, env)
+    await expect(arrangeMemorySide("with", id, workspace, config, env)).rejects.toThrow("already exists")
+    await first.cleanup()
+    expect(await readdir(first.notesDir!).catch(() => "removed")).toBe("removed")
+  }, 60_000)
+
+  test("notes are re-dated relative to the run", () => {
+    const note = "---\nid: m_1\nkind: fact\nscope: project\ncreated: 2026-10-22T12:00:00Z\nconfirmed: 2026-11-02T12:00:00Z\nexpires: 2026-12-31\n---\ncreated: 2026-10-22T12:00:00Z stays in the body\n"
+    const later = new Date(Date.parse(NOTES_WRITTEN_AS_OF) + 100 * 86_400_000)
+    expect(redateNote(note, later)).toBe("---\nid: m_1\nkind: fact\nscope: project\ncreated: 2027-01-30T12:00:00Z\nconfirmed: 2027-02-10T12:00:00Z\nexpires: 2027-04-10\n---\ncreated: 2026-10-22T12:00:00Z stays in the body\n")
+    expect(redateNote(note.replace("expires: 2026-12-31", "expires: 90d"), new Date(NOTES_WRITTEN_AS_OF))).toBe(note.replace("expires: 2026-12-31", "expires: 90d"))
+  })
 
   test("--memory without: memory off in the run's own configuration, no notes", async () => {
     const id = (await memoryTaskSource.list())[0]!

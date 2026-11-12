@@ -289,11 +289,16 @@ async function runOne(task: Task, attempt: number, root: string, out: string, ba
   await mkdir(dir, { recursive: true })
   const source = base.memory === undefined ? GENERAL_TASKS : memoryTaskSource
   const extra: Record<string, string> = { ...taskRunEnv(task) }
+  let cleanupMemory = async () => {}
   const prepared = await source
     .prepare(task.id, dir)
     .then(async () => {
-      // The configuration sits beside the workspace, not in it, so a grader never sees it.
-      if (base.memory !== undefined) Object.assign(extra, await arrangeMemorySide(base.memory, task.id, dir, join(root, `${name}.config`)))
+      if (base.memory === undefined) return
+      // The configuration sits beside the workspace and the notes in the agent's data directory, not in the
+      // workspace, so neither the model's file tools nor a grader see them.
+      const arranged = await arrangeMemorySide(base.memory, task.id, dir, join(root, `${name}.config`), { ...process.env, ...base.env })
+      Object.assign(extra, arranged.env)
+      cleanupMemory = arranged.cleanup
     })
     .then(
       () => null,
@@ -301,6 +306,7 @@ async function runOne(task: Task, attempt: number, root: string, out: string, ba
     )
   const options: RunOptions = Object.keys(extra).length === 0 ? base : { ...base, env: { ...base.env, ...extra } }
   if (prepared !== null) {
+    await cleanupMemory()
     await Promise.all([Bun.write(eventsFile, ""), Bun.write(stderrFile, `${prepared}\n`)])
     if (!options.keep) await rm(dir, { recursive: true, force: true })
     const metrics = computeMetrics("", task.maxSteps)
@@ -329,7 +335,7 @@ async function runOne(task: Task, attempt: number, root: string, out: string, ba
     }
   }
 
-  const agent = await runTurns(task, dir, eventsFile, stderrFile, options)
+  const agent = await runTurns(task, dir, eventsFile, stderrFile, options).finally(() => cleanupMemory())
   const counted = computeMetrics(agent.stdout, task.maxSteps)
   const graded: GradeResult = await source.grade(task.id, dir).catch((error: unknown) => ({ pass: false, message: `grader error: ${String(error)}` }))
   if (!options.keep) await rm(dir, { recursive: true, force: true })
