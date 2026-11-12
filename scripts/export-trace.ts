@@ -29,6 +29,7 @@ import { parseArgs } from "node:util"
 import { brand } from "../packages/core/src/brand.ts"
 import { forkOf } from "../packages/core/src/event/durable.ts"
 import type { SessionId } from "../packages/core/src/id.ts"
+import type { BlobStore } from "../packages/core/src/store/blobs.ts"
 import { SESSIONS_DIRECTORY, openSessionDirectory } from "../packages/core/src/store/directory.ts"
 import { openSqliteStore } from "../packages/core/src/store/sqlite.ts"
 import { type SessionSummary, type Store, StoreError } from "../packages/core/src/store/store.ts"
@@ -114,6 +115,11 @@ interface Source {
  * The sessions of a data directory. A session is read from a copy: its file,
  * and the files of the sessions a fork inherits from, are each copied as one
  * consistent snapshot into a scratch data directory, which is then read.
+ * Media is not in a session's file but in the data directory's shared blob
+ * store, which the copy does not have: blobs are read from the live store
+ * (content-addressed and never changed, so reading them needs no snapshot).
+ * Without them a request with an image could not be encoded, and its call
+ * would be exported usage-only.
  */
 function fromDataDirectory(dataDir: string): Source {
   const live = openSessionDirectory({ dataDir })
@@ -137,9 +143,20 @@ function fromDataDirectory(dataDir: string): Source {
     resolve: (idOrPrefix) => live.resolve(idOrPrefix),
     read: (id, work) => {
       copy(id)
-      return copied.read(id, work)
+      return copied.read(id, (store) => work(withBlobsOf(store, live.blobs)))
     },
   }
+}
+
+/** `store`, with `getBlob` answered from `blobs`. */
+function withBlobsOf(store: Store, blobs: BlobStore): Store {
+  return new Proxy(store, {
+    get(target, key) {
+      if (key === "getBlob") return (hash: string) => blobs.get(hash)
+      const value = Reflect.get(target, key, target)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
 }
 
 /** A single database file that holds its sessions itself, read from one consistent copy. */
