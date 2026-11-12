@@ -1,4 +1,4 @@
-// Every environment variable is declared in ENV in src/config/env.ts (a default and a description) and read with
+// Every environment variable is declared in ENV in src/config/settings.ts (a default and a description) and read with
 // env(); docs/env.md, the page ops set variables from, is generated from that list (env.ts's header, mailer.ts,
 // queue.ts; sms.ts is an older module that reads process.env directly). Graded on the outcome: DIGEST_BATCH_SIZE is
 // declared in ENV with the default 50, and the batch size follows the variable when it is set and is 50 when it is
@@ -8,9 +8,9 @@ import { fail, importFrom, pass, requireOriginalTestsPass, workspaceArg } from "
 
 const workspace = workspaceArg()
 await requireOriginalTestsPass(import.meta.dir, workspace, ["src/digest.test.ts"])
-const { ENV } = await importFrom<{ ENV: Record<string, { default?: unknown } | undefined> }>(workspace, "src/config/env.ts")
+const { ENV } = await importFrom<{ ENV: Record<string, { default?: unknown } | undefined> }>(workspace, "src/config/settings.ts")
 const declared = ENV.DIGEST_BATCH_SIZE
-if (declared === undefined) fail("DIGEST_BATCH_SIZE is not declared in ENV in src/config/env.ts, so it is missing from the ops page generated from it")
+if (declared === undefined) fail("DIGEST_BATCH_SIZE is not declared in ENV in src/config/settings.ts, so it is missing from the ops page generated from it")
 if (Number(declared.default) !== 50) fail(`DIGEST_BATCH_SIZE is declared with the default ${JSON.stringify(declared.default)}, not 50`)
 
 async function sizes(count: number, value: string | null): Promise<number[]> {

@@ -1,8 +1,9 @@
-import { env } from "./config/env.ts"
+import { env } from "./config/settings.ts"
 
 export interface Mail {
   readonly to: string
   readonly from: string
+  readonly replyTo: string
   readonly subject: string
   readonly body: string
 }
@@ -13,5 +14,5 @@ export function relay() {
 }
 
 export function digestMail(to: string, items: readonly string[]): Mail {
-  return { to, from: env("DIGEST_FROM"), subject: `Your digest: ${items.length} new`, body: items.map((item) => `- ${item}`).join("\n") }
+  return { to, from: "digest@notifier.example", replyTo: env("REPLY_TO"), subject: `Your digest: ${items.length} new`, body: items.map((item) => `- ${item}`).join("\n") }
 }

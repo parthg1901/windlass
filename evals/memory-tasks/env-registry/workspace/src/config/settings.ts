@@ -6,7 +6,7 @@ export const ENV = {
   SMTP_HOST: { default: "localhost", description: "mail relay host" },
   SMTP_PORT: { default: "2525", description: "mail relay port" },
   QUEUE_URL: { default: "memory://", description: "where outgoing messages are queued" },
-  DIGEST_FROM: { default: "digest@notifier.example", description: "sender address of the daily digest" },
+  REPLY_TO: { default: "support@notifier.example", description: "reply address on every mail" },
 } as const satisfies Record<string, { default: string; description: string }>
 
 export type EnvName = keyof typeof ENV

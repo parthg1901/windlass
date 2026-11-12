@@ -1,4 +1,4 @@
-import { now } from "./lib/clock.ts"
+import { now } from "./lib/runtime.ts"
 
 export interface AuditEntry {
   readonly at: number

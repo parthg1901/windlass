@@ -1,4 +1,4 @@
-import { env } from "./config/env.ts"
+import { env } from "./config/settings.ts"
 
 const queued: unknown[] = []
 
