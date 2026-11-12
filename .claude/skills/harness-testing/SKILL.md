@@ -136,7 +136,7 @@ Reading a result:
 - The frozen tool list has 20 tools, about 3,300 estimated tokens (`bun scripts/tool-block.ts` prints it); a session's first request is about 4,550 tokens.
 - Wake-ups fire in the server of an interactive run (`windlass`, `windlass tui`, an editor's `windlass acp`), never in a one-prompt run, a listing or a subcommand (the CLI sets `WINDLASS_WAKE=off` for those). List pending wake-ups before starting an interactive session in a data directory with old ones: they fire at once, late.
 - A question asked after a hand edit ends "nothing to check"; the next turn that edits a file runs the checks on everything unverified, the hand edit included, and the model may then repair the user's file.
-- The CLI has no `--agent` yet: test an agent with `agents.default` in a throwaway `XDG_CONFIG_HOME`.
+- An agent is chosen with `--agent <name>` or `/agent`; `agents.default` in the user's config file (a throwaway `XDG_CONFIG_HOME` in tests) sets the one a new session starts as.
 - In tmux, wait for the `›` prompt before sending keys: under load a fixed 6-second wait lost the Enter.
 - Under heavy load (five agents on two cores: load average 15 to 20) tests time out at the default 5 s. Re-run a timeout alone, or with `--timeout 60000`, before believing it.
 - prefixlens is a separate repository that may be changing under you: a failing `packages/core/test/trace/export.test.ts` can mean the sibling checkout moved (its trace format, how it records images), not that the harness broke. Check `git -C ../prefixlens log` first.

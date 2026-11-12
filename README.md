@@ -123,6 +123,10 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 - [docs/skills.md](docs/skills.md): skills and where they live.
 - [docs/wake-ups.md](docs/wake-ups.md): timers, checks and webhooks that wake a session.
 - [docs/memory.md](docs/memory.md): notes that persist across sessions (off by default).
+- [docs/agents.md](docs/agents.md): agents: defining one, restrictions, switching, subagents as agents.
+- [docs/hooks.md](docs/hooks.md): commands that refuse a call, add a note, or keep a turn from ending.
+- [docs/diagnostics.md](docs/diagnostics.md): language-server diagnostics after an edit.
+- [docs/task-list.md](docs/task-list.md): the model's task list.
 - [docs/event-log.md](docs/event-log.md): the format of a session's log.
 - `windlass --help`: every option and exit code.
 
