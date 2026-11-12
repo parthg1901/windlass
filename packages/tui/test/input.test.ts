@@ -21,6 +21,18 @@ async function scripted(width = 100, height = 30): Promise<{ mounted: Mounted; b
 const keys = (mounted: Mounted) => mounted.setup.mockInput
 
 describe("the input", () => {
+  test("an unknown /word is not sent and names the nearest command; // sends a message that starts with a slash", async () => {
+    const { mounted, backend } = await scripted(160, 30)
+    await keys(mounted).typeText("/hepl")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    expect(await mounted.frame()).toContain("/hepl is not a command, so nothing was sent; did you mean /help?")
+    await keys(mounted).typeText("//etc holds the config")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    expect(backend.sent).toEqual([{ text: "/etc holds the config", delivery: "steer" }])
+  })
+
   test("Enter sends; Alt-Enter and a trailing backslash start a new line instead", async () => {
     const { mounted, backend } = await scripted()
     await keys(mounted).typeText("first line")

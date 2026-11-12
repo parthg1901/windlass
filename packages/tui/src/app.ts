@@ -21,7 +21,7 @@ import type { RevertPlan, RevertResult } from "@light-harness/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
-import { changeLabel, fileList, formatDuration } from "./cli.ts"
+import { changeLabel, fileList, formatDuration, nearest } from "./cli.ts"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
@@ -440,6 +440,8 @@ export class App {
     this.setInput("")
     // Sent: the user is no longer typing, and a question that comes next may take the keys.
     this.lastTyped = 0
+    // A message that really starts with a slash is written with two, as in the line CLI.
+    if (trimmed.startsWith("//")) return this.send(text.trimStart().slice(1), this.transcript.activity.executing ? this.mode : "steer")
     const command = parseCommand(trimmed)
     if (command !== null) return void this.command(command.spec, command.name, command.rest)
     this.send(text, this.transcript.activity.executing ? this.mode : "steer")
@@ -573,7 +575,10 @@ export class App {
   }
 
   private async command(spec: CommandSpec | null, name: string, rest: string): Promise<void> {
-    if (spec === null) return this.say(`unknown command /${name}; /help lists them`, "warn")
+    if (spec === null) {
+      const close = nearest(name, COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]))
+      return this.say(`/${name} is not a command, so nothing was sent; ${close === null ? "/help lists the commands" : `did you mean /${close}?`}. To send a message that starts with a slash, begin it with two: //${name}`, "warn")
+    }
     if (this.busyCommand && spec.name !== "quit" && spec.name !== "help") return this.say(`/${spec.name} waits for the command before it`, "warn")
     this.busyCommand = true
     try {
