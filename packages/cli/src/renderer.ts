@@ -230,7 +230,7 @@ export class PrettyRenderer implements Sink {
           event.data.reason === "unattended"
             ? `needs approval for ${needs.join(", ")}; nobody is here to give it, so it was refused${event.data.stop ? " and the run ends (--unattended stop)" : " (--unattended deny)"}`
             : "refused by the approval policy"
-        for (const line of wrap(`not run: ${why}`, this.width - 2)) this.line("info", [seg(`${SYMBOL.notRun} `, "yellow"), seg(line, "yellow")])
+        wrap(`not run: ${why}`, this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.notRun} ` : "  ", "yellow"), seg(line, "yellow")]))
         return
       }
       case "taint.noticed":
@@ -949,6 +949,14 @@ export class QuietSink implements Sink {
       case "diagnostic":
         // Something is wrong with the harness itself: said where failures go, since the engine says it nowhere else.
         this.writeError(`${brand.binary}: ${event.kind.replace(/_/g, " ")}: ${event.message}\n`)
+        return
+      case "approval.denied":
+        // Nothing waited: an unattended run says what became of a call that would have asked.
+        if (event.data.reason === "unattended")
+          this.writeError(`${brand.binary}: a tool call was not run: it needs approval for ${event.data.needs.map(describeNeed).join(", ")}, and nobody is here to give it (--unattended ${event.data.stop ? "stop" : "deny"})\n`)
+        return
+      case "notice":
+        this.writeError(`${brand.binary}: ${event.message.split("\n").join(" ")}\n`)
         return
     }
   }

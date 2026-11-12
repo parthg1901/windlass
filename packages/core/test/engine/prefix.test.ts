@@ -6,6 +6,7 @@
  * except exactly where an event in the log allows a break.
  */
 import { afterAll, describe, expect, test } from "bun:test"
+import type { StoredEvent } from "../../src/event/durable.ts"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
 import { script } from "../../src/testing/fake-provider.ts"
@@ -304,5 +305,60 @@ describe("verification and revert keep the prefix property", () => {
     } finally {
       await h.dispose()
     }
+  })
+})
+
+describe("the approval layer keeps the prefix property", () => {
+  test("a question, an answer, a refusal, a taint notice and its clearing are not model input: every request extends the one before", async () => {
+    const sandbox = {
+      state: { available: true as const },
+      temp: (sessionId: string) => ({ dir: `/sandbox-tmp/${sessionId}`, alias: "/tmp" }),
+      plan: () => {
+        throw new Error("a scripted tool spawns nothing")
+      },
+      policy: () => {
+        throw new Error("a scripted tool spawns nothing")
+      },
+    }
+    const h = new Harness({ approval: { sandbox, secrets: [], home: "/home/user" }, attended: true })
+    try {
+      const fetch = (command: string) => [script.toolCall("call_1", "shell", { command, sandbox: { network: true } }), usage]
+      h.tools.on("shell", "fetched").on("read", "notes")
+      h.provider.enqueue(fetch("curl a"), fetch("curl b"), [script.toolCall("call_1", "write", { path: "~/.ssh/config", content: "x" }), usage], answer("Done."), [script.toolCall("call_1", "read", { path: "a.ts" }), usage], answer("Read."))
+      const session = h.create()
+      session.send("Fetch twice.")
+      const first = (await h.seen((item) => item.type === "approval.requested")) as StoredEvent<"approval.requested">
+      session.answer({ messageId: first.data.messageId, callId: first.data.callId }, { choice: "once" })
+      const second = (await h.seen((item) => item.type === "approval.requested" && item.seq > first.seq)) as StoredEvent<"approval.requested">
+      session.answer({ messageId: second.data.messageId, callId: second.data.callId }, { choice: "deny" })
+      await h.settled()
+      // Between turns the user clears the taint; the next turn's request still extends the last one.
+      expect(session.clearTaint()).toBe(true)
+      session.send("Now read a.ts.")
+      await h.settled()
+
+      const kinds: string[] = h.log().map((item) => item.type)
+      for (const type of ["approval.requested", "approval.answered", "approval.denied", "taint.noticed", "taint.cleared"]) expect(kinds).toContain(type)
+      expect(verdicts(h)).toEqual(["first", "extension", "extension", "extension", "extension", "extension"])
+      expect(h.diagnostics).toEqual([])
+      // The frozen tool list is the session's for good: the same in the first request and the last.
+      expect(h.provider.requests.at(-1)!.tools).toEqual(h.provider.requests[0]!.tools)
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("the shell tool's schema carries the escalation argument for every session, whatever the machine or the mode", async () => {
+    const { createStandardTools } = await import("../../src/tools/index.ts")
+    const { escalationSchema } = await import("../../src/approval/escalation.ts")
+    const { createCommandSandbox } = await import("../../src/sandbox/command.ts")
+    const plain = createStandardTools({ spillDir: "/nonexistent" }).map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }))
+    const sandboxed = createStandardTools({ spillDir: "/elsewhere", shell: { sandbox: createCommandSandbox({ tempBase: "/nonexistent/temp" }) } }).map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }))
+    // The specs do not depend on the options: the frozen tool list hashes the same everywhere.
+    expect(sandboxed).toEqual(plain)
+    const shell = plain.find((tool) => tool.name === "shell")!
+    expect((shell.inputSchema as { properties: Record<string, unknown> }).properties.sandbox).toEqual(escalationSchema)
+    expect((shell.inputSchema as { required: string[] }).required).toEqual(["command"])
   })
 })
