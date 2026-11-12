@@ -47,7 +47,9 @@ switch (mode) {
     const session = h.engine.createSession({ cwd: second!, settings })
     let announced = false
     session.subscribe((item) => {
-      if (item.type !== "tool.started" || announced) return
+      // A process that is to hang says it has started once the command it hangs in runs: whoever kills it then
+      // finds a started command, never the moment between two steps.
+      if (item.type !== "tool.started" || announced || (mode === "hang" && item.data.effect !== "exec")) return
       announced = true
       console.log(`started ${session.id}`)
     })
