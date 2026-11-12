@@ -232,6 +232,10 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **A test that presses Ctrl-D while a turn still runs hangs**: Ctrl-D is ignored then, and nothing exits. After answering a question that came up during a turn, wait for the turn's reply or its ending before leaving.
 - **A project's command was cut in its own approval question** (line CLI: a word wider than the terminal ended in `…`; dock: two lines, the rest dropped; arguments unquoted). The question now shows all of it, each argument quoted (`bash -c '<one argument>'`); a command too long for the dock (60% of the height) is printed in full above it and the dock says `… N more lines of the command do not fit here: the whole of it is printed above, to its end`. Test with one very long word that ends in a marker, at 80 columns in the CLI and 100 in the TUI, and read the frame before answering. The engine's own notice about a skipped hook (`⚠ hook: … (<command>…)`) still shortens the command at 120 characters: that line is not the question.
 - **A problem with an agent definition marked the model call that was running** with `⚠` in the panel's bars (`⚠ diagnostic`), as if the request were wrong. Diagnostics of kind `agents` mark no call now; `skills` and `mcp` ones still do.
+- **`/undo` of a turn that had a task list removes the panel's `Tasks` section**; wait for it to go, not for a row.
+- **A turn's ending row with compactions** reads `○ done · … · 14 steps + 2 summary calls · 1m09s · turn 1`: match the parts, not the whole line.
+- **Picking an agent**: `/new`, then `/agent`, type the start of its name (`rev`), wait 0.6 s, Enter.
+- **A long command in an approval question**: put a marker at the end of a long word and look for the marker before answering; the dock prints a command too long for it above itself and says so.
 
 ## Measured (two-core aarch64, 2026-11-12)
 
