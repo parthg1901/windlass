@@ -24,6 +24,7 @@ export {
   skillsLines,
   wakeLines,
   wakeMessageSummary,
+  wakeNotFiringText,
   webhookSecretLines,
 } from "../../cli/src/features.ts"
 export { mcpArguments } from "../../cli/src/tools.ts"

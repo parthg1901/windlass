@@ -26,6 +26,7 @@ import {
   rememberArgs,
   skillsLines,
   wakeLines,
+  wakeNotFiringText,
   webhookSecretLines,
 } from "./features.ts"
 import { hookQuestionLines, hooksLines, hooksUnattendedText, lspLines, lspQuestionLines, lspUnattendedText } from "./hooks.ts"
@@ -270,6 +271,15 @@ export class FeatureWatch {
     return tracked
   }
 
+  /** A wake-up created where nothing fires wake-ups (a one-prompt run): said once, with where it will fire. */
+  private async notFiring(id: string): Promise<void> {
+    if (this.session.wakeups === undefined) return
+    const list = await this.session.wakeups().catch(() => null)
+    if (list === null || !list.available || list.running) return
+    const wake = list.wakeups.find((candidate) => candidate.id === id)
+    this.io.out.notice(wakeNotFiringText({ id, description: wake?.description ?? null }, this.session.id), "warn")
+  }
+
   private mcp(state: McpStateResult): void {
     for (const server of state.servers) {
       if (server.state === "failed" && server.error !== null) {
@@ -315,6 +325,7 @@ export class FeatureWatch {
   }
 
   private async created(id: string): Promise<void> {
+    await this.notFiring(id)
     if (this.session.wakeSecret === undefined) return
     const secret = await this.session.wakeSecret(id)
     // Not a webhook: there is nothing to show.

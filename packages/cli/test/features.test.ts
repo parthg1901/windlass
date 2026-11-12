@@ -21,7 +21,7 @@ import { createAcpEngine } from "../src/acp-engine.ts"
 import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { Session } from "../src/engine.ts"
 import { FeatureWatch } from "../src/feature-commands.ts"
-import { mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeMessageSummary } from "../src/features.ts"
+import { mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
 import { successSummary } from "../src/tools.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -283,6 +283,34 @@ describe("what the project's configuration asks for is settled before a message 
     // With nobody to ask, nothing is put before a message.
     const unattended = new FeatureWatch(session, { ...io, ask: null }, { attended: false, secrets: false })
     await unattended.beforeMessage()
+    expect(said).toEqual([])
+  })
+})
+
+describe("a wake-up created where none fires", () => {
+  const created = (id: string) => stored([event("tool.settled", { messageId: "a1" as MessageId, callId: "c1" as CallId, outcome: "success", output: `Created wake-up ${id}.`, truncation: null, attachments: [], display: { wake: { action: "create", id } } })])[0]!
+  const list = (running: boolean) => ({ sessionId: "ses_x", available: true, running, wakeups: [{ id: "w_1", trigger: "at" as const, description: "once at 09:30", state: "pending", nextAt: "2026-11-12T09:30:00.000Z", fired: 0, maxFirings: 1, author: "model" as const, message: "Check CI.", url: null, lines: [] }] })
+  const watching = (running: boolean) => {
+    const said: { text: string; tone: string | undefined }[] = []
+    const session = { id: "ses_x", wakeups: async () => list(running), wakeSecret: async (id: string) => ({ id, url: null, secret: null, message: "not a webhook" }) } as unknown as Session
+    const watch = new FeatureWatch(session, { out: { lines: () => {}, notice: (text, tone) => void said.push({ text, tone }) }, ask: null }, { attended: false, secrets: false })
+    return { watch, said }
+  }
+
+  test("a one-prompt run says at once that it will not fire it, and where it will", async () => {
+    const { watch, said } = watching(false)
+    watch.event(created("w_1"))
+    await watch.settled()
+    expect(said).toEqual([{ text: wakeNotFiringText({ id: "w_1", description: "once at 09:30" }, "ses_x"), tone: "warn" }])
+    expect(said[0]!.text).toBe(
+      `Wake-up w_1 (once at 09:30) was created, but this run does not fire wake-ups: it ends with its turn. It fires, late if its time has passed by then, the next time ${brand.name} runs interactively on this machine (\`${brand.binary}\` with no prompt, \`${brand.binary} tui\`, or an editor). \`${brand.binary} --session ses_x\` opens this session: /wakeups lists it there, and /wakeups cancel w_1 removes it.`,
+    )
+  })
+
+  test("a run that fires wake-ups says nothing about it", async () => {
+    const { watch, said } = watching(true)
+    watch.event(created("w_1"))
+    await watch.settled()
     expect(said).toEqual([])
   })
 })

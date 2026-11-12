@@ -211,6 +211,16 @@ export function wakeLines(result: WakeListResult): Line[] {
   return lines
 }
 
+/**
+ * A wake-up was created in a run that fires none (a one-prompt run exits
+ * when its turn ends): said at once, with where it will fire, so that "I
+ * will remind you in a minute" is not taken for something this run does.
+ */
+export function wakeNotFiringText(wake: { readonly id: string; readonly description: string | null }, sessionId: string): string {
+  const what = wake.description === null ? `Wake-up ${wake.id}` : `Wake-up ${wake.id} (${wake.description})`
+  return `${what} was created, but this run does not fire wake-ups: it ends with its turn. It fires, late if its time has passed by then, the next time ${brand.name} runs interactively on this machine (\`${brand.binary}\` with no prompt, \`${brand.binary} tui\`, or an editor). \`${brand.binary} --session ${sessionId}\` opens this session: /wakeups lists it there, and /wakeups cancel ${wake.id} removes it.`
+}
+
 /** A webhook wake-up's address and secret, for the user. */
 export function webhookSecretLines(secret: WakeSecretResult, created: boolean): Line[] {
   if (secret.secret === null || secret.url === null) return [line(secret.message ?? `${secret.id} has no secret`, "warn")]

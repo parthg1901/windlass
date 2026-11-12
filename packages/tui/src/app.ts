@@ -22,7 +22,7 @@ import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend,
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
-import { COPY_NOTE, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, wakeNotFiringText, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
@@ -1214,9 +1214,19 @@ export class App {
 
   /** What an event asks of the client besides showing it: a webhook wake-up's secret, once, when it is created. */
   private featureEvent(session: BackendSession, event: import("./cli.ts").EngineEvent): void {
-    if (event.type !== "tool.settled" || event.data.outcome !== "success" || session.wakeSecret === undefined) return
+    if (event.type !== "tool.settled" || event.data.outcome !== "success") return
     const wake = (event.data.display as { wake?: { action?: unknown; id?: unknown } } | null)?.wake
     if (wake?.action !== "create" || typeof wake.id !== "string") return
+    const id = wake.id
+    // A server that fires no wake-ups (it was started that way): said when one is created, with where it will fire.
+    void session.wakeups?.().then(
+      (list) => {
+        if (!list.available || list.running || this.session !== session) return
+        this.say(wakeNotFiringText({ id, description: list.wakeups.find((candidate) => candidate.id === id)?.description ?? null }, session.id), "warn")
+      },
+      () => {},
+    )
+    if (session.wakeSecret === undefined) return
     void session.wakeSecret(wake.id).then(
       (secret) => {
         if (secret.secret === null || this.session !== session) return
