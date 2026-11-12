@@ -14,6 +14,9 @@
  * - Every quoted message is made of text found in the program's source.
  * - Each "Not yet" carries a marker comment, and the ones that say something
  *   is missing fail once it exists, so the page is updated with it.
+ * - The module pages users also read (the READMEs of hooks, lsp and agents,
+ *   and TODO-TOOL.md) quote the edit tool's result as it is printed and say
+ *   what the clients do today.
  */
 import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"

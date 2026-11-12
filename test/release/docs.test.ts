@@ -10,6 +10,11 @@
  * - The configuration keys in the user guide are the validator's, section by
  *   section; the exit codes are the help's; every environment variable the
  *   source reads is in the user guide.
+ * - The turn endings the user guide gives for each interface are the ones
+ *   its source draws; the data directory's table and the work directory are
+ *   the paths the program keeps; the README's table of slash commands names
+ *   every command of both interfaces; the troubleshooting page's
+ *   configuration error lists the validator's keys.
  * - Every name that comes from `brand` (the title, the binary, directory
  *   names, environment variable prefixes) is the brand's: a rename makes this
  *   fail until the pages say the new name.

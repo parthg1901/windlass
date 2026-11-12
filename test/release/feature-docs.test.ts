@@ -15,6 +15,12 @@
  * - Names, paths, limits, headers and the webhook signature are the code's.
  * - Each "Not yet" that says something is missing fails once it exists, so
  *   the page is updated with it.
+ * - What the pages say runs unasked, taints, or is answered (a search of MCP
+ *   tools, the tools that change only the program's own records, the webhook
+ *   listener, forking signed out) is decided or run here by the program.
+ * - docs/safety.md and docs/replay.md are checked on the same points: the
+ *   modes table against the approval policy, the replay command's options,
+ *   exit codes and printed lines against its source.
  */
 import { describe, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
