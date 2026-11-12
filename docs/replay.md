@@ -35,15 +35,18 @@ One session:
 ```
 windlass replay [<session-id>] [--system-prompt <file>] [--tool-description <tool>=<file>]...
           [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute]
-          [--strict] [--json] [--through <seq>] [--workspace <dir>]
+          [--strict] [--json] [--through <seq>] [--workspace <dir>] [--cwd <dir>] [-q]
 ```
 
-`windlass replay` prints the replay's report, then the comparison that carries the signal (its side effects against the
-recording's, reads ignored, and whether it ended with the recording's files; the grade is the eval suite's, below),
-then the replay session and the copy it worked in. `--json` prints the same as one object,
-the comparison under `compared` (and as printed under `comparison`). It runs through `windlass acp` like every subcommand
-(`_windlass/replay`, [acp.md](acp.md)). `bun scripts/replay.ts` takes the same options and `--data-dir <dir>`,
-and runs the engine in its own process.
+`windlass replay` prints a line per step as it goes (`step 1 · read a.txt · as recorded`; `-q` leaves them out, and cannot be combined with `--json`), then
+the replay's report, then the comparison that carries the signal (its side effects against the recording's, reads
+ignored, and whether it ended with the recording's files; the grade is the eval suite's, below), then the replay
+session with its number of model calls and, under the policies that run tools, the copy it worked in. `--json`
+prints the same as one object, the comparison under `compared` (and as printed under `comparison`). The exit code
+is 0 when the replay ran, identical or diverged, 1 when it could not be compared, and 2 for a usage error. It runs
+through `windlass acp` like every subcommand (`_windlass/replay`, [acp.md](acp.md)). `bun scripts/replay.ts` takes a
+session ID, the same options except `--cwd` and `-q`, and `--data-dir <dir>`, and runs the engine in its own
+process.
 
 - `<session-id>` is a session of the harness data directory, or a unique prefix of one (the most recent session of
   the directory when left out).
@@ -128,7 +131,10 @@ replay ses_e79e…: DIVERGED  left the recording at step 2, call 1: arguments di
 - **Text is compared only as the final answer**, side by side; a step that says something different and makes the
   same calls is the same step.
 
-Below the report the script prints the comparison that ignores reads (`replay/effects.ts`):
+Below the report `windlass replay` (and the script) prints the comparison that ignores reads (`replay/effects.ts`).
+Under `stop` a replay that left its recording has no answer of its own, and the comparison says so
+(`side effects   not compared: the replay stopped before an answer of its own (use --policy execute)`). Under
+`execute`:
 
 ```
 compared on what it did (reads ignored)

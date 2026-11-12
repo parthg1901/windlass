@@ -583,6 +583,44 @@ describe("quoted program messages", () => {
   })
 })
 
+describe("docs/replay.md against the replay command", () => {
+  const page = readFileSync(join(ROOT, "docs/replay.md"), "utf8")
+  const usage = replayUsage()
+
+  test("the options the page gives the command are the command's, and none of the command's is missing", () => {
+    const block = /```\n(windlass replay|[a-z]+ replay) \[<session-id>\][\s\S]*?```/.exec(page)![0]
+    expect(block.split("\n")[1]!.split(" ")[0]).toBe(BIN)
+    const named = new Set([...block.matchAll(/(?<![\w-])(--[a-z][a-z-]*|-q)(?![\w-])/g)].map((match) => match[1]!))
+    const known = new Set([...flagsOf(usage), "-q"])
+    for (const flag of named) expect(known, flag).toContain(flag)
+    for (const flag of flagsOf(usage)) if (flag !== "--quiet") expect(named, `${flag} is not in the page's usage`).toContain(flag)
+    expect(usage).toContain("-q, --quiet")
+    for (const policy of ["stop", "execute-read-only", "execute"]) expect(parseSubcommand(["replay", "--policy", policy])).not.toHaveProperty("kind", "error")
+    expect(parseSubcommand(["replay", "ses_1", "--strict", "--through", "7", "-q"])).not.toHaveProperty("kind", "error")
+    expect(parseSubcommand(["replay", "--json", "-q"])).toEqual({ kind: "error", message: "replay: --json and --quiet cannot be combined" })
+    expect(page).toContain("`-q` leaves them out, and cannot be combined with `--json`")
+  })
+
+  test("what the page says the command prints is what its source prints", () => {
+    const command = readFileSync(join(ROOT, "packages/cli/src/subcommands.ts"), "utf8")
+    const effects = readFileSync(join(ROOT, "packages/core/src/replay/effects.ts"), "utf8")
+    // The command prints the comparison itself: the page no longer sends the reader to the script for it.
+    expect(page).toContain(`Below the report \`${BIN} replay\` (and the script) prints the comparison that ignores reads`)
+    expect(command).toMatch(/comparison|compareReplay/)
+    for (const quoted of ["compared on what it did (reads ignored)", "side effects   not compared: the replay stopped before an answer of its own (use --policy execute)"]) {
+      expect(page).toContain(quoted)
+      expect(effects).toContain(quoted)
+    }
+    expect(page).toContain("`step 1 · read a.txt · as recorded`")
+    expect(command).toContain('"as recorded"')
+    expect(command).toContain("(the copy the replay carried on in; delete it when you are done)")
+    // The exit codes, as the command's own usage gives them.
+    expect(usage).toContain("Exit code 0 when the replay ran (identical or\ndiverged), 1 when it could not be compared, 2 for a usage error.")
+    expect(page).toContain("is 0 when the replay ran, identical or diverged, 1 when it could not be compared, and 2 for a usage error")
+    for (const key of ["compared", "comparison"]) expect(page).toContain(`\`${key}\``)
+  })
+})
+
 describe("what the pages say is not there yet", () => {
   const clients = () => sourceFiles().filter((file) => ["packages/acp/src", "packages/cli/src", "packages/tui/src"].some((dir) => file.startsWith(join(ROOT, dir))))
 
