@@ -157,6 +157,10 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
     }
   }
   const subject = said(tool.subject, tool.name)
+  // Only a built-in tool is believed, and only about a class that changes something: an MCP server's tool is asked
+  // about by name whatever it says. A call that changes only records runs no command, whatever its input carries.
+  const changed = typeof tool.changes === "function" ? said(tool.changes, null) : (tool.changes ?? null)
+  const records = changed === "records" && (tool.effect === "write" || tool.effect === "exec") && (tool.origin ?? "builtin") === "builtin"
   const cautions = said(tool.cautions, [] as readonly string[]).filter((line) => typeof line === "string" && line !== "")
   return {
     facts: {
@@ -164,10 +168,9 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
       effect: tool.effect,
       origin: tool.origin ?? "builtin",
       paths,
-      command: tool.effect === "exec" && typeof record.command === "string" ? record.command : null,
-      escalation,
-      // Only a built-in tool of class `write` is believed: an MCP server's tool is asked about by name whatever it says.
-      ...(tool.changes === "records" && tool.effect === "write" && (tool.origin ?? "builtin") === "builtin" ? { changes: "records" as const } : {}),
+      command: tool.effect === "exec" && !records && typeof record.command === "string" ? record.command : null,
+      escalation: records ? null : escalation,
+      ...(records ? { changes: "records" as const } : {}),
       ...(cautions.length === 0 ? {} : { cautions }),
     },
   }

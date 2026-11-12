@@ -535,13 +535,60 @@ describe("the approval of wake_create", () => {
     }
   })
 
-  test("with nobody present in mode ask it is refused like any command, and nothing is set up; in mode auto a timer needs no question", async () => {
+  test("without a command, on a machine with no sandbox, it is not asked about as an unsandboxed command: nothing is run, so a timer and a webhook need no question, and a check still does", async () => {
+    const none = approval({ sandbox: { ...sandbox, state: { available: false, reason: "no sandbox on this machine", remedy: null } } })
+    const { h } = firing({ approval: none, attended: true }, { listener: true, port: 0 })
+    try {
+      h.provider.enqueue(
+        [call("wake_create", { trigger: "after", seconds: 600, message: "Later." }), U],
+        [call("wake_create", { trigger: "webhook", message: "The build called." }), U],
+        [call("wake_create", { trigger: "check", command: "bun test", seconds: 60, fire: "until", message: "The tests pass now." }), U],
+        answer("Set up."),
+      )
+      h.create().send("Remind me, and tell me when the build calls and when the tests pass.")
+      // The only question is about the one call that has a command.
+      const asked = (await h.seen((item) => item.type === "approval.requested")) as StoredEvent<"approval.requested">
+      expect(asked.data.question).toMatchObject({ title: "Run this command without the sandbox?", subject: "bun test" })
+      expect(of(h, "approval.requested")).toHaveLength(1)
+      expect(h.engine.wake()!.store.list({ sessionId: h.session.id }).map((wake) => wake.trigger.kind).sort()).toEqual(["at", "webhook"])
+      // The two that ran are on record as what they were: no sandbox, because nothing was run.
+      expect(of(h, "tool.started").map((item) => item.data.run)).toMatchObject([{ mode: "auto", sandbox: null }, { mode: "auto", sandbox: null }])
+      expect(h.session.answer({ messageId: asked.data.messageId as MessageId, callId: asked.data.callId as CallId }, { choice: "deny" })).toBe(true)
+      await h.settled()
+      expect(h.engine.wake()!.store.list({ sessionId: h.session.id })).toHaveLength(2)
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("in mode ask a timer is asked about as what it is, a record of the harness's own, with what it will do later", async () => {
+    const { h } = firing({ approval: approval({ user: { mode: "ask" }, sandbox: { ...sandbox, state: { available: false, reason: "no sandbox on this machine", remedy: null } } }), attended: true })
+    try {
+      h.provider.enqueue([call("wake_create", { trigger: "after", seconds: 600, message: "Later." }), U], answer("Set up."))
+      h.create().send("Remind me.")
+      const asked = (await h.seen((item) => item.type === "approval.requested")) as StoredEvent<"approval.requested">
+      expect(asked.data.needs).toEqual([{ kind: "records", tool: "wake_create" }])
+      expect(asked.data.question.title).not.toContain("command")
+      expect(asked.data.question.subject).toBe("wake_create")
+      expect(asked.data.question.details[0]).toBe("This sets up a wake-up that fires after 10m, once. It starts a turn in this session later, when nobody may be watching.")
+      expect(asked.data.question.details.join("\n")).not.toContain("sandbox")
+      expect(h.session.answer({ messageId: asked.data.messageId as MessageId, callId: asked.data.callId as CallId }, { choice: "once" })).toBe(true)
+      await h.settled()
+      expect(h.engine.wake()!.store.list({ sessionId: h.session.id })).toHaveLength(1)
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("with nobody present in mode ask it is refused like any change, and nothing is set up; in mode auto a timer needs no question", async () => {
     const refused = firing({ approval: approval({ user: { mode: "ask" } }) })
     try {
       refused.h.provider.enqueue([call("wake_create", { trigger: "after", seconds: 600, message: "Later." }), U], answer("I could not."))
       refused.h.create().send("Remind me.")
       await refused.h.settled()
-      expect(of(refused.h, "approval.denied")[0]!.data).toMatchObject({ reason: "unattended", needs: [{ kind: "exec-sandboxed" }] })
+      expect(of(refused.h, "approval.denied")[0]!.data).toMatchObject({ reason: "unattended", needs: [{ kind: "records", tool: "wake_create" }] })
       expect(refused.h.engine.wake()!.store.list({ sessionId: refused.h.session.id })).toEqual([])
     } finally {
       await refused.h.dispose()

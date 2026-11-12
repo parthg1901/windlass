@@ -272,8 +272,14 @@ export interface Tool<Input = Json> extends ToolSpec {
    * this and does not treat the call as a file write: it runs without a
    * question in the modes `auto` and `full`, and mode `ask` asks about it
    * as what it is. Not part of the tool's spec.
+   *
+   * A function answers for one call, where it depends on the input: a
+   * tool of class `exec` whose call runs nothing says so (`wake_create`
+   * for a timer or a webhook, which has no command), and that call is
+   * decided as a change of records and never as a command. It must not
+   * throw on input the schema allows; `null` means the class says it all.
    */
-  readonly changes?: "records"
+  readonly changes?: "records" | ((input: never) => "records" | null)
   /**
    * What the user should know about a call with this input before approving
    * it, beyond what its class says: one fact per line, shown in the question

@@ -374,7 +374,8 @@ is a new version with a decoder for the old one.
   approval is asked about and remembered for `github/create_issue`, never for the bridge), and a tool whose call
   acts later says so for the question (`Tool.cautions`: `wake_create`).
 - A tool whose calls change less than its class says declares it (`Tool.changes: "records"`: `wake_cancel`,
-  `memory_save`, `memory_retract` change only records the harness keeps for itself). The class stays `write`
+  `memory_save`, `memory_retract` change only records the harness keeps for itself; as a function it answers for
+  one call, which is how `wake_create` says that a timer or a webhook runs no command). The class stays `write`
   (a crash is still `effect_unknown`, the step is still bracketed by snapshots); the approval layer reads the
   declaration. It is not part of the tool's spec.
 
@@ -974,8 +975,11 @@ client opened it meanwhile.
 - *Shutdown.* `Engine.close()` stops the listener and the scheduler first, then the sessions, then the MCP
   servers and the language servers, then sends the spans live telemetry still holds (for a short while at most),
   then closes the wake store.
-- *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so it is
-  decided exactly as that command would be; the question adds that it acts later, unattended, and how often. What
+- *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so a check is
+  decided exactly as that command would be; the question adds that it acts later, unattended, and how often. A
+  timer or a webhook has no command and runs nothing, so that call is decided as what it is, a change of the
+  harness's own records (`Tool.changes` answers per call): no question in `auto` and `full`, the records question
+  in `ask`, and never "run this command without the sandbox" on a machine that has none. What
   the call ran under becomes the most the wake-up's check may run with. Before each run the scheduler asks what
   the session's commands may have now (`runAllowedNow`): sandboxed and offline once the session holds untrusted content, the recorded run otherwise, never more. A
   session that is not open in the process that runs the check (closed, open elsewhere, not opened since a

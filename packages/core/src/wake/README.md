@@ -197,8 +197,10 @@ Cancellations, check runs, holds and expiries stay in the wake store; they are n
 
 ### Approvals and taint
 
-- `wake_create` is decided exactly like the shell: its input has the shell's `command` and `sandbox` at the top level,
-  so `callFacts` and `decide` treat it as that command. The decision it ran under (`ToolContext.sandbox`) becomes the
+- `wake_create` with a command (a check) is decided exactly like the shell: its input has the shell's `command` and
+  `sandbox` at the top level, so `callFacts` and `decide` treat it as that command. Without one (a timer, a webhook)
+  nothing is ever run: the tool says so for that call (`Tool.changes`), and it is decided as a change of the
+  harness's own records, the same on a machine with a sandbox and on one without. The decision it ran under (`ToolContext.sandbox`) becomes the
   wake-up's `run`: sandboxed with that network and those writable roots, or unsandboxed where the call ran
   unsandboxed (`full`). In `ask` mode, the question should add that it will run later, unattended, up to
   `maxFirings` times (`describeTrigger` gives the words). With nobody present it is refused like any `exec` call.

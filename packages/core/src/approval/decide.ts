@@ -33,7 +33,7 @@ export interface CallFacts {
   readonly command: string | null
   /** A shell call's `sandbox` argument, classified. */
   readonly escalation: Escalation | null
-  /** `records`: the call changes only the harness's own records, no file and nothing outside (`Tool.changes`). */
+  /** `records`: the call changes only the harness's own records, no file and nothing outside, and runs no command (`Tool.changes`). */
   readonly changes?: "records"
   /** Facts about this call the question shows besides its own (`Tool.cautions`), one per line. */
   readonly cautions?: readonly string[]
@@ -114,9 +114,11 @@ function planCall(input: DecisionInput, tainted: boolean): Plan {
       needs: call.paths.flatMap((path): Need[] => (path.place === "hidden" ? [{ kind: "read-hidden", path: path.real ?? path.given }] : [])),
     }
   }
-  // A write that changes only the harness's own records touches no file and sends nothing out: there is no path to
-  // check and nothing the sandbox would contain. Only the mode in which every change asks asks about it.
-  if (call.effect === "write" && call.changes === "records") return { run: RUN, needs: input.policy.mode === "ask" ? [{ kind: "records", tool: call.tool }] : [] }
+  // A call that changes only the harness's own records touches no file, runs nothing and sends nothing out: there
+  // is no path to check and nothing the sandbox would contain, whether one exists on this machine or not. Only the
+  // mode in which every change asks asks about it. (`callFacts` says which calls these are: a write to the records,
+  // or a call of an `exec` tool that runs no command, such as a wake-up that is a timer or a webhook.)
+  if (call.changes === "records") return { run: RUN, needs: input.policy.mode === "ask" ? [{ kind: "records", tool: call.tool }] : [] }
   if (call.effect === "write") return full ? { run: RUN, needs: [] } : planWrite(input)
   return planExec(input, tainted)
 }
@@ -203,7 +205,7 @@ function titleFor(input: DecisionInput, needs: readonly Need[], has: (kind: Need
   if (call.origin === "mcp") return `Allow the MCP tool ${call.tool}?`
   if (call.effect === "network") return `Allow ${call.tool} to use the network?`
   if (has("exec-unsandboxed")) return "Run this command without the sandbox?"
-  if (call.effect === "exec") {
+  if (call.effect === "exec" && call.changes !== "records") {
     const writes = needs.flatMap((need) => (need.kind === "sandbox-write" ? [need.path] : []))
     const extra = [...(has("sandbox-network") ? ["network access"] : []), ...(writes.length > 0 ? [`writing to ${listOf(writes)}`] : [])]
     if (has("exec-sandboxed")) return extra.length === 0 ? "Run this command in the sandbox?" : `Run this command in the sandbox with ${listOf(extra)}?`

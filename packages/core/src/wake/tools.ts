@@ -6,7 +6,8 @@
  *   a turn nobody may be watching. The approval layer decides on it exactly as on a shell command: its input has
  *   the shell's `command` and `sandbox` arguments at the top level, so `callFacts` reads them the same way, and
  *   the decision the call ran under (`ToolContext.sandbox`) is recorded on the wake-up as the most its check may
- *   ever run with. A timer or a webhook has no command; it is still decided as `exec`.
+ *   ever run with. A timer or a webhook has no command and runs nothing: such a call says so (`Tool.changes`)
+ *   and is decided as what it is, a change of the harness's own records, with or without a sandbox on the machine.
  * - `wake_list` (effect `read`): this session's wake-ups, with every limit that applies to them.
  * - `wake_cancel` (effect `write`): stops one of this session's wake-ups. `write` because it changes state that
  *   outlives the call, so an unobserved outcome settles as `effect_unknown`.
@@ -135,6 +136,8 @@ export function wakeCreateTool(options: WakeToolOptions): Tool<CreateInput> {
       additionalProperties: false,
     },
     effect: "exec",
+    // Only a check has a command. Any other trigger writes a record and runs nothing, now or later.
+    changes: (input: CreateInput) => (input.trigger === "check" ? null : "records"),
     execute: async (input, context) => {
       const now = (options.now ?? Date.now)()
       const trigger = triggerOf(input, options.timeZone)

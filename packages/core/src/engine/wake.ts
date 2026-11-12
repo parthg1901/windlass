@@ -10,9 +10,11 @@
  *   delivered twice is one message. One that carries content from outside
  *   the harness is recorded as such with the admission, and taints the
  *   session from there on.
- * - `wake_create` is decided by the approval layer exactly as a shell command
- *   is (its input has the shell's `command` and `sandbox`), and what it was
- *   allowed to run under is the most its check may ever run with.
+ * - `wake_create` with a command (a check) is decided by the approval layer
+ *   exactly as a shell command is (its input has the shell's `command` and
+ *   `sandbox`), and what it was allowed to run under is the most its check
+ *   may ever run with. Without one (a timer, a webhook) nothing is run, and
+ *   the call is decided as a change of the harness's own records.
  *
  * **Which processes fire wake-ups.** Every process that offers the tools can
  * create, list and cancel wake-ups: they are records in a store all processes
