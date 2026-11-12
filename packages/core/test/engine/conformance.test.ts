@@ -13,6 +13,9 @@
  * exactly that difference applied, never a looser comparison.
  */
 import { afterAll, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { type NewEvent, event } from "../../src/event/durable.ts"
 import { ENGINE_LIMITS, FAILURE_TEXT, NOTE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
@@ -46,12 +49,46 @@ import {
   measured,
   usage,
 } from "../scenarios/script.ts"
+import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, SECOND_FIX } from "../scenarios/verification.ts"
 import type { ToolContext } from "../../src/tool/tool.ts"
+import { HARNESS_ORIGIN } from "../../src/event/durable.ts"
+import type { MessageId } from "../../src/id.ts"
+import { fixtureServer, waitFor } from "../mcp/helpers.ts"
 import { FakeWorkspace, Harness, ScriptedTools, comparable, converse, failed, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
-afterAll(removeHarnessDirectories)
+const projects: string[] = []
+afterAll(() => {
+  removeHarnessDirectories()
+  for (const directory of projects.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+/**
+ * A real directory for a scenario about skills or MCP servers, which read
+ * the disk and start processes: the session works in it, and its path
+ * stands for the scenarios' `/repo` when the logs are compared.
+ */
+function projectDirectory(): string {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-conformance-")))
+  projects.push(root)
+  const cwd = join(root, "repo")
+  mkdirSync(join(cwd, ".git"), { recursive: true })
+  return cwd
+}
+
+/** A skill file of the scenario's project. */
+function writeSkill(cwd: string, name: string, description: string): void {
+  const path = join(cwd, ".claude", "skills", name, "SKILL.md")
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, `---\nname: ${name}\ndescription: ${description}\n---\nTag, then push the tag.\n`)
+}
+
+/** The log with the scenario's stand-in for the working directory. */
+function inRepo(h: Harness, events: readonly StoredEvent[]): readonly StoredEvent[] {
+  if (h.cwd === "/repo") return events
+  return JSON.parse(JSON.stringify(events).split(h.cwd).join("/repo")) as StoredEvent[]
+}
 
 const U = script.usage(usage)
 const ENCRYPTED = { providerData: { encrypted_content: "gAAAA" } }
@@ -1143,6 +1180,95 @@ Object.assign(PLAYS, {
     h.restart().send(say[2]!)
     await h.settled()
   },
+
+  // ---------------------------------------------------------------- skills, MCP servers and wake-ups
+
+  "The skill index follows the files: first given, then replaced, then withdrawn": async (h, say) => {
+    writeSkill(h.cwd, "release", SKILL_FIRST)
+    h.provider.enqueue(answer("One: release."))
+    h.create().send(say[0]!)
+    await h.settled()
+    writeSkill(h.cwd, "release", SKILL_EDITED)
+    h.provider.enqueue([call("call_1", "shell", { command: "rm -r .claude/skills/release" }), U], answer("Removed."))
+    h.tools.on("shell", () => {
+      rmSync(join(h.cwd, ".claude", "skills", "release"), { recursive: true })
+      return ""
+    })
+    h.session.send(say[1]!)
+    await h.settled()
+    // Three messages about skills, and never a changed prefix.
+    expect(h.provider.prefixBreaks()).toEqual([])
+    for (const request of h.provider.requests) expect(request.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(h.provider.requests[0]!.tools.map((tool) => tool.name)).toContain("skill")
+  },
+
+  "An MCP server connects late; its tool is called through the bridge, and the result taints the session": async (h, say) => {
+    h.provider.enqueue([call("call_1", "read", { path: "a.ts" }), U], [call("call_2", "mcp_call", JSON.parse(MCP_CALL_INPUT) as Json), U], answer("The server said hello."))
+    h.tools.on("read", async () => {
+      // The first request is out; the server connects while the tool runs.
+      await waitFor(() => h.session.mcp()!.servers.some((server) => server.state === "ready"), 10_000, "the server to connect")
+      return "export const a = 1"
+    })
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.provider.prefixBreaks()).toEqual([])
+    expect(JSON.stringify(h.provider.requests[0]!.input)).not.toContain("mcp_tools")
+    expect(JSON.stringify(h.provider.requests[1]!.input)).toContain("- echo: Echo the text back.")
+    for (const request of h.provider.requests) expect(request.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(h.session.approval()!.taint.tainted).toBe(true)
+  },
+
+  "A wake-up fires while the session is idle": async (h, say) => {
+    h.provider.enqueue(answer("2"), answer("The build is green."))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.session.admit({ messageId: FIRING as MessageId, origin: HARNESS_ORIGIN.wake, text: WAKE_TEXT, start: true })).toBe("admitted")
+    await h.settled()
+    expect(h.provider.prefixBreaks()).toEqual([])
+    expect(JSON.stringify(h.provider.requests[1]!.input.at(-1))).toContain('<harness origin=\\"wake\\">')
+  },
+
+  "A wake-up fires while a turn runs": async (h, say) => {
+    h.provider.enqueue([call("call_1", "read", { path: "a.ts" }), U], answer("a is 1."), answer("The build is green."))
+    h.tools.on("read", () => {
+      expect(h.session.admit({ messageId: FIRING as MessageId, origin: HARNESS_ORIGIN.wake, text: WAKE_TEXT, start: true })).toBe("admitted")
+      return "export const a = 1"
+    })
+    h.create().send(say[0]!)
+    await h.settled()
+    // The user's turn was answered before the model was shown the wake-up.
+    expect(JSON.stringify(h.provider.requests[1]!.input)).not.toContain("Wake-up")
+    expect(h.provider.prefixBreaks()).toEqual([])
+  },
+
+  "A firing is delivered again after the process died": async (h, say) => {
+    h.provider.enqueue(answer("2"))
+    h.create().send(say[0]!)
+    await h.settled()
+    // Admitted, and the process is gone before the turn starts: nothing more is in the log.
+    expect(h.session.admit({ messageId: FIRING as MessageId, origin: HARNESS_ORIGIN.wake, text: WAKE_TEXT, start: false })).toBe("admitted")
+    h.kill()
+    const session = h.restart("wait")
+    h.provider.enqueue(answer("The build is green."))
+    const before = h.log().length
+    expect(session.admit({ messageId: FIRING as MessageId, origin: HARNESS_ORIGIN.wake, text: WAKE_TEXT, start: true })).toBe("duplicate")
+    // Nothing was admitted a second time; what was written is the start of the turn the message was to start.
+    expect(h.log()[before]!.type).toBe("execution.started")
+    await h.settled()
+    expect(session.admit({ messageId: FIRING as MessageId, origin: HARNESS_ORIGIN.wake, text: WAKE_TEXT, start: true })).toBe("duplicate")
+    await h.settled()
+  },
+
+  "A webhook's firing brings untrusted content: the session is tainted before its turn starts": async (h, say) => {
+    h.provider.enqueue(answer("2"), answer("The deploy went out."))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.session.approval()!.taint.tainted).toBe(false)
+    expect(h.session.admit({ messageId: FIRING as MessageId, origin: HARNESS_ORIGIN.wakeWebhook, text: WEBHOOK_TEXT, start: true, untrusted: WEBHOOK_BODY })).toBe("admitted")
+    await h.settled()
+    expect(h.session.approval()!.taint).toMatchObject({ tainted: true, sources: [{ kind: "wake-up", path: "webhook_body" }] })
+    expect(h.provider.prefixBreaks()).toEqual([])
+  },
 } satisfies Record<string, Play>)
 
 const scenarios = Object.entries(families).flatMap(([family, list]) => list.map((scenario) => ({ family, scenario })))
@@ -1156,7 +1282,17 @@ describe("the loop writes each scenario's events", () => {
         ? new ScriptedTools({ read: "read", shell: "exec", write: "write", fetch: "network" })
         : new ScriptedTools()
       const setup = scenario.setup
+      const features = scenario.features
+      // Skills and MCP servers are read from a real directory, which then stands for the scenarios' `/repo`.
+      const cwd = features?.skills === true || features?.mcp === true ? projectDirectory() : undefined
       const h = new Harness({
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(features?.skills === true ? { skills: { configDir: join(dirname(cwd!), "config") } } : {}),
+        // One scripted server of the user's own, slow to start, so that the first request is out before it connects.
+        ...(features?.mcp === true
+          ? { mcp: { startWaitMs: 0, probeMs: 300, graceMs: 500, dropAfterMs: 200 }, userConfig: { verify: { mode: "off" as const }, mcp: { servers: { fx: fixtureServer(["--only", "echo", "--startup-delay", "300"]) } } } }
+          : {}),
+        ...(features?.wake === true ? { wake: {} } : {}),
         tools,
         limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET },
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
@@ -1180,7 +1316,7 @@ describe("the loop writes each scenario's events", () => {
       try {
         await play(h, prompts(scenario))
         const wanted = (await DEVIATIONS[scenario.title]?.expected(allEvents(scenario))) ?? allEvents(scenario)
-        expect(comparable(h.log())).toEqual(comparable(wanted))
+        expect(comparable(inRepo(h, h.log()))).toEqual(comparable(wanted))
         // Nothing scripted was left over, so the situation happened the way the scenario describes it.
         expect(h.provider.remaining).toBe(0)
         expect(h.tools.unused).toBe(0)
@@ -1196,7 +1332,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(84)
+    expect(scenarios).toHaveLength(90)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

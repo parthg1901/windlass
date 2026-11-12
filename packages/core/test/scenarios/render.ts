@@ -52,6 +52,7 @@ function renderScenario(scenario: Scenario, number: number): string {
     ...(scenario.setup === undefined ? [] : [describeSetup(scenario.setup)]),
     ...(scenario.contextWindow === undefined ? [] : [`*Context window:* ${scenario.contextWindow.toLocaleString("en-US")} tokens.`]),
     ...(scenario.approval === undefined ? [] : [describeApproval(scenario.approval)]),
+    ...(scenario.features === undefined ? [] : [describeFeatures(scenario.features)]),
     ["```", ...lines, "```"].join("\n"),
     `*UI:* ${view(end).map(describeMessage).join(" · ")}. *Claim:* ${describeClaim(end)}.${end.inbox.length > 0 ? ` *Inbox:* ${end.inbox.map((item) => `${item.messageId} (${item.delivery})`).join(", ")}.` : ""}`,
     `*Model sees next:* ${historyIds(end).join(", ") || "nothing"}.`,
@@ -68,6 +69,15 @@ function describeApproval(approval: NonNullable<Scenario["approval"]>): string {
   const sandbox = approval.sandbox === "unavailable" ? "no sandbox on the machine" : "the sandbox is available"
   const who = approval.attended === true ? "a person is present" : `nobody is present (unattended: ${approval.unattended ?? "deny"})`
   return `*Approval:* mode ${approval.mode ?? "auto"}; ${sandbox}; ${who}.`
+}
+
+function describeFeatures(features: NonNullable<Scenario["features"]>): string {
+  const offered = [
+    ...(features.skills === true ? ["skills (the `skill` tool; the project has skill files)"] : []),
+    ...(features.mcp === true ? ["MCP (`mcp_search` and `mcp_call`; the user's configuration names one server, `fx`)"] : []),
+    ...(features.wake === true ? ["wake-ups (`wake_create`, `wake_list`, `wake_cancel`)"] : []),
+  ]
+  return `*Engine:* offers ${offered.join("; ")}.`
 }
 
 function describeMessage(message: MessageView): string {

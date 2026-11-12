@@ -75,7 +75,20 @@ export interface Scenario {
    * the engine offers none of their tools.
    */
   readonly spawn?: SpawnSetting
+  /**
+   * The features the engine offers the session, for the scenarios about
+   * them: skills (the project has skill files), MCP servers (the user's
+   * configuration names one scripted server), wake-ups. Without it the
+   * engine offers none of their tools and appends nothing about them.
+   */
+  readonly features?: FeatureSetting
   readonly phases: readonly Phase[]
+}
+
+export interface FeatureSetting {
+  readonly skills?: boolean
+  readonly mcp?: boolean
+  readonly wake?: boolean
 }
 
 export interface SpawnSetting {

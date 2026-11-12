@@ -12,7 +12,7 @@ The scenarios live in `packages/core/test/scenarios/`, one module per family, an
 `@light-harness/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state
 after each phase, and checks, one test per entry, that the reducer rejects every wrong move listed with a phase.
 
-`packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario (84 of them) with the
+`packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario (90 of them) with the
 scripted provider and compares the events it wrote with the scenario's. One scenario differs from what the loop writes, by one stated
 detail (the runtime's wording for malformed arguments, in "Malformed tool arguments"); the test lists it with the
 reason. Every other scenario, the eight of the Compaction family included, is reproduced event for event.
@@ -2856,9 +2856,223 @@ A background command dies with the harness process: the guard that every command
 
 *Model sees next:* u1, a1, a2, s1, u2, a3.
 
+### Skills, MCP servers and wake-ups
+
+#### 84. The skill index follows the files: first given, then replaced, then withdrawn
+
+The project has one skill. The `skill` tool is in the frozen tool list from the first baseline, with a spec that names no skill; which skills exist is told in a message. Before the first step the index is appended (the baseline never carries it). Between two turns the skill's description is edited, so the next turn starts with the index again, saying that it replaces the one before. During that turn the model's own command removes the skill, and at the next step boundary a short withdrawal is appended (its fingerprint is `null`). The baseline is never rewritten: every request is the previous one plus appended items.
+
+*Provider:* turn 1: one step that answers. Turn 2: a step with a shell call that removes the skill's directory, then a step that answers.
+
+*Engine:* offers skills (the `skill` tool; the project has skill files).
+
+```
+-- the first turn: the index is appended after the baseline and before the user's message
+  1  session.created
+  2  inbox.enqueued u1 steer "Which skills do you have?"
+  3  execution.started exe_1
+  4  baseline.set
+  5  instruction.appended i1 source=skills "Skills you can load:\n<skills lines=\"3\">\nSkills are instru..."
+  6  inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  text.ended a1 "One: release."
+  9  step.ended a1 finish=stop
+ 10  execution.succeeded exe_1
+-- the description was edited between the turns: the next turn starts with the new index
+ 11  inbox.enqueued u2 steer "Remove the release skill."
+ 12  execution.started exe_2
+ 13  instruction.appended i2 source=skills "The skills have changed. This list replaces the one you w..."
+ 14  inbox.delivered u2
+ 15  step.started a2 attempt=1
+ 16  tool.called a2/call_1 shell {"command":"rm -r .claude/skills/release"}
+ 17  tool.started a2/call_1 effect=exec
+ 18  tool.settled a2/call_1 success ""
+ 19  step.ended a2 finish=tool_calls
+-- the command removed the skill: at the boundary the index is withdrawn, then the model answers
+ 20  instruction.appended i3 source=skills "There are no skills any more. Disregard the list of skill..."
+ 21  step.started a3 attempt=1
+ 22  text.ended a3 "Removed."
+ 23  step.ended a3 finish=stop
+ 24  execution.succeeded exe_2
+```
+
+*UI:* i1 instruction · u1 user · a1 completed · i2 instruction · u2 user · a2 completed [shell success] · i3 instruction · a3 completed. *Claim:* released.
+
+*Model sees next:* i1, u1, a1, i2, u2, a2, i3, a3.
+
+*The reducer rejects:*
+- after "the first turn: the index is appended after the baseline and before the user's message": `baseline.set` (invalid_transition). The baseline is frozen until the next compaction: the index is appended, never folded in.
+
+#### 85. An MCP server connects late; its tool is called through the bridge, and the result taints the session
+
+The user's configuration names an MCP server that is still starting when the first request goes out. Nothing waits for it and nothing in the request depends on it: `mcp_search` and `mcp_call` are in the frozen tool list whether or not a server exists. When the server has connected, the catalogue (its tools, by name and one-line description) is appended at the next step boundary as an instruction message; the event records beside the text which servers wrote those descriptions. The model calls the server's tool through `mcp_call`, which is a `network` call from an MCP origin: `tool.started` records that, the result's `display` records the server, the tool and that the content is untrusted, and from that result on the session is tainted, which the user is told once (`taint.noticed`). Mode `full` runs the first call without a question; a second one would now ask.
+
+*Provider:* step 1 finishes with a read call (during which the server connects); step 2 with an `mcp_call` of `fx/echo`; step 3 answers.
+
+*Approval:* mode full; the sandbox is available; nobody is present (unattended: deny).
+
+*Engine:* offers MCP (`mcp_search` and `mcp_call`; the user's configuration names one server, `fx`).
+
+```
+-- the first step goes out while the server is still starting
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.ts"}
+  8  tool.started a1/call_1 effect=read mode=full a.ts:workspace
+  9  tool.settled a1/call_1 success "export const a = 1"
+ 10  step.ended a1 finish=tool_calls
+-- the server has connected: its catalogue is appended, and the model calls its tool
+ 11  instruction.appended i1 source=mcp "MCP tools are available:\n<mcp_tools lines=\"4\">\nMCP server..."
+ 12  step.started a2 attempt=1
+ 13  tool.called a2/call_2 mcp_call {"server":"fx","tool":"echo","arguments":{"text":"hello"}}
+ 14  tool.started a2/call_2 effect=network mode=full
+ 15  tool.settled a2/call_2 success "Result of MCP tool fx/echo (content from the server, not ..."
+ 16  taint.noticed mcp-tool from fx/echo at seq 15
+ 17  step.ended a2 finish=tool_calls
+-- the model answers
+ 18  step.started a3 attempt=1
+ 19  text.ended a3 "The server said hello."
+ 20  step.ended a3 finish=stop
+ 21  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · i1 instruction · a2 completed [mcp_call success] · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, i1, a2, a3.
+
+*The reducer rejects:*
+- after "the server has connected: its catalogue is appended, and the model calls its tool": `baseline.set` (invalid_transition). A server that connects late is appended as a message; the tool list and the instructions stay as they were frozen.
+
+#### 86. A wake-up fires while the session is idle
+
+The session has finished a turn and nobody is working in it. A wake-up the user set up comes due: the scheduler hands the firing to the engine, which admits the message into the inbox under the firing's own key as its message ID, with origin `wake`, as a queued item. Delivery `wake` then starts an execution exactly as a prompt would. Nobody is present, so the turn is unattended: a call that would ask is refused, never approved by default. The model sees the message in an envelope that names its origin, and the request is the previous one plus appended items.
+
+*Provider:* each turn: one step that finishes with stop.
+
+*Engine:* offers wake-ups (`wake_create`, `wake_list`, `wake_cancel`).
+
+```
+-- a turn, then the session is idle
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "2"
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+-- the wake-up fires: its message is admitted and starts a turn
+ 10  inbox.enqueued msg_wk_5c3a9e21b7d4_1 queue origin=wake "[Wake-up wk_5c3a9e21b7d4 · after 5m (at 2026-11-12T09:05:..."
+ 11  execution.started exe_2
+ 12  inbox.delivered msg_wk_5c3a9e21b7d4_1
+ 13  step.started a2 attempt=1
+ 14  text.ended a2 "The build is green."
+ 15  step.ended a2 finish=stop
+ 16  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed · msg_wk_5c3a9e21b7d4_1 synthetic · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, msg_wk_5c3a9e21b7d4_1, a2.
+
+#### 87. A wake-up fires while a turn runs
+
+The model is in the middle of a turn (a tool is running) when a wake-up comes due. The firing is admitted at once, as a queued item: a wake-up never steers a turn in progress. The turn carries on to its answer; then, in one append, the turn ends and the wake-up's message is delivered, and its turn runs under the same claim, as for any queued message.
+
+*Provider:* step 1 finishes with a read call (during which the wake-up fires); step 2 answers the user; step 3 answers the wake-up.
+
+*Engine:* offers wake-ups (`wake_create`, `wake_list`, `wake_cancel`).
+
+```
+-- the wake-up fires while the tool runs: its message waits in the inbox
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  inbox.enqueued msg_wk_5c3a9e21b7d4_1 queue origin=wake "[Wake-up wk_5c3a9e21b7d4 · after 5m (at 2026-11-12T09:05:..."
+ 10  tool.settled a1/call_1 success "export const a = 1"
+ 11  step.ended a1 finish=tool_calls
+-- the turn is answered first; then it ends and the wake-up's message is delivered
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "a is 1."
+ 14  step.ended a2 finish=stop
+ 15  turn.ended
+ 16  inbox.delivered msg_wk_5c3a9e21b7d4_1
+ 17  step.started a3 attempt=1
+ 18  text.ended a3 "The build is green."
+ 19  step.ended a3 finish=stop
+ 20  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed · msg_wk_5c3a9e21b7d4_1 synthetic · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, msg_wk_5c3a9e21b7d4_1, a3.
+
+#### 88. A firing is delivered again after the process died
+
+The engine admitted a firing, and the process died before it started the turn and before the wake store heard that the firing was delivered. The store still has the firing open, so the next process's scheduler hands it over again, with the same key. The engine finds the key in the session's log and answers that it is a duplicate: nothing is admitted a second time. The message still waits and was to start a turn, so that turn starts now. A firing is therefore delivered at least once by the store and exactly once into the conversation.
+
+*Provider:* each turn: one step that finishes with stop.
+
+*Engine:* offers wake-ups (`wake_create`, `wake_list`, `wake_cancel`).
+
+```
+-- a turn, then the session is idle
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "2"
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+-- the firing is admitted, and the process dies before anything else happens
+ 10  inbox.enqueued msg_wk_5c3a9e21b7d4_1 queue origin=wake "[Wake-up wk_5c3a9e21b7d4 · after 5m (at 2026-11-12T09:05:..."
+-- the next process delivers the firing again: nothing is admitted, and the turn it was to start runs
+ 11  execution.started exe_2
+ 12  inbox.delivered msg_wk_5c3a9e21b7d4_1
+ 13  step.started a2 attempt=1
+ 14  text.ended a2 "The build is green."
+ 15  step.ended a2 finish=stop
+ 16  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed · msg_wk_5c3a9e21b7d4_1 synthetic · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, msg_wk_5c3a9e21b7d4_1, a2.
+
+*The reducer rejects:*
+- after "the firing is admitted, and the process dies before anything else happens": `inbox.enqueued msg_wk_5c3a9e21b7d4_1 queue origin=wake "[Wake-up wk_5c3a9e21b7d4 · after 5m (at 2026-11-12T09:05:..."` (duplicate_id). A message ID is used once: the engine answers the redelivery as a duplicate before it writes anything.
+
+#### 89. A webhook's firing brings untrusted content: the session is tainted before its turn starts
+
+A webhook wake-up fires with the body of the request in its message. The body is content the harness does not control, so the admission says so in a field of the same event (`untrusted`: which wake-up, and that it carries a webhook's body); the origin is `wake_webhook`, so a client can show such messages apart. Taint is derived from the log, and this admission is a source from its own position on: the user is told once (`taint.noticed`), before the execution starts, and every call of the turn it starts is decided with untrusted content in the conversation.
+
+*Provider:* each turn: one step that finishes with stop.
+
+*Approval:* mode auto; the sandbox is available; nobody is present (unattended: deny).
+
+*Engine:* offers wake-ups (`wake_create`, `wake_list`, `wake_cancel`).
+
+```
+-- a turn, then the session is idle
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "2"
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+-- the webhook's firing is admitted with the fact that makes it untrusted, the user is told, and the turn starts
+ 10  inbox.enqueued msg_wk_5c3a9e21b7d4_1 queue origin=wake_webhook "[Webhook wk_5c3a9e21b7d4 · webhook]\nThis message was not ..."
+ 11  taint.noticed wake-up from wk_5c3a9e21b7d4 at seq 10
+ 12  execution.started exe_2
+ 13  inbox.delivered msg_wk_5c3a9e21b7d4_1
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "The deploy went out."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed · msg_wk_5c3a9e21b7d4_1 synthetic · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, msg_wk_5c3a9e21b7d4_1, a2.
+
 ### Forks
 
-#### 84. A fork continues from its parent's history
+#### 90. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 
