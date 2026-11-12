@@ -760,7 +760,10 @@ export class Transcript {
         const before = open?.tokensBefore ?? 0
         const sizes = before > 0 && event.data.tokensAfter > 0 ? ` · about ${thousands(before)} → ${thousands(event.data.tokensAfter)} tokens` : ""
         const fallback = event.data.source === "fallback"
-        const text = [span(fallback ? "compacted the conversation without a summary" : "compacted the conversation", fallback ? "warn" : undefined), span(sizes, "dim")]
+        // The images of kept tool results that are not sent from here on (those an earlier compaction retired count again).
+        const images = (event.data.retired ?? []).reduce((sum, result) => sum + result.images, 0)
+        const retired = images === 0 ? "" : ` · ${plural(images, "image")} of earlier tool results no longer sent`
+        const text = [span(fallback ? "compacted the conversation without a summary" : "compacted the conversation", fallback ? "warn" : undefined), span(`${sizes}${retired}`, "dim")]
         const detail = fallback
           ? [[span(`Why: ${event.data.detail ?? "the model produced no usable summary"}.`, "warn")], [span("The model continues from a list of the files, commands and errors so far and your own messages, and can search the full conversation.", "dim")]]
           : [[span("Earlier messages are now a checkpoint; the model can still search them.", "dim")], ...(event.data.detail === null ? [] : [[span(`Note: ${event.data.detail}.`, "dim")]])]

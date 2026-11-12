@@ -86,6 +86,27 @@ describe("rows from a scripted turn", () => {
     expect(transcript.calls.map((call) => call.kind)).toEqual(["compaction", "step"])
   })
 
+  test("a compaction that retired images of kept tool results says how many on its row", () => {
+    const transcript = play([
+      ...opening("go"),
+      event("compaction.started", { messageId: m("k1"), trigger: "auto", mode: "normal", keepFromSeq: 3, prompt: "summarise", tokensBefore: 41_200 }),
+      event("compaction.ended", {
+        messageId: m("k1"),
+        summary: "…",
+        source: "model",
+        detail: null,
+        tokensAfter: 9_800,
+        usage: null,
+        retired: [
+          { messageId: m("a0"), callId: c("r1"), images: 2, note: "(2 images of this result are no longer shown.)" },
+          { messageId: m("a0"), callId: c("r2"), images: 1, note: "(1 image of this result is no longer shown.)" },
+        ],
+      }),
+    ])
+    const row = transcript.rows.find((candidate) => candidate.kind === "notice" && candidate.symbol === "⇣")
+    expect(row?.kind === "notice" && row.text.map((part) => part.text).join("")).toBe("compacted the conversation · about 41,200 → 9,800 tokens · 3 images of earlier tool results no longer sent")
+  })
+
   test("parallel calls stay where they started while they interleave", () => {
     const called = (id: string, name: string) => event("tool.called", { messageId: m("a1"), callId: c(id), name, input: JSON.stringify({ command: `run ${id}` }), providerData: null })
     const settled = (id: string) => event("tool.settled", { messageId: m("a1"), callId: c(id), outcome: "success", output: "ok", truncation: null, attachments: [], display: null })
