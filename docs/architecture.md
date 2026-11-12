@@ -45,7 +45,8 @@ packages/core/src
                   revert), history.ts (the history tools as the loop offers them),
                   recovery.ts (start-up recovery), replay.ts (what a replay may change, its changed baseline),
                   spawn.ts (the subagent and background tools, what is read off a child's log),
-                  worktree.ts (a subagent's git worktree and the merge back), state.ts (what the loop reads off the projection),
+                  worktree.ts (a subagent's git worktree and the merge back), skills.ts, mcp.ts, wake.ts and memory.ts
+                  (those four modules as the loop offers them), state.ts (what the loop reads off the projection),
                   workspace.ts (what it reads off the log about snapshots), constants.ts (limits and frozen texts),
                   channel.ts (the event stream), clock.ts
   snapshot/       the working tree as git tree objects in a private git directory: take, diff, restore, prune
@@ -62,6 +63,13 @@ packages/core/src
                   escalation.ts (the shell call's explicit `sandbox` argument, the hint), grants.ts (remembered
                   approvals), taint.ts, redact.ts, record.ts (these shapes as the log stores them, and the
                   history taint is folded from)
+  skills/         skill files: discovery, the index text, the `skill` tool, the `skills` configuration section
+  mcp/            MCP servers behind two bridge tools: both protocol eras, the two transports, the registry, the
+                  catalogue text, the `mcp` configuration section
+  wake/           wake-ups: the record and its limits, cron, the shared store, the scheduler, the check runner, the
+                  webhook listener, the tools, the `wake` configuration section
+  memory/         notes across sessions: the files, expiry and budget, trust, delivery, the tools, usage and scores,
+                  the `memory` configuration section
 ```
 
 Naming: a lowercase export such as `message` or `usage` is a validator; the PascalCase export of the same name is its
@@ -88,8 +96,8 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Group | Events |
 | --- | --- |
 | Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
-| Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint) |
-| Inbox | `inbox.enqueued`, `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
+| Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists) |
+| Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
@@ -250,6 +258,13 @@ is a new version with a decoder for the old one.
   idle is written when the next execution starts.
 - What the model currently has per source is a fold over those fingerprints in the model's view of the log. Nothing
   reads rendered text back, so a reverted, refused or compacted-away message is detected again by itself.
+- Three sources are never part of the baseline: the skill index (`skills`), the MCP catalogue (`mcp`) and memory
+  (`memory`). What they say depends on things outside the session (a file is edited, a server connects), so each
+  reaches the model only as appended messages: once when it first has something to say, again when its fingerprint
+  changes, and as a one-line withdrawal with fingerprint `null`. Their modules write the texts; `AppendedSource` and
+  `detectAppendedChanges` (`instructions/state.ts`) route the keys through the same fold. A baseline set after a
+  compaction carries none of them, so the first boundary after it gives each again in full. `renderSection` refuses
+  their keys, so none can be folded into a baseline by mistake.
 
 **Provider** (`provider/`)
 - `stream(request, signal)` yields normalised events and ends with exactly one `finish` or `error`. Failures are
@@ -270,6 +285,9 @@ is a new version with a decoder for the old one.
 - The context carries the abort signal with its reason. A tool that is aborted returns what it observed.
 - The context carries `putBlob`, which stores bytes in the blob table and returns the reference a tool lists in its
   result's `attachments`. The tool runtime supplies it from its options (`store.putBlob`), so a tool never sees the store.
+- A tool that stands for many says which one a call means (`Tool.subject`: `mcp_call` names the server's tool, so an
+  approval is asked about and remembered for `github/create_issue`, never for the bridge), and a tool whose call
+  acts later says so for the question (`Tool.cautions`: `wake_create`).
 
 **Approval and the sandbox** (`approval/`, `sandbox/`, `engine/approval.ts`; for users: `docs/safety.md`)
 - `decide` is pure. It is given the mode, the call's effect class and origin, the facts about its path arguments
@@ -289,7 +307,11 @@ is a new version with a decoder for the old one.
   command's granted network, a network or MCP tool by its class or origin: a tool declares `origin: "mcp"` or
   effect `network` and is a source with no further wiring), `taint.cleared` and compactions, in log order. The
   engine keeps that history in memory, built from the log on first use and extended with every append. A write
-  outside the workspace is not a source: its result shows nothing of the file. `taint.noticed` records that the
+  outside the workspace is not a source: its result shows nothing of the file. Two sources say what they are
+  themselves, in a field: an MCP bridge call's result records in `display.mcp` whether it holds content an untrusted
+  server wrote (it is a source when it does, so a call to a server the user's file marks as trusted, or one refused
+  before anything was sent, is not), and an admitted input records `untrusted` (a wake-up's firing with a webhook's
+  body or a networked check's output), which is a source from the admission on. `taint.noticed` records that the
   user was told, and is what a client shows; a fork inherits it, a revert and a compaction leave it.
 - Redaction is applied by the loop to every tool result before `tool.settled` is written (the text, and every
   string of the structured `display` data), and to a check report. The values are the engine's `secrets`: by
@@ -314,7 +336,9 @@ is a new version with a decoder for the old one.
   takes its own "before" snapshot, never deletes an ignored file, and reports what it left alone.
 - `loadConfig` reads the user and project files with strict validation: an unknown key is an error. The
   `approval` section is the one key that is not merged: each file's section is handed on as written, and
-  `resolveApprovalConfig` lets the project's only tighten the user's.
+  `resolveApprovalConfig` lets the project's only tighten the user's. The sections `mcp`, `skills`, `wake` and
+  `memory` are validated by the modules that own them, and `LoadedConfig.files` hands on both files apart, because
+  for each of them it matters who wrote a value (see "Skills, MCP servers, wake-ups and memory").
 - `decideGate` is pure: finish, run these checks, report and continue, or finish unresolved. `renderReport` is the
   deterministic text the model is shown; `acknowledgeTool` is the tool (`report_check_failure`) with which the model
   says it cannot fix a failing check. An acknowledgement is that tool call, never parsed prose; a check may be
@@ -325,7 +349,8 @@ is a new version with a decoder for the old one.
   the jitter source, limits, the data directory, the snapshot opener, the configuration loader, the check runner),
   so tests inject fakes. `createHarness` (`assembly.ts`) is the one place the real ones are put together; the CLI
   and the ACP server both call it and write nothing to a store themselves.
-- A session offers `send` (steer or queue), `start`, `interrupt`, `setSettings` (model and effort, at the next step
+- A session offers `send` (steer or queue), `admit` (input from a harness component under a message ID it is
+  given: a reused ID is a duplicate and writes nothing), `start`, `interrupt`, `setSettings` (model and effort, at the next step
   boundary), `withdraw` (a prompt that was not delivered yet), `readEvents` (its stored log, for a client that
   replays history), `revert`, `undoRevert`, an event stream and `close`. Closing a session closes that session:
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
@@ -592,6 +617,105 @@ that already holds the child's change merges to itself.
 `<data dir>-work` (`EngineOptions.workDir`): beside the data directory, never inside it. The sandbox hides the data
 directory from commands, and commands must run in these.
 
+## Skills, MCP servers, wake-ups and memory
+
+Four modules that were built apart (`skills/`, `mcp/`, `wake/`, `memory/`; each has a README) and are wired into
+the loop by one file each in `engine/`. They have one rule in common, which is the reason they exist in this form:
+**nothing they bring changes a session's frozen prefix.** Their tools have constant specs and are in the tool list
+from the first baseline or never; what changes during a session (which skills exist, which servers are connected
+and what they offer, which notes apply) is appended as a message with its text stored. `EngineOptions.skills`,
+`mcp`, `wake` and `memory` switch each on; `createHarness` passes all four, and an engine built without one offers
+nothing of it.
+
+| Feature | Tools in the frozen list | When | Appended source |
+| --- | --- | --- | --- |
+| Skills | `skill` | every session, whether or not a skill exists | `skills`: the index |
+| MCP | `mcp_search`, `mcp_call` | every session, whether or not a server is configured | `mcp`: the catalogue |
+| Wake-ups | `wake_create`, `wake_list`, `wake_cancel` | a session a person started, while `wake.enabled` (default on) | none: firings arrive through the inbox |
+| Memory | `memory_save`, `memory_retract`, `memory_search` | a session a person started, while `memory.enabled` (default **off**) | `memory`: the notes |
+
+"When" is decided once, as the first baseline is set, like the acknowledgement tool: the list keeps the tools or
+lacks them from then on, also across a compaction and whatever the configuration says later. Skills and MCP are
+unconditional so that every session of a build has the same list and a skill or a server that appears later needs
+no change of it. A feature acts only for a session whose list has its tools: an index, a catalogue or notes are
+never given to a model that has no tool to act on them. The tool list of a session of the real harness has 19
+tools with verification on and memory off (seven file and shell tools, two history tools, three for spawned work,
+the acknowledgement tool, and the six of skills, MCP and wake-ups); memory adds three.
+
+**Skills** (`engine/skills.ts`). At every step boundary the skills of the session's working directory are
+discovered (a few `readdir` and `stat` calls and one read per skill file) and the index is appended when its
+fingerprint differs from what the model has: editing a description, adding or removing a skill appends; editing a
+body does not, and the next `skill` call returns the new body. What discovery could not load goes to the user as a
+`diagnostic` of kind `skills`, once, never to the model; `EngineSession.skills()` gives a client the skills and the
+problems. `skills.paths` is read from the user's own file only (a repository carries its skills in itself and
+must not point the harness at other directories); `skills.disabled` from both files.
+
+**MCP servers** (`engine/mcp.ts`). The engine has one hub with one registry per distinct server (its
+configuration and, for a started one, the directory it starts in), shared by the sessions whose configuration
+names it, started when the first of them reads its configuration and stopped when the last lets go or the engine
+closes. Starting never blocks: the registry connects in the background, and a server that is ready later is
+appended later. The first step of an execution alone gives servers that have never answered a bounded moment
+(`McpSetup.startWaitMs`, 1.5 s), so that a one-prompt run has the catalogue in its first request.
+
+- *The call.* `mcp_call` is a `network` tool with origin `mcp`. The approval layer decides it: in `ask` and
+  `auto` it is asked about by the server's tool (`Allow the MCP tool github/create_issue?`), and the answer can be
+  remembered for that tool, for the session or the project; nobody present, it is refused; `full` runs it until the
+  session is tainted. `mcp_search` is a read.
+- *What is recorded.* `tool.settled.display.mcp` holds the kind (call or search), the servers whose text is in the
+  output, the tool, whether that text is untrusted, and the outcome (`result`, `tool_error`, `failed`, `refused`).
+  The catalogue's `instruction.appended.detail` names each server with its number of tools and whether it is
+  untrusted. Taint reads the first; nothing is parsed out of text.
+- *Taint.* A bridge result that says `untrusted` is a source (kind `mcp-tool`, named by the server's tool). The
+  catalogue is not: it is one line per tool, given to every session at its start, and a warning that is always on
+  teaches people to ignore it. That its descriptions are server-written is on record for a stricter policy.
+- *A project's server.* A server named by the user's own file starts. One the project's file names, or changes in
+  any way, does not: opening a repository must not run a command, or send the user's environment to an address,
+  that the repository chose. It waits for the user's approval, which is a remembered approval for the project like
+  any other (`approval/grants.ts`: a `tool` rule `mcp-server:<name>:<fingerprint>` in
+  `approvals/<workspace hash>.json`, 30 days), for exactly this definition of the server: the fingerprint is of its
+  merged configuration, so an edited command is asked about again. `EngineSession.mcp()` lists the started servers
+  and the ones that wait, with the words of the question; `approveMcpServer(name, fingerprint)` records the
+  approval and starts the server. The question is not tied to a tool call, so it is not an `approval.requested`
+  event: the session's log does not change when a server starts, only when its catalogue is appended. Until a
+  client puts the question, the user is told by a `diagnostic` of kind `mcp`, and a call that names the server is
+  answered with why it went nowhere. There is no unattended default.
+
+**Wake-ups** (`engine/wake.ts`). A firing is delivered through `EngineSession.admit`: `inbox.enqueued` with the
+firing's own key as the message ID, origin `wake` (or `wake_webhook`), delivery `queue`, and with delivery `wake`
+a start as `send` makes it. The key makes a redelivery a duplicate: the engine looks it up in the session's log
+(messages, the inbox, and withdrawn items) and writes nothing; if the message still waits and was to start a turn,
+the turn starts then. The scheduler's `deliver` opens a session that is not open in the process (held elsewhere:
+retry; archived, gone or a replay: the wake-up fails), and lets go of it again when its turn is over unless a
+client opened it meanwhile.
+
+- *Which processes fire.* Every process that offers the tools can create, list and cancel: wake-ups are records
+  in a store all processes of a data directory share. The scheduler and the webhook listener run only in a
+  process that asks for them (`EngineOptions.wake.run`), which is for the long-lived ones, the ACP server. A
+  one-prompt run does not: it would fire other sessions' wake-ups, start turns in them and cut them off when it
+  exits, and it must not open a port. What it sets up fires in the next process that runs the scheduler.
+- *Shutdown.* `Engine.close()` stops the listener and the scheduler first, then the sessions, then the MCP
+  servers, then closes the wake store.
+- *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so it is
+  decided exactly as that command would be; the question adds that it acts later, unattended, and how often. What
+  the call ran under becomes the most the wake-up's check may run with. Before each run the scheduler asks what
+  the session's commands may have now (`runAllowedNow`): sandboxed and offline once the session holds untrusted
+  content, the recorded run otherwise, never more.
+- *Taint.* A firing with a webhook's body, or the output of a check that had the network or no sandbox, is
+  admitted with `untrusted`, and the user is told (`taint.noticed`) before the execution it starts.
+- *Configuration.* The store, scheduler and listener are one per process, so the user's own file configures them.
+  A project's file tightens per session: it turns the tools off and lowers the model's limit of pending wake-ups.
+  Its lower hourly ceiling is not applied.
+
+**Memory** (`engine/memory.ts`), behind `memory.enabled`. With the flag off as the first baseline is set, nothing
+of it exists for the session, then or later, and its requests are byte for byte those of an engine without memory
+(a test holds this). With it on: the notes are appended under source `memory` (the block, then updates for what
+this session changes), each delivery is recorded in memory's usage log before the message is appended, and the
+outcome of each turn is recorded from `execution.succeeded`, `turn.ended`, a user's interrupt and
+`history.reverted`. The model's quote of the user is looked up in the session's own visible user messages. A
+subagent is not offered memory. `EngineSession.memory()` gives a client the store. The A/B comparison that decides
+whether memory stays reads evaluation results and lives in `evals/memory-compare.ts`; core imports nothing from
+`evals/`.
+
 ## Replay
 
 `Engine.replaySession` creates a replay session (`lineage.kind = "replay"`) and runs it; `docs/replay.md` is the
@@ -636,6 +760,16 @@ These are the shapes the scenarios spell out event by event.
   at once; later, in one append, `spawn.ended` and `inbox.enqueued` (`subagent_result`), then its delivery.
 - **A background command.** `tool.called` · `tool.started` · `spawn.started` · `tool.settled` with the handle;
   when it exits, in one append, `spawn.ended` and `inbox.enqueued` (`background_command`); if idle, `execution.started`.
+- **A source that is never in the baseline.** At a boundary, after the baseline when one is set there:
+  `instruction.appended` with source `skills`, `mcp` or `memory` (the first text, a replacement, or a withdrawal
+  with fingerprint `null`) · the delivery of waiting input · `step.started`.
+- **An MCP call.** `tool.called` · the approval layer's decision (a question by the server's tool, or a refusal) ·
+  `tool.started` (`network`, origin `mcp`) · `tool.settled` (`display.mcp`: server, tool, untrusted, outcome) ·
+  `taint.noticed` the first time such a result is untrusted.
+- **A wake-up's firing.** `inbox.enqueued` (the firing's key as the message ID, origin `wake` or `wake_webhook`,
+  delivery `queue`, `untrusted` when it carries outside content) · `taint.noticed` when that is new · if idle and
+  the delivery is `wake`, `execution.started` · `inbox.delivered` · the turn's steps. While a turn runs: the item
+  waits, then `turn.ended` and `inbox.delivered` in one append. Delivered again: nothing.
 - **A replay.** `session.created` (replay) · `execution.started` · `baseline.set` (changed) · the recording's
   prompt · per step `tool.called`, `tool.started` (when the recorded call had started), `replay.call`,
   `tool.settled` · `execution.succeeded` or `execution.failed` (`replay`) · `replay.ended`.
@@ -663,7 +797,10 @@ sessions/<session id>.db-lock     that session's writer lock; never deleted
 sessions/<session id>.db-holder   the process holding the lock, for the error message only
 ../<data dir>-work/               beside the data directory: workspaces/ (a fork's copy), worktrees/ (a subagent's
                                   git worktree), replays/ (a replay's copy): where sandboxed commands must run
-approvals/<workspace hash>.json   approvals remembered for a project (30 days), keyed by its real path
+approvals/<workspace hash>.json   approvals remembered for a project (30 days), keyed by its real path; also the
+                                  approvals of the MCP servers the project's file names
+wake/                             the wake-ups of every session: one SQLite file all processes share, the owners' locks
+memory/                           notes (user/, projects/<name>-<hash>/) and the usage log; only with memory enabled
 index.db                          the listing cache; can be deleted at any time
 blobs/<aa>/<sha256>               media, content-addressed
 spill/                            tool output too long for the model, named by content or by call

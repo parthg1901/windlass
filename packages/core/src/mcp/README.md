@@ -1,8 +1,10 @@
 # mcp
 
-MCP (Model Context Protocol) servers behind two fixed bridge tools. A leaf module: nothing else in core imports it, and
-it imports only `brand`, `validate`, `config/schema.ts` (`ConfigError`), `instructions/source.ts` (`fingerprint`) and
-the tool contract.
+MCP (Model Context Protocol) servers behind two fixed bridge tools. It imports only `brand`, `validate`,
+`config/schema.ts` (`ConfigError`), `instructions/source.ts` (`fingerprint`) and the tool contract. The engine uses
+it through `engine/mcp.ts`, which is where the points of "Engine integration" below are carried out and where the
+decisions this module left open are made (who may start a server a project's file names; one registry per distinct
+server; what is recorded); `docs/architecture.md` describes the result.
 
 ## Why bridge tools
 

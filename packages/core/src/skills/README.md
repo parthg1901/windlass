@@ -2,8 +2,9 @@
 
 A skill is a directory with a `SKILL.md`: front matter with a `name` and a one-line `description`, then
 instructions, possibly with supporting files next to it. The model is told which skills exist (name and description
-only, the index) and loads one with the `skill` tool when a task calls for it. A leaf module: nothing in core imports
-it; it imports only `brand`, `config/schema.ts` (`ConfigError`), `instructions/source.ts` (`fingerprint`) and the tool contract.
+only, the index) and loads one with the `skill` tool when a task calls for it. It imports only `brand`,
+`config/schema.ts` (`ConfigError`), `instructions/source.ts` (`fingerprint`) and the tool contract. The engine uses it
+through `engine/skills.ts`, which carries out "Engine integration" below; `docs/architecture.md` describes the result.
 
 | File | What |
 | --- | --- |

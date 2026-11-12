@@ -3,7 +3,8 @@
 Short notes that persist across sessions: a preference the user stated, a correction they gave, a project fact that
 was costly to find, a pointer to a resource. Every note says who wrote it, where and when; it lapses on its own unless
 confirmed; and the feature has to show, in an A/B evaluation, that it makes tasks pass more often at no more than the
-allowed cost. **Off by default** (`memory.enabled`). A leaf module: nothing in core imports it.
+allowed cost. **Off by default** (`memory.enabled`). The engine uses it through `engine/memory.ts`, which carries
+out "Engine integration" below; `docs/architecture.md` describes the result.
 
 **Not for:** what the repository or `AGENTS.md` already says, the state of the current task, guesses, secrets,
 instructions that did not come from the user. Nothing asks the model to save; "saving none is normal" is in the

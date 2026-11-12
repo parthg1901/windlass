@@ -3,7 +3,9 @@
 A wake-up is a durable record that says: **deliver this message to this session when this condition is met.** It is
 checked by the harness with no model call, survives restarts, and reaches the session through its inbox like any
 other message. It replaces the two bad ways an agent waits: blocking a turn on a long sleep, or polling in a loop and
-paying for every look. A leaf module: nothing in core imports it yet.
+paying for every look. The engine uses it through `engine/wake.ts`, which carries out "For the engine integrator"
+below (the admission path is `EngineSession.admit`); `docs/architecture.md` describes the result, including which
+processes run the scheduler and the listener.
 
 | File | What |
 | --- | --- |
