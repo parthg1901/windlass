@@ -91,8 +91,9 @@ export function wrapLine(line: Line, columns: number, indent: Line = []): Span[]
   let used = 0
   const push = (style: Span, text: string, w: number) => {
     const last = row.at(-1)
-    if (last !== undefined && sameStyle(last, style)) row[row.length - 1] = { ...last, text: last.text + text }
-    else row.push({ ...style, text })
+    const drawn = text.replace(/\u00a0/g, " ")
+    if (last !== undefined && sameStyle(last, style)) row[row.length - 1] = { ...last, text: last.text + drawn }
+    else row.push({ ...style, text: drawn })
     used += w
   }
   const newRow = () => {
@@ -157,9 +158,10 @@ function tokens(line: Line): Token[] {
     const text = part.text.length > budget ? `${part.text.slice(0, budget)}… (${(part.text.length - budget).toLocaleString("en-US")} more characters)` : part.text
     budget -= part.text.length
     let first = true
-    for (const piece of text.split(/(\s+)/)) {
+    // A no-break space (U+00A0) holds the words on either side together; it is drawn as a plain space.
+    for (const piece of text.split(/([^\S\u00a0]+)/)) {
       if (piece === "") continue
-      const space = /^\s+$/.test(piece)
+      const space = /^[^\S\u00a0]+$/.test(piece)
       const w = width(piece)
       const last = out.at(-1)
       // A span that begins where the one before it ended, with no space between: the same word goes on.

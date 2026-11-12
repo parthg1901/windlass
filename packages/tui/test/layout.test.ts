@@ -27,6 +27,11 @@ test("an answer wraps between words: inline code keeps the punctuation around it
   expect(rows(answer, 30, true).join(" ")).toBe("The name is read from `core/brand.ts`, and **everything**: the binary (see `docs/names.md`).".replace(/\*\*/g, ""))
 })
 
+test("a no-break space keeps two words on one row and is drawn as a plain space", () => {
+  const laid = wrapLine([span("done · 2 steps · 5.5s · turn\u00a01")], 28).map((row) => row.map((part) => part.text).join(""))
+  expect(laid).toEqual(["done · 2 steps · 5.5s ·", "turn 1"])
+})
+
 test("a word keeps the style of each of its parts, and a word longer than a row is the only thing broken", () => {
   const laid = wrapLine([span("see "), span("a.ts", "code"), span(", then")], 9)
   expect(laid.map((row) => row.map((part) => part.text).join(""))).toEqual(["see a.ts,", "then"])
