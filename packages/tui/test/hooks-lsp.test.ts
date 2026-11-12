@@ -154,7 +154,9 @@ describe("when a session opens", () => {
     }
     mounted = await mount({ width: 190, height: 44, backend })
     const opened = flat(await mounted.frame())
-    expect(opened).toContain("● ready")
+    // The session is not ready for a message while the question waits: the status line says what it waits for.
+    expect(opened).not.toContain("● ready")
+    expect(opened).toContain('? waiting for your answer · the hook "no-push"')
     expect(opened).toContain('asks to run a hook "no-push" before a tool call runs')
     expect(opened).not.toContain('Start the language server "typescript"')
     expect(backend.sent).toEqual([])
@@ -164,10 +166,12 @@ describe("when a session opens", () => {
     const second = flat(await mounted.frame())
     expect(second).toContain('the hook "no-push" is not run; /hooks approve no-push asks again')
     expect(second).toContain('Start the language server "typescript" that this project\'s configuration names?')
+    expect(second).toContain('? waiting for your answer · the language server "typescript"')
     mounted.clock.now += ARMING_MS + 10
     await mounted.setup.mockInput.typeText("n")
     await mounted.settle()
     expect(flat(await mounted.frame())).not.toContain("[a] Allow it for this project")
+    expect(flat(await mounted.frame())).toContain("● ready")
 
     // Another session in the same run: what was answered "not now" is asked about again there.
     await command("/new")

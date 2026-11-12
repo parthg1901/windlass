@@ -75,6 +75,8 @@ export interface AppOptions {
 interface FeatureQuestion {
   readonly id: string
   readonly ask: ApprovalAsk
+  /** What the question is about, for the status line: `the hook "lint"`. */
+  readonly subject: string
   readonly answer: (allow: boolean) => Promise<void>
 }
 
@@ -1201,7 +1203,7 @@ export class App {
   }
 
   private mcpQuestion(session: BackendSession, server: McpServerInfo): FeatureQuestion {
-    return { id: mcpAskId(server), ask: mcpServerAsk(session.id, server), answer: (allow) => this.answerServer(session, server, allow) }
+    return { id: mcpAskId(server), ask: mcpServerAsk(session.id, server), subject: `the MCP server "${server.name}"`, answer: (allow) => this.answerServer(session, server, allow) }
   }
 
   /** The hooks changed: a project's hook nobody approved yet (this definition of it) is put in the dock, with the engine's question. */
@@ -1217,7 +1219,7 @@ export class App {
   }
 
   private hookQuestion(session: BackendSession, hook: HookInfo): FeatureQuestion {
-    return { id: hookAskId(hook), ask: hookAsk(session.id, hook), answer: (allow) => this.answerHook(session, hook, allow) }
+    return { id: hookAskId(hook), ask: hookAsk(session.id, hook), subject: `the hook "${hook.name}"`, answer: (allow) => this.answerHook(session, hook, allow) }
   }
 
   private async answerHook(session: BackendSession, hook: HookInfo, allow: boolean): Promise<void> {
@@ -1245,7 +1247,7 @@ export class App {
   }
 
   private lspQuestion(session: BackendSession, server: LspServerInfo): FeatureQuestion {
-    return { id: lspAskId(server), ask: lspServerAsk(session.id, server), answer: (allow) => this.answerLspServer(session, server, allow) }
+    return { id: lspAskId(server), ask: lspServerAsk(session.id, server), subject: `the language server "${server.name}"`, answer: (allow) => this.answerLspServer(session, server, allow) }
   }
 
   private async answerLspServer(session: BackendSession, server: LspServerInfo, allow: boolean): Promise<void> {
@@ -1950,6 +1952,9 @@ export class App {
     const parts: Span[] = []
     if (this.connection !== "connected") parts.push(span(this.connection === "starting" ? "⋯ starting the engine" : `✗ ${this.connection}`, this.connection === "starting" ? "dim" : "error"))
     else if (activity.executing) parts.push(...this.activityText(now))
+    else if (this.dock?.feature !== undefined && !this.dock.state.withdrawn)
+      // A question about the project's configuration waits: the session is not ready for a message until it is answered.
+      parts.push(span("? ", "warn", { bold: true }), span("waiting for your answer", "warn"), span(` · ${this.dock.feature.subject}${this.dock.state.focused ? "" : " · Tab to answer"}`, "dim"))
     else parts.push(span("● ready", "dim"))
     // Work that goes on while the session's own turn waits or is over: a subagent in the background.
     const subagents = this.transcript.runningSubagents()
