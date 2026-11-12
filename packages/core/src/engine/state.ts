@@ -301,6 +301,16 @@ export function ranSideEffectsSince(projection: Projection, seq: number, effects
   )
 }
 
+/**
+ * Whether the turn in progress did work: one of its tool calls has its
+ * result. A call that never began (stopped before it started) is none.
+ */
+export function workedThisTurn(projection: Projection): boolean {
+  return currentTurn(projection).some(
+    (message) => message.kind === "assistant" && message.parts.some((part) => part.type === "tool_call" && part.state.status === "settled" && part.state.outcome !== "not_started"),
+  )
+}
+
 /** Whether a response says nothing: no tool call and no text but whitespace. Reasoning alone is not an answer. */
 export function saysNothing(message: AssistantMessage): boolean {
   return message.parts.every((part) => part.type === "reasoning" || (part.type === "text" && part.text.trim() === ""))

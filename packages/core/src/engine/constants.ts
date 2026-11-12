@@ -160,6 +160,11 @@ export const MANUAL_COMPACTION_TEXT = {
   ended: (why: string) => `The conversation was not compacted: ${why}`,
 } as const
 
+/** What the user is told, once, about how a turn ended when the events alone would leave them guessing. */
+export const NOTICE_TEXT = {
+  noClosingAnswer: "The model returned an empty response twice after its work, so the turn ended without a closing answer. What it did is shown above; ask it to sum up if you need that.",
+} as const
+
 export const FAILURE_TEXT = {
   refused: "The provider refused the request.",
   emptyTwice: "The model returned an empty response twice.",

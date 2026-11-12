@@ -519,7 +519,8 @@ function stepErrorText(error: EventData<"step.failed">["error"]): string {
   }
 }
 
-function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run"): string {
+function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run" | "no_closing_answer"): string {
+  if (kind === "no_closing_answer") return "The model gave no closing answer"
   if (kind === "sandbox_unavailable") return "Commands cannot be sandboxed on this machine"
   if (kind === "approval_ignored") return "A project setting was not followed"
   return "The project's checks were not run"

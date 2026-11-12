@@ -138,6 +138,7 @@ import {
   FAILURE_TEXT,
   INCOMPLETE_STREAM,
   NOTE_TEXT,
+  NOTICE_TEXT,
   TOOL_TEXT,
   failureText,
   modelCallTimedOut,
@@ -193,6 +194,7 @@ import {
   turnBeginning,
   turnInput,
   turnStartSeq,
+  workedThisTurn,
   wouldGoIdle,
 } from "./state.ts"
 import {
@@ -2677,10 +2679,18 @@ class LiveSession implements EngineSession {
     const ended = event("step.ended", { messageId, finish: "stop", usage })
     const current = this.projection()
     if (saysNothing(message) && !current.inbox.some((item) => item.delivery === "steer") && !this.onTape()) {
-      // A response with no text and no call (nothing at all, or only reasoning) says nothing. It gets one nudge;
-      // a second one in a row fails the execution (retry rule 8).
+      // A response with no text and no call (nothing at all, or only reasoning) says nothing. It gets one nudge.
+      // A second one in a row fails the execution (retry rule 8), unless the turn has work in it: then the model
+      // has nothing to add, and the turn ends as any turn ends, through the gate.
       const previous = current.messages.at(-2)
       const nudged = previous?.kind === "synthetic" && previous.delivery === null && previous.origin === HARNESS_ORIGIN.emptyResponse
+      if (nudged && workedThisTurn(current)) {
+        this.write([ended])
+        this.probe("step.closed")
+        // The turn will end as done with nothing said last: the user is told why there is no answer to read.
+        this.ephemeral({ type: "notice", sessionId: this.id, kind: "no_closing_answer", message: NOTICE_TEXT.noClosingAnswer })
+        return "continue"
+      }
       if (nudged) {
         this.write([ended, event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.emptyTwice })])
         return "done"
@@ -3878,7 +3888,7 @@ class LiveSession implements EngineSession {
   }
 
   /** Says once per process what the user should know about how this session's tools run. */
-  private notice(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run", message: string): void {
+  private notice(kind: Extract<EphemeralEvent, { type: "notice" }>["kind"], message: string): void {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.ephemeral({ type: "notice", sessionId: this.id, kind, message })

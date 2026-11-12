@@ -353,7 +353,7 @@ export class PrettyRenderer implements Sink {
         return this.headed(what, [flatten(event.message)])
       }
       case "notice": {
-        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "project setting not followed" : "checks not run"
+        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "project setting not followed" : event.kind === "no_closing_answer" ? "no closing answer" : "checks not run"
         return this.headed(what, event.message.split("\n").map(flatten))
       }
       case "approval.requested": {

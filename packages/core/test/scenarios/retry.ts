@@ -314,7 +314,7 @@ export const argumentsCutOff: Scenario = {
 export const emptyResponse: Scenario = {
   title: "An empty response: one nudge, then failure",
   description:
-    "The model finishes with no text, no reasoning and no tool call. The loop appends one nudge and asks again (retry rule 8). The second response is empty too, so the execution fails instead of nudging again.",
+    "The model finishes with no text, no reasoning and no tool call. The loop appends one nudge and asks again (retry rule 8). The second response is empty too, and the turn has done nothing, so the execution fails instead of nudging again. (A turn that has work in it ends differently: see the next scenario.)",
   provider: "steps 1 and 2 each finish with stop and no output items",
   phases: [
     {
@@ -338,6 +338,43 @@ export const emptyResponse: Scenario = {
           { id: "a2", status: "completed", text: "", calls: [] },
         ],
         history: ["u1", "a1", "s1", "a2"],
+        execution: null,
+      },
+    },
+  ],
+}
+
+export const emptyResponseAfterWork: Scenario = {
+  title: "An empty response after the work: the turn ends as done",
+  description:
+    "The model did what it was asked (a call of this turn has its result) and then finishes with nothing: no text, no call. It gets the one nudge, as always. When the answer to the nudge is empty too, that means the model has nothing to add, not that the turn failed: the second empty step is closed, and the turn ends as any turn ends, through the verification gate, as `execution.succeeded` with what the gate found (here no check is configured). The user is told once, by a `notice` of kind `no_closing_answer`, that the model gave no closing answer; the log shows the same thing as the nudge followed by an empty completed step. A turn with no work in it still fails on the second empty response (the scenario before this one).",
+  provider: "step 1 asks for a tool; steps 2 and 3 each finish with stop and no output items",
+  phases: [
+    {
+      label: "the work, then an empty response, which is nudged",
+      events: [
+        ...opening("Write notes.md."),
+        stepStarted("a1"),
+        ...ran("a1", "call_1", "write", '{"path":"notes.md","content":"x\\n"}', "Wrote notes.md (1 line)."),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        stepEnded("a2", "stop"),
+        synthetic("s1", "empty_response", "Your last response was empty. Continue with the task, or say that you are done."),
+      ],
+      expect: { history: ["u1", "a1", "a2", "s1"] },
+    },
+    {
+      label: "the second one ends the turn through the gate",
+      events: [stepStarted("a3"), stepEnded("a3", "stop"), executionSucceeded()],
+      expect: {
+        ui: [
+          { id: "u1" },
+          { id: "a1", status: "completed", calls: ["call_1 write success"] },
+          { id: "a2", status: "completed", text: "", calls: [] },
+          { id: "s1", origin: "empty_response" },
+          { id: "a3", status: "completed", text: "", calls: [] },
+        ],
+        history: ["u1", "a1", "a2", "s1", "a3"],
         execution: null,
       },
     },
@@ -443,6 +480,7 @@ export const retryScenarios = [
   malformedArguments,
   argumentsCutOff,
   emptyResponse,
+  emptyResponseAfterWork,
   identicalCallGuard,
   stepLimit,
 ]

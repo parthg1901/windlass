@@ -432,6 +432,20 @@ const PLAYS: Record<string, Play> = {
     await h.settled()
   },
 
+  "An empty response after the work: the turn ends as done": async (h, say) => {
+    h.provider.enqueue([call("call_1", "write", { path: "notes.md", content: "x\n" }), U], [U], [U])
+    h.tools.on("write", "Wrote notes.md (1 line).")
+    const notices: string[] = []
+    h.create()
+    h.session.subscribe((item) => {
+      if (item.type === "notice") notices.push(item.kind)
+    })
+    h.session.send(say[0]!)
+    await h.settled()
+    // The user is told, once, why the turn has no last word.
+    expect(notices).toEqual(["no_closing_answer"])
+  },
+
   "The same call with the same arguments, again and again": async (h, say) => {
     h.provider.enqueue(
       [call("call_1", "read", { path: "a.ts" }), U],
@@ -1487,7 +1501,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(97)
+    expect(scenarios).toHaveLength(98)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })
