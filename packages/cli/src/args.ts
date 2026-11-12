@@ -177,7 +177,7 @@ function usageRows(b: string): string {
     [`${b} login finish`, ["finish a sign-in started elsewhere from the pasted address"]],
     [`${b} login status`, ["who is signed in and until when (never the tokens)"]],
     [`${b} login logout`, ["forget the saved sign-in on this machine"]],
-    [`${b} tui [options]`, [`the full-screen terminal interface (preview; ${brand.envPrefix}TUI=1 makes`, `it what \`${b}\` with no prompt starts)`]],
+    [`${b} tui [options]`, [`the full-screen terminal interface (${brand.envPrefix}TUI=1 makes it`, `what \`${b}\` with no prompt starts)`]],
     [`${b} fork [<session>]`, ["a new session with the conversation so far, to try another", "way without changing the original; --turn <n> forks after", `turn n (\`${b} fork --help\`)`]],
     [`${b} replay [<session>]`, ["the model again on a recorded session, every tool call", "answered from the recording: where does a changed prompt,", "tool description or model change what it does", `(\`${b} replay --help\`)`]],
   ]

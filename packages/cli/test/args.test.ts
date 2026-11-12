@@ -91,5 +91,8 @@ describe("parseArgs", () => {
     // Both session commands are listed.
     expect(helpText()).toMatch(/^  \/undo {2,}go back to before your last message/m)
     expect(helpText()).toMatch(/^  \/redo {2,}bring back what the last \/undo took away/m)
+    // The full-screen interface is a way to run the program like the others, as the README has it.
+    expect(helpText()).toMatch(new RegExp(`^  ${brand.binary} tui \\[options\\] +the full-screen terminal interface \\(${brand.envPrefix}TUI=1 makes it$`, "m"))
+    expect(helpText()).not.toMatch(/preview/i)
   })
 })
