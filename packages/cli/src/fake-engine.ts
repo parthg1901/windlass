@@ -309,6 +309,8 @@ export class FakeSession implements Session {
   }
 
   private async deliver(item: InboxItem): Promise<boolean> {
+    // A queued item follows a turn, which ends first. A replay has no checks, so nothing was verified.
+    if (item.delivery === "queue" && !(await this.replay(event("turn.ended", { verification: { status: "not_configured" } })))) return false
     if (!(await this.replay(event("inbox.delivered", { messageId: item.id })))) return false
     this.unanswered.push(item)
     return true

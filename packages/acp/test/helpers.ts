@@ -1,6 +1,7 @@
 /**
- * Test harness: the ACP server on a real `Backend` (real step loop, real
- * SQLite store, real tools) with a scripted model, connected to the SDK's own
+ * Test harness: the ACP server on the real harness assembly (`createHarness`:
+ * real step loop, a real SQLite store per session, real tools) with a
+ * scripted model, connected to the SDK's own
  * client over in-memory streams. Every message the agent writes is recorded
  * and checked against the SDK's generated schemas for its method.
  */
@@ -15,14 +16,13 @@ import {
   client,
   methods,
 } from "@agentclientprotocol/sdk"
-import { type AnyTool, type EngineOptions } from "@light-harness/core"
+import { type AnyTool, type EngineOptions, type Harness as CoreHarness, type ModelEntry, type SignInState, createHarness } from "@light-harness/core"
 import { FakeProvider, type ScriptedResponse } from "@light-harness/core/testing"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
-import { Backend, type ModelEntry, type SignInState } from "../src/backend.ts"
 import { silentLogger } from "../src/log.ts"
 import { type Served, serve } from "../src/server.ts"
 
-export const DEFAULTS = { model: "test-model", effort: null, databaseFile: "sessions.db", spillDirectory: "spill" } as const
+export const DEFAULTS = { model: "test-model", effort: null } as const
 
 export const MODELS: readonly ModelEntry[] = [
   { id: "test-model", name: "Test Model", efforts: ["low", "medium", "high"], defaultEffort: "medium", contextWindow: 200_000 },
@@ -47,7 +47,8 @@ export interface Harness {
   readonly dataDir: string
   readonly workspace: string
   readonly provider: FakeProvider
-  readonly backend: Backend
+  /** The harness the server runs on: the one the command line builds, with a scripted model. */
+  readonly backend: CoreHarness
   readonly served: Served
   readonly connection: ClientConnection
   /** Every `session/update` the client received, in order. */
@@ -74,15 +75,17 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const workspace = options.dataDir === undefined ? join(root!, "work") : join(dataDir, "..", "work")
   await Bun.write(join(workspace, ".keep"), "")
   const provider = options.provider ?? new FakeProvider(options.responses ?? [])
-  const backend = new Backend({
-    defaults: DEFAULTS,
-    log: silentLogger,
+  const backend = createHarness({
+    defaultModel: DEFAULTS.model,
+    defaultEffort: DEFAULTS.effort,
+    log: () => {},
     dataDir,
     provider,
     models: async () => MODELS,
     ...(options.signIn === undefined ? {} : { signIn: options.signIn }),
     ...(options.tools === undefined ? {} : { tools: options.tools }),
-    engine: { discover: () => [], ...options.engine },
+    // No configuration files of the machine the tests run on.
+    engine: { discover: () => [], loadConfig: null, ...options.engine },
   })
 
   const wire: Message[] = []

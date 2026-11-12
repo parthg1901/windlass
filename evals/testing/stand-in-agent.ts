@@ -32,6 +32,8 @@ if (parsed.kind !== "run" || parsed.options.output !== "json" || parsed.options.
   process.stderr.write("stand-in: needs --json --cwd <dir> and a prompt\n")
   process.exit(2)
 }
+// For the runner's tests: the arguments each turn was started with.
+if (process.env.STAND_IN_ARGV) (await import("node:fs")).appendFileSync(process.env.STAND_IN_ARGV, `${JSON.stringify(process.argv.slice(2))}\n`)
 const options = parsed.options
 const cwd = options.cwd!
 const prompt = options.prompt!
@@ -129,24 +131,24 @@ async function solve() {
 
 /** Records a scripted trace session in the real session database and prints its log as the CLI's `--json` would. */
 async function scripted(name: string, broken: boolean) {
-  const { mkdirSync } = await import("node:fs")
-  const { dirname } = await import("node:path")
-  const { openSqliteStore } = await import("../../packages/core/src/store/sqlite.ts")
+  const { openSessionDirectory } = await import("../../packages/core/src/store/directory.ts")
   const { buildRequest } = await import("../../packages/core/src/request/build.ts")
   const { Loop, SCRIPTS, fixedClock } = await import("../../packages/core/test/trace/sessions.ts")
   const script = SCRIPTS.find((candidate) => candidate.name === name)
   if (!script) throw new Error(`stand-in: no scripted session ${name}`)
-  const path = sessionDatabase()
-  mkdirSync(dirname(path), { recursive: true })
-  const store = openSqliteStore({ path, now: fixedClock() })
+  // As the CLI stores it: the session's own file in the data directory.
+  const id = `ses_${name.replace(/[^a-z]+/g, "_")}_${process.pid}` as SessionId
+  const directory = openSessionDirectory({ dataDir: sessionDatabase(), now: fixedClock() })
+  const store = directory.create(id)
   const calls = { count: 0 }
   const builder: typeof buildRequest = (projection, buildOptions) => {
     const request = buildRequest(projection, buildOptions)
     calls.count += 1
     return { ...request, instructions: `${request.instructions}\nCall ${calls.count}.` }
   }
-  const loop = new Loop(store, `ses_${name.replace(/[^a-z]+/g, "_")}_${process.pid}` as SessionId, broken ? builder : undefined)
+  const loop = new Loop(store, id, broken ? builder : undefined)
   script.run(loop)
   for (const stored of store.readEvents(loop.id)) process.stdout.write(`${JSON.stringify(stored)}\n`)
   store.close()
+  directory.close()
 }

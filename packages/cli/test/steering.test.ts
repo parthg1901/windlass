@@ -67,7 +67,8 @@ describe("the fake engine takes input during a turn", () => {
 
   test("a queued message waits for the answer, then is delivered and answered under the same claim", async () => {
     const { types, state } = await play("one-tool-call-then-an-answer", once((item) => item.type === "tool.started", (session) => void session.send("Then a changelog entry.", { delivery: "queue" })))
-    expect(types.slice(-6)).toEqual(["step.ended", "delivered u_live_1", "step a_live_2", "text.ended", "step.ended", "execution.succeeded"])
+    // The turn ends first (a replay verifies nothing), then the queued message is delivered.
+    expect(types.slice(-7)).toEqual(["step.ended", "turn.ended", "delivered u_live_1", "step a_live_2", "text.ended", "step.ended", "execution.succeeded"])
     expect(state.messages.find((message) => String(message.id) === "a_live_2")?.kind).toBe("assistant")
   })
 

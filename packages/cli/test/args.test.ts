@@ -75,6 +75,12 @@ describe("parseArgs", () => {
 
   test("help text uses the brand's binary name", () => {
     expect(helpText()).toContain(`  ${brand.binary} [options] <prompt...>`)
-    expect(helpText()).toContain("Exit codes: 0 done, 1 failed, 2 usage error, 130 interrupted (Ctrl-C),\n141 output closed (a pipe reader left), 143 terminated (SIGTERM).")
+    // Every exit code is listed, with the one a script must not mistake for success.
+    for (const line of ["  0    done", "  1    failed", "  2    usage error", "  3    done, but the project's checks still fail and were left unresolved", "  130  interrupted (Ctrl-C)", "  141  output closed", "  143  terminated (SIGTERM)"])
+      expect(helpText()).toContain(line)
+    expect(helpText()).toContain('data.verification.status is "unresolved"')
+    // Both session commands are listed.
+    expect(helpText()).toMatch(/^  \/undo {2,}go back to before your last message/m)
+    expect(helpText()).toMatch(/^  \/redo {2,}bring back what the last \/undo took away/m)
   })
 })

@@ -13,11 +13,9 @@
  * `revert.failed`) and the renderer shows it, as it would in a replay.
  *
  * How a command reaches the session: the input editor (`terminal.ts`) sees a
- * submitted `/undo` or `/redo` and runs it here, and the session is the one
- * the engine offered with `offerSession` when it was opened. A process has
- * one interactive session, so there is one slot. (The loop in `main.ts` that
- * owns both the editor and the session hands the editor only keystrokes;
- * passing the session to the editor there would replace the slot.)
+ * submitted `/undo` or `/redo` and runs it here, on the session `main.ts`
+ * attached to the editor when it opened it (`Screen.attach`). An engine
+ * whose sessions cannot revert attaches none, and the commands say so.
  */
 import type { RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
 import { type Segment, plural, seg } from "./text.ts"
@@ -36,13 +34,6 @@ export interface CommandIo {
   ask(question: string): Promise<string | null>
 }
 
-let offered: RevertableSession | null = null
-
-/** Makes `session` the one `/undo` and `/redo` act on; `null` takes it away. Called by the engine that opened it. */
-export function offerSession(session: RevertableSession | null): void {
-  offered = session
-}
-
 const COMMANDS = ["/undo", "/redo"] as const
 type Command = (typeof COMMANDS)[number]
 
@@ -52,9 +43,15 @@ export function sessionCommand(entry: string): Command | null {
   return COMMANDS.find((command) => command === word) ?? null
 }
 
-/** Runs `/undo` or `/redo` to its end: the preview, the question if there is one, the revert. Never throws. */
-export async function runSessionCommand(command: Command, io: CommandIo): Promise<void> {
-  const session = offered
+/** The session's revert and its undo, when it has both. */
+export function revertable(session: Partial<RevertableSession>): RevertableSession | null {
+  const { revert, undoRevert } = session
+  if (revert === undefined || undoRevert === undefined) return null
+  return { revert: (options) => revert.call(session, options), undoRevert: (options) => undoRevert.call(session, options) }
+}
+
+/** Runs `/undo` or `/redo` on `session` to its end: the preview, the question if there is one, the revert. Never throws. */
+export async function runSessionCommand(command: Command, session: RevertableSession | null, io: CommandIo): Promise<void> {
   const undo = command === "/undo"
   const note = (text: string, tone: "dim" | "yellow" | "red" = "dim") => io.print([seg(text, tone)])
   if (session === null) return note(`${command} is not available with this engine`, "yellow")

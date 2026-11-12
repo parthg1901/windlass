@@ -300,6 +300,18 @@ export class PrettyRenderer implements Sink {
         this.line("info", [seg(`${SYMBOL.inbox} withdrawn: `, "dim"), seg(quote(item?.text ?? event.data.messageId), "dim")])
         return
       }
+      case "turn.ended": {
+        // The turn before a queued message is over. What it rests on is said as it would be at the end of the
+        // execution, when that is worth a line: checks that passed, or failing ones that were left as they are.
+        const verification = event.data.verification
+        const next = seg(" · on to the queued message", "dim")
+        if (verification.status === "passed") this.line("info", [seg(`${SYMBOL.ok} `, "green"), seg("checks passed", "green"), next])
+        if (verification.status === "unresolved") {
+          this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg("failing checks left unresolved", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), next])
+          for (const line of wrap(unresolvedReason(verification), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+        }
+        return
+      }
       case "inbox.delivery_changed": {
         const item = this.inbox.get(event.data.messageId)
         if (item !== undefined) this.inbox.set(event.data.messageId, { ...item, delivery: event.data.delivery })
@@ -860,6 +872,16 @@ export class QuietSink implements Sink {
       }
       case "execution.interrupted":
         if (event.data.reason === "user") this.writeError(`${brand.binary}: interrupted\n`)
+        return
+      case "turn.ended": {
+        const verification = event.data.verification
+        if (verification.status === "unresolved")
+          this.writeError(`${brand.binary}: failing checks left unresolved before the queued message: ${verification.failing.join(", ")} (${unresolvedReason(verification)})\n`)
+        return
+      }
+      case "diagnostic":
+        // Something is wrong with the harness itself: said where failures go, since the engine says it nowhere else.
+        this.writeError(`${brand.binary}: ${event.kind.replace(/_/g, " ")}: ${event.message}\n`)
         return
     }
   }

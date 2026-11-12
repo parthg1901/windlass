@@ -1,6 +1,6 @@
 /**
- * Explains a run's prompt-cache misses. After a run, its session is exported from the harness's session database as
- * a prefixlens trace (`scripts/export-trace.ts`) and `prefixlens report --json` classifies each call that lost
+ * Explains a run's prompt-cache misses. After a run, its session is exported from the harness's data directory (one
+ * database file per session, so runs in parallel never wait for each other) as a prefixlens trace (`scripts/export-trace.ts`) and `prefixlens report --json` classifies each call that lost
  * cached tokens:
  *
  * - provider-side: the prefix was intact and the provider missed anyway (seen often on quick follow-ups);
@@ -21,7 +21,6 @@ import { join, resolve } from "node:path"
 import { brand } from "../packages/core/src/brand.ts"
 import { COMPACTION_PROMPT } from "../packages/core/src/engine/constants.ts"
 import type { TraceRecord } from "../packages/core/src/trace/format.ts"
-import { DATABASE_FILE } from "../packages/cli/src/real-engine.ts"
 import { errorLine } from "./grader.ts"
 
 const REPO = resolve(import.meta.dir, "..")
@@ -31,9 +30,9 @@ export function prefixlensDir() {
   return process.env.PREFIXLENS_DIR ?? resolve(REPO, "..", "prefixlens")
 }
 
-/** The session database the CLI writes, for the environment the agent ran with. */
+/** The data directory the CLI keeps its sessions in, one file each, for the environment the agent ran with. */
 export function sessionDatabase(env: Readonly<Record<string, string | undefined>> = process.env) {
-  return join(env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), brand.directory, DATABASE_FILE)
+  return join(env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), brand.directory)
 }
 
 export type MissVerdict = "provider-side" | "expired" | "intentional" | "avoidable"
@@ -90,7 +89,7 @@ export function skipped(reason: string, status: "skipped" | "error" = "skipped")
   return { status, reason, ...EMPTY }
 }
 
-/** Exports `sessionId` from `database` to `traceFile`, then classifies it. Never throws. */
+/** Exports `sessionId` from `database` (a harness data directory, or a single database file) to `traceFile`, then classifies it. Never throws. */
 export async function classifySession(sessionId: string | null, options: { readonly database: string; readonly traceFile: string }): Promise<CacheClassification> {
   if (!existsSync(join(prefixlensDir(), "src", "cli.ts"))) return skipped(`no prefixlens checkout at ${prefixlensDir()}`)
   if (sessionId === null) return skipped("the run reported no session")

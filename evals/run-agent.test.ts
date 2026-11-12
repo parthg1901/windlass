@@ -221,6 +221,20 @@ describe("a multi-turn task", () => {
     expect(await Bun.file(result.stderrFile).text()).toContain("--- turn 2")
   }, 60_000)
 
+  test("every turn is started with the task's step limit, the later ones in the first one's session", async () => {
+    const record = join(scratch.dir, "argv.jsonl")
+    const report = await run("solve", { tasks: ["follow-up-change"], model: "stand-in-model", effort: "low" }, { STAND_IN_ARGV: record })
+    const result = report.results[0]!
+    const turns = (await Bun.file(record).text()).trim().split("\n").map((line) => JSON.parse(line) as string[])
+    expect(turns).toHaveLength(2)
+    const flag = (argv: string[], name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null)
+    // The limit is the task's own (`maxSteps` in task.json), on every turn, and before the `--` that ends the options.
+    expect(turns.map((argv) => flag(argv, "--max-steps"))).toEqual([String(result.maxSteps), String(result.maxSteps)])
+    expect(turns.every((argv) => argv.indexOf("--max-steps") < argv.indexOf("--"))).toBe(true)
+    expect(turns.map((argv) => flag(argv, "--model"))).toEqual(["stand-in-model", null])
+    expect(turns.map((argv) => flag(argv, "--session"))).toEqual([null, "ses_standin"])
+  }, 60_000)
+
   test("a turn that hits the time limit ends the run; the next prompt is not sent", async () => {
     const report = await run("hang", { tasks: ["follow-up-change"], timeoutSeconds: 1 })
     const result = report.results[0]!

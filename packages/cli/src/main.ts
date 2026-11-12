@@ -7,14 +7,16 @@
  *
  * Every way out goes through the same door: the engine's `close` is called and
  * waited for at most `CLOSE_TIMEOUT_MS`, the terminal is put back, and the code
- * says why (0 done, 1 failed, 2 usage, 130 Ctrl-C, 141 output closed, 143
- * SIGTERM). The one exception is a second Ctrl-C within two seconds, which
- * leaves at once after putting the terminal back.
+ * says why (0 done, 1 failed, 2 usage, 3 done with failing checks left
+ * unresolved, 130 Ctrl-C, 141 output closed, 143 SIGTERM). The one exception
+ * is a second Ctrl-C within two seconds, which leaves at once after putting
+ * the terminal back.
  */
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import { brand } from "@light-harness/core"
 import { helpText, type Options, parseArgs } from "./args.ts"
+import { revertable } from "./commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
 import {
   CLOSE_TIMEOUT_MS,
@@ -83,11 +85,9 @@ export async function run(io: Io): Promise<number> {
     case "error":
       return usage(io, parsed.message)
     case "acp": {
-      // Loaded only here, so a normal run does not pay for the protocol SDK. The defaults stay owned by real-engine.ts.
+      // Loaded only here, so a normal run does not pay for the protocol SDK. The server builds the same harness the CLI does.
       const { serveStdio } = await import("@light-harness/acp")
-      const real = await import("./real-engine.ts")
-      const defaults = { model: real.DEFAULT_MODEL, effort: real.DEFAULT_EFFORT, databaseFile: real.DATABASE_FILE, spillDirectory: real.SPILL_DIRECTORY }
-      return serveStdio({ defaults, env: io.env, version: await version() })
+      return serveStdio({ env: io.env, version: await version() })
     }
     case "list":
     case "run":
@@ -135,6 +135,8 @@ export async function run(io: Io): Promise<number> {
     return 1
   }
 
+  // `/undo` and `/redo` act on this session, when its engine can revert.
+  screen?.attach(revertable(session))
   const terminal = screen === null ? null : new TerminalMode(io, screen)
   const leaving = new Deferred<number>()
   const control = { running: false, lastInterrupt: 0, leaving: false }

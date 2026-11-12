@@ -17,7 +17,7 @@
  * above the input, and, when one asks a question, shows the question as the
  * prompt and gives it the next entry as the answer.
  */
-import { type CommandIo, runSessionCommand, sessionCommand } from "./commands.ts"
+import { type CommandIo, type RevertableSession, runSessionCommand, sessionCommand } from "./commands.ts"
 import { type Segment, displayWidth, renderLine, renderWrapped, seg, stripAnsi, truncate } from "./text.ts"
 
 export interface ScreenOptions {
@@ -58,8 +58,15 @@ export class Screen {
   private asking: { readonly answer: (text: string | null) => void; readonly prompt: string; readonly hint: string } | null = null
   /** The command that is running, so that a second one waits its turn. */
   private command: Promise<void> = Promise.resolve()
+  /** The session `/undo` and `/redo` act on, when it can revert. */
+  private session: RevertableSession | null = null
 
   constructor(private readonly options: ScreenOptions) {}
+
+  /** Makes `session` the one `/undo` and `/redo` act on; `null` when the engine's sessions cannot revert. */
+  attach(session: RevertableSession | null): void {
+    this.session = session
+  }
 
   // ---------------------------------------------------------------- output
 
@@ -161,7 +168,7 @@ export class Screen {
           this.show(question)
         }),
     }
-    this.command = this.command.then(() => runSessionCommand(command, io))
+    this.command = this.command.then(() => runSessionCommand(command, this.session, io))
   }
 
   /** Resolves when no `/undo` or `/redo` is running. */

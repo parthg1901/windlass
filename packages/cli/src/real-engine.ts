@@ -1,152 +1,46 @@
 /**
- * The real engine behind the CLI's `Engine` interface: the step loop from
- * `@light-harness/core` on the session database in the harness data
- * directory, the ChatGPT-plan Responses provider with the saved sign-in, and
- * the standard tools.
+ * The real engine behind the CLI's `Engine` interface: a thin adapter. The
+ * harness itself (the data directory, a store per session, the ChatGPT-plan
+ * provider with the saved sign-in, the standard tools, the defaults) is put
+ * together by `createHarness` in `@light-harness/core`, which the ACP server
+ * uses too. What is added here is the CLI's own: an `OpenRequest` becomes a
+ * session, and everything that can be missing in a user's environment (no
+ * sign-in, a session another process is working in, an unknown session or
+ * model) becomes `EngineUnavailable` with a sentence the CLI prints.
  *
  * `createRealEngine()` does nothing until `open` (or a listing) is called:
  * the CLI creates it for every run that is not a demo, including runs that
- * only print help. Everything that can be missing in a user's environment (no
- * sign-in, another process holding the database, an unknown session) is
- * reported as `EngineUnavailable` with a sentence the CLI prints.
- *
- * Every name, directory and binary comes from `brand`.
+ * only print help. One CLI process works in one session, so closing that
+ * session closes the harness; other processes carry on in theirs.
  */
-import { mkdirSync } from "node:fs"
-import { join } from "node:path"
 import {
-  type AnyTool,
-  type Engine as CoreEngine,
   EngineError,
-  type EngineOptions,
   type EngineSession,
+  type Harness,
+  type HarnessOptions,
   ModelListError,
-  OpenAIResponsesProvider,
-  type Provider,
-  type SessionId,
-  type SessionSettings,
-  type Store,
   StoreError,
   brand,
-  createEngine,
-  createStandardTools,
-  listModels,
-  openSqliteStore,
+  createHarness,
 } from "@light-harness/core"
-import { AuthError, accessToken, dataDir } from "@light-harness/core/auth/chatgpt"
-import { offerSession } from "./commands.ts"
 import { type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, type Session, type SessionSummary } from "./engine.ts"
 
-/** The model a new session uses when `--model` is not given. `--models` lists what the account offers. */
-export const DEFAULT_MODEL = "gpt-6.1-sol"
-/** The reasoning effort a new session uses when `--effort` is not given: `null` is the model's own default. */
-export const DEFAULT_EFFORT: string | null = null
-/** The session database, in the harness data directory. */
-export const DATABASE_FILE = "sessions.db"
-/** Where tool output that is too long for the model is written in full, under the data directory. */
-export const SPILL_DIRECTORY = "spill"
+export { DEFAULT_EFFORT, DEFAULT_MODEL } from "@light-harness/core"
 
 /** For tests and scripts. The CLI passes nothing. */
-export interface RealEngineOptions {
-  /** Defaults to `<data home>/<brand.directory>`, where the sign-in is kept too. */
-  readonly dataDir?: string
-  /** Instead of the ChatGPT-plan provider. With one, the sign-in is not checked. */
-  readonly provider?: Provider
-  /** Instead of the standard tools. */
-  readonly tools?: readonly AnyTool[]
-  readonly defaultModel?: string
-  readonly defaultEffort?: string | null
-  /** Passed through to the loop (limits, clock, instruction discovery, hooks, ...). */
-  readonly engine?: Partial<Omit<EngineOptions, "store" | "provider" | "tools" | "dataDir">>
-}
+export type RealEngineOptions = HarnessOptions
 
-interface Running {
-  readonly store: Store
-  readonly engine: CoreEngine
-}
+const SIGN_IN = "sign in with ChatGPT, then try again"
 
 export function createRealEngine(options: RealEngineOptions = {}): Engine {
-  const directory = options.dataDir ?? dataDir()
-  let running: Running | null = null
-  let stopping: Promise<void> | null = null
-
-  /** Opens the database and builds the loop on first use. */
-  const start = (): Running => {
-    if (running !== null) return running
-    mkdirSync(directory, { recursive: true })
-    const store = openStore(join(directory, DATABASE_FILE))
-    const spillDir = join(directory, SPILL_DIRECTORY)
-    const provider =
-      options.provider ??
-      new OpenAIResponsesProvider({
-        accessToken,
-        readBlob: (ref) => {
-          const blob = store.getBlob(ref.hash)
-          if (blob === null) throw new Error(`blob ${ref.hash} is not in the session database`)
-          return blob.bytes
-        },
-      })
-    const engine = createEngine({
-      // On a rejected sign-in the token is looked up once more (it is refreshed when it is due) before the step fails.
-      refreshAuth: () =>
-        accessToken().then(
-          () => true,
-          () => false,
-        ),
-      log: (line) => process.stderr.write(`${brand.binary}: ${line}\n`),
-      // What `--model` is checked against. A scripted provider has no listing, so nothing is checked.
-      ...(options.provider === undefined ? { listModels: () => listModels({ accessToken }).then((models) => models.map((model) => model.slug)) } : {}),
-      ...options.engine,
-      store,
-      provider,
-      tools: options.tools ?? createStandardTools({ spillDir }),
-      dataDir: directory,
-      spillDir,
-    })
-    running = { store, engine }
-    return running
-  }
-
-  /** The shutdown every exit path goes through: stop the work, then let go of the database. Safe to call twice. */
-  const stop = (): Promise<void> => {
-    stopping ??= (async () => {
-      const current = running
-      if (current === null) return
-      await current.engine.close()
-      current.store.close()
-    })()
-    return stopping
-  }
-
-  const settingsFor = (request: OpenRequest): SessionSettings => ({
-    model: request.model ?? options.defaultModel ?? DEFAULT_MODEL,
-    reasoningEffort: request.effort ?? (options.defaultEffort === undefined ? DEFAULT_EFFORT : options.defaultEffort),
-  })
-
-  const sessionFor = ({ engine }: Running, request: OpenRequest): EngineSession => {
-    const target = request.session
-    if (target.kind === "new") return engine.createSession({ cwd: request.cwd, settings: settingsFor(request) })
-    const id = target.kind === "resume" ? (target.id as SessionId) : engine.latestSession(request.cwd)?.session.id
-    if (id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
-    // A claim left by a process that died or shut down is repaired here. It is worked on again once the user says
-    // something, so that what they say is in front of the model in the first step after the restart.
-    const session = open(engine, id)
-    const current = session.projection().session.settings
-    if (request.model !== null || request.effort !== null)
-      session.setSettings({ model: request.model ?? current.model, reasoningEffort: request.effort ?? current.reasoningEffort })
-    return session
-  }
+  const harness = createHarness(options)
 
   return {
     open: async (request): Promise<Session> => {
-      if (stopping !== null) throw new EngineUnavailable("the engine is closed")
-      if (options.provider === undefined) await requireSignIn()
-      const loop = start()
-      // A model named on the command line is checked before a session is created with it or switched to it.
-      if (request.model !== null) await validate(loop.engine, settingsFor(request))
-      const session = sessionFor(loop, request)
-      // `/undo` and `/redo` act on this session (see `commands.ts`).
-      offerSession(session)
+      if (harness.closed) throw new EngineUnavailable("the engine is closed")
+      const signIn = await harness.signIn()
+      if (!signIn.signedIn) throw new EngineUnavailable(`${signIn.message} (${SIGN_IN})`)
+      const session = await unavailable(() => sessionFor(harness, request))
       return {
         id: session.id,
         events: session.events,
@@ -156,87 +50,74 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
             ...(request.maxSteps === null ? {} : { maxSteps: request.maxSteps }),
           }),
         interrupt: () => session.interrupt(),
-        close: stop,
+        revert: (revert) => session.revert(revert),
+        undoRevert: (undo) => session.undoRevert(undo),
+        close: () => harness.close(),
       }
     },
 
     listSessions: async ({ cwd }): Promise<SessionSummary[]> => {
-      const { store } = start()
       try {
-        return store
-          .listSessions()
-          .filter((summary) => summary.session.cwd === cwd)
-          .map((summary) => ({
+        return await unavailable(async () =>
+          harness.engine.listSessions({ cwd }).map((summary) => ({
             id: summary.session.id,
             title: summary.session.title,
             cwd: summary.session.cwd,
             updatedAt: summary.updatedAt,
             model: summary.session.settings.model,
-          }))
+          })),
+        )
       } finally {
-        await stop()
+        await harness.close()
       }
     },
 
     listModels: async (): Promise<ModelInfo[]> => {
-      const fallback = options.defaultModel ?? DEFAULT_MODEL
       try {
-        const models = await listModels({ accessToken })
+        const models = await harness.listModels()
         return models.map((model) => ({
-          id: model.slug,
-          description: model.displayName === model.slug ? null : model.displayName,
-          efforts: model.reasoningEfforts,
-          isDefault: model.slug === fallback,
+          id: model.id,
+          description: model.name === model.id ? null : model.name,
+          efforts: model.efforts,
+          isDefault: model.id === harness.defaults.model,
         }))
       } catch (error) {
-        if (error instanceof ModelListError) throw new EngineUnavailable(`could not list the models: ${signInHint(error.error.kind, error.message)}`)
+        if (error instanceof ModelListError)
+          throw new EngineUnavailable(`could not list the models: ${error.error.kind === "auth" ? `${error.message} (${SIGN_IN})` : error.message}`)
         throw error
       }
     },
   }
 }
 
-function openStore(path: string): Store {
+/** The session a request names: a new one, the one an ID or a unique prefix of one names, or the latest in the directory. */
+async function sessionFor(harness: Harness, request: OpenRequest): Promise<EngineSession> {
+  const engine = harness.engine
+  const asked = { model: request.model, effort: request.effort }
+  // A model named on the command line is checked before a session is created with it or switched to it.
+  if (request.model !== null) await engine.validateSettings(await harness.settingsFor(request.cwd, asked))
+  const target = request.session
+  if (target.kind === "new") return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked) })
+  const id = target.kind === "resume" ? engine.resolveSession(target.id) : engine.latestSession(request.cwd)?.session.id
+  if (id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
+  // A claim left by a process that died or shut down is repaired here. It is worked on again once the user says
+  // something, so that what they say is in front of the model in the first step after the restart.
+  const session = engine.openSession(id, { resume: "wait" })
+  const current = session.projection().session.settings
+  if (request.model !== null || request.effort !== null)
+    session.setSettings({ model: request.model ?? current.model, reasoningEffort: request.effort ?? current.reasoningEffort })
+  return session
+}
+
+/** Says what is missing in the user's environment as a sentence, instead of a stack trace. */
+async function unavailable<T>(work: () => Promise<T>): Promise<T> {
   try {
-    return openSqliteStore({ path })
+    return await work()
   } catch (error) {
-    if (error instanceof StoreError && error.code === "locked")
-      throw new EngineUnavailable(`another ${brand.binary} process is using the session database (${path}); close it first`)
+    // Each of these messages is written for the user: which session, who holds it and what to do, or which models exist.
+    if (error instanceof EngineError && error.code !== "closed") throw new EngineUnavailable(error.message)
     if (error instanceof StoreError && error.code === "schema_mismatch")
-      throw new EngineUnavailable(`the session database (${path}) was written by another version of ${brand.name}`)
+      throw new EngineUnavailable(`that session was written by another version of ${brand.name} and cannot be opened by this one (${error.message})`)
     throw error
   }
-}
-
-function open(engine: CoreEngine, id: SessionId): EngineSession {
-  try {
-    return engine.openSession(id, { resume: "wait" })
-  } catch (error) {
-    if (error instanceof EngineError && error.code === "session_not_found") throw new EngineUnavailable(`there is no session ${id}`)
-    throw error
-  }
-}
-
-/** Refuses a model the provider does not offer, naming the ones it does. */
-async function validate(engine: CoreEngine, settings: SessionSettings): Promise<void> {
-  try {
-    await engine.validateSettings(settings)
-  } catch (error) {
-    if (error instanceof EngineError && error.code === "unknown_model") throw new EngineUnavailable(error.message)
-    throw error
-  }
-}
-
-/** Fails before a session is created or resumed when there is no usable sign-in. */
-async function requireSignIn(): Promise<void> {
-  try {
-    await accessToken()
-  } catch (error) {
-    if (error instanceof AuthError) throw new EngineUnavailable(`${error.message} (sign in with ChatGPT, then try again)`)
-    throw error
-  }
-}
-
-function signInHint(kind: string, message: string) {
-  return kind === "auth" ? `${message} (sign in with ChatGPT, then try again)` : message
 }

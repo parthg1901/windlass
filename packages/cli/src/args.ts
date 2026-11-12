@@ -120,7 +120,7 @@ Usage:
   ${b} acp                       serve the Agent Client Protocol on stdio (for editors)
 
 Options:
-  --session <id>         resume a session by ID
+  --session <id>         resume a session by ID, or by the start of one if it is unique
   -c, --continue         resume the most recent session in this directory
   -m, --model <name>     model to use
   --effort <level>       reasoning effort, e.g. low, medium or high
@@ -148,10 +148,29 @@ Interactive keys:
 
 While the agent works:
   type and press Enter    sent at once; the agent sees it after the current step
-  /queue <message>        held until the agent would otherwise stop, then delivered
+  /queue <message>        held until the turn is done (its checks have run), then delivered
   /exit                   leave (the running work is stopped as a shutdown)
 
-Exit codes: 0 done, 1 failed, 2 usage error, 130 interrupted (Ctrl-C),
-141 output closed (a pipe reader left), 143 terminated (SIGTERM).
+At the prompt, while the agent is idle:
+  /undo                   go back to before your last message: the files and the
+                          conversation. Shows what will change first, and asks before
+                          it overwrites a file edited since by you or another session
+  /redo                   bring back what the last /undo took away
+
+Sessions are stored one file each, so several ${b} processes (and an editor) can
+work at once, each in its own session. A session another process is working in
+cannot be opened until that process lets go of it.
+
+Exit codes:
+  0    done
+  1    failed
+  2    usage error
+  3    done, but the project's checks still fail and were left unresolved (the model
+       reported that it cannot fix them, ran out of rounds, or checks only report).
+       With --json the last event is execution.succeeded, and its
+       data.verification.status is "unresolved" (with the reason and the failing checks)
+  130  interrupted (Ctrl-C)
+  141  output closed (a pipe reader left)
+  143  terminated (SIGTERM)
 `
 }

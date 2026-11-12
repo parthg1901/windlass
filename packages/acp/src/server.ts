@@ -1,6 +1,11 @@
 /**
  * The ACP v1 agent: one instance per client connection, on top of the
- * process's `Backend`.
+ * process's harness (`createHarness` in `@light-harness/core`, the same
+ * assembly the command line uses). Everything it does to a session goes
+ * through the engine: creating and opening, the stored log for a replay,
+ * settings, withdrawing a prompt, closing one session, archiving. A session
+ * another process is working in (a terminal, another editor) is refused
+ * with an error that names that process.
  *
  * The prompt turn. `session/prompt` admits the prompt into the session's inbox
  * (`steer` by default, `queue` when `_meta["<ns>/delivery"]` says so) and its
@@ -43,12 +48,15 @@ import {
   agent,
   methods,
 } from "@agentclientprotocol/sdk"
-import { type EngineEvent, type SessionSettings, type StoredEvent, brand } from "@light-harness/core"
-import { Backend, type ModelEntry, type OpenSession, SessionUnavailable, SIGN_IN_HINT } from "./backend.ts"
+import { EngineError, type EngineEvent, type EngineSession, type Harness, type MessageId, type ModelEntry, type SessionId, type SessionSettings, type StoredEvent, brand } from "@light-harness/core"
 import { EXT, META, type SessionState, type StateNotification } from "./extensions.ts"
 import { type Logger, describeError } from "./log.ts"
+import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText } from "./prompt.ts"
 import { type Output, Translator, type TurnEnd } from "./translate.ts"
+
+/** The instruction a signed-out user gets. The CLI has no sign-in command yet; this is the developer helper. */
+export const SIGN_IN_HINT = `run \`bun scripts/login.ts start\` in the ${brand.name} checkout and finish the ChatGPT sign-in, then try again`
 
 /** The one auth method: the ChatGPT-plan sign-in, which the user completes outside the client. */
 export const AUTH_METHOD_ID = "chatgpt"
@@ -69,9 +77,9 @@ export interface Served {
   readonly done: Promise<void>
 }
 
-/** Serves one client connection. The backend outlives it; the caller closes the backend when the process ends. */
-export function serve(backend: Backend, stream: Stream, options: ServeOptions): Served {
-  const state = new ConnectionState(backend, options)
+/** Serves one client connection. The harness outlives it; the caller closes the harness when the process ends. */
+export function serve(harness: Harness, stream: Stream, options: ServeOptions): Served {
+  const state = new ConnectionState(harness, options)
   const connection = buildAgent(state).connect(stream)
   state.client = connection.client
   state.connectionSignal = connection.signal
@@ -127,10 +135,14 @@ class ConnectionState {
   private readonly views = new Map<string, SessionView>()
   private closing: Promise<void> | null = null
 
+  readonly catalog: ModelCatalog
+
   constructor(
-    readonly backend: Backend,
+    readonly harness: Harness,
     readonly options: ServeOptions,
-  ) {}
+  ) {
+    this.catalog = catalogOf(harness, options.log)
+  }
 
   get log(): Logger {
     return this.options.log
@@ -178,35 +190,33 @@ class ConnectionState {
     requireDirectory(cwd)
     await this.requireSignIn()
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
-    const open = this.unavailableAsError(() => this.backend.createSession(cwd))
-    const view = this.attach(open, cwd, open.engine.projection().lastSeq)
-    return { sessionId: open.id, configOptions: await this.configOptions(view.settings) }
+    const settings = await this.harness.settingsFor(cwd)
+    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings }))
+    const view = this.attach(session, cwd, session.projection().lastSeq)
+    return { sessionId: session.id, configOptions: await this.configOptions(view.settings) }
   }
 
   async loadSession(sessionId: string, cwd: string, replay: boolean) {
     if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
     await this.requireSignIn()
-    const summary = this.unavailableAsError(() => this.backend.summary(sessionId))
+    // Archived sessions are not offered: `session/delete` archives.
+    const summary = this.engineErrors(() => this.harness.engine.getSession(sessionId as SessionId), sessionId)
     if (summary === null || summary.session.archived) throw RequestError.sessionNotFound(sessionId)
     // Known before the state is reported, for the context window in `usage_update`.
-    const models = this.backend.models()
+    const models = this.catalog.list()
     if (summary.session.cwd !== cwd)
       throw RequestError.invalidParams({ cwd, sessionCwd: summary.session.cwd }, `session ${sessionId} works in ${summary.session.cwd}, not ${cwd}`)
     this.views.get(sessionId)?.detach()
     await models
-    const open = this.unavailableAsError(() => {
-      try {
-        return this.backend.openSession(sessionId)
-      } catch (error) {
-        if (error instanceof SessionUnavailable) throw RequestError.sessionNotFound(sessionId)
-        throw error
-      }
-    })
+    // A claim left by a process that died is repaired here; a suspended one (a clean shutdown in the middle of a
+    // turn) stays suspended until the user says something, so their words are in front of the model in the first
+    // step after the restart. A session another process holds is refused, with that process named.
+    const session = this.engineErrors(() => this.harness.engine.openSession(sessionId as SessionId, { resume: "wait" }), sessionId)
     // Read, translate and queue the stored log before listening, all in this synchronous block, so that a live
     // event either is in the log read here or arrives after it, never both and never neither.
-    const history = this.backend.history(open.id)
+    const history = session.readEvents()
     const lastSeq = history.at(-1)?.seq ?? 0
-    const view = this.attach(open, cwd, lastSeq, (translator) => {
+    const view = this.attach(session, cwd, lastSeq, (translator) => {
       // Without a replay the log is still folded, so the translator knows the model and the calls in it.
       const outputs = translator.replay(history)
       return replay ? outputs.filter((output) => output.type === "update") : []
@@ -220,7 +230,7 @@ class ConnectionState {
     if (cwd !== null && !isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
     const offset = cursor === null ? 0 : Number(cursor)
     if (!Number.isInteger(offset) || offset < 0) throw RequestError.invalidParams({ cursor }, "unknown cursor")
-    const all = this.unavailableAsError(() => this.backend.listSessions()).filter((summary) => cwd === null || summary.session.cwd === cwd)
+    const all = this.engineErrors(() => this.harness.engine.listSessions(cwd === null ? {} : { cwd }))
     const page = all.slice(offset, offset + LIST_PAGE)
     const sessions: SessionInfo[] = page.map((summary) => ({
       sessionId: summary.session.id,
@@ -237,20 +247,22 @@ class ConnectionState {
     if (view === undefined) return {}
     await view.cancelAndWait()
     view.detach()
-    await this.backend.closeSession(sessionId)
+    // This session only: its work stops as a shutdown and it is let go of. The engine and its other sessions carry on.
+    await view.session.close()
     return {}
   }
 
   async deleteSession(sessionId: string): Promise<Record<string, never>> {
     await this.closeSession(sessionId)
-    await this.unavailableAsError(() => this.backend.archive(sessionId))
+    // The soft delete: the session is archived (`session.archived`); its log stays.
+    await this.engineErrors(() => this.harness.engine.archiveSession(sessionId as SessionId), sessionId, true)
     return {}
   }
 
   async setConfigOption(sessionId: string, configId: string, value: string) {
     const view = this.requireView(sessionId)
     const current = view.settings
-    const models = await this.backend.models()
+    const models = await this.catalog.list()
     let next: SessionSettings
     if (configId === CONFIG.model) {
       const entry = models.find((model) => model.id === value)
@@ -265,7 +277,7 @@ class ConnectionState {
         throw RequestError.invalidParams({ configId, value }, `${current.model} does not take the reasoning effort ${value}`)
       next = { model: current.model, reasoningEffort: value === DEFAULT_EFFORT_VALUE ? null : value }
     } else throw RequestError.invalidParams({ configId }, `unknown config option ${configId}`)
-    view.open.engine.setSettings(next)
+    view.session.setSettings(next)
     view.requested = next
     return { configOptions: await this.configOptions(next) }
   }
@@ -276,7 +288,7 @@ class ConnectionState {
     const view = this.requireView(sessionId)
     const text = requirePromptText(blocks)
     const delivery = meta?.[META.delivery] === "queue" ? "queue" : "steer"
-    const messageId = view.open.engine.send(text, { delivery })
+    const messageId = view.session.send(text, { delivery })
     return view.waitFor(messageId, signal)
   }
 
@@ -288,15 +300,15 @@ class ConnectionState {
   admit(sessionId: string, blocks: readonly ContentBlock[], delivery: "steer" | "queue") {
     const view = this.requireView(sessionId)
     const text = requirePromptText(blocks)
-    const messageId = view.open.engine.send(text, { delivery })
+    const messageId = view.session.send(text, { delivery })
     view.echo.add(messageId)
     return { messageId }
   }
 
   async models() {
-    const models = await this.backend.models()
+    const models = await this.catalog.list()
     return {
-      defaultModel: this.backend.defaults.model,
+      defaultModel: this.harness.defaults.model,
       models: models.map((model) => ({ ...model, efforts: [...model.efforts] })),
     }
   }
@@ -304,7 +316,7 @@ class ConnectionState {
   // ---- shared ----
 
   async configOptions(settings: SessionSettings): Promise<SessionConfigOption[]> {
-    return configOptionsFor(settings, await this.backend.models())
+    return configOptionsFor(settings, await this.catalog.list())
   }
 
   sendUpdate(sessionId: string, update: SessionUpdate): Promise<void> {
@@ -331,20 +343,20 @@ class ConnectionState {
       this.views.clear()
       for (const view of views) view.detach()
       if (views.length > 0) this.log.info(`client disconnected; closing ${views.length} session(s) as a shutdown`)
-      await Promise.all(views.map((view) => this.backend.closeSession(view.open.id).catch((error: unknown) => this.log.error(`closing ${view.open.id} failed: ${describeError(error)}`))))
+      await Promise.all(views.map((view) => view.session.close().catch((error: unknown) => this.log.error(`closing ${view.session.id} failed: ${describeError(error)}`))))
     })()
     return this.closing
   }
 
   forget(view: SessionView): void {
-    if (this.views.get(view.open.id) === view) this.views.delete(view.open.id)
+    if (this.views.get(view.session.id) === view) this.views.delete(view.session.id)
   }
 
-  private attach(open: OpenSession, cwd: string, fromSeq: number, prime?: (translator: Translator) => Output[]): SessionView {
-    const view = new SessionView(this, open, cwd, fromSeq)
+  private attach(session: EngineSession, cwd: string, fromSeq: number, prime?: (translator: Translator) => Output[]): SessionView {
+    const view = new SessionView(this, session, cwd, fromSeq)
     if (prime !== undefined) view.queueOutputs(prime(view.translator), true)
     view.listen()
-    this.views.set(open.id, view)
+    this.views.set(session.id, view)
     return view
   }
 
@@ -355,16 +367,37 @@ class ConnectionState {
   }
 
   private async requireSignIn(): Promise<void> {
-    const state = await this.backend.signIn()
-    if (!state.signedIn) throw RequestError.authRequired({ methodId: AUTH_METHOD_ID }, state.message)
+    const state = await this.harness.signIn()
+    if (!state.signedIn) throw RequestError.authRequired({ methodId: AUTH_METHOD_ID }, `${state.message} To sign in, ${SIGN_IN_HINT}.`)
   }
 
-  private unavailableAsError<T>(work: () => T): T {
-    try {
-      return work()
-    } catch (error) {
-      if (error instanceof SessionUnavailable) throw RequestError.internalError({ reason: error.message }, error.message)
+  /**
+   * Turns what the engine refuses into the protocol's errors: an unknown
+   * session is `session not found`; a session another process is working in
+   * is an error that names the process; a harness that is shutting down says
+   * so. With `absentIsFine`, a session that does not exist is no error (a
+   * delete of something already gone).
+   */
+  private engineErrors<T>(work: () => T, sessionId?: string, absentIsFine?: false): T
+  private engineErrors<T>(work: () => Promise<T>, sessionId: string, absentIsFine: true): Promise<T | undefined>
+  private engineErrors<T>(work: () => T | Promise<T>, sessionId?: string, absentIsFine = false): T | Promise<T | undefined> {
+    const translate = (error: unknown): never => {
+      if (error instanceof EngineError && error.code === "session_in_use")
+        throw new RequestError(-32603, error.message, { [META.capabilities]: { reason: "session_in_use", holderPid: error.holderPid } })
+      if (error instanceof EngineError && error.code === "session_not_found") throw RequestError.sessionNotFound(sessionId ?? "")
+      if (error instanceof EngineError) throw RequestError.internalError({ reason: error.message }, error.message)
+      if (this.harness.closed) throw RequestError.internalError({ reason: "shutting down" }, `${brand.name} is shutting down`)
       throw error
+    }
+    try {
+      const result = work()
+      if (!(result instanceof Promise)) return result
+      return result.catch((error: unknown) => {
+        if (absentIsFine && error instanceof EngineError && error.code === "session_not_found") return undefined
+        return translate(error)
+      })
+    } catch (error) {
+      return translate(error)
     }
   }
 }
@@ -383,29 +416,31 @@ class SessionView {
 
   constructor(
     private readonly connection: ConnectionState,
-    readonly open: OpenSession,
+    readonly session: EngineSession,
     cwd: string,
     private fromSeq: number,
   ) {
-    const backend = connection.backend
+    const catalog = connection.catalog
     const capabilities = connection.clientCapabilities
     this.translator = new Translator({
-      sessionId: open.id,
+      sessionId: session.id,
       cwd,
       log: connection.log,
       notices: capabilities.session?.notices != null,
       compaction: capabilities.session?.compaction != null,
-      contextWindow: (model) => backend.cachedModels().find((entry) => entry.id === model)?.contextWindow ?? null,
+      contextWindow: (model) => catalog.cached().find((entry) => entry.id === model)?.contextWindow ?? null,
       echo: (messageId) => this.echo.has(messageId),
     })
   }
 
   get settings(): SessionSettings {
-    return this.requested ?? this.open.engine.projection().session.settings
+    return this.requested ?? this.session.projection().session.settings
   }
 
   listen(): void {
-    this.unlisten = this.open.listen((item) => this.onEvent(item))
+    // Handled after whatever produced the event has returned, in order: a prompt's sender registers what it
+    // waits for before its own `inbox.enqueued` is looked at here.
+    this.unlisten = this.session.subscribe((item) => queueMicrotask(() => this.onEvent(item)))
   }
 
   detach(): void {
@@ -436,15 +471,34 @@ class SessionView {
 
   cancel(): void {
     const waiting = this.pending.filter((pending) => !pending.delivered)
-    const withdrawn = new Set(this.connection.backend.cancelInbox(this.open.id, waiting.map((pending) => pending.messageId)))
+    const withdrawn = this.withdraw(waiting.map((pending) => pending.messageId))
     if (withdrawn.size > 0) this.settle((pending) => withdrawn.has(pending.messageId), { kind: "stop", stopReason: "cancelled" })
-    this.open.engine.interrupt()
+    this.session.interrupt()
   }
 
   async cancelAndWait(): Promise<void> {
     this.cancel()
-    await this.open.engine.settled()
+    await this.session.settled()
     await this.flushed()
+  }
+
+  /**
+   * Withdraws prompts that were not delivered yet (`inbox.cancelled`,
+   * through the engine). The loop reads the inbox at every boundary, so one
+   * withdrawn here never reaches the model. Returns the ones that were still
+   * waiting; a prompt already delivered is left alone.
+   */
+  private withdraw(messageIds: readonly string[]): Set<string> {
+    return new Set(
+      messageIds.filter((messageId) => {
+        try {
+          return this.session.withdraw(messageId as MessageId)
+        } catch (error) {
+          this.connection.log.warn(`could not withdraw a waiting message in ${this.session.id}: ${describeError(error)}`)
+          return false
+        }
+      }),
+    )
   }
 
   queueOutputs(outputs: readonly Output[], replay: boolean): void {
@@ -453,21 +507,21 @@ class SessionView {
 
   /** After a load or resume: the title, the context use, and whether the session is working, idle or suspended. */
   syncState(history: readonly StoredEvent[]): void {
-    const projection = this.open.engine.projection()
+    const projection = this.session.projection()
     const session = projection.session
     this.enqueue(() =>
-      this.connection.sendUpdate(this.open.id, {
+      this.connection.sendUpdate(this.session.id, {
         sessionUpdate: "session_info_update",
         title: session.title,
         updatedAt: new Date(projection.updatedAt).toISOString(),
       }),
     )
     const last = lastUsage(history)
-    const size = last === null ? null : (this.connection.backend.cachedModels().find((model) => model.id === last.model)?.contextWindow ?? null)
+    const size = last === null ? null : (this.connection.catalog.cached().find((model) => model.id === last.model)?.contextWindow ?? null)
     if (last !== null && size !== null)
-      this.enqueue(() => this.connection.sendUpdate(this.open.id, { sessionUpdate: "usage_update", used: last.used, size }))
-    const state: SessionState = this.open.engine.working ? "running" : session.execution?.status === "suspended" ? "suspended" : "idle"
-    const params: StateNotification = { sessionId: this.open.id, state }
+      this.enqueue(() => this.connection.sendUpdate(this.session.id, { sessionUpdate: "usage_update", used: last.used, size }))
+    const state: SessionState = this.session.working ? "running" : session.execution?.status === "suspended" ? "suspended" : "idle"
+    const params: StateNotification = { sessionId: this.session.id, state }
     this.enqueue(() => this.connection.sendExt(EXT.state, { ...params }))
   }
 
@@ -487,7 +541,7 @@ class SessionView {
     switch (output.type) {
       case "update": {
         const update = output.update
-        this.enqueue(() => this.connection.sendUpdate(this.open.id, update))
+        this.enqueue(() => this.connection.sendUpdate(this.session.id, update))
         return
       }
       case "ext": {
@@ -498,7 +552,7 @@ class SessionView {
       case "settings": {
         const settings = output.settings
         this.enqueue(async () =>
-          this.connection.sendUpdate(this.open.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(settings) }),
+          this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(settings) }),
         )
         return
       }
@@ -518,7 +572,7 @@ class SessionView {
     this.settle((pending) => pending.delivered, end)
     if (end.kind === "failed" && seq !== null) {
       const stranded = this.pending.filter((pending) => !pending.delivered && pending.enqueuedSeq !== null && pending.enqueuedSeq < seq)
-      const withdrawn = new Set(this.connection.backend.cancelInbox(this.open.id, stranded.map((pending) => pending.messageId)))
+      const withdrawn = this.withdraw(stranded.map((pending) => pending.messageId))
       this.settle((pending) => withdrawn.has(pending.messageId), end)
     }
   }
@@ -538,7 +592,7 @@ class SessionView {
 
   private enqueue(send: () => Promise<void>): void {
     this.outbox = this.outbox.then(send).catch((error: unknown) => {
-      if (!this.connection.connectionClosed) this.connection.log.warn(`could not send an update for ${this.open.id}: ${describeError(error)}`)
+      if (!this.connection.connectionClosed) this.connection.log.warn(`could not send an update for ${this.session.id}: ${describeError(error)}`)
     })
   }
 }

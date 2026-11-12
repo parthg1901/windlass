@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EngineError, type StoredEvent } from "@light-harness/core"
 import { FakeProvider, script } from "@light-harness/core/testing"
-import { offerSession } from "../src/commands.ts"
+import { revertable } from "../src/commands.ts"
 import { type EngineEvent, EngineUnavailable, type Session } from "../src/engine.ts"
 import { createRealEngine } from "../src/real-engine.ts"
 import { PrettyRenderer } from "../src/renderer.ts"
@@ -18,7 +18,6 @@ import { VirtualTerminal } from "./vt.ts"
 
 const scratch: string[] = []
 afterAll(() => {
-  offerSession(null)
   for (const directory of scratch) rmSync(directory, { recursive: true, force: true })
 })
 
@@ -58,6 +57,8 @@ describe("the real engine", () => {
     const session = await engine.open(open(workspace))
     const vt = new VirtualTerminal(100)
     const screen = new Screen({ write: (text) => vt.write(text), columns: () => 100, color: false })
+    // As `main.ts` does when it has opened the session.
+    screen.attach(revertable(session))
     const renderer = new PrettyRenderer({ write: (text) => screen.write(text), color: false, columns: () => 100, live: false, showReasoning: false, echoPrompts: true })
     const seen: EngineEvent[] = []
     const durable = () => seen.filter((item): item is StoredEvent => "seq" in item).map((item) => item.type)

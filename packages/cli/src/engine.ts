@@ -29,8 +29,10 @@
  *   the prompt, SIGTERM, a closed stdout pipe), and the CLI waits for it for
  *   at most `CLOSE_TIMEOUT_MS` before exiting anyway. Anything still running
  *   is stopped as a `shutdown`, and `events` ends.
+ * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
+ *   that leaves them out has no undo, and the commands say so.
  */
-import type { EphemeralEvent, MessageId, SessionId, StoredEvent } from "@light-harness/core"
+import type { EphemeralEvent, MessageId, RevertOptions, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
 export type EngineEvent = StoredEvent | EphemeralEvent
@@ -127,6 +129,10 @@ export interface Session {
   send(text: string, options?: SendOptions): Promise<MessageId | null>
   /** Asks the running execution to stop with reason `user`. A no-op when nothing runs. */
   interrupt(): void
+  /** `/undo`: goes back to before a user message (the latest by default), files and conversation. Only while idle. */
+  revert?(options?: RevertOptions): Promise<RevertResult>
+  /** `/redo`: undoes the latest revert. Only while idle. */
+  undoRevert?(options?: Omit<RevertOptions, "messageId">): Promise<RevertResult>
   /** Stops anything still running (as a shutdown) and ends `events`. */
   close(): Promise<void>
 }
@@ -134,14 +140,25 @@ export interface Session {
 /** How long the CLI waits for `Session.close` before it exits anyway. */
 export const CLOSE_TIMEOUT_MS = 3000
 
-/** The terminal state of a turn, read from its `execution.*` event. */
-export type TurnOutcome = "succeeded" | "failed" | "interrupted"
+/**
+ * The terminal state of a turn, read from its `execution.*` event.
+ * `unresolved` is an execution that ended as done although the project's
+ * checks still fail (`execution.succeeded` whose `verification.status` is
+ * `unresolved`): the model said it cannot fix them, ran out of rounds, or the
+ * checks only report. It is not a success a script should build on.
+ */
+export type TurnOutcome = "succeeded" | "unresolved" | "failed" | "interrupted"
+
+/** The exit code of a turn that ended with failing checks left unresolved. Distinct from done (0) and failed (1). */
+export const EXIT_UNRESOLVED = 3
 
 /** The process exit code for a turn's outcome. */
 export function exitCodeOf(outcome: TurnOutcome): number {
   switch (outcome) {
     case "succeeded":
       return 0
+    case "unresolved":
+      return EXIT_UNRESOLVED
     case "failed":
       return 1
     case "interrupted":
@@ -153,7 +170,7 @@ export function exitCodeOf(outcome: TurnOutcome): number {
 export function turnOutcomeOf(event: EngineEvent): TurnOutcome | null {
   switch (event.type) {
     case "execution.succeeded":
-      return "succeeded"
+      return event.data.verification.status === "unresolved" ? "unresolved" : "succeeded"
     case "execution.failed":
       return "failed"
     case "execution.interrupted":

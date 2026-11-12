@@ -88,6 +88,8 @@ const EXPECTED: Record<string, readonly string[]> = {
     "    12 pass",
     "",
     "■ interrupted · 1.0s",
+    // The model call itself had finished: what it cost is known although its tool was cut short.
+    "  tokens · 1,000 in · 800 cached (80%) · 50 out (10 reasoning)",
   ],
   "a-steer-arriving-mid-step-is-delivered-at-the-next-step-boundary": [
     "› Fix the failing test.",
@@ -180,6 +182,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "    12 pass",
     "",
     "■ stopped for shutdown · the turn resumes at the next start",
+    "  tokens · 1,000 in · 800 cached (80%) · 50 out (10 reasoning)",
     "",
     "› Are you there?",
     "",

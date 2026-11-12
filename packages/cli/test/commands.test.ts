@@ -5,10 +5,15 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import type { RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
-import { type RevertableSession, offerSession, sessionCommand } from "../src/commands.ts"
+import { type RevertableSession, revertable, sessionCommand } from "../src/commands.ts"
 import { type EditorAction, Screen } from "../src/terminal.ts"
 import { VirtualTerminal } from "./vt.ts"
 
+/** The session the next `setup()` attaches to its editor, as `main.ts` attaches the one it opened. */
+let offered: RevertableSession | null = null
+const offerSession = (session: RevertableSession | null) => {
+  offered = session
+}
 afterEach(() => offerSession(null))
 
 const plan = (changes: RevertPlan["changes"], more: Partial<RevertPlan> = {}): RevertPlan => ({
@@ -45,6 +50,7 @@ function session(preview: RevertResult, done: (options: RevertOptions) => Revert
 function setup(columns = 72) {
   const vt = new VirtualTerminal(columns)
   const screen = new Screen({ write: (text) => vt.write(text), columns: () => columns, color: false })
+  screen.attach(offered)
   const actions: EditorAction[] = []
   screen.show("› ", "type a message")
   const type = async (data: string) => {
@@ -57,6 +63,18 @@ function setup(columns = 72) {
   const prompt = () => vt.text.split("\n").at(-1)!
   return { vt, screen, actions, type, output, prompt }
 }
+
+describe("which sessions can revert", () => {
+  test("one that has both revert and its undo; an engine without them offers no /undo", async () => {
+    const calls = session({ kind: "preview", plan: agentOnly })
+    const both = revertable(offered!)
+    expect(both).not.toBeNull()
+    await both!.revert({ dryRun: true })
+    expect(calls).toEqual(['revert {"dryRun":true}'])
+    expect(revertable({})).toBeNull()
+    expect(revertable({ revert: offered!.revert })).toBeNull()
+  })
+})
 
 describe("which entries are commands", () => {
   test("only /undo and /redo on their own", () => {

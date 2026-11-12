@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { script } from "@light-harness/core/testing"
-import { SIGN_IN_HINT } from "../src/backend.ts"
+import { SIGN_IN_HINT } from "../src/server.ts"
 import { EXT } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 
@@ -92,7 +92,7 @@ test("session/list, session/close and session/delete (a soft delete: the session
   expect((await harness.connection.agent.request(methods.agent.session.list, {})).sessions.map((session) => session.sessionId)).toEqual([b])
   await expect(harness.connection.agent.request(methods.agent.session.load, { sessionId: a, cwd: harness.workspace, mcpServers: [] })).rejects.toMatchObject({ code: -32002 })
   // The log is still there.
-  expect(harness.backend.history(a as never).map((item) => item.type).at(-1)).toBe("session.archived")
+  expect(harness.backend.engine.readEvents(a as never).map((item) => item.type).at(-1)).toBe("session.archived")
   // Loading a session from another directory is refused rather than run in the wrong place.
   await expect(harness.connection.agent.request(methods.agent.session.load, { sessionId: b, cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({ code: -32602 })
 })

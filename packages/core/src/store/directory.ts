@@ -121,7 +121,7 @@ export interface SessionDirectoryOptions {
   readonly now?: () => number
   /** Passed to each session's store: how long a write waits for SQLite's write lock. */
   readonly busyTimeoutMs?: number
-  /** One line about something the user should know (the old database was moved aside). Defaults to standard error. */
+  /** One line about something the user should know (the old database was moved aside). Defaults to standard error, prefixed with the binary's name. */
   readonly notice?: (line: string) => void
 }
 
@@ -144,7 +144,7 @@ export function openSessionDirectory(options: SessionDirectoryOptions): SessionD
   const dataDir = options.dataDir
   const sessionsDir = join(dataDir, SESSIONS_DIRECTORY)
   mkdirSync(sessionsDir, { recursive: true })
-  moveLegacyDatabase(dataDir, options.notice ?? ((line) => void process.stderr.write(`${line}\n`)))
+  moveLegacyDatabase(dataDir, options.notice ?? ((line) => void process.stderr.write(`${brand.binary}: ${line}\n`)))
   const blobs = createFileBlobStore(join(dataDir, BLOBS_DIRECTORY))
   const held = new Map<SessionId, SqliteStore>()
   const index = new SessionIndex(join(dataDir, INDEX_FILE))
@@ -308,7 +308,7 @@ function moveLegacyDatabase(dataDir: string, notice: (line: string) => void): vo
     } catch {}
   }
   notice(
-    `${brand.binary}: sessions are now stored one file each, in ${join(dataDir, SESSIONS_DIRECTORY)}. The old database ${legacy} was not converted; it was moved to ${backup} and its sessions are no longer listed.`,
+    `sessions are now stored one file each, in ${join(dataDir, SESSIONS_DIRECTORY)}. The old database ${legacy} was not converted: it was moved to ${backup}, and its sessions are no longer listed.`,
   )
 }
 

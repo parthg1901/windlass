@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { brand, openSqliteStore } from "@light-harness/core"
+import { type SessionId, brand, openSessionDirectory } from "@light-harness/core"
 import { script } from "@light-harness/core/testing"
 import { EXT, META } from "../src/extensions.ts"
-import { DEFAULTS, type Harness, startHarness, until } from "./helpers.ts"
+import { type Harness, startHarness, until } from "./helpers.ts"
 
 let h: Harness | null = null
 afterEach(async () => {
@@ -80,19 +80,19 @@ test("a client that disconnects mid-turn: the session is shut down resumably and
   const pid = await pidIn(join(harness.workspace, "pid.txt"))
   await harness.disconnect()
   expect(alive(pid)).toBe(false)
-  expect(harness.backend.isOpen(sessionId)).toBe(false)
-  await harness.backend.close()
-
-  const store = openSqliteStore({ path: join(harness.dataDir, DEFAULTS.databaseFile) })
+  // The disconnect let go of the session, though the server process lives on: anyone can open it for writing now.
+  const directory = openSessionDirectory({ dataDir: harness.dataDir })
   try {
-    const types = store.readEvents(sessionId as never).map((item) => item.type)
-    expect(types.slice(-2)).toEqual(["synthetic.appended", "execution.interrupted"])
-    const interrupted = store.readEvents(sessionId as never).at(-1) as { data: { reason: string } }
+    directory.open(sessionId as SessionId).close()
+    const events = directory.readEvents(sessionId as SessionId)
+    expect(events.map((item) => item.type).slice(-2)).toEqual(["synthetic.appended", "execution.interrupted"])
+    const interrupted = events.at(-1) as { data: { reason: string } }
     expect(interrupted.data.reason).toBe("shutdown")
-    expect(store.getSession(sessionId as never)?.session.execution?.status).toBe("suspended")
+    expect(directory.get(sessionId as SessionId)?.session.execution?.status).toBe("suspended")
   } finally {
-    store.close()
+    directory.close()
   }
+  await harness.backend.close()
 
   // A new connection (a restarted process) sees the session suspended, and the next prompt takes the turn up again.
   const again = await startHarness({ dataDir: harness.dataDir, responses: [[script.text("Picked up where we stopped.")]] })

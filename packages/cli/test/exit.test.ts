@@ -62,6 +62,18 @@ describe("exit paths", () => {
     expect(cli.traced()).toBe("close\nclosed\n")
   })
 
+  test("a turn that ends with failing checks left unresolved exits with 3, and --json says so in its last event", async () => {
+    const cli = start(["--demo", "the-checks-still-fail-after-the-last-allowed-round", "--demo-speed", "0", "--json", "Fix it."])
+    expect(await cli.proc.exited).toBe(3)
+    await cli.done
+    const last = JSON.parse(cli.output.out.trim().split("\n").at(-1)!) as { type: string; data: { verification: { status: string; reason: string; failing: string[] } } }
+    expect(last.type).toBe("execution.succeeded")
+    expect(last.data.verification).toMatchObject({ status: "unresolved", reason: "max_rounds", failing: ["test"] })
+    // The same turn with passing checks is a plain success.
+    const passing = start(["--demo", "the-checks-pass", "--demo-speed", "0", "--json", "Fix it."])
+    expect(await passing.proc.exited).toBe(0)
+  })
+
   test("Ctrl-C mid-turn: the engine is closed after the stop and the code is 130", async () => {
     const cli = start(["--demo", "a-long-build-command", "--demo-grace", "100"])
     await cli.waitFor("▸ shell")

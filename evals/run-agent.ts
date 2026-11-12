@@ -45,7 +45,7 @@ export interface RunOptions {
   readonly keep?: boolean
   /** Where results.json and the raw streams go. Default: a timestamped directory under evals/results/. */
   readonly out?: string
-  /** The command that starts the agent; the runner appends `--json --cwd <dir> [--model] [--effort] -- <prompt>`. */
+  /** The command that starts the agent; the runner appends `--json --cwd <dir> --max-steps <n> [--model] [--effort] -- <prompt>`. */
   readonly cli?: readonly string[]
   /** Overrides every task's `timeoutSeconds`. */
   readonly timeoutSeconds?: number
@@ -55,7 +55,7 @@ export interface RunOptions {
   readonly env?: Record<string, string>
   /** Called with each finished row, e.g. to print progress. */
   readonly onResult?: (result: RunResult) => void
-  /** The session database to export traces from. Default: the CLI's, under the agent's `XDG_DATA_HOME`. */
+  /** Where to export traces from: the harness data directory (one file per session), or a single database file. Default: the CLI's data directory, under the agent's `XDG_DATA_HOME`. */
   readonly database?: string
   /** Export and classify each run's cache misses (default true; skipped visibly when prefixlens is absent). */
   readonly classify?: boolean
@@ -360,7 +360,9 @@ async function runTurns(task: Task, dir: string, eventsFile: string, stderrFile:
       const sessionId = index === 0 ? null : sessionOf(output.join(""))
       if (index > 0 && sessionId === null) break
       const spent = turns.reduce((total, turn) => total + turn.wallMs, 0)
-      const flags = index === 0 ? [...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["--effort", options.effort] : [])] : ["--session", sessionId!]
+      // Every turn runs under the task's step limit: the loop then makes one last call without tools instead of going on.
+      const limit = ["--max-steps", String(task.maxSteps)]
+      const flags = [...limit, ...(index === 0 ? [...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["--effort", options.effort] : [])] : ["--session", sessionId!])]
       const turn = await runProcess(prompt, flags, dir, Math.max(1000, budgetMs - spent), writer, options)
       output.push(turn.stdout)
       stderr.push(task.prompts.length > 1 ? `--- turn ${index + 1}\n${turn.stderr}` : turn.stderr)

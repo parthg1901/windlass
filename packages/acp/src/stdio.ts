@@ -7,14 +7,13 @@
  *
  * The process ends when the client closes stdin, when stdout goes away, or on
  * SIGTERM, SIGINT or SIGHUP. Each way out is the same graceful shutdown: every
- * session is stopped as a `shutdown` (it resumes later), every tool process
- * is stopped, and the database is closed, waiting at most
+ * session is stopped as a `shutdown` (it resumes later) and let go of, every
+ * tool process is stopped, waiting at most
  * `SHUTDOWN_TIMEOUT_MS`. Should the process die anyway, the shell tool's guard
  * still kills the commands' process groups.
  */
 import { ndJsonStream } from "@agentclientprotocol/sdk"
-import { brand } from "@light-harness/core"
-import { Backend, type HarnessDefaults } from "./backend.ts"
+import { brand, createHarness } from "@light-harness/core"
 import { LOG_LEVEL_ENV, createLogger, describeError, levelFromEnv } from "./log.ts"
 import { SCRIPT_ENV, scriptedProvider } from "./scripted.ts"
 import { serve } from "./server.ts"
@@ -23,7 +22,6 @@ import { serve } from "./server.ts"
 export const SHUTDOWN_TIMEOUT_MS = 5000
 
 export interface StdioOptions {
-  readonly defaults: HarnessDefaults
   readonly env: Record<string, string | undefined>
   readonly version?: string
 }
@@ -40,7 +38,8 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   const scriptPath = options.env[SCRIPT_ENV]
   const provider = scriptPath === undefined || scriptPath === "" ? undefined : await scriptedProvider(scriptPath)
   if (provider !== undefined) log.warn(`using the scripted model in ${scriptPath} (${SCRIPT_ENV}); no real model is called`)
-  const backend = new Backend({ defaults: options.defaults, log, ...(provider === undefined ? {} : { provider }) })
+  // The same harness the command line builds: one data directory, a store per session, the saved sign-in.
+  const harness = createHarness({ log: (line) => log.info(line), ...(provider === undefined ? {} : { provider }) })
 
   let outputClosed = false
   const output = new WritableStream<Uint8Array>({
@@ -50,7 +49,7 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
         process.stdout.write(chunk, (error) => (error ? reject(error) : resolve()))
       }),
   })
-  const served = serve(backend, ndJsonStream(output, Bun.stdin.stream()), { log, ...(options.version === undefined ? {} : { version: options.version }) })
+  const served = serve(harness, ndJsonStream(output, Bun.stdin.stream()), { log, ...(options.version === undefined ? {} : { version: options.version }) })
 
   let stopping: Promise<void> | null = null
   const shutdown = (why: string): Promise<void> => {
@@ -59,7 +58,7 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
       served.connection.close()
       const finished = await within(
         SHUTDOWN_TIMEOUT_MS,
-        served.done.then(() => backend.close()),
+        served.done.then(() => harness.close()),
       )
       if (!finished) log.warn(`the shutdown took longer than ${SHUTDOWN_TIMEOUT_MS} ms; exiting anyway`)
     })().catch((error: unknown) => log.error(`the shutdown failed: ${describeError(error)}`))
