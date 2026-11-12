@@ -97,7 +97,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 
 | Group | Events |
 | --- | --- |
-| Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
+| Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
 | Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
@@ -107,7 +107,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run; `agent` when the policy that refused it is the restrictions of the agent the session runs as), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
 | Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge) |
 | Replay | `replay.call` (per call: matched, normalised, dropped, diverged or off the recording; whether the tool ran for real), `replay.diverged` (the copy the replay carries on in, and the snapshot it was restored from), `replay.ended` (the outcome, the reason, the report) |
-| Compaction | `compaction.started` (the trigger: `auto`, `overflow`, or `manual` when the user asked; the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after), `compaction.failed` |
+| Compaction | `compaction.started` (the trigger: `auto`, `overflow`, or `manual` when the user asked; the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after, and `calls`: how many summary requests it took, retries and the repair included), `compaction.failed` (with `calls` too) |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
 | Verification | `checks.started`, `checks.finished` (the evidence), `checks.failed`; the gate's outcome is on `execution.succeeded` |
 | History ranges | `revert.started`, `history.reverted` (with the record of the restore), `revert.undo_started`, `history.restored`, `revert.failed` |
@@ -140,16 +140,20 @@ is a new version with a decoder for the old one.
   git directory of the session's working directory (`session.created.cwd`).
 - `execution.succeeded` says what "done" rests on: `passed` with the evidence, `not_needed` (the turn changed no
   file, or nothing the checks cover changed; with `unverified` when files the checks cover did change outside the
-  turn and were therefore not checked), `not_configured`, or `unresolved` with the failing checks, the reason
-  (`acknowledged`, `max_rounds`, `report_mode`) and the evidence. A client shows these as different endings.
+  turn and were therefore not checked), `not_configured`, `left_to_parent` (the session is a subagent: its turn is not
+  verified by itself, its parent's turn is; it says nothing about whether checks exist), or `unresolved` with
+  the failing checks, the reason (`acknowledged`, `max_rounds`, `report_mode`) and the evidence. A client shows
+  these as different endings.
+- A summary call is a model request that is no step: it writes no `step.started`. The model requests of a turn
+  are its `step.started` events plus the `calls` of the `compaction.ended` and `compaction.failed` events in it.
 
 **Reducer and projection** (`message/`)
 - `reduce(state, event)` is pure and is the only code that turns events into state. The store runs it inside the
   append transaction, so an event it rejects is never written. Rebuilding from the log always equals the live rows.
 - It rejects every sequence the step loop must not write. The list, with a scenario and a rejection test for each,
   is in `docs/step-loop-scenarios.md`. In short:
-  - *Shape of the log.* `seq` is dense. A message enters history only at a step boundary and only under a running
-    execution claim. A step and a compaction need a baseline. A step has one terminal event, after all its calls
+  - *Shape of the log.* `seq` is dense. A message enters history only at a step boundary and only under a running execution claim (the one exception is the message that announces a switch of agent, which
+    the user also makes between two turns). A step and a compaction need a baseline. A step has one terminal event, after all its calls
     have settled.
   - *Tool calls.* A call is `pending`, then optionally `running`, then `settled` exactly once. From `pending` it
     settles as `not_started` or `error`; from `running` as `success`, `error` or `effect_unknown`. `tool.started`
@@ -192,8 +196,13 @@ is a new version with a decoder for the old one.
     under the `stop` policy, and ends once.
   - *Agents.* `agent.switched` names the agent the session ran as before. Without a message it is accepted only
     while no baseline is set (the first baseline then carries the agent's instructions); with one, only right
-    after that message, which must be an instruction message of source `agent`, under a running claim. A call is
-    refused in an agent's name only by the agent the session runs as.
+    after that message, which must be an instruction message of source `agent`. That message and the switch need a step boundary
+    and no claim: they are written the moment the user switches while the session is idle, and at the next
+    boundary of a turn that runs. A call is refused in an agent's name only by the agent the session runs as.
+  - *Who verifies.* The ending of a subagent's turn (`execution.succeeded`, `turn.ended`) says `left_to_parent`
+    and nothing else, and no other session's ending says it.
+  - *Forks.* Only a fork's `session.created` carries `inherited`, and what it carries lies at or before the
+    fork point.
   - *Reverts.* A revert and its undo happen only while no execution holds the claim. One that restores files is
     announced first (`revert.started`), nothing starts while it is open, and its record must be of the announced
     restore. Only the latest revert can be undone, until an execution starts; the undo puts back exactly the
@@ -218,8 +227,19 @@ is a new version with a decoder for the old one.
   the order of two statements.
 - One writer per database file, and the harness keeps one file per session (see "Where sessions live"). `seq` is
   dense per session and is the only ordering; IDs and timestamps never order anything.
-- The request ledger stores, for each model call, the ordered block hashes of the request and the usage. It is in
-  the session's own file.
+- `getProjection` is what the step loop reads several times per step, so its cost must not grow with the log. It
+  keeps the rows it last read for a session, decoded, with the `last_seq` they were read at. Every message row
+  says when it last changed (`message.changed_seq`, written by `append` with the row), and rows change only
+  inside an append, which always moves `last_seq`: an unchanged `last_seq` means unchanged rows, and otherwise
+  the session row, the inbox and the message rows that changed since are read again, in one read transaction.
+  What it returns is always what the rows say; `test/store/projection-read.test.ts` compares it, after every
+  event of every scenario, with a connection that reads every row and with the rebuild from the log.
+  (Measured with the scripted provider on the loaded two-core development machine, at 2M tokens of history: the
+  state reads of one model call took 787 ms before and 1 ms after; the median time per call went from 659 ms
+  to 138 ms.)
+- The request ledger stores, for each model call, the ordered block hashes of the request, the usage (with what
+  the provider says it wrote to its cache, when it says) and the name of the provider that served it
+  (`Provider.id`): the signed-in Responses provider, or a scripted one. It is in the session's own file.
 - Media lives in a blob store keyed by SHA-256 that all sessions share, so a reload shows the same image and a
   block that refers to it hashes the same.
 - `searchMessages` and `readMessageAt` are what the history tools use: every message that is not excluded, also the
@@ -235,6 +255,9 @@ is a new version with a decoder for the old one.
   write lock longer than the store waits; for a session, a `SessionInUseError` that names the process),
   `schema_mismatch` (the file is from another schema version), `parent_missing` (a fork's inherited events were
   asked for and its parent's file is gone), `read_only` and `ambiguous_session`.
+- A session's summary (`getSession`, a listing) carries `firstPrompt`: the beginning of the first thing the user
+  said, from the session's own message rows (or, before anything was delivered, the prompt that waits). It is
+  what a client names a session by that nobody titled, and it is kept in the listing cache with the summary.
 
 **Request** (`request/`)
 - A request is an ordered list of blocks: parameters, each tool, the instructions, each input item. Everything in a
@@ -285,6 +308,10 @@ is a new version with a decoder for the old one.
   it. A `transport` error has a `reason`: `connection` (could not send, or the connection broke) or `stalled`
   (nothing arrived within the idle timeout).
 - Provider-owned payloads (encrypted reasoning, item phase) travel as opaque `providerData` and are replayed verbatim.
+- `Usage` keeps what the provider says it wrote to its prompt cache (`cacheWriteTokens`, and the part with the
+  12-hour lifetime) exactly when the provider reported the figure, zero included; a missing figure is not zero.
+  `step.ended`, the ledger and the trace export (`cache_write_tokens`, `cache_write_12h_tokens`, and `billing:
+  "subscription"` for a call the signed-in provider served) carry it.
 - A provider does not retry and does not change the request. The step loop owns the single attempt budget.
 
 **Tool** (`tool/`)
@@ -298,6 +325,10 @@ is a new version with a decoder for the old one.
 - A tool that stands for many says which one a call means (`Tool.subject`: `mcp_call` names the server's tool, so an
   approval is asked about and remembered for `github/create_issue`, never for the bridge), and a tool whose call
   acts later says so for the question (`Tool.cautions`: `wake_create`).
+- A tool whose calls change less than its class says declares it (`Tool.changes: "records"`: `wake_cancel`,
+  `memory_save`, `memory_retract` change only records the harness keeps for itself). The class stays `write`
+  (a crash is still `effect_unknown`, the step is still bracketed by snapshots); the approval layer reads the
+  declaration. It is not part of the tool's spec.
 
 **Approval and the sandbox** (`approval/`, `sandbox/`, `engine/approval.ts`; for users: `docs/safety.md`)
 - `decide` is pure. It is given the mode, the call's effect class and origin, the facts about its path arguments
@@ -305,6 +336,9 @@ is a new version with a decoder for the old one.
   harness's project directory, outside, or in a path the sandbox hides), the escalation the model asked for with
   the shell call's `sandbox` argument, whether a sandbox exists, the session's taint, the remembered approvals and
   whether anyone is present. It never reads a command's text. The engine does the lookups and the writes.
+- A call that changes only the harness's own records (`Tool.changes`) is no file write: there is no path to
+  check and nothing a sandbox would contain. It runs without a question in `auto` and `full`, attended or not,
+  and `ask`, where every change asks, asks about it as that (need `records`, remembered by tool).
 - From the log alone: what was asked is `approval.requested` (the question as shown, word for word); what the user
   answered is `approval.answered`; what that allowed afterwards is its `grants` (a session approval is stamped with
   the answer's own `seq`, and `session.approval.grants` in the projection is their list); whether a command ran in
@@ -316,15 +350,21 @@ is a new version with a decoder for the old one.
 - Taint is derived, not stored: `deriveTaint` folds the tool results that started (a read's path facts, a
   command's granted network, a network or MCP tool by its class or origin: a tool declares `origin: "mcp"` or
   effect `network` and is a source with no further wiring), `taint.cleared` and compactions, in log order. The
-  engine keeps that history in memory, built from the log on first use and extended with every append. A write
+  engine keeps that history in memory, built from the session's own events on first use and extended with every append
+  (a fork's own events begin with the entries its `session.created` carries of the history it inherited, so its
+  parent's file is never read for it). A write
   outside the workspace is not a source: its result shows nothing of the file. Two sources say what they are
   themselves, in a field: an MCP bridge call's result records in `display.mcp` whether it holds content an untrusted
   server wrote (it is a source when it does, so a call to a server the user's file marks as trusted, or one refused
   before anything was sent, is not), and an admitted input records `untrusted` (a wake-up's firing with a webhook's
-  body or a networked check's output), which is a source from the admission on. `taint.noticed` records that the
+  body or a networked check's output), which is a source from the admission on. A third is `background_output` showing a running subagent's words:
+  its `display.subagent.tainted` says the subagent's conversation was tainted then, and the result is a source
+  like the subagent's answer. `taint.noticed` records that the
   user was told, and is what a client shows; a fork inherits it, a revert and a compaction leave it.
 - Redaction is applied by the loop to every tool result before `tool.settled` is written (the text, and every
-  string of the structured `display` data), and to a check report. The values are the engine's `secrets`: by
+  string of the structured `display` data), and to a check report. A check's own output is redacted as it
+  arrives, like a command's (`RunCheckOptions.redact`): its progress and the file that keeps it in full hold
+  the placeholders, and that file is named by the hash of the redacted output. The values are the engine's `secrets`: by
   default the values of the process's credential-looking environment variables, read once. The file tools are
   handed the same redaction (`ToolContext.redact`), so an `edit` whose `old_string` holds a placeholder is matched
   against the file as it was shown and applied to the real text, and a placeholder in `new_string`, or in the
@@ -383,7 +423,8 @@ is a new version with a decoder for the old one.
   a request and an HTTP 400. Listing and reading open nothing and close nothing. Opening a session another process holds fails
   with `EngineError` `session_in_use`, which carries the holder's process ID and a message that says what to do.
 - One step is one model call. Before every step the loop re-reads the projection and decides from stored state alone;
-  it keeps no conversation state in memory. Events that are decided together are appended in one transaction.
+  it keeps no conversation state in memory. Reading the state costs what the last appends changed, not the
+  length of the log (see `getProjection` under "Store"), so the time of a step does not grow with the session. Events that are decided together are appended in one transaction.
 - `tool.called` is durable when the call finishes streaming and `tool.started` right before the tool runs, both
   before any side effect. An interrupt is durable (`execution.interrupt_requested`) before anything is aborted.
 - *The order of the calls of one step.* Calls the loop itself refuses are settled first. Reads are decided at
@@ -432,7 +473,9 @@ is a new version with a decoder for the old one.
   whose change it is looking at. The results and the decision are one append: `checks.finished` with the terminal
   event, or with the report that sends the model back. The turn ends unresolved when the model acknowledges the
   failure with the tool, after `maxRounds` reports, or in `report` mode, where the model is shown the failure and
-  not sent back. A configuration that cannot be loaded fails the execution before anything is sent.
+  not sent back. A configuration that cannot be loaded fails the execution before anything is sent, and says so; anything else
+  that fails as an execution starts (the store, say) is reported as the harness's own failure, in its own
+  words, never as a configuration problem.
 - *What "this turn" is, and what stays unverified.* A turn begins with the first input delivered under an
   execution, and again with every queued message; a steer redirects the turn it arrives in and begins none, so
   what the turn changed before it still counts. A subagent's changes are its parent's turn's: they happen while a
@@ -514,8 +557,12 @@ is a new version with a decoder for the old one.
   its most recent steps, and the checkpoint carries the turn's request (quoted verbatim) and a sentence telling the
   model that the work was in progress. An aggressive compaction keeps only what fits; with nothing kept, the model
   continues from the checkpoint alone. A normal compaction that could take out less than a quarter of what is in
-  view (one huge tool result is the last step) is not made: the request is sent while it fits, and compacted
-  aggressively at once when it does not.
+  view (one huge tool result is the last step) is not made: the request is sent while it fits, and compacted aggressively at once when it does not. Nor is
+  one made whose result is known beforehand not to fit: before the summary is asked for, the loop predicts the
+  request after it (what no compaction removes, the kept tail, and the summary and the checkpoint at their
+  bounds), and when that is larger than the usable window, or the kept tail alone is as the policy will judge
+  it (an estimate with its margin), the compaction is aggressive at once. A normal one would have been
+  followed at the next boundary by an aggressive one: two summary calls for one compaction's worth of room.
 - *The summary.* The summary request is the step request of the part before the cut plus one prompt, so it reads
   that part from the cache; the cut and the prompt are durable (`compaction.started`) before it is sent. This
   provider rejects `max_output_tokens`, so the answer is bounded by the loop: it stops reading at twice the
@@ -527,7 +574,7 @@ is a new version with a decoder for the old one.
   the assistant's last words. A summary that only lacks a detail or is too long within the bound is used and says
   so. Only a provider that cannot be used at all (signed out, the plan's limit, failing again and again) fails the
   execution, as it would fail a step; history is then unchanged. `compaction.ended` records which of these happened
-  (`source`, `detail`) and the size after, so a client can tell the user: the CLI prints the sizes before and
+  (`source`, `detail`), the size after and how many summary requests it took (`calls`), so a client can tell the user: the CLI prints the sizes before and
   after, and for a fallback why there is no summary and what the model continues from.
 - *The checkpoint* (`context/checkpoint.ts`) is rendered once, from every non-excluded message before the cut in
   the whole log, and frozen in `compaction.ended`: the summary, an index of exact identifiers (files with lines,
@@ -614,8 +661,7 @@ parent's approval settings and, by default, the parent's workspace. It has a cac
   step boundary. If the session is idle it starts a new execution. When the model has nothing more to do while a
   background subagent still works, **the turn does not end**: the loop waits at the boundary for the next input
   instead of running the gate, because the checks would see the child's work half done.
-- *Verification.* The gate applies to the parent's turn. Children do not run it (their `execution.succeeded` says
-  `not_configured`, and they are not offered the acknowledgement tool): several children each running the whole
+- *Verification.* The gate applies to the parent's turn. Children do not run it (their `execution.succeeded` says `left_to_parent`, whatever the project configures, and they are not offered the acknowledgement tool): several children each running the whole
   check suite in one workspace would mostly report each other's unfinished work, and the parent's turn is verified
   once their work is in.
 - *Interrupts.* Interrupting or closing a session stops everything it spawned, after its own interrupt is durable:
@@ -628,8 +674,9 @@ parent's approval settings and, by default, the parent's workspace. It has a cac
   that would ask is refused as unattended. A child has no approvals remembered for the session (its parent's are
   the parent's); approvals remembered for the project apply to it as to any session.
 - *Taint.* A child's taint is its own while it runs. When its result is delivered, `spawn.ended.tainted` says
-  whether its conversation held untrusted content, and from that event on the parent is tainted too (source kind
-  `subagent`), as by any tool result.
+  whether its conversation held untrusted content, and from that event on the parent is tainted too (source kind `subagent`), as by any tool result. The same
+  holds earlier when the parent looks: `background_output` showing the latest words of a child whose
+  conversation is tainted is a source from that result on.
 - *Usage.* `spawn.ended.usage` is what the child's model calls cost during that piece of work; the parent's
   `spawned.usage` adds them up. They are not part of the parent's own request ledger.
 - *Events for a client.* The parent's stream carries each durable event of a child as an ephemeral `child.event`
@@ -724,9 +771,12 @@ appended later. The first step of an execution alone gives servers that have nev
   output, the tool, whether that text is untrusted, and the outcome (`result`, `tool_error`, `failed`, `refused`).
   The catalogue's `instruction.appended.detail` names each server with its number of tools and whether it is
   untrusted. Taint reads the first; nothing is parsed out of text.
-- *Taint.* A bridge result that says `untrusted` is a source (kind `mcp-tool`, named by the server's tool). The
-  catalogue is not: it is one line per tool, given to every session at its start, and a warning that is always on
-  teaches people to ignore it. That its descriptions are server-written is on record for a stricter policy.
+- *Taint.* A bridge result that says `untrusted` is a source (kind `mcp-tool`, named by the server's tool). The catalogue is not: it is one line per tool, given to every session at its start, and a warning that is always
+  on teaches people to ignore it. A search (`mcp_search`) is not one either for what the catalogue carries: the
+  names, descriptions and input schemas a server declares for its tools, with or without `includeSchema`, so
+  that looking a tool up does not change how its call is decided (a one-prompt run in `full` can search and
+  call a tool of an untrusted server). A search is a source only for text the catalogue never carries: a
+  server's notes and the error text of a server that is unavailable. That its descriptions are server-written is on record for a stricter policy.
 - *A project's server.* A server named by the user's own file starts. One the project's file names, or changes in
   any way, does not: opening a repository must not run a command, or send the user's environment to an address,
   that the repository chose. It waits for the user's approval, which is a remembered approval for the project like
@@ -763,8 +813,13 @@ client opened it meanwhile.
 - *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so it is
   decided exactly as that command would be; the question adds that it acts later, unattended, and how often. What
   the call ran under becomes the most the wake-up's check may run with. Before each run the scheduler asks what
-  the session's commands may have now (`runAllowedNow`): sandboxed and offline once the session holds untrusted
-  content, the recorded run otherwise, never more.
+  the session's commands may have now (`runAllowedNow`): sandboxed and offline once the session holds untrusted content, the recorded run otherwise, never more. A
+  session that is not open in the process that runs the check (closed, open elsewhere, not opened since a
+  restart) is decided as an open one would be, from what is stored: the policy of the user's file and the
+  project's for its working directory, the process's own settings and its agent's mode, the taint derived from
+  its log under that policy, and the taint it noticed itself. Only a choice a client made for the open session
+  is not known there. A check's output is redacted as it arrives, so its `on_change` fingerprint is of the
+  redacted output.
 - *Taint.* A firing with a webhook's body, or the output of a check that had the network or no sandbox, is
   admitted with `untrusted`, and the user is told (`taint.noticed`) before the execution it starts.
 - *Configuration.* The store, scheduler and listener are one per process, so the user's own file configures them.
@@ -792,11 +847,10 @@ Markdown file: instructions, and optionally a model, an effort and restrictions.
   agent's where it names them, and the first baseline carries the agent's instructions as its last section
   (source `agent`). An agent that cannot be found, or names a model the provider's listing lacks, creates
   nothing. The session never reads the file again: otherwise it could widen its own restrictions with `write`.
-- *Switching.* `setAgent(name | "none")` reads the definition and, once a baseline is frozen, waits for the next
-  step boundary under a claim: there the loop appends an instruction message of source `agent` (the new
-  instructions, saying what they replace; a one-line withdrawal with fingerprint `null` for "none") and
-  `agent.switched` naming that message, in one append, and then `settings.changed` when the agent names another
-  model or effort. A switch to an agent on the session's own settings keeps the whole cached prefix. After a
+- *Switching.* `setAgent(name | "none")` reads the definition. While the session is idle the switch is recorded
+  at once, so a process that dies afterwards has not lost it; while a turn runs it is made at the next step
+  boundary. Either way, once a baseline is frozen, it is an instruction message of source `agent` (the new
+  instructions, saying what they replace; a one-line withdrawal with fingerprint `null` for "none") and `agent.switched` naming that message, in one append (the one message that may enter history without a running execution), and then `settings.changed` when the agent names another model or effort. A switch to an agent on the session's own settings keeps the whole cached prefix. After a
   compaction the new baseline carries the agent in force, from the record.
 - *Restrictions.* Before a call is decided (after the calls the loop itself refuses, and with or without the
   approval layer) `checkAgentCall` looks at the tool's name, effect class and origin. A call the agent may not
@@ -866,8 +920,15 @@ These are the shapes the scenarios spell out event by event.
 - **A session that starts as an agent.** `session.created` (with the agent's model and effort) · `agent.switched`
   (no message) · later `baseline.set`, whose last source is `agent`. A call the agent may not make:
   `tool.called` · `approval.denied` (`agent`) · `tool.settled` (`error`, the sentence), in one append.
-- **A switch of agent.** At the top of a boundary: `instruction.appended` (source `agent`) · `agent.switched`
-  (that message) · `settings.changed` when the agent names another model or effort · the delivery of waiting input.
+- **A switch of agent.** While idle, when the user makes it; in a turn, at the top of its next boundary:
+  `instruction.appended` (source `agent`) · `agent.switched` (that message) · `settings.changed` when the agent
+  names another model or effort · (in a turn) the delivery of waiting input.
+- **An empty response.** `step.ended stop` with nothing said · the nudge (`synthetic.appended empty_response`)
+  · the next step. A second empty response in a row: when a call of the turn has its result, `step.ended` and
+  the turn ends through the gate (the user is told by a `notice` of kind `no_closing_answer`); when the turn
+  did nothing, `step.ended` · `execution.failed`.
+- **A subagent's own log.** `session.created` (spawn) · the task as its first input · its steps ·
+  `execution.succeeded` with `left_to_parent`.
 - **A compaction on request.** While idle: `execution.started` · `compaction.started` (`manual`) ·
   `compaction.ended` · `execution.succeeded` (`not_needed`); the `baseline.set` comes with the next turn. While a
   turn runs: the same two compaction events at the boundary after the step in progress, then `baseline.set` and
@@ -950,14 +1011,15 @@ refreshing at once each write rows they read themselves, with the signature they
 costs a re-read and nothing else; a process killed inside the cache's transaction leaves nothing; and a cache that
 is missing, corrupt or from another version is deleted and rebuilt from the files. If it cannot be rebuilt the
 listing is computed from the files alone. "The most recent session for this directory", "list by directory" and
-"resolve an ID or a unique prefix" are all this listing (the prefix needs only the file names). The cost of a
-listing is one `readdir` and two `stat` calls per session, plus one small read per session that changed.
+"resolve an ID or a unique prefix" are all this listing (the prefix needs only the file names). The cost of a listing is one `readdir` and two `stat` calls per session, plus one small read per session that
+changed. That read brings the summary and, with it, the beginning of the user's first prompt (`firstPrompt`),
+which the cache keeps under the same rules: a session nobody titled is named from the listing itself, and no
+session's log is opened for a title.
 
 **Forks.** `Engine.forkSession(id, options)` forks a session at a step boundary (the latest one by default, or the
 event `throughSeq` names, which is refused when it lies inside a step). What the fork inherits, as of that point:
 the history (messages, the baseline, the compaction in force), the model settings (unless it is given its own), the
-title, the taint (the content came with the history: the reducer copies the noticed taint, and the decisions
-derive it from the inherited results) and the root session's ID as its cache key, so its first request is its
+title, the taint (the content came with the history: the reducer copies the noticed taint, and the decisions derive it from the entries of the inherited results that the fork's `session.created` carries) and the root session's ID as its cache key, so its first request is its
 parent's last request plus what is appended. What it does not inherit: the inbox, the claim, the snapshots, the
 verification state, the undo history, and the approvals remembered for the session. An approval was given to one
 line of work, and a fork is another that may go somewhere else (and may work in another directory); approvals
@@ -982,9 +1044,16 @@ A fork's log is its parent's events through the fork point followed by its own, 
 file, possibly open for writing in another process. The fork reads it through a read-only connection, and only
 events at or before the fork point. That is safe because those events are committed, and the log is append-only
 (the schema's triggers refuse updates and deletes): whoever writes to the parent meanwhile only adds events after
-them. When a fork is created, its inherited messages, baseline and compaction are copied into its own rows, so a
-fork whose parent file is later missing still opens, runs and is listed; reading its inherited events then fails
-with `parent_missing`, which names the parent. Creating a fork of a session that cannot be found fails the same
+them. When a fork is created, what it needs of that history at run time is copied into it: its inherited messages,
+baseline and compaction into its own rows, and the entries its taint is derived from into its `session.created`
+(`inherited.taint`: the entries since the conversation was last declared trustworthy that can be a source under
+some policy). Nothing the loop does reads the parent afterwards: the taint fold, the lookup of an admitted
+input, a revert and `turnChanges` read the fork's own events (a revert to before an inherited message rewinds
+the conversation and restores no file: the snapshots of that history are the parent's). So a fork whose parent
+file is later missing still opens, runs and is listed; only reading its inherited events then fails, with
+`parent_missing`, which names the parent (a client that replays a fork's history should read from its fork
+point when that happens). Forking such a fork again is not possible: the new fork is folded onto the whole
+inherited log. Creating a fork of a session that cannot be found fails the same
 way. A process that dies while it forks leaves at most the copy of the workspace: the fork's session is created
 in one append, so it either exists whole or is not listed.
 
