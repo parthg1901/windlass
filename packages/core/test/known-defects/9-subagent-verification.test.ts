@@ -58,7 +58,9 @@ async function delegated(run: (h: Harness, childId: SessionId) => void) {
     h.create().send("Fix a.ts with a subagent.")
     await h.settled()
     expect(scripted.unused()).toBe(0)
-    const childId = of(h.log(), "spawn.started")[0]!.data.work.sessionId as SessionId
+    const work = of(h.log(), "spawn.started")[0]!.data.work
+    if (work.kind !== "subagent") throw new Error("the parent started no subagent")
+    const childId = work.sessionId
     run(h, childId)
   } finally {
     await h.dispose()
