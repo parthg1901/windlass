@@ -29,8 +29,15 @@
  *    compaction message holds them. (The history tools' full-text index is
  *    not part of this schema: it is derived data in tables `history-index.ts`
  *    creates when a session is first searched.)
+ * 5: `message.changed_seq`, so that reading a session's state reads the
+ *    message rows an append changed and not every row there is. With it the
+ *    shapes that changed since version 4: a fork's `session.created` carries
+ *    the taint entries of its inherited history, a subagent's ending says
+ *    `left_to_parent`, a compaction's ending says how many summary calls it
+ *    took, and an approval can be about a tool that changes only the
+ *    harness's own records.
  */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 /**
  * Run on every connection, before anything else.
@@ -111,12 +118,16 @@ CREATE TABLE message (
   kind       TEXT NOT NULL,
   -- NULL, or why the message is left out of model history: reverted | refused
   excluded   TEXT,
+  -- The session's last_seq as of the append that last wrote this row (for a fork's inherited rows, its first
+  -- event). A reader that holds the state as of seq N brings it up to date from the rows with changed_seq > N.
+  changed_seq INTEGER NOT NULL,
   -- JSON of the Message.
   data       TEXT NOT NULL,
   PRIMARY KEY (session_id, seq)
 ) STRICT, WITHOUT ROWID;
 
 CREATE UNIQUE INDEX message_id ON message (session_id, id);
+CREATE INDEX message_changed ON message (session_id, changed_seq);
 
 -- Projection: admitted input that has not been delivered. A row is removed
 -- when its item is delivered or cancelled; the log keeps the history.

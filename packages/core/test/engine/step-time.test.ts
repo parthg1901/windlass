@@ -1,32 +1,23 @@
 /**
- * Known defect 6 (a measurement, not a `test.failing`): the time of a step
- * grows with the length of the log.
+ * The time of a step does not grow with the length of the log.
  *
- * Reported from `test/engine/long-session.test.ts`: the median time per
- * model call went from about 92 ms at 531K tokens of history to 232 ms at
- * 2M, with the scripted provider, so it is the harness's own work.
+ * The loop decides from stored state alone, so it reads the session's
+ * state several times per step (`LiveSession.projection()` in `engine.ts`:
+ * the top of `loop`, `prepare`, `closeStep`, `assistant`, the approval
+ * layer, every write that checks `expectedSeq`, …). A read that decoded
+ * every message row made the time per step O(log length) although the
+ * model's view is bounded by the window. `getProjection` (`store/sqlite.ts`)
+ * therefore reads only the rows that changed since its last read.
  *
- * This drives one session the same way (turns of 9,000-token reads, a
- * 128,000-token window, compactions as they come) and wraps the session's
- * store, in place, with timers: every store method the engine calls is
- * counted and timed per model call. It prints, for the first and the last
- * quarter of the calls, the median time between calls and where it went.
- * Only a generous bound is asserted.
+ * This drives one session (turns of 9,000-token reads, a 128,000-token
+ * window, compactions as they come) on a store whose methods are counted
+ * and timed per model call, and prints, for the first and the last quarter
+ * of the calls, the median time between calls and where it went. Asserted:
+ * late in the session a read of the state costs no more than a few times
+ * what it cost early (it was thirty times at 400K tokens before), and a
+ * generous bound on the whole.
  *
- * What it shows (see the report; numbers on the loaded two-core machine):
- * `getProjection` dominates and grows linearly with the log. The engine
- * reads the projection through `LiveSession.projection()` (`engine.ts`),
- * which calls `store.getProjection` (`store/sqlite.ts`, `loadProjection`):
- * every message row of the session, compacted away or not, is read and
- * decoded through the validators (`decodeMessage`) on every call, and the
- * loop calls it several times per step (the top of `loop`, `waiting`,
- * `ready`, `prepare`, `closeStep`, `assistant`, `authorize`'s fact context,
- * `grants`, `noticeTaint`, every `write` that checks `expectedSeq`, …).
- * The cost per call is O(all messages ever written), and the number of calls
- * per step is constant, so the time per step is O(log length) although the
- * model's view is bounded by the window.
- *
- * Set `<BRAND>_DEFECT6_TOKENS` (the name built from `brand`) for a longer run.
+ * Set `<BINARY>_STEP_TIME_TOKENS` (the name built from `brand`) for a longer run.
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -41,14 +32,14 @@ import { FakeProvider } from "../../src/testing/fake-provider.ts"
 import { estimateMessage, estimateRequest, estimateTokens } from "../../src/context/estimate.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
 import { type ScriptItem, script } from "../../src/testing/fake-provider.ts"
-import { ManualClock, ScriptedTools } from "../engine/harness.ts"
+import { ManualClock, ScriptedTools } from "./harness.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 
-const directory = mkdtempSync(join(tmpdir(), "lh-defect-6-"))
+const directory = mkdtempSync(join(tmpdir(), "lh-step-time-"))
 afterAll(() => rmSync(directory, { recursive: true, force: true }))
 
 const WINDOW = 128_000
-const TARGET = Number(process.env[`${brand.binary.toUpperCase()}_DEFECT6_TOKENS`] ?? 400_000)
+const TARGET = Number(process.env[`${brand.binary.toUpperCase()}_STEP_TIME_TOKENS`] ?? 400_000)
 const FILE_TOKENS = 9_000
 const READS_PER_TURN = [6, 12, 3, 9]
 
@@ -71,7 +62,7 @@ interface Interval {
   readonly summary: boolean
 }
 
-describe("known defect 6: the time of a step grows with the log", () => {
+describe("the time of a step", () => {
   test(
     "measures where the time between model calls goes, early and late in a long session",
     async () => {
@@ -178,11 +169,14 @@ describe("known defect 6: the time of a step grows with the log", () => {
         const late = steps.slice(-quarter)
         console.log(
           [
-            `defect 6: ${turns} turns, ${history.toLocaleString("en")} tokens of history, ${intervals.length} model calls`,
+            `step time: ${turns} turns, ${history.toLocaleString("en")} tokens of history, ${intervals.length} model calls`,
             ...describe("first quarter", early),
             ...describe("last quarter", late),
           ].join("\n"),
         )
+        // What reading the state costs per model call, early and late: the part that grew with the log.
+        const reads = (part: readonly Interval[]) => median(part.map((item) => item.store.getProjection?.[1] ?? 0))
+        expect(reads(late)).toBeLessThan(Math.max(20, reads(early) * 5))
         // Generous: on the development machine a call takes a small fraction of this, even late.
         expect(median(late.map((item) => item.ms))).toBeLessThan(5_000)
       } finally {

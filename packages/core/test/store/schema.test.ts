@@ -64,7 +64,7 @@ describe("SQLite schema", () => {
     const database = open()
     expect(() => insertEvent(database, "ses_missing", 1)).toThrow()
     expect(() =>
-      database.run("INSERT INTO message (session_id, seq, id, kind, data) VALUES ('ses_missing', 1, 'm', 'user', '{}')"),
+      database.run("INSERT INTO message (session_id, seq, id, kind, changed_seq, data) VALUES ('ses_missing', 1, 'm', 'user', 1, '{}')"),
     ).toThrow()
   })
 
@@ -87,10 +87,11 @@ describe("SQLite schema", () => {
     insertSession(database, "ses_1")
     insertSession(database, "ses_2", ["ses_1", "fork", 5])
     const insert = (sessionId: string, seq: number, id: string) =>
-      database.run("INSERT INTO message (session_id, seq, id, kind, data) VALUES (?, ?, ?, 'user', '{}')", [
+      database.run("INSERT INTO message (session_id, seq, id, kind, changed_seq, data) VALUES (?, ?, ?, 'user', ?, '{}')", [
         sessionId,
         seq,
         id,
+        seq,
       ])
     insert("ses_1", 5, "msg_1")
     insert("ses_2", 5, "msg_1")

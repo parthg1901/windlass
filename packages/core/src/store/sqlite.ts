@@ -10,7 +10,19 @@
  *   append the cached `lastSeq` is checked against the row and the projection
  *   is reloaded from rows if they differ.
  * - Reads (`getProjection`, `readMessages`, ...) always read rows, never the
- *   cache, so they show exactly what is durable.
+ *   writer's cache, so they show exactly what is durable.
+ * - `getProjection` is what the step loop calls several times per step, so it
+ *   does not read every row every time: it keeps the rows it last read for a
+ *   session, decoded, with the `last_seq` they were read at, and brings them
+ *   up to date from the rows that changed since. Every row says when it last
+ *   changed (`message.changed_seq`, written by `append` with the row), and
+ *   rows change only inside an append, which always moves `last_seq`. So an
+ *   unchanged `last_seq` means unchanged rows, and otherwise the session
+ *   row, the inbox and the message rows with a later `changed_seq` are read
+ *   again. The cost of a read is then what the last appends changed, not the
+ *   length of the log. `readMessages` and `readModelHistory` read every row
+ *   they return, each time; the tests compare all three with a rebuild from
+ *   the log.
  * - One writer per file, enforced at open by `acquireWriterLock`
  *   (`sqlite-lock.ts`): a second writer gets `StoreLockedError` at once.
  *   Other connections that touch the file (a reader, the sqlite3 shell) can
@@ -143,6 +155,8 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
   }
   const history = createHistoryIndex(database, { readOnly, decodeMessage, ...(options.disableFullTextSearch ? { disableFullText: true } : {}) })
   const cache = new Map<SessionId, Projection>()
+  /** What `getProjection` last read of each session, by rows: see `readProjection`. */
+  const read = new Map<string, ReadState>()
   const listeners = new Set<(events: readonly StoredEvent[]) => void>()
 
   const remember = (id: SessionId, projection: Projection) => {
@@ -151,6 +165,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     if (cache.size > CACHED_SESSIONS) cache.delete(cache.keys().next().value!)
   }
 
+  /** Every row of a session, read and decoded. */
   const loadProjection = (id: string): Projection | null => {
     const row = sql.session.get(id)
     if (row === null) return null
@@ -162,6 +177,46 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
       messages: sql.messages.all(id, Number.MAX_SAFE_INTEGER, -1).map((data) => decodeMessage(id, data.data)),
       inbox: sql.inbox.all(id).map((data) => decodeJson(inboxItem, data.data, `session ${id} inbox item`)),
     }
+  }
+
+  /**
+   * The session's state from its rows, reading only the rows that changed
+   * since the last read. All of it is read inside one transaction, so a
+   * reader beside a writer sees one committed state and never half of two.
+   */
+  const readProjection = database.transaction((id: string): Projection | null => {
+    const row = sql.session.get(id)
+    if (row === null) {
+      read.delete(id)
+      return null
+    }
+    const known = read.get(id)
+    // Rows change only inside an append, and an append always moves `last_seq`.
+    if (known !== undefined && known.projection.lastSeq === row.last_seq) return known.projection
+    if (known === undefined || known.projection.lastSeq > row.last_seq) {
+      const projection = loadProjection(id)!
+      remembered(id, { projection, state: row.state, baseline: row.baseline })
+      return projection
+    }
+    const previous = known.projection
+    const changed = sql.changedMessages.all(id, previous.lastSeq).map((data) => decodeMessage(id, data.data))
+    const projection: Projection = {
+      lastSeq: row.last_seq,
+      updatedAt: row.time_updated,
+      // The same text is the same state: the object decoded from it stands.
+      session: row.state === known.state ? previous.session : decodeJson(sessionState, row.state, `session ${id} state`),
+      baseline: row.baseline === known.baseline ? previous.baseline : row.baseline === null ? null : decodeJson(baseline, row.baseline, `session ${id} baseline`),
+      messages: changed.length === 0 ? previous.messages : mergeBySeq(previous.messages, changed),
+      inbox: sql.inbox.all(id).map((data) => decodeJson(inboxItem, data.data, `session ${id} inbox item`)),
+    }
+    remembered(id, { projection, state: row.state, baseline: row.baseline })
+    return projection
+  })
+
+  const remembered = (id: string, state: ReadState) => {
+    read.delete(id)
+    read.set(id, state)
+    if (read.size > CACHED_SESSIONS) read.delete(read.keys().next().value!)
   }
 
   /** The projection the next append folds onto: the cached object when it is current, else rows. */
@@ -198,7 +253,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     if (previous !== null && changes.baseline !== undefined)
       sql.updateBaseline.run(changes.baseline === null ? null : canonicalJson(changes.baseline), id)
     for (const changed of changes.messages)
-      sql.upsertMessage.run(id, changed.seq, changed.id, changed.kind, changed.excluded, canonicalJson(changed))
+      sql.upsertMessage.run(id, changed.seq, changed.id, changed.kind, changed.excluded, next.lastSeq, canonicalJson(changed))
     for (const item of changes.inbox) sql.upsertInbox.run(id, item.messageId, item.seq, item.delivery, canonicalJson(item))
     for (const removed of changes.inboxRemoved) sql.deleteInbox.run(id, removed)
     for (const event of events) sql.insertEvent.run(id, event.seq, event.type, event.v, event.time, encodeEventData(event))
@@ -351,7 +406,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
       listeners.add(entry)
       return () => listeners.delete(entry)
     },
-    getProjection: loadProjection,
+    getProjection: (id) => readProjection(id),
     getSession: (id) => {
       const row = sql.session.get(id)
       return row === null ? null : summary(row)
@@ -379,6 +434,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     close: () => {
       listeners.clear()
       cache.clear()
+      read.clear()
       database.close()
       lock?.close()
     },
@@ -437,6 +493,36 @@ function openReader(path: string, busyTimeoutMs: number): Database {
       throw new StoreSchemaError(`${path} is not a store database`)
     throw error
   }
+}
+
+/** A session's state as `getProjection` last read it, with the texts of the two rows it decodes only when they change. */
+interface ReadState {
+  readonly projection: Projection
+  readonly state: string
+  readonly baseline: string | null
+}
+
+/** `messages` (in `seq` order) with each of `changed` (in `seq` order) in the place of the message of its `seq`, or added. */
+function mergeBySeq(messages: readonly Message[], changed: readonly Message[]): Message[] {
+  const merged = [...messages]
+  for (const message of changed) {
+    const last = merged.at(-1)
+    if (last === undefined || message.seq > last.seq) {
+      merged.push(message)
+      continue
+    }
+    // The first message whose seq is not below this one's.
+    let low = 0
+    let high = merged.length
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if (merged[middle]!.seq < message.seq) low = middle + 1
+      else high = middle
+    }
+    if (merged[low]?.seq === message.seq) merged[low] = message
+    else merged.splice(low, 0, message)
+  }
+  return merged
 }
 
 interface SessionRow {
@@ -532,11 +618,13 @@ function prepare(database: Database) {
       `SELECT session_id AS sessionId, seq, time, type, v, data FROM event
        WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?`,
     ),
-    upsertMessage: database.query<unknown, [string, number, string, string, string | null, string]>(
-      `INSERT INTO message (session_id, seq, id, kind, excluded, data) VALUES (?, ?, ?, ?, ?, ?)
+    upsertMessage: database.query<unknown, [string, number, string, string, string | null, number, string]>(
+      `INSERT INTO message (session_id, seq, id, kind, excluded, changed_seq, data) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (session_id, seq) DO UPDATE SET id = excluded.id, kind = excluded.kind,
-         excluded = excluded.excluded, data = excluded.data`,
+         excluded = excluded.excluded, changed_seq = excluded.changed_seq, data = excluded.data`,
     ),
+    // The messages an append wrote after the session was at `last_seq`, in seq order.
+    changedMessages: database.query<Data, [string, number]>("SELECT data FROM message WHERE session_id = ? AND changed_seq > ? ORDER BY seq"),
     // The `limit` messages with the highest seq below `beforeSeq`, returned in seq order.
     messages: database.query<Data, [string, number, number]>(
       `SELECT data FROM (SELECT seq, data FROM message WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?)
