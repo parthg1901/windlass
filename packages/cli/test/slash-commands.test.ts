@@ -172,4 +172,48 @@ describe("as a user types them", () => {
     expect(run.out).toContain("The tests pass.")
     expect(JSON.stringify(provider.requests[0])).toContain("Run the frontend tests with bun test src and fix what fails.")
   })
+
+  test("a one-prompt run whose prompt is a /word that is no command sends nothing, suggests the nearest, and exits with the usage code", async () => {
+    const cwd = withCommands({ "frontend/test.md": TEST, "broken.md": BROKEN })
+    const provider = new FakeProvider([[script.text("Never asked.")]])
+    const flat = (text: string) => text.replace(/\s+/g, " ")
+    const typo = await runCli(["--cwd", cwd, "/frontend:tset src"], { engine: engineFor(provider, cwd) })
+    expect(typo.code).toBe(2)
+    expect(flat(typo.out + typo.err)).toContain("/frontend:tset is not a command, so nothing was sent; did you mean /frontend:test? (/help lists them). To send a message that starts with a slash, begin it with two: //frontend:tset")
+    // The same in the output modes a script reads: said where failures go, nothing on stdout.
+    const json = await runCli(["--cwd", cwd, "--json", "/hlep"], { engine: engineFor(provider, cwd) })
+    expect([json.code, json.out]).toEqual([2, ""])
+    expect(flat(json.err)).toContain("/hlep is not a command, so nothing was sent; did you mean /help?")
+    // A file that cannot be used says why; a command of the interactive prompt says where to type it.
+    const broken = await runCli(["--cwd", cwd, "/broken"], { engine: engineFor(provider, cwd) })
+    expect(broken.code).toBe(2)
+    expect(flat(broken.out + broken.err)).toContain("/broken cannot be used, so nothing was sent:")
+    const own = await runCli(["--cwd", cwd, "/diff"], { engine: engineFor(provider, cwd) })
+    expect(own.code).toBe(2)
+    expect(flat(own.out + own.err)).toContain(`/diff is a command of the interactive prompt, so nothing was sent; run \`${brand.binary}\` with no prompt`)
+    // Nothing of the four reached the model, and no session was created for any of them.
+    expect(provider.requests.length).toBe(0)
+    expect((await runCli(["--cwd", cwd, "--list-sessions"], { engine: engineFor(provider, cwd) })).out).toBe(`no sessions in ${cwd}\n`)
+  })
+
+  test("a one-prompt run whose prompt starts with two slashes sends the text with one", async () => {
+    const cwd = withCommands({ "frontend/test.md": TEST })
+    const provider = new FakeProvider([[script.text("That path is a directory.")]])
+    const run = await runCli(["--cwd", cwd, "--json", "//frontend:tset is what I typed"], { engine: engineFor(provider, cwd) })
+    expect(run.code).toBe(0)
+    const admitted = run.out.split("\n").filter((line) => line.includes('"inbox.enqueued"')).map((line) => JSON.parse(line) as { data: { content: { text: string }[] } })
+    expect(admitted.map((item) => item.data.content[0]!.text)).toEqual(["/frontend:tset is what I typed"])
+    expect(provider.requests.length).toBe(1)
+  })
+
+  test("with -i, a first prompt that is a command of the prompt's own or a typo is handled as if typed there", async () => {
+    const cwd = withCommands({ "frontend/test.md": TEST })
+    const provider = new FakeProvider([[script.text("Never asked.")]])
+    const run = await interactive(["--cwd", cwd, "-i", "/hlep"], engineFor(provider, cwd), async (type, waitFor) => {
+      await waitFor("/hlep is not a command, so nothing was sent; did you mean /help?")
+      type("\x04")
+    })
+    expect(run.code).toBe(0)
+    expect(provider.requests.length).toBe(0)
+  })
 })

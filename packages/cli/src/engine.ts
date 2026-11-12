@@ -178,6 +178,12 @@ export interface Engine {
   listSessions?(request: { readonly cwd: string }): Promise<readonly SessionSummary[]>
   /** `--models`: the models `--model` accepts. Optional, like `listSessions`. */
   listModels?(): Promise<readonly ModelInfo[]>
+  /**
+   * The command files a session in `cwd` would have, without opening one: what a one-prompt run looks at before it
+   * opens a session for a prompt that is `/word`. `builtins`: the client's own commands, which hide a file of the
+   * same name. Optional: without it the prompt is looked at once the session is open.
+   */
+  commands?(cwd: string, builtins: readonly ClientCommand[]): Promise<CommandsResult>
   /** `fork`: a new session with another's conversation up to a step boundary. Optional: without it the subcommand says this engine cannot fork. */
   fork?(request: ForkRequest): Promise<ForkOutcome>
   /** `replay`: replays a recorded session; `progress` gets the replay session's events as they happen, and `cancel` ends it as incomplete. */

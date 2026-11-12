@@ -14,11 +14,12 @@
  */
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
+import type { CommandsResult } from "@windlass/acp/extensions"
 import { brand, versionLine, versionString } from "@windlass/core"
 import { agentLines, compactText, taskLines, tasksProgress } from "./agents.ts"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
-import { recapLines } from "./features.ts"
+import { type Line, recapLines } from "./features.ts"
 import { type FeatureCommand, type FeatureIo, FeatureWatch, runFeatureCommand } from "./feature-commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
 import {
@@ -171,6 +172,16 @@ export async function run(io: Io): Promise<number> {
 
   const engine = await engineFor(io, options, demo, interactive)
   if (engine === null) return EXIT.usage
+  // A one-prompt run whose prompt is `/word` and no command file's is over before a session is opened for it: nothing
+  // is sent, no session is created or resumed, and what the word could have been is said where usage errors go.
+  if (!interactive && !autoplay && prompt !== null && engine.commands !== undefined) {
+    const list = engine.commands.bind(engine)
+    const first = await commandEntry(() => list(cwd, clientCommands()), prompt)
+    if (first.kind !== "send") {
+      for (const line of refusedPrompt(first)) io.stderr.write(`${line.startsWith(" ") ? "" : `${brand.binary}: `}${line}\n`)
+      return EXIT.usage
+    }
+  }
   const screen = interactive ? new Screen({ write: (text) => io.stdout.write(text), columns: () => io.stdout.columns(), color: colorEnabled(io.stdout.isTTY, io.env) }) : null
   const sink = makeSink(io, options, autoplay, screen)
   // Keys typed while the engine starts are kept for the prompt: raw mode from now on, so nothing is echoed as if sent.
@@ -272,8 +283,15 @@ export async function run(io: Io): Promise<number> {
     // Which session this is, before anything else: a new one, or the one resumed with its title and its turns.
     if (terminal !== null && demo === null) await sayOpened(sink as PrettyRenderer, session, resumed)
     if (terminal === null) {
-      // A prompt that is `/name args` for a command file is sent as that command; anything else as it was typed.
-      const outcome = await turn(await commandEntry(session, prompt!))
+      // A prompt that is `/name args` for a command file is sent as that command; a `/word` that is no command is
+      // not sent at all, as at the interactive prompt; anything else goes as it was typed (`//word`: the text `/word`).
+      const first = await commandEntry(sessionFiles(session), prompt!)
+      if (first.kind !== "send") {
+        // Reached only with an engine that cannot list command files before a session is open.
+        for (const line of refusedPrompt(first)) sink.notice(line, "warn")
+        return EXIT.usage
+      }
+      const outcome = await turn(first.entry)
       if (outcome === "closed") return 1
       if (outcome === "not_sent") return EXIT.usage
       // Not a failure of the work: the run was not allowed to go on (`--unattended stop`).
@@ -374,13 +392,42 @@ interface Entry {
   readonly command?: { readonly name: string; readonly args: string }
 }
 
-/** A one-prompt run's prompt: a command file's when its first word names one (and no command of the CLI's own), else the text. */
-async function commandEntry(session: Session, text: string): Promise<Entry> {
+/**
+ * What a prompt given on the command line is, read as the interactive line
+ * reads an entry: a message (`//word` is the text `/word`), a command
+ * file's text (`send`), a command of the prompt's own (`own`), or a
+ * `/word` that is nothing, which is never sent: it would cost a model
+ * request and name a session after a typo (`nothing`, with what to say).
+ */
+type FirstEntry = { readonly kind: "send"; readonly entry: Entry } | { readonly kind: "own"; readonly name: string } | { readonly kind: "nothing"; readonly lines: readonly Line[] }
+
+/** `files`: the command files as they are now (of the session, or of its directory before one is open); `null` when they cannot be had. */
+async function commandEntry(files: (() => Promise<CommandsResult>) | null, text: string): Promise<FirstEntry> {
   const found = lookup(text, [BUILTIN_COMMANDS])
-  if (found.kind !== "unknown" || session.commands === undefined) return { text }
-  const listing = await session.commands(clientCommands()).catch(() => null)
+  if (found.kind === "message") return { kind: "send", entry: { text: found.text } }
+  if (found.kind === "command") return { kind: "own", name: found.command.name }
+  const listing = files === null ? null : await files().catch(() => null)
   const again = listing === null ? found : lookup(text, [BUILTIN_COMMANDS, userCommands(listing)])
-  return again.kind === "command" ? { text, command: { name: again.command.name, args: again.rest } } : { text }
+  if (again.kind === "command") return { kind: "send", entry: { text, command: { name: again.command.name, args: again.rest } } }
+  const unusable = listing === null ? null : unusableCommandLines(listing, found.name)
+  if (unusable !== null) return { kind: "nothing", lines: unusable }
+  return { kind: "nothing", lines: [{ text: unknownCommandText(again.kind === "unknown" ? again : found), tone: "warn" }] }
+}
+
+/** What a one-prompt run says about a prompt that is no message and no command file's: one line each, for standard error. */
+function refusedPrompt(first: Exclude<FirstEntry, { kind: "send" }>): string[] {
+  return first.kind === "own" ? [ownCommandText(first.name)] : first.lines.map((line) => `${" ".repeat(line.indent ?? 0)}${line.text}`)
+}
+
+/** What a one-prompt run says about a prompt that is a command of the interactive prompt: there is no prompt to run it at. */
+function ownCommandText(name: string): string {
+  return `/${name} is a command of the interactive prompt, so nothing was sent; run \`${brand.binary}\` with no prompt (\`${brand.binary} --continue\` for the latest session) and type it there. To send a message that starts with a slash, begin it with two: //${name}`
+}
+
+/** The command files of an open session, as `commandEntry` asks for them; `null` for an engine without any. */
+function sessionFiles(session: Session): (() => Promise<CommandsResult>) | null {
+  const commands = session.commands
+  return commands === undefined ? null : () => commands.call(session, clientCommands())
 }
 
 interface Interactive {
@@ -434,20 +481,13 @@ async function interactiveLoop(context: Interactive): Promise<number> {
     if (unusable !== null) return renderer.printLines(unusable)
     if (found.kind === "unknown") renderer.notice(unknownCommandText(found), "warn")
   }
-  terminal.start((action) => {
-    switch (action.kind) {
-      case "interrupt":
-        if (control.running) return context.onCtrlC()
-        // At the prompt Ctrl-C clears what was typed, as in a shell.
-        if (screen.entry !== "") return screen.clear()
-        return renderer.notice("press Ctrl-D or type /exit to leave")
-      case "eof":
-        if (!control.running) waiting?.(null)
-        return
-      case "submit": {
+  /** An entry submitted at the prompt: a message, a command of the CLI's own, a command file's, or nothing. */
+  const submit = (entered: string): void => {
+    {
+      {
         // A `/word` is a command or nothing: an unknown one is never sent (it would cost a request and title the session).
-        const found = lookup(action.text, [BUILTIN_COMMANDS])
-        if (found.kind === "unknown") return void fileCommand(action.text, found)
+        const found = lookup(entered, [BUILTIN_COMMANDS])
+        if (found.kind === "unknown") return void fileCommand(entered, found)
         if (found.kind === "message") {
           if (control.running) return found.text.trim() === "" ? undefined : steer(found.text, false)
           return waiting?.({ text: found.text })
@@ -495,9 +535,27 @@ async function interactiveLoop(context: Interactive): Promise<number> {
         }
       }
     }
+  }
+  terminal.start((action) => {
+    switch (action.kind) {
+      case "interrupt":
+        if (control.running) return context.onCtrlC()
+        // At the prompt Ctrl-C clears what was typed, as in a shell.
+        if (screen.entry !== "") return screen.clear()
+        return renderer.notice("press Ctrl-D or type /exit to leave")
+      case "eof":
+        if (!control.running) waiting?.(null)
+        return
+      case "submit":
+        return submit(action.text)
+    }
   })
 
-  let pending: Entry | null = context.first === null ? null : await commandEntry(session, context.first)
+  // The prompt given on the command line: what is sent starts the first turn; a command of the prompt's own, or a
+  // `/word` that is none, is handled as if it had been typed here.
+  const first = context.first === null ? null : await commandEntry(sessionFiles(session), context.first)
+  let pending: Entry | null = first?.kind === "send" ? first.entry : null
+  let typed: string | null = first === null || first.kind === "send" ? null : context.first
   for (;;) {
     let entry = pending
     pending = null
@@ -506,6 +564,11 @@ async function interactiveLoop(context: Interactive): Promise<number> {
       screen.show("› ")
       entry = await new Promise<Entry | null>((done) => {
         waiting = done
+        if (typed !== null) {
+          const entered = typed
+          typed = null
+          submit(entered)
+        }
       })
       waiting = null
       if (entry === null) break

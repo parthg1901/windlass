@@ -117,7 +117,11 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
     try {
       return await work(connected)
     } finally {
-      if (opened === 0 && connected.openSessions === 0) await connected.stop()
+      if (opened === 0 && connected.openSessions === 0) {
+        await connected.stop()
+        // What comes after it in the same run (a session opened for a prompt that turned out to be a command file's) starts a server again.
+        if (started !== null && opened === 0) started = null
+      }
     }
   }
   return {
@@ -144,6 +148,14 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
           throw unavailable(error)
         })
         return listed.models.map((model): ModelInfo => ({ id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: model.id === listed.defaultModel }))
+      }),
+    commands: (cwd, builtins) =>
+      listing(async (connected) => {
+        // A server from before command files has none to list.
+        if (!connected.offers(EXT.commands)) return { available: false, commands: [], problems: [] }
+        return connected.listCommands(cwd, builtins).catch((error: unknown) => {
+          throw unavailable(error)
+        })
       }),
     // A one-off: the server is let go of after it, as after a listing.
     fork: (request: ForkRequest): Promise<ForkOutcome> =>
