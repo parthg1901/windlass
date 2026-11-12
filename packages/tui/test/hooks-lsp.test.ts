@@ -364,24 +364,43 @@ describe("before a message is sent", () => {
     expect(backend.sent.map((item) => item.text)).toEqual(["fix the test", "and the docs"])
   })
 
-  test("a project's MCP server the engine has not looked at yet is named before the first message, and approving one mid-turn says when the agent has it", async () => {
+  test("a project's MCP server is asked about as soon as the session opens, before any message; approving one mid-turn says when the agent has it", async () => {
     const backend = new ScriptBackend()
+    const server = { name: "issues", state: "awaiting_approval" as const, transport: "stdio" as const, target: "bun server.ts", argv: ["bun", "server.ts"], tools: null, hiddenTools: 0, error: null, retryInMs: null, origin: "project" as const, file: PROJECT_FILE, question: { fingerprint: "f1", subject: "bun server.ts", details: [] } }
+    let approved = 0
+    backend.prepare = (opened) => {
+      opened.mcp = async () => ({ sessionId: opened.id, available: true, servers: approved > 0 ? [{ ...server, state: "running" as const, question: null }] : [server] })
+      opened.approveMcp = async () => {
+        approved += 1
+        return true
+      }
+    }
     mounted = await mount({ width: 200, height: 44, backend })
     const session = backend.session!
-    const server = { name: "issues", state: "not_started" as const, transport: "stdio" as const, target: "bun server.ts", argv: ["bun", "server.ts"], tools: null, hiddenTools: 0, error: null, retryInMs: null, origin: "project" as const, file: PROJECT_FILE, question: null }
-    session.mcp = async () => ({ sessionId: session.id, available: true, servers: [server] })
-    await command("/mcp approve issues")
-    expect(flat(await mounted.frame())).toContain('The MCP server "issues" cannot be approved yet: a session looks at its MCP servers when its first message is sent.')
+    await mounted.settle()
+    // Nothing was typed or sent: the question is there with the session.
+    const open = flat(await mounted.frame())
+    expect(open).toContain('? Start the MCP server "issues" that this project\'s configuration names?')
+    expect(open).not.toContain("not looked at yet")
+    expect(backend.sent).toEqual([])
+    mounted.clock.now += QUIET_MS + ARMING_MS + 10
+    await mounted.settle()
+    mounted.clock.now += ARMING_MS + 10
+    await mounted.setup.mockInput.typeText("n")
+    await mounted.settle()
+    expect(flat(await mounted.frame())).toContain("/mcp approve issues asks again")
+    // The first message goes at once, with no paragraph about what the engine has yet to look at.
     await mounted.setup.mockInput.typeText("hello")
     mounted.setup.mockInput.pressEnter()
     await mounted.settle()
     expect(backend.sent).toEqual([{ text: "hello", delivery: "steer" }])
-    expect(flat(await mounted.frame())).toContain('This project\'s configuration names the MCP server "issues". A project\'s server starts only once you have approved it')
-    // The turn runs; the engine has looked, and the question is put: a yes now says the agent has it from the next message.
-    session.approveMcp = async () => true
+    const sent = flat(await mounted.frame())
+    expect(sent).not.toContain("A project's server starts only once you have approved it")
+    expect(sent).not.toContain("cannot be approved yet")
+    // The turn runs and the user asks for the question again: a yes now says the agent has it from the next message.
     session.emit(event("execution.started", { executionId: "exe_1" as never }))
+    await command("/mcp approve issues")
     mounted.clock.now += QUIET_MS + 10
-    session.pushMcp({ sessionId: session.id, available: true, servers: [{ ...server, state: "awaiting_approval", question: { fingerprint: "f1", subject: "bun server.ts", details: [] } }] })
     await mounted.settle()
     mounted.clock.now += ARMING_MS + 10
     await mounted.setup.mockInput.typeText("a")

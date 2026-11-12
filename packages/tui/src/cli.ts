@@ -15,7 +15,6 @@ export {
   type Line,
   mcpApprovedText,
   mcpFailureText,
-  mcpFirstMessageText,
   mcpLines,
   mcpNotWaitingText,
   memoryAction,

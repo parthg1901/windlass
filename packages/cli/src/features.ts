@@ -103,19 +103,6 @@ export function mcpApprovedText(server: Pick<McpServerInfo, "name">, midTurn: bo
     : `approved: "${server.name}" starts now; the agent has its tools from your next message. /mcp shows it.`
 }
 
-/**
- * Before a session's first message: the project's servers the engine has
- * not looked at yet, said once so that the question that may follow, in the
- * middle of the first turn, is expected. `null` when there are none.
- */
-export function mcpFirstMessageText(servers: readonly McpServerInfo[]): string | null {
-  const waiting = servers.filter((server) => server.state === "not_started" && server.origin === "project")
-  if (waiting.length === 0) return null
-  const names = waiting.map((server) => `"${server.name}"`).join(", ")
-  const one = waiting.length === 1
-  return `This project's configuration names ${one ? `the MCP server ${names}` : `MCP servers (${names})`}. A project's server starts only once you have approved it: if ${one ? "it has" : "they have"} not been approved, you are asked while this first turn runs, and the agent has ${one ? "its" : "their"} tools from the message after you approve.`
-}
-
 /** `/mcp`: every server with its state, its tools, what it runs and where it is defined. */
 export function mcpLines(state: McpStateResult): Line[] {
   if (!state.available) return [line(`This engine offers no MCP servers.`, "dim")]

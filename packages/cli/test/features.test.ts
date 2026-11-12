@@ -21,7 +21,7 @@ import { createAcpEngine } from "../src/acp-engine.ts"
 import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { Session } from "../src/engine.ts"
 import { FeatureWatch } from "../src/feature-commands.ts"
-import { localTime, mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeAddEntry, wakeCheckAccess, wakeCheckQuestionLines, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
+import { localTime, mcpApprovedText, mcpNotWaitingText, mcpStateWords, wakeAddEntry, wakeCheckAccess, wakeCheckQuestionLines, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
 import { successSummary } from "../src/tools.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -357,8 +357,6 @@ describe("what the project's configuration asks for is settled before a message 
     expect(mcpNotWaitingText(server("running", "project"))).toBe('the MCP server "issues" does not wait for an approval: it is running')
     expect(mcpApprovedText({ name: "issues" }, false)).toBe('approved: "issues" starts now; the agent has its tools from your next message. /mcp shows it.')
     expect(mcpApprovedText({ name: "issues" }, true)).toContain("The turn in progress began without it, so the agent may already have said it has no such tools: ask again in your next message")
-    expect(mcpFirstMessageText([server("not_started", "user"), server("running", "project")])).toBeNull()
-    expect(mcpFirstMessageText([server("not_started", "project")])).toContain('names the MCP server "issues". A project\'s server starts only once you have approved it')
   })
 
   test("a hook, a language server and an MCP server that wait are asked about, and answered, before the message goes", async () => {

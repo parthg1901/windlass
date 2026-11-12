@@ -22,7 +22,7 @@ import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend,
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
-import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { CHANGED_DURING_COMMAND, hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult, WakeCreateParams } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
@@ -294,17 +294,20 @@ export class App {
   }
 
   /**
-   * As soon as a session is open: a project's hook or language server that
-   * waits for an approval is put in the dock, one question after the other,
-   * before any message. The server says so too, a moment after the open; this
-   * does not depend on that word arriving after the listeners are in place.
-   * (The MCP servers are looked at by the engine with the first message.)
+   * As soon as a session is open: a project's hook, language server or MCP
+   * server that waits for an approval is put in the dock, one question after
+   * the other, before any message. The server says so too, a moment after the
+   * open; this does not depend on that word arriving after the listeners are
+   * in place. (The engine reads a session's MCP servers when it is first
+   * asked about them, which is here.)
    */
   private async lookAtFeatures(session: BackendSession): Promise<void> {
     const hooks = await session.hooks?.().catch(() => undefined)
     if (hooks !== undefined) this.hooksChanged(session, hooks)
     const lsp = await session.lsp?.().catch(() => undefined)
     if (lsp !== undefined) this.lspChanged(session, lsp)
+    const mcp = await session.mcp?.().catch(() => undefined)
+    if (mcp !== undefined) this.mcpChanged(session, mcp)
   }
 
   private async consume(session: BackendSession): Promise<void> {
@@ -582,10 +585,9 @@ export class App {
   /**
    * Before a message that starts a turn is sent: whatever of the project's
    * configuration waits for an approval (a hook, a language server, an MCP
-   * server the engine has looked at) is put in the dock now, and the message
-   * goes once it is answered, so the turn starts with what the user allowed.
-   * Before a session's first message the engine has not looked at the MCP
-   * servers yet: a project's are named, with what to expect.
+   * server) is put in the dock now, if it was not when the session opened,
+   * and the message goes once it is answered, so the turn starts with what
+   * the user allowed.
    */
   private async beforeMessage(session: BackendSession): Promise<void> {
     if (this.transcript.activity.executing) return
@@ -595,12 +597,7 @@ export class App {
     }
     await look(session.hooks, (state) => this.hooksChanged(session, state))
     await look(session.lsp, (state) => this.lspChanged(session, state))
-    await look(session.mcp, (state) => {
-      this.mcpChanged(session, state)
-      const first = this.transcript.turns.turns.length > 0 || this.asked.has("first-message") ? null : mcpFirstMessageText(state.servers)
-      this.asked.add("first-message")
-      if (first !== null) this.say(first)
-    })
+    await look(session.mcp, (state) => this.mcpChanged(session, state))
     if (this.featuresSettled()) return
     this.say("your message is sent once the question below is answered")
     await new Promise<void>((resolve) => this.featureWaiters.push(resolve))
