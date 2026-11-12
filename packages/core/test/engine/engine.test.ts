@@ -562,6 +562,7 @@ describe("when the harness itself is wrong", () => {
             attempt: row.attempt,
             purpose: "step",
             model: row.model,
+            provider: row.provider,
             blocks: row.blocks.map((block, index) => (index === 0 ? { ...block, hash: "0".repeat(64) } : block)),
           })
           h.session.send("Second.")
@@ -595,6 +596,7 @@ describe("when the harness itself is wrong", () => {
           attempt: row.attempt,
           purpose: "step",
           model: row.model,
+          provider: row.provider,
           blocks: row.blocks.map((block, index) => (index === 0 ? { ...block, hash: "0".repeat(64) } : block)),
         })
         const from = h.seenEvents.length

@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 4 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 6 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -1581,10 +1581,12 @@ Declared in `packages/core/src/event/durable.ts`.
 ### `usage`
 
 Token counts for one model call, as measured by the provider.
-- `inputTokens`: all input tokens, including the cached ones.
+- `inputTokens`: all input tokens, including the cached ones and the ones written to the cache.
 - `cachedInputTokens`: the part of `inputTokens` served from the prompt cache.
 - `outputTokens`: all output tokens, including reasoning tokens.
 - `reasoningTokens`: the part of `outputTokens` spent on reasoning.
+- `cacheWriteTokens`: the part of `inputTokens` the provider says it wrote to the prompt cache. Present exactly when the provider reported the figure, zero included; absent when it reports no writes at all.
+- `cacheWrite12hTokens`: the part of `cacheWriteTokens` written with the 12-hour lifetime, when the provider reported the split.
 
 So uncached input is `inputTokens - cachedInputTokens`, and the total is `inputTokens + outputTokens`. A provider that reports these differently converts to this shape at its boundary.
 
@@ -1594,6 +1596,8 @@ So uncached input is `inputTokens - cachedInputTokens`, and the total is `inputT
 | `cachedInputTokens` | integer ≥ 0 | yes |
 | `outputTokens` | integer ≥ 0 | yes |
 | `reasoningTokens` | integer ≥ 0 | yes |
+| `cacheWriteTokens` | integer ≥ 0 | may be absent |
+| `cacheWrite12hTokens` | integer ≥ 0 | may be absent |
 
 Declared in `packages/core/src/provider/usage.ts`.
 

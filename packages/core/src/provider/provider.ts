@@ -60,8 +60,16 @@ export type StreamEvent =
 
 export type StreamEventType = StreamEvent["type"]
 
+/**
+ * The name of the one real provider: OpenAI's Responses API through the
+ * ChatGPT-plan sign-in. A ledger row with this name was answered by a
+ * model on the user's plan; any other name is a scripted provider's (a
+ * test, a demo, an evaluation).
+ */
+export const SIGNED_IN_PROVIDER = "openai-responses"
+
 export interface Provider {
-  /** Stable name of the provider, recorded for diagnosis. */
+  /** Stable name of the provider. Recorded in the request ledger with every call it serves. */
   readonly id: string
   /**
    * Starts one model call.

@@ -11,6 +11,7 @@ import { join } from "node:path"
 import { buildRequest } from "../../src/request/build.ts"
 import { requestBlocks } from "../../src/request/request.ts"
 import type { SessionId } from "../../src/id.ts"
+import { SIGNED_IN_PROVIDER } from "../../src/provider/provider.ts"
 import type { SqliteStore } from "../../src/store/sqlite.ts"
 import { type ExportResult, describeUnverified, exportSession } from "../../src/trace/export.ts"
 import { canonicalResponsesRequest, serializeTrace, traceHash } from "../../src/trace/format.ts"
@@ -122,6 +123,9 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
         output_tokens: usage.outputTokens,
         reasoning_tokens: usage.reasoningTokens,
       })
+      // A scripted provider served these calls: nobody was billed, so the trace does not say how, and says who answered.
+      expect(call.record.billing).toBeUndefined()
+      expect(call.record.x_light_harness?.served_by).toBe("fake")
       expect(call.record.ts).toBe(new Date(call.row.startedAt).toISOString())
       expect(call.record.model).toBe(call.row.model)
       expect(call.record.session).toBe(loop.id)
@@ -129,6 +133,49 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
       expect(call.record.params?.tool_choice).toBeUndefined()
     }
     expect(session(name).trace).not.toMatch(/authorization|bearer|access_token|refresh_token|account/i)
+  })
+
+  test("a call the signed-in provider served is billed to the plan, and its cache writes are what the ledger kept", () => {
+    const { loop } = session(name)
+    const copy = openTestStore(join(directory, `signed-in-${name.replace(/\W+/g, "-")}.db`))
+    try {
+      // The same session in a store of its own, with the ledger as the real provider would have left it.
+      for (const item of store.readEvents(loop.id)) copy.append(loop.id, [{ type: item.type, v: item.v, data: item.data } as never])
+      for (const row of store.readRequests(loop.id)) {
+        copy.beginRequest({ id: row.id, sessionId: row.sessionId, messageId: row.messageId, attempt: row.attempt, purpose: row.purpose, model: row.model, provider: SIGNED_IN_PROVIDER, blocks: row.blocks })
+        if (row.outcome !== null)
+          copy.finishRequest(row.id, {
+            outcome: row.outcome,
+            errorKind: row.errorKind,
+            // The first call wrote what it did not read, a part of it for twelve hours; the others report that they wrote nothing.
+            usage: row.usage === null ? null : { ...row.usage, cacheWriteTokens: row.ordinal === 1 ? Math.min(256, row.usage.inputTokens - row.usage.cachedInputTokens) : 0, ...(row.ordinal === 1 ? { cacheWrite12hTokens: 128 } : {}) },
+          })
+      }
+      const exported = exportSession(copy, loop.id, { compactionPrompt: COMPACTION_PROMPT })
+      const records = exported.calls.flatMap((call) => (call.record === null ? [] : [call]))
+      expect(records.length).toBeGreaterThan(0)
+      for (const call of records) {
+        const usage = call.row.usage!
+        const written = usage.cacheWriteTokens!
+        expect(call.record!.billing).toBe("subscription")
+        expect(call.record!.provider).toBe("openai")
+        expect(call.record!.x_light_harness?.served_by).toBe(SIGNED_IN_PROVIDER)
+        expect(call.record!.usage).toEqual({
+          input_tokens: usage.inputTokens - usage.cachedInputTokens - written,
+          cache_read_tokens: usage.cachedInputTokens,
+          cache_write_tokens: written,
+          ...(usage.cacheWrite12hTokens === undefined ? {} : { cache_write_12h_tokens: Math.min(written, usage.cacheWrite12hTokens) }),
+          output_tokens: usage.outputTokens,
+          reasoning_tokens: usage.reasoningTokens,
+        })
+        // The prompt's size is the same whichever way it is split (SPEC 3).
+        expect(call.record!.usage.input_tokens + call.record!.usage.cache_read_tokens + written).toBe(usage.inputTokens)
+      }
+      const trace = serializeTrace(exported.records)
+      expect(validateTrace(trace).errors).toEqual([])
+    } finally {
+      copy.close()
+    }
   })
 
   test("breaks are marked exactly where a legitimate break event was appended", () => {

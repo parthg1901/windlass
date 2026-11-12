@@ -26,7 +26,7 @@ import { makeProviderError, type ProviderError } from "./error.ts"
 import { ResponsesStreamMapper } from "./openai-responses-decode.ts"
 import { MissingBlobError, blobRefs, encodeRequest } from "./openai-responses-encode.ts"
 import { classify, isRecord, readErrorBody, retryAfterMs, stringOr } from "./openai-responses-error.ts"
-import type { Provider, StreamEvent } from "./provider.ts"
+import { type Provider, SIGNED_IN_PROVIDER, type StreamEvent } from "./provider.ts"
 import { SseParser } from "./sse.ts"
 import { userAgent } from "../version.ts"
 
@@ -56,7 +56,7 @@ export interface OpenAIResponsesOptions {
 }
 
 export class OpenAIResponsesProvider implements Provider {
-  readonly id = "openai-responses"
+  readonly id = SIGNED_IN_PROVIDER
   private readonly options: OpenAIResponsesOptions
   private readonly fetch: FetchFunction
   private readonly baseUrl: string

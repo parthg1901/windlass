@@ -413,6 +413,7 @@ describe("request ledger", () => {
     attempt: 1,
     purpose,
     model: "gpt-test",
+    provider: "fake",
     blocks,
   })
 

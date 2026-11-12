@@ -6,7 +6,7 @@
  * deterministic for the same inputs.
  */
 import type { Json } from "../json.ts"
-import type { Usage } from "../provider/usage.ts"
+import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { ArgumentChange, CallShape, Divergence, DivergenceKind, MatchStats, RecordedSide, ReplayedSide } from "./match.ts"
 import type { ReplaySnapshot } from "./replay.ts"
 import type { Tape } from "./tape.ts"
@@ -185,11 +185,5 @@ function tokens(usage: Usage | null, field: "inputTokens" | "outputTokens"): str
 }
 
 function add(a: Usage | null, b: Usage): Usage {
-  if (a === null) return b
-  return {
-    inputTokens: a.inputTokens + b.inputTokens,
-    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
-    outputTokens: a.outputTokens + b.outputTokens,
-    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
-  }
+  return a === null ? b : sumUsage(a, b)
 }

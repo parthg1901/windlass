@@ -162,6 +162,7 @@ describe("single writer", () => {
           attempt: 1,
           purpose: "step",
           model: "gpt-test",
+          provider: "fake",
           blocks: [],
         }),
       ),

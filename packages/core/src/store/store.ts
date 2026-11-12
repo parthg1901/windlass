@@ -75,6 +75,12 @@ export interface RequestStart {
   readonly attempt: number
   readonly purpose: RequestPurpose
   readonly model: string
+  /**
+   * The provider that serves the call, by its own name (`Provider.id`): the
+   * signed-in Responses provider, or a scripted one in a test, a demo or an
+   * evaluation. It tells a session a real model answered from one a script did.
+   */
+  readonly provider: string
   /** `hashRequest(request)`: the ordered block hashes of exactly what was sent. */
   readonly blocks: readonly BlockHash[]
 }

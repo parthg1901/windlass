@@ -104,8 +104,8 @@ describe("SQLite schema", () => {
     insertSession(database, "ses_1")
     const insert = (id: string) =>
       database.run(
-        `INSERT INTO request (id, session_id, message_id, attempt, purpose, model, blocks, time_started)
-         VALUES (?, 'ses_1', 'msg_1', 1, 'step', 'gpt-test', '[]', 0)`,
+        `INSERT INTO request (id, session_id, message_id, attempt, purpose, model, provider, blocks, time_started)
+         VALUES (?, 'ses_1', 'msg_1', 1, 'step', 'gpt-test', 'fake', '[]', 0)`,
         [id],
       )
     insert("req_1")

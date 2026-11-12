@@ -30,7 +30,7 @@
 import { existsSync, realpathSync } from "node:fs"
 import { isAbsolute, relative, resolve } from "node:path"
 import type { InterruptReason } from "../interrupt.ts"
-import type { Usage } from "../provider/usage.ts"
+import { type Usage, sumUsage } from "../provider/usage.ts"
 import { parseArguments } from "../tool/args.ts"
 import type { RunHooks, ToolCall, ToolCallOutcome, ToolRuntime } from "../tool/runtime.ts"
 import type { AnyTool } from "../tool/tool.ts"
@@ -354,11 +354,5 @@ function namesOriginal(argumentsText: string, original: string): boolean {
 }
 
 function addUsage(a: Usage | null, b: Usage): Usage {
-  if (a === null) return b
-  return {
-    inputTokens: a.inputTokens + b.inputTokens,
-    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
-    outputTokens: a.outputTokens + b.outputTokens,
-    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
-  }
+  return a === null ? b : sumUsage(a, b)
 }

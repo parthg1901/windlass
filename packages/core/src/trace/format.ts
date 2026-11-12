@@ -9,13 +9,13 @@
  * as their bytes (SPEC 4.5, "Binary data"); the block's hash is still that of
  * the content as sent, so it is the hash the ledger proves.
  *
- * What 1.2 adds that the harness does not store is left out, as the spec
- * says to for "unknown": `billing` (the ledger does not say which provider
- * served a call, so a scripted session cannot be told from a signed-in one),
- * and `cache_write_tokens` and `cache_write_12h_tokens` (the provider's
- * decoder keeps only cached, input, output and reasoning tokens). An OpenAI
- * stream reports usage only on its final event, so a call with usage was
- * never cut off and `interrupted` is never written.
+ * Of what 1.2 adds: `billing` is written for a call the ledger says the
+ * signed-in provider served (a ChatGPT plan: `"subscription"`) and left out,
+ * as the spec says to for "unknown", for any other provider (a scripted
+ * one); `cache_write_tokens` and `cache_write_12h_tokens` are what the
+ * provider reported and the ledger kept, `null` and absent when it reported
+ * none. An OpenAI stream reports usage only on its final event, so a call
+ * with usage was never cut off and `interrupted` is never written.
  *
  * Nothing here knows about sessions or the store; `export.ts` does.
  */
@@ -45,16 +45,18 @@ export interface TraceBlock {
 }
 
 /**
- * SPEC 3. `cache_write_tokens` is always `null` here and the 1.2 field
- * `cache_write_12h_tokens` is never written: the provider reports writes
- * (`input_tokens_details.cache_write_tokens`, and their lifetimes in
- * `cache_write_tokens_details`), but the harness's stored usage does not keep
- * them, and `null` is what the spec says for writes that are not known.
+ * SPEC 3. `cache_write_tokens` is what the provider reported
+ * (`input_tokens_details.cache_write_tokens`, zero included), or `null` when
+ * it reported no figure, which is what the spec says for writes that are
+ * not known. `cache_write_12h_tokens` (1.2) is the part of it with the
+ * 12-hour lifetime (`cache_write_tokens_details.ttl_12h_tokens`), written
+ * only when the provider reported the split.
  */
 export interface TraceUsage {
   readonly input_tokens: number
   readonly cache_read_tokens: number
   readonly cache_write_tokens: number | null
+  readonly cache_write_12h_tokens?: number
   readonly output_tokens: number
   readonly reasoning_tokens?: number
 }
@@ -90,6 +92,8 @@ export interface HarnessExtension {
   readonly message_id: string
   readonly attempt: number
   readonly purpose: "step" | "compaction"
+  /** The provider that served the call, by the name the ledger has for it (`Provider.id`): the signed-in one, or a scripted one. */
+  readonly served_by: string
   readonly outcome: "ok" | "error" | "aborted" | null
   /** Whether the rebuilt request's block hashes equal the ledger row's. `false` means the record is usage-only for that reason. */
   readonly verified: boolean
@@ -112,6 +116,8 @@ export interface TraceRecord {
   readonly ts: string
   readonly provider: string
   readonly model: string
+  /** SPEC 2 (format 1.2): how the call was billed, when the writer knows. */
+  readonly billing?: "per_token" | "subscription"
   readonly fidelity: "full-request" | "usage-only"
   readonly params?: Readonly<Record<string, Json>>
   readonly request?: { readonly reuse?: number; readonly blocks: readonly TraceBlock[] }
@@ -227,13 +233,15 @@ export function canonicalResponsesRequest(body: Readonly<Record<string, Json>>):
   }
 }
 
-/** SPEC 3, the OpenAI Responses row: the harness's `inputTokens` include the cached ones. */
+/** SPEC 3, the OpenAI Responses row: the harness's `inputTokens` include the cached ones and the ones written to the cache. */
 export function traceUsage(usage: Usage): TraceUsage {
   const cached = Math.min(usage.inputTokens, usage.cachedInputTokens)
+  const written = usage.cacheWriteTokens === undefined ? null : Math.min(usage.inputTokens - cached, usage.cacheWriteTokens)
   return {
-    input_tokens: usage.inputTokens - cached,
+    input_tokens: usage.inputTokens - cached - (written ?? 0),
     cache_read_tokens: cached,
-    cache_write_tokens: null,
+    cache_write_tokens: written,
+    ...(written === null || usage.cacheWrite12hTokens === undefined ? {} : { cache_write_12h_tokens: Math.min(written, usage.cacheWrite12hTokens) }),
     output_tokens: usage.outputTokens,
     reasoning_tokens: usage.reasoningTokens,
   }

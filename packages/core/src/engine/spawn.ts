@@ -25,7 +25,7 @@
 import { SUBAGENT_AGENT_PROPERTY } from "../agents/use.ts"
 import type { StoredEvent, WorktreeRecord } from "../event/durable.ts"
 import type { CallId, MessageId, SessionId } from "../id.ts"
-import type { Usage } from "../provider/usage.ts"
+import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { AnyTool, Tool, ToolContext, ToolResult } from "../tool/tool.ts"
 
 export type { BackgroundCommand, BackgroundHost } from "../tool/tool.ts"
@@ -144,12 +144,7 @@ export interface ChildResult {
 export function addUsage(total: Usage | null, next: Usage | null): Usage | null {
   if (next === null) return total
   if (total === null) return next
-  return {
-    inputTokens: total.inputTokens + next.inputTokens,
-    cachedInputTokens: total.cachedInputTokens + next.cachedInputTokens,
-    outputTokens: total.outputTokens + next.outputTokens,
-    reasoningTokens: total.reasoningTokens + next.reasoningTokens,
-  }
+  return sumUsage(total, next)
 }
 
 /**

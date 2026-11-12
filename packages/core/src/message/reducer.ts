@@ -46,6 +46,7 @@ import { AGENT_KEY } from "../agents/use.ts"
 import { type StepError, type StoredEvent, HARNESS_ORIGIN } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
+import { sumUsage } from "../provider/usage.ts"
 import {
   type AssistantMessage,
   type Exclusion,
@@ -1035,17 +1036,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (event.data.merge !== null && entry.worktree === null) fail("invalid_transition", `subagent ${entry.sessionId} did not work in a worktree`)
       const cost = event.data.usage
       const total = spawned.usage
-      const usage =
-        cost === null
-          ? total
-          : total === null
-            ? cost
-            : {
-                inputTokens: total.inputTokens + cost.inputTokens,
-                cachedInputTokens: total.cachedInputTokens + cost.cachedInputTokens,
-                outputTokens: total.outputTokens + cost.outputTokens,
-                reasoningTokens: total.reasoningTokens + cost.reasoningTokens,
-              }
+      const usage = cost === null ? total : total === null ? cost : sumUsage(total, cost)
       return session({ spawned: { ...spawned, running: spawned.running.filter((candidate) => candidate !== entry), usage } })
     }
 

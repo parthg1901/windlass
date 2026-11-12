@@ -40,6 +40,7 @@ import type { SessionId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { blobRefs, encodeRequest } from "../provider/openai-responses-encode.ts"
+import { SIGNED_IN_PROVIDER } from "../provider/provider.ts"
 import { type BuildOptions, type CallOptions, buildCompactionRequest, buildRequest } from "../request/build.ts"
 import { type PrefixBreakCause, prefixBreakCauses } from "../request/build-break.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
@@ -335,6 +336,7 @@ function toRecord(
     message_id: row.messageId,
     attempt: row.attempt,
     purpose: row.purpose,
+    served_by: row.provider,
     outcome: row.outcome,
     verified: request !== null,
     ...("unverified" in rebuilt ? { unverified_reason: rebuilt.unverified.message } : {}),
@@ -347,8 +349,11 @@ function toRecord(
     session: sessionId,
     lane: options.lane ?? "main",
     ts: new Date(row.startedAt).toISOString(),
+    // The request is a Responses request whoever answered it; who did is in the extension, and decides the billing.
     provider: "openai",
     model: request?.model ?? row.model,
+    // The one real provider is the ChatGPT-plan sign-in. A scripted provider billed nothing: left unknown.
+    ...(row.provider === SIGNED_IN_PROVIDER ? { billing: "subscription" as const } : {}),
     fidelity: request === null ? "usage-only" : "full-request",
     ...(request === null ? {} : { params: request.params, request: { blocks: request.blocks } }),
     usage: traceUsage(row.usage!),

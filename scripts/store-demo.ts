@@ -71,6 +71,7 @@ store.beginRequest({
   attempt: 1,
   purpose: "step",
   model: "gpt-test",
+  provider: "fake",
   blocks: [
     { kind: "params", hash: "1".repeat(64), bytes: 120 },
     { kind: "instructions", hash: "2".repeat(64), bytes: 900 },

@@ -103,7 +103,7 @@ export class Loop {
       purpose === "compaction" ? buildCompactionRequest(this.projection, {}, m(messageId)) : this.builder(this.projection, { toolChoice: "auto" })
     const blocks = hashRequest(request)
     const id = `${this.id}_r${++this.calls}` as RequestId
-    this.store.beginRequest({ id, sessionId: this.id, messageId: m(messageId), attempt, purpose, model: request.params.model, blocks })
+    this.store.beginRequest({ id, sessionId: this.id, messageId: m(messageId), attempt, purpose, model: request.params.model, provider: "fake", blocks })
     const blobs = new Map(blobRefs(request).map((ref) => [ref.hash, this.store.getBlob(ref.hash)!.bytes] as const))
     const encoded = encodeRequest(request, blobs)
     const usage = outcome === "ok" ? this.provider(blocks) : null

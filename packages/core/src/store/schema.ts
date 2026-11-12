@@ -36,8 +36,11 @@
  *    `left_to_parent`, a compaction's ending says how many summary calls it
  *    took, and an approval can be about a tool that changes only the
  *    harness's own records.
+ * 6: the request ledger says which provider served a call (`provider`) and
+ *    what the provider wrote to its cache (`cache_write_tokens` and the
+ *    12-hour part of it); `Usage`, and so `step.ended`, carry the same counts.
  */
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 /**
  * Run on every connection, before anything else.
@@ -155,6 +158,8 @@ CREATE TABLE request (
   -- step | compaction
   purpose             TEXT NOT NULL,
   model               TEXT NOT NULL,
+  -- The provider that served the call, by its own name (Provider.id).
+  provider            TEXT NOT NULL,
   -- JSON array of {kind, hash, bytes}: the ordered block hashes of the request.
   blocks              TEXT NOT NULL,
   time_started        INTEGER NOT NULL,
@@ -165,7 +170,11 @@ CREATE TABLE request (
   input_tokens        INTEGER,
   cached_input_tokens INTEGER,
   output_tokens       INTEGER,
-  reasoning_tokens    INTEGER
+  reasoning_tokens    INTEGER,
+  -- What the provider says it wrote to its prompt cache, and the part of that with the 12-hour lifetime.
+  -- NULL when the provider reported no such figure (which is not the same as zero).
+  cache_write_tokens     INTEGER,
+  cache_write_12h_tokens INTEGER
 ) STRICT;
 
 CREATE INDEX request_session ON request (session_id, ordinal);

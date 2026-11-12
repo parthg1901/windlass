@@ -104,7 +104,7 @@ import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffec
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
-import type { Usage } from "../provider/usage.ts"
+import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { type PrefixVerdict, checkPrefix } from "../request/build-break.ts"
 import { CHECKPOINT_ORIGIN, type CallOptions, HARNESS_CLOSE, buildCompactionRequest, buildRequest, harnessOpen } from "../request/build.ts"
@@ -2745,6 +2745,7 @@ class LiveSession implements EngineSession {
       attempt: input.attempt,
       purpose: input.purpose,
       model: request.params.model,
+      provider: provider.id,
       blocks: input.blocks,
     })
 
@@ -5468,12 +5469,7 @@ async function retainSnapshots(
 function addUsage(total: Usage | null, next: Usage | null): Usage | null {
   if (next === null) return total
   if (total === null) return next
-  return {
-    inputTokens: total.inputTokens + next.inputTokens,
-    cachedInputTokens: total.cachedInputTokens + next.cachedInputTokens,
-    outputTokens: total.outputTokens + next.outputTokens,
-    reasoningTokens: total.reasoningTokens + next.reasoningTokens,
-  }
+  return sumUsage(total, next)
 }
 
 const ABORTED = Symbol("aborted")

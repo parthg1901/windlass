@@ -382,6 +382,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
           checked.attempt,
           checked.purpose,
           checked.model,
+          checked.provider,
           JSON.stringify(checked.blocks),
           clock(),
         )
@@ -409,6 +410,8 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
         checked.usage?.cachedInputTokens ?? null,
         checked.usage?.outputTokens ?? null,
         checked.usage?.reasoningTokens ?? null,
+        checked.usage?.cacheWriteTokens ?? null,
+        checked.usage?.cacheWrite12hTokens ?? null,
         id,
       ),
     )
@@ -563,6 +566,7 @@ interface RequestRow {
   readonly attempt: number
   readonly purpose: string
   readonly model: string
+  readonly provider: string
   readonly blocks: string
   readonly time_started: number
   readonly time_finished: number | null
@@ -572,6 +576,8 @@ interface RequestRow {
   readonly cached_input_tokens: number | null
   readonly output_tokens: number | null
   readonly reasoning_tokens: number | null
+  readonly cache_write_tokens: number | null
+  readonly cache_write_12h_tokens: number | null
 }
 
 interface EventSqlRow {
@@ -662,16 +668,16 @@ function prepare(database: Database) {
        ON CONFLICT (session_id, message_id) DO UPDATE SET delivery = excluded.delivery, data = excluded.data`,
     ),
     deleteInbox: database.query<unknown, [string, string]>("DELETE FROM inbox WHERE session_id = ? AND message_id = ?"),
-    insertRequest: database.query<RequestRow, [string, string, string, number, string, string, string, number]>(
-      `INSERT INTO request (id, session_id, message_id, attempt, purpose, model, blocks, time_started)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    insertRequest: database.query<RequestRow, [string, string, string, number, string, string, string, string, number]>(
+      `INSERT INTO request (id, session_id, message_id, attempt, purpose, model, provider, blocks, time_started)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
     ),
     finishRequest: database.query<
       RequestRow,
-      [number, string, string | null, number | null, number | null, number | null, number | null, string]
+      [number, string, string | null, number | null, number | null, number | null, number | null, number | null, number | null, string]
     >(
       `UPDATE request SET time_finished = ?, outcome = ?, error_kind = ?, input_tokens = ?, cached_input_tokens = ?,
-         output_tokens = ?, reasoning_tokens = ?
+         output_tokens = ?, reasoning_tokens = ?, cache_write_tokens = ?, cache_write_12h_tokens = ?
        WHERE id = ? AND outcome IS NULL RETURNING *`,
     ),
     lastRequest: database.query<RequestRow, [string]>(
@@ -767,6 +773,7 @@ const requestStart = object({
   attempt: integer(1),
   purpose: requestPurpose,
   model: nonEmptyString,
+  provider: nonEmptyString,
   blocks: blockHashes,
 }) satisfies Validator<RequestStart>
 
@@ -788,6 +795,7 @@ function requestRecord(row: RequestRow): RequestRecord {
         attempt: row.attempt,
         purpose: row.purpose,
         model: row.model,
+        provider: row.provider,
         blocks: JSON.parse(row.blocks),
       },
       what,
@@ -804,6 +812,8 @@ function requestRecord(row: RequestRow): RequestRecord {
               cachedInputTokens: row.cached_input_tokens,
               outputTokens: row.output_tokens,
               reasoningTokens: row.reasoning_tokens,
+              ...(row.cache_write_tokens === null ? {} : { cacheWriteTokens: row.cache_write_tokens }),
+              ...(row.cache_write_12h_tokens === null ? {} : { cacheWrite12hTokens: row.cache_write_12h_tokens }),
             },
             `${what}.usage`,
           ),

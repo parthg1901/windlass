@@ -5,9 +5,10 @@ import { decodeChunks, fixtureBytes, splitAt, sseFixtures } from "./responses-he
 
 const decodeFixture = async (name: string) => decodeChunks([await fixtureBytes(name)])
 
-const usage = (inputTokens: number, cachedInputTokens: number, outputTokens: number, reasoningTokens: number) => ({
+/** The usage a response reported. Every fixture says how much it wrote to the cache (nothing); `written: null` is a response without that field. */
+const usage = (inputTokens: number, cachedInputTokens: number, outputTokens: number, reasoningTokens: number, written: number | null = 0) => ({
   type: "usage" as const,
-  usage: { inputTokens, cachedInputTokens, outputTokens, reasoningTokens },
+  usage: { inputTokens, cachedInputTokens, outputTokens, reasoningTokens, ...(written === null ? {} : { cacheWriteTokens: written }) },
 })
 
 const terminalCount = (events: readonly StreamEvent[]) =>
@@ -176,6 +177,24 @@ describe("Responses stream decoding: framing", () => {
     expect(mapper.frame({ event: "response.completed", data: '{"type":"response.completed","response":{"output":[]}}' })).toEqual([
       { type: "finish", reason: "stop" },
     ])
+  })
+
+  test("what the provider wrote to its cache is kept as reported: absent when the response has no such field, with the 12-hour part when it says", () => {
+    const completed = (details: Record<string, unknown>) => {
+      const response = { output: [], usage: { input_tokens: 5000, input_tokens_details: { cached_tokens: 1024, ...details }, output_tokens: 40, output_tokens_details: { reasoning_tokens: 8 } } }
+      return new ResponsesStreamMapper().frame({ event: "response.completed", data: JSON.stringify({ type: "response.completed", response }) })[0]
+    }
+    // A model that reports no writes: the figure is unknown, not zero.
+    expect(completed({})).toEqual(usage(5000, 1024, 40, 8, null))
+    // Zero is a figure.
+    expect(completed({ cache_write_tokens: 0 })).toEqual(usage(5000, 1024, 40, 8, 0))
+    // The lifetimes are a split of the same figure.
+    expect(completed({ cache_write_tokens: 3000, cache_write_tokens_details: { ttl_30m_tokens: 1000, ttl_12h_tokens: 2000 } })).toEqual({
+      type: "usage",
+      usage: { inputTokens: 5000, cachedInputTokens: 1024, outputTokens: 40, reasoningTokens: 8, cacheWriteTokens: 3000, cacheWrite12hTokens: 2000 },
+    })
+    // A split without the figure it splits says nothing.
+    expect(completed({ cache_write_tokens_details: { ttl_12h_tokens: 2000 } })).toEqual(usage(5000, 1024, 40, 8, null))
   })
 
   test("nothing follows a terminal event", () => {

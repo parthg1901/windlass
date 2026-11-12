@@ -264,11 +264,16 @@ export class ResponsesStreamMapper {
     const raw = response.usage
     const input = isRecord(raw.input_tokens_details) ? raw.input_tokens_details : {}
     const output = isRecord(raw.output_tokens_details) ? raw.output_tokens_details : {}
+    // The provider says what it wrote to the cache only on some models: the figure is kept when the field is there
+    // (zero included), and left out, not made zero, when it is not. Its lifetimes are a split of the same figure.
+    const writes = isRecord(input.cache_write_tokens_details) ? input.cache_write_tokens_details : {}
     const usage: Usage = {
       inputTokens: count(raw.input_tokens),
       cachedInputTokens: count(input.cached_tokens),
       outputTokens: count(raw.output_tokens),
       reasoningTokens: count(output.reasoning_tokens),
+      ...(isCount(input.cache_write_tokens) ? { cacheWriteTokens: input.cache_write_tokens } : {}),
+      ...(isCount(input.cache_write_tokens) && isCount(writes.ttl_12h_tokens) ? { cacheWrite12hTokens: writes.ttl_12h_tokens } : {}),
     }
     return [{ type: "usage", usage }]
   }
@@ -287,8 +292,12 @@ function integerOr(value: unknown): number {
   return typeof value === "number" && Number.isInteger(value) ? value : -1
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+}
+
 function count(value: unknown): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
+  return isCount(value) ? value : 0
 }
 
 function clip(text: string) {

@@ -165,6 +165,7 @@ export class Driver {
       attempt: 1,
       purpose,
       model: "gpt-test",
+      provider: "fake",
       blocks,
     })
     this.store.finishRequest(`${this.id}_${id}` as RequestId, {
