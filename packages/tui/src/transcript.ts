@@ -1378,6 +1378,17 @@ export function turnsLabel(turns: readonly TurnInfo[]): string | null {
   return `turns ${turns[0]!.number} to ${turns.at(-1)!.number}`
 }
 
+/**
+ * How the server is asked for the diff of the turn a row ended: by the number of the event that ended it, which
+ * tells a turn apart from the queued message's turn that followed it in the same execution, and by its execution
+ * where the row knows it. `null`: the row names no turn the server could find (a demo, a row without an event).
+ */
+export function turnDiffParams(row: OutcomeRow): { readonly executionId?: string; readonly endSeq?: number } | null {
+  const endSeq = row.turn !== null && row.seq > 0 ? row.seq : null
+  if (endSeq === null && row.executionId === null) return null
+  return { ...(row.executionId === null ? {} : { executionId: row.executionId }), ...(endSeq === null ? {} : { endSeq }) }
+}
+
 export function expandable(row: Row): boolean {
   return row.kind === "tool" || row.kind === "reasoning" || row.kind === "outcome" || (row.kind === "notice" && row.detail.length > 2) || (row.kind === "user" && row.command !== null)
 }

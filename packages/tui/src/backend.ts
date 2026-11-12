@@ -131,7 +131,7 @@ export interface BackendSession {
   /** The user trusts what is in the conversation again. Resolves with whether it was tainted. */
   clearTaint?(): Promise<boolean>
   /** The files a turn (`executionId`, the latest by default) or a step (`messageId`) changed, with per-file patches. */
-  diff?(params: { readonly executionId?: string; readonly messageId?: string }): Promise<DiffResult>
+  diff?(params: { readonly executionId?: string; readonly endSeq?: number; readonly messageId?: string }): Promise<DiffResult>
   /** The session's title as the server has it (its own, or derived from the first message). */
   title?(): Promise<string | null>
   /** Renames the session, when the server offers it; resolves with the title as stored. */

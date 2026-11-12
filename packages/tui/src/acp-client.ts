@@ -273,7 +273,7 @@ class AcpSession implements BackendSession {
     return this.call(() => this.session.clearTaint())
   }
 
-  diff(params: { readonly executionId?: string; readonly messageId?: string }): Promise<DiffResult> {
+  diff(params: { readonly executionId?: string; readonly endSeq?: number; readonly messageId?: string }): Promise<DiffResult> {
     if (!this.session.offers(EXT.diff)) return Promise.resolve({ available: false, reason: "unavailable", message: "this server does not send per-file diffs" })
     return this.call(() => this.session.diff(params))
   }

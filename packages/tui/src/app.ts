@@ -30,7 +30,7 @@ import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { ReviewView, reviewTarget } from "./review-view.ts"
-import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable } from "./transcript.ts"
+import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable, turnDiffParams } from "./transcript.ts"
 import { forkPointOfTurn } from "@windlass/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
@@ -143,7 +143,7 @@ export class App {
   readonly pager: Pager
   /** The review of a turn's changes, and the turn whose diff the reader shows (r opens its review). */
   readonly review: ReviewView
-  private diffTurn: { readonly executionId: string | null } | null = null
+  private diffTurn: { readonly executionId: string | null; readonly endSeq: number | null } | null = null
   /** When the user last typed in the input: the dock does not take the focus from someone typing. */
   private lastTyped = 0
   /** How the session's tool calls are approved, as the server last said. */
@@ -407,7 +407,7 @@ export class App {
     if (this.pager.open) {
       if (key.sequence === "r" && this.diffTurn !== null) {
         this.pager.close()
-        void this.openReview(this.diffTurn.executionId)
+        void this.openReview(this.diffTurn)
       } else this.pager.key(name, key.sequence, ctrl)
       return handled()
     }
@@ -1691,13 +1691,11 @@ export class App {
     const session = this.session
     if (session?.diff === undefined) return this.unavailable("/diff", "", DEMO_DIFFS)
     const selected = this.conversation.selectedRow()
-    // The server's diffs are of a whole run of work: a turn a queued message followed has only what its tool calls reported.
-    if (selected?.kind === "outcome" && selected.continues) return this.say("the per-file diffs of a turn that a queued message followed are not kept apart from that message's turn: Ctrl-O on this row shows the diffs its tool calls reported", "warn")
-    const outcome = selected?.kind === "outcome" ? selected : this.transcript.rows.findLast((row): row is OutcomeRow => row.kind === "outcome" && row.executionId !== null)
-    const params = selected?.kind === "tool" ? { messageId: selected.messageId } : outcome?.executionId == null ? {} : { executionId: outcome.executionId }
+    // Each turn has its own diff, a turn a queued message followed too: the server is told which by the event that ended it.
+    const outcome = selected?.kind === "outcome" ? selected : this.transcript.rows.findLast((row): row is OutcomeRow => row.kind === "outcome" && turnDiffParams(row) !== null)
     let result: DiffResult
     try {
-      result = await session.diff(params)
+      result = selected?.kind === "tool" ? await session.diff({ messageId: selected.messageId }) : outcome === undefined ? await session.diff({}) : await this.turnDiff(session, outcome)
     } catch (error) {
       return this.say(`/diff failed: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
@@ -1706,9 +1704,14 @@ export class App {
       outcome.serverDiff = result
       this.transcript.changed(outcome)
     }
-    if (result.files.length === 0) return this.say(`the ${result.scope} changed no file`)
-    const what = result.scope === "step" ? "this step" : "this turn"
-    this.diffTurn = result.scope === "turn" ? { executionId: result.executionId } : null
+    const turn = outcome?.turn == null ? "this turn" : `turn ${outcome.turn}`
+    const what = result.scope === "step" ? "this step" : turn
+    if (result.files.length === 0) {
+      // With nothing selected the latest turn was asked about: an earlier one is a selection away, which nothing else says.
+      const earlier = result.scope === "turn" && selected?.kind !== "outcome" && (outcome?.turn ?? 1) > 1 ? ` (the latest); for an earlier turn's changes select its ending row (Alt-Up), then /diff` : ""
+      return this.say(`${what} changed no file${earlier}`)
+    }
+    this.diffTurn = result.scope === "turn" ? { executionId: result.executionId, endSeq: outcome === undefined ? null : (turnDiffParams(outcome)?.endSeq ?? null) } : null
     await this.pager.show({
       title: `Changes of ${what}: ${plural(result.files.length, "file")} · +${result.files.reduce((sum, file) => sum + file.added, 0)} -${result.files.reduce((sum, file) => sum + file.removed, 0)}`,
       body: (columns) => {
@@ -1727,15 +1730,26 @@ export class App {
   }
 
   /**
+   * The diff of the turn an ending row ended, its own files only. A row whose ending the server no longer counts as
+   * one (a turn cut off by a shutdown and resumed since) is asked for by its execution instead.
+   */
+  private async turnDiff(session: BackendSession, row: OutcomeRow): Promise<DiffResult> {
+    const params = turnDiffParams(row) ?? {}
+    const result = await session.diff!(params)
+    if (result.available || result.reason !== "not_found" || params.endSeq === undefined || params.executionId === undefined) return result
+    return session.diff!({ executionId: params.executionId })
+  }
+
+  /**
    * `/review`: the changes of the selected turn (the latest by default) line
    * by line, to comment on. Sending the review sends one ordinary message
    * made of the comments; leaving keeps them for the turn (`review-view.ts`).
    */
-  private async openReview(executionId: string | null = null): Promise<void> {
+  private async openReview(shown: { readonly executionId: string | null; readonly endSeq: number | null } | null = null): Promise<void> {
     const session = this.session
     if (session?.diff === undefined) return this.unavailable("/review", "", DEMO_DIFFS)
     const delivery = () => (!this.transcript.activity.executing ? "sends it" : this.mode === "steer" ? "sends it into the running turn (steer)" : "queues it for after the running turn")
-    const came = await this.review.run({ ...reviewTarget(this.transcript.rows, this.conversation.selectedRow(), executionId), sessionId: session.id, diff: (params) => session.diff!(params), delivery, asking: () => this.asking() })
+    const came = await this.review.run({ ...reviewTarget(this.transcript.rows, this.conversation.selectedRow(), shown), sessionId: session.id, diff: (params) => session.diff!(params), delivery, asking: () => this.asking() })
     this.input.focus()
     // A question that came up meanwhile waits for Tab: a key meant for the review must not answer it.
     if (this.dock !== null) this.dock.state.focused = false
@@ -1800,9 +1814,9 @@ export class App {
   /** The server's per-file diffs of a turn, for its expanded ending row. */
   private fetchDiff(row: OutcomeRow): void {
     const session = this.session
-    if (session?.diff === undefined || row.executionId === null || row.serverDiff !== null) return
+    if (session?.diff === undefined || turnDiffParams(row) === null || row.serverDiff !== null) return
     row.serverDiff = "loading"
-    session.diff({ executionId: row.executionId }).then(
+    this.turnDiff(session, row).then(
       (result) => {
         row.serverDiff = result
         this.transcript.changed(row)

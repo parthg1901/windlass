@@ -361,7 +361,8 @@ describe("/review in the app", () => {
     const executionId = (ALL.find((item) => item.type === "execution.started") as Extract<(typeof ALL)[number], { type: "execution.started" }>).data.executionId
     await command("/review")
     expect(app.review.open).toBe(true)
-    expect(asked).toEqual([{ executionId }])
+    // The turn is named by its execution and by the event that ended it.
+    expect(asked).toEqual([{ executionId, endSeq: ALL.findLast((item) => item.type.startsWith("execution."))!.seq }])
     let frame = await mounted!.frame()
     expect(frame.split("\n").every((line) => Bun.stringWidth(line) <= 100)).toBe(true)
     expect(frame).toContain("Review of turn 1 · no comments yet · 3 files · +4 -1")
@@ -607,13 +608,25 @@ describe("the turn /review is about", () => {
   test("the selected ending row's turn, the turn a selected row belongs to, or the latest that ended", () => {
     const row = (kind: string, more: object = {}) => ({ kind, ...more }) as never
     const rows = [row("user"), row("tool"), row("outcome", { executionId: "exe_1", turn: 1 }), row("user"), row("tool"), row("outcome", { executionId: "exe_2", turn: 2 }), row("user"), row("tool")]
-    expect(reviewTarget(rows, null)).toEqual({ executionId: "exe_2", turn: 2, latest: true })
-    expect(reviewTarget(rows, rows[2]!)).toEqual({ executionId: "exe_1", turn: 1, latest: false })
-    expect(reviewTarget(rows, rows[1]!)).toEqual({ executionId: "exe_1", turn: 1, latest: false })
+    expect(reviewTarget(rows, null)).toEqual({ executionId: "exe_2", endSeq: null, turn: 2, latest: true })
+    expect(reviewTarget(rows, rows[2]!)).toEqual({ executionId: "exe_1", endSeq: null, turn: 1, latest: false })
+    expect(reviewTarget(rows, rows[1]!)).toEqual({ executionId: "exe_1", endSeq: null, turn: 1, latest: false })
     // A row of the turn still running: the latest that ended.
-    expect(reviewTarget(rows, rows[7]!)).toEqual({ executionId: "exe_2", turn: 2, latest: true })
-    expect(reviewTarget(rows, null, "exe_1")).toEqual({ executionId: "exe_1", turn: 1, latest: false })
-    expect(reviewTarget([], null)).toEqual({ executionId: null, turn: null, latest: true })
-    expect(reviewTarget([], null, "exe_9")).toEqual({ executionId: "exe_9", turn: null, latest: true })
+    expect(reviewTarget(rows, rows[7]!)).toEqual({ executionId: "exe_2", endSeq: null, turn: 2, latest: true })
+    expect(reviewTarget(rows, null, { executionId: "exe_1" })).toEqual({ executionId: "exe_1", endSeq: null, turn: 1, latest: false })
+    expect(reviewTarget([], null)).toEqual({ executionId: null, endSeq: null, turn: null, latest: true })
+    expect(reviewTarget([], null, { executionId: "exe_9" })).toEqual({ executionId: "exe_9", endSeq: null, turn: null, latest: true })
+  })
+
+  test("a turn that a queued message followed and that message's turn are two turns of one execution, told apart by the event that ended each", () => {
+    const row = (kind: string, more: object = {}) => ({ kind, ...more }) as never
+    // The first turn's ending has no execution of its own to name (the execution went on); the second ends it.
+    const rows = [row("user"), row("tool"), row("outcome", { executionId: null, turn: 1, seq: 12, continues: true }), row("user"), row("tool"), row("outcome", { executionId: "exe_1", turn: 2, seq: 19 })]
+    expect(reviewTarget(rows, null)).toEqual({ executionId: "exe_1", endSeq: 19, turn: 2, latest: true })
+    expect(reviewTarget(rows, rows[2]!)).toEqual({ executionId: null, endSeq: 12, turn: 1, latest: false })
+    expect(reviewTarget(rows, rows[0]!)).toEqual({ executionId: null, endSeq: 12, turn: 1, latest: false })
+    // The turn a diff is shown of, as the reader hands it over.
+    expect(reviewTarget(rows, null, { executionId: "exe_1", endSeq: 12 })).toEqual({ executionId: "exe_1", endSeq: 12, turn: 1, latest: false })
+    expect(reviewTarget(rows, null, { executionId: "exe_1", endSeq: 19 })).toEqual({ executionId: "exe_1", endSeq: 19, turn: 2, latest: true })
   })
 })

@@ -12,13 +12,15 @@ import { type KeyEvent, type OptimizedBuffer, Renderable, type RenderContext, Te
 import type { DiffResult } from "./backend.ts"
 import { type EditorPlace, Review, ReviewScreen, reviewMessage } from "./review.ts"
 import type { Theme } from "./theme.ts"
-import type { OutcomeRow, Row } from "./transcript.ts"
+import { type OutcomeRow, type Row, turnDiffParams } from "./transcript.ts"
 import { clearRect, drawLine } from "./views.ts"
 
 /** The turn a review is asked for. */
 export interface ReviewTarget {
   /** `null`: the latest turn, as the engine knows it. */
   readonly executionId: string | null
+  /** The event that ended the turn: what tells it from the queued message's turn after it in the same execution. */
+  readonly endSeq?: number | null
   /** The turn's number as its ending row shows it; `null` when the conversation does not say. */
   readonly turn: number | null
   readonly latest: boolean
@@ -26,7 +28,7 @@ export interface ReviewTarget {
 
 export interface ReviewRequest extends ReviewTarget {
   readonly sessionId: string
-  readonly diff: (params: { readonly executionId?: string }) => Promise<DiffResult>
+  readonly diff: (params: { readonly executionId?: string; readonly endSeq?: number }) => Promise<DiffResult>
   /** What Enter does with the message right now, for the hint (`sends it`, or how it reaches an agent at work). */
   readonly delivery: () => string
   /** Whether a question (a tool call's approval, one about the project's configuration) waits under the view right now. */
@@ -51,12 +53,15 @@ export interface ReviewOutcome {
  * a selected row belongs to; with nothing selected, or with `executionId`
  * given (the turn a diff is already shown of), that turn or the latest.
  */
-export function reviewTarget(rows: readonly Row[], selected: Row | null, executionId: string | null = null): ReviewTarget {
-  const ended = (row: Row): row is OutcomeRow => row.kind === "outcome" && row.executionId !== null
+export function reviewTarget(rows: readonly Row[], selected: Row | null, shown: { readonly executionId: string | null; readonly endSeq?: number | null } | null = null): ReviewTarget {
+  const ended = (row: Row): row is OutcomeRow => row.kind === "outcome" && turnDiffParams(row) !== null
   const latest = rows.findLast(ended)
   const at = selected === null ? -1 : rows.indexOf(selected)
-  const of = executionId !== null ? rows.find((row): row is OutcomeRow => ended(row) && row.executionId === executionId) : at === -1 ? latest : (rows.slice(at).find(ended) ?? latest)
-  return { executionId: of?.executionId ?? executionId, turn: of?.turn ?? null, latest: of === undefined || of === latest }
+  // The turn a diff is shown of is named by the event that ended it, or else by its execution (whose latest turn it then is).
+  const same = (row: OutcomeRow) => (shown?.endSeq != null ? turnDiffParams(row)?.endSeq === shown.endSeq : row.executionId === shown?.executionId)
+  const of = shown !== null && (shown.endSeq != null || shown.executionId !== null) ? rows.findLast((row): row is OutcomeRow => ended(row) && same(row)) : at === -1 ? latest : (rows.slice(at).find(ended) ?? latest)
+  const params = of === undefined ? null : turnDiffParams(of)
+  return { executionId: params?.executionId ?? shown?.executionId ?? null, endSeq: params?.endSeq ?? shown?.endSeq ?? null, turn: of?.turn ?? null, latest: of === undefined || of === latest }
 }
 
 export class ReviewView extends Renderable {
@@ -119,7 +124,7 @@ export class ReviewView extends Renderable {
     const what = request.turn === null ? "the latest turn" : `turn ${request.turn}`
     let result: DiffResult
     try {
-      result = await request.diff(request.executionId === null ? {} : { executionId: request.executionId })
+      result = await request.diff({ ...(request.executionId === null ? {} : { executionId: request.executionId }), ...(request.endSeq == null ? {} : { endSeq: request.endSeq }) })
     } catch (error) {
       return { say: { text: `/review failed: ${error instanceof Error ? error.message : String(error)}`, tone: "error" }, message: null }
     }
@@ -127,7 +132,8 @@ export class ReviewView extends Renderable {
     if (result.files.length === 0) return { say: { text: `nothing to review: ${what} changed no file`, tone: "dim" }, message: null }
     if (this.keptFor !== request.sessionId) this.kept.clear()
     this.keptFor = request.sessionId
-    const key = result.executionId ?? request.executionId ?? `${result.from}..${result.to}`
+    // Two turns of one execution (a turn and the queued message after it) keep their comments apart: by the event that ended each.
+    const key = request.endSeq != null ? `ended at ${request.endSeq}` : (result.executionId ?? request.executionId ?? `${result.from}..${result.to}`)
     const review = this.kept.get(key) ?? new Review({ turn: request.turn, latest: request.latest }, result.files)
     this.kept.set(key, review)
     const screen = new ReviewScreen(review)
