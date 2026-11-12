@@ -26,6 +26,8 @@ export interface GrepOptions {
 }
 
 const MAX_MATCHES = 250
+/** The result stays below this, whatever the number of matches and the context: it is cut after a whole match and its context. */
+const MAX_OUTPUT_BYTES = 20 * 1024
 const MAX_LINE_CHARS = 300
 const BINARY_SAMPLE = 8192
 
@@ -88,14 +90,19 @@ export function grepTool(options: GrepOptions = {}): Tool<GrepInput> {
       const collector = createCollector()
       const outcome = ripgrep === null ? await searchPure(search, collector.add, context.signal) : await searchRipgrep(ripgrep, search, collector.add, context.signal)
       if (!outcome.ok) return failure(outcome.error)
-      const lines = format(collector.records, search.context, (path) => shownPath(context, join(search.root, path)))
-      const display = { matches: collector.matches, files: collector.files, engine: ripgrep === null ? "pure" : "ripgrep" }
+      const units = format(collector.records, search.context, (path) => shownPath(context, join(search.root, path)))
+      const kept = within(units, MAX_OUTPUT_BYTES)
+      const lines = units.slice(0, kept).flat().join("\n")
+      const display = { matches: collector.matches, shown: kept, files: collector.files, engine: ripgrep === null ? "pure" : "ripgrep" }
       if (context.signal.aborted) return failure(`${lines === "" ? "" : `${lines}\n\n`}[Search interrupted; results are incomplete.]`, display)
       if (collector.matches === 0) return success(`No matches for ${JSON.stringify(input.pattern)} in ${placeName(shown)}.`, display)
+      const narrow = `Narrow the pattern, path or glob${search.context > 0 ? ", or ask for fewer context lines" : ""}.`
       const more =
-        collector.matches > MAX_MATCHES
-          ? `\n\n[Showing the first ${MAX_MATCHES} of ${collector.matches} matching lines. Narrow the pattern, path or glob.]`
-          : ""
+        kept < units.length
+          ? `\n\n[Showing the first ${kept} of ${collector.matches} matching lines; the other ${collector.matches - kept} are left out to keep the result under ${MAX_OUTPUT_BYTES / 1024} KB. ${narrow}]`
+          : collector.matches > MAX_MATCHES
+            ? `\n\n[Showing the first ${MAX_MATCHES} of ${collector.matches} matching lines. ${narrow}]`
+            : ""
       return success(`${lines}${more}`, display)
     },
   }
@@ -125,15 +132,43 @@ function createCollector() {
   }
 }
 
-function format(records: readonly Record[], context: number, show: (path: string) => string): string {
-  const out: string[] = []
+/**
+ * The output lines, one group per match: the match with the context after it, and the context before it with the
+ * `--` that separates it from the group before when it does not follow on from a match. Context with no match after
+ * it (before a match past the limit) is left out.
+ */
+function format(records: readonly Record[], context: number, show: (path: string) => string): string[][] {
+  const units: string[][] = []
+  let leading: string[] = []
+  let afterMatch = false
   let previous: Record | null = null
   for (const record of records) {
-    if (context > 0 && previous !== null && (previous.path !== record.path || previous.line + 1 !== record.line)) out.push("--")
-    out.push(`${show(record.path)}${record.match ? ":" : "-"}${record.line}${record.match ? ":" : "-"}${record.text}`)
+    if (previous !== null && (previous.path !== record.path || previous.line + 1 !== record.line)) {
+      afterMatch = false
+      leading = context > 0 ? ["--"] : []
+    }
+    const line = `${show(record.path)}${record.match ? ":" : "-"}${record.line}${record.match ? ":" : "-"}${record.text}`
+    if (record.match) {
+      units.push([...leading, line])
+      leading = []
+      afterMatch = true
+    } else if (afterMatch) units[units.length - 1]!.push(line)
+    else leading.push(line)
     previous = record
   }
-  return out.join("\n")
+  // The first group has nothing before it to be separated from.
+  if (units[0]?.[0] === "--") units[0].shift()
+  return units
+}
+
+/** How many of the first groups fit in `maxBytes` joined by newlines; always at least one. */
+function within(units: readonly string[][], maxBytes: number): number {
+  let bytes = 0
+  for (let index = 0; index < units.length; index += 1) {
+    bytes += units[index]!.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0)
+    if (bytes > maxBytes && index > 0) return index
+  }
+  return units.length
 }
 
 async function searchRipgrep(rg: string, search: Search, add: (record: Record) => void, signal: AbortSignal): Promise<Outcome> {

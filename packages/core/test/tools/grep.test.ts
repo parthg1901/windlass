@@ -72,6 +72,45 @@ describe("grep", () => {
         expect(wide).toBe(`wide.txt:1:hit ${"w".repeat(296)}... [line cut, 1004 characters long]`)
       })
 
+      test("bounds the result by size, cut after a whole match and its context", async () => {
+        const ws = workspace({ grep: { ripgrep: engine.ripgrep } })
+        // 250 matches, each with ten lines of context on either side, on lines of about 150 characters: before the
+        // bound the result held every one of them, over 49 KB that the runtime then capped in the middle of a line.
+        const filler = (line: number) => `line ${line} ${"x".repeat(140)}`
+        const lines = Array.from({ length: 250 * 30 }, (_, index) => (index % 30 === 15 ? `needle ${index + 1}` : filler(index + 1)))
+        await ws.write("big.txt", `${lines.join("\n")}\n`)
+        const outcome = await ws.call("grep", { pattern: "needle", context: 10 })
+        const output = outputOf(outcome)
+        const [body, note] = output.split("\n\n[")
+        expect(Buffer.byteLength(body!)).toBeLessThanOrEqual(20 * 1024)
+        const groups = body!.split("\n--\n")
+        // Every group is whole: ten lines before, the match, ten after.
+        for (const [index, group] of groups.entries()) {
+          const rows = group.split("\n")
+          expect(rows).toHaveLength(21)
+          expect(rows[10]).toBe(`big.txt:${index * 30 + 16}:needle ${index * 30 + 16}`)
+          expect(rows[20]).toBe(`big.txt-${index * 30 + 26}-${filler(index * 30 + 26)}`)
+        }
+        const shown = groups.length
+        expect(shown).toBeGreaterThan(1)
+        expect(note).toBe(
+          `Showing the first ${shown} of 250 matching lines; the other ${250 - shown} are left out to keep the result under 20 KB. Narrow the pattern, path or glob, or ask for fewer context lines.]`,
+        )
+        expect(outcome.settlement.truncation).toBeNull()
+        expect(outcome.settlement.display).toMatchObject({ matches: 250, shown })
+      })
+
+      test("without context the size bound also cuts between matches", async () => {
+        const ws = workspace({ grep: { ripgrep: engine.ripgrep } })
+        await ws.write("wide.txt", Array.from({ length: 200 }, (_, index) => `hit ${index + 1} ${"w".repeat(290)}`).join("\n"))
+        const output = outputOf(await ws.call("grep", { pattern: "hit" }))
+        const [body, note] = output.split("\n\n[")
+        const rows = body!.split("\n")
+        expect(Buffer.byteLength(body!)).toBeLessThanOrEqual(20 * 1024)
+        expect(rows.every((row, index) => row.startsWith(`wide.txt:${index + 1}:hit ${index + 1} `))).toBe(true)
+        expect(note).toBe(`Showing the first ${rows.length} of 200 matching lines; the other ${200 - rows.length} are left out to keep the result under 20 KB. Narrow the pattern, path or glob.]`)
+      })
+
       test("reports an invalid regular expression and a missing path", async () => {
         const ws = workspace({ grep: { ripgrep: engine.ripgrep } })
         await ws.write("a.txt", "x")
