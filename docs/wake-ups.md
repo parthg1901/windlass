@@ -32,6 +32,14 @@ lh "in a minute, remind me to look at the canary"
   ✓ Created wake-up wk_7a3c12139dd8: after 1m (at 2026-11-12T08:39:20Z). ⊡
 ```
 
+`lh` and `lh tui` list the session's wake-ups with `/wakeups` (pending first, each with its trigger, state, next
+time, firings and limits in the engine's words), `/wakeups cancel <id>` stops one, and `/wakeups secret <id>` shows
+a webhook's URL and secret (below). The name is the feature's: `/wake` (an alias) reads like an order to wake
+something up, which it is not.
+
+A message a wake-up delivers is shown as one, never as something you typed: `⏰ wake-up <id>: it fired (<trigger>) ·
+not typed by you`, then the message it was set up with (`a webhook request arrived` for a webhook).
+
 `wake_create` is decided like the shell command it may run: a check's command runs in the sandbox, without network
 unless the model asked for it and it was approved, and what was approved when it was created is the most it ever
 runs with. A timer or a webhook runs no command. `wake_list` shows the session's wake-ups and their limits;
@@ -101,12 +109,20 @@ about which wake-ups exist:
 
 (status `401`). A body over the limit gets `413`, too many requests `429` with `Retry-After`.
 
+### The secret
+
+The model is told `The secret that signs requests is shown to the user, not to you.` When the agent creates a
+webhook wake-up, `lh` and `lh tui` show you its URL and secret once, right under the call; `/wakeups secret <id>`
+shows them again. `lh` prints the secret only to a terminal: in a one-shot run whose output goes to a file or a pipe
+it says where to see it instead, and `--json` never carries it (the event stream is the engine's events, and the
+secret is in none of them). An editor asks for it with `_light-harness/wake_secret` ([acp.md](acp.md)). It is kept in
+the wake-up store, `~/.local/share/light-harness/wake/wake.db`.
+
 ### Not yet
 
-- **No client shows you the secret.** The model is told `The secret that signs requests is shown to the user, not to you.`,
-  but neither `lh`, `lh tui` nor `lh acp` shows it. It is kept only in the wake-up store, `~/.local/share/light-harness/wake/wake.db`.
 - **Nothing listens.** See "Where wake-ups fire today": no entry point starts the listener, so a request to the URL
   is refused by the operating system.
+- **Creating a wake-up yourself.** The engine can (`author: "user"`), but no command does it yet: ask the agent.
 
 ## Limits
 

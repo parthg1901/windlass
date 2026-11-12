@@ -105,9 +105,24 @@ A file with a mistake is not used, and you are told at the first step (the model
 ⚠ memory: A memory note is not valid and is not used: <file>: unknown key "colour"; known keys: id, kind, scope, status, created, confirmed, expires, author, session, message, call, seq, quote, untrusted, supersedes, user-confirmed, retracted, retracted-by, retract-reason
 ```
 
+## Commands
+
+In `lh` and `lh tui`, for a session that has memory:
+
+| Command | What it does |
+|---|---|
+| `/memory` | the notes in force (who wrote each, when, when it lapses), the ones not in force, the notes waiting for your confirmation, files with mistakes, and what is about to lapse |
+| `/memory confirm <id>`, `/memory reject <id>` | decide on a pending note: confirmed, later sessions are given it; rejected, none is |
+| `/memory renew <id>` | the note is still true: it is confirmed today, which restarts its lapse period |
+| `/remember <text>` | save a note as you, for this project; `/remember --me <text>` saves one about you, for every project. It is "written by the user" |
+| `/forget <id>` | retract a note: no later session is given it; the file is kept with `status: retracted` |
+
+When memory is off, `/memory` says so and how to turn it on; a session started while it was off has none, so it also
+says to start a new session. An editor does the same with `_light-harness/memory` and `_light-harness/memory_change`
+([acp.md](acp.md)).
+
 ## Not yet
 
-- **No commands for notes.** There is no command to list, confirm or reject notes in `lh` or `lh tui`; read and
-  edit the files. A pending note stays pending: nothing puts the question of confirming it to you yet.
+- **Pending notes are not put to you unasked.** `/memory` lists them; nothing asks at the prompt when one is saved.
 - **Every save asks** in the default mode, with a question that names no path ("writing files"), and is refused in
   one-shot runs.

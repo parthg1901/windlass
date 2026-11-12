@@ -76,7 +76,8 @@ that the repository chose. You see, at the first step:
 ⚠ mcp: This project's configuration names the MCP server "<name>" (<command and arguments>). It was not started: a server a project names runs only after you approve it.
 ```
 
-and when the model tries to use it, it is told:
+and, where someone can answer, you are asked whether to start it (below). When the model tries to use it before you
+have said yes, it is told:
 
 ```text
 The MCP server "<name>" is named by this project's configuration and was not started: it waits for the user's approval. Tell the user; do not try another way to reach it.
@@ -85,11 +86,34 @@ The MCP server "<name>" is named by this project's configuration and was not sta
 The approval is for exactly that definition of the server: if the project's file changes its command, it is asked
 about again.
 
-### Not yet
+### Approving it
 
-No client can give that approval today: neither `lh`, `lh tui` nor an editor through `lh acp` puts the question, so
-a project's server stays stopped. To use it, copy its definition into your own file
-(`~/.config/light-harness/config.json`), under a name the project's file does not use, after reading what it runs.
+Interactively, `lh` asks at the prompt right after that line, with the command (or address) it would start, the file
+that defines it, the engine's own explanation, and what each answer does:
+
+```text
+? Start the MCP server "tracker" that this project's configuration names?
+    tracker-mcp serve
+  y  start it for this project and remember that (30 days, this exact definition: an edited one is asked about again)
+  n  not now: it stays stopped and the agent is told it waits for you; /mcp approve tracker asks again
+[y] start it · [N] not now ›
+```
+
+`lh tui` puts the same question in the approval dock above the input (`a` starts it, `n` leaves it stopped), and an
+editor through `lh acp` can put it too (`_light-harness/mcp`, `_light-harness/mcp_approve`, [acp.md](acp.md)). A yes
+starts the server at once; its tools reach the model at its next step. A tool call's question always comes first: the
+server's question steps aside and is put again after it.
+
+In a one-shot run nobody can answer, so the server stays stopped and `lh` says once how to approve it: run `lh`
+interactively in that directory and answer the question (or type `/mcp approve <name>`). The approval is remembered,
+so later one-shot runs in the project start it. You can also copy the definition into your own file
+(`~/.config/light-harness/config.json`) after reading what it runs.
+
+## Seeing the servers: /mcp
+
+`/mcp` (in `lh` and `lh tui`) lists each server with its state (running with its tool count, starting, failed to
+start with why and when it is retried, waiting for your approval, disabled, or not started yet: servers start with
+the first message of a session), what it runs or where it is reached, and the file that defines it.
 
 ## What the model sees
 
@@ -124,7 +148,9 @@ text. An image in a result is attached for the model to see.
 
 ## Trust and taint
 
-- `mcp_call` runs outside the sandbox, so in `ask` and `auto` every call asks (above). In a one-shot run, with
+- `mcp_call` runs outside the sandbox, so in `ask` and `auto` every call asks (above). Under the question, `lh`
+  shows the arguments that would be sent (`arguments sent: {...}`, cut after 600 characters with how much more there
+  is), and `lh tui` shows them in the dock (`sends: {...}`); the call's row reads `mcp_call <server>/<tool>`. In a one-shot run, with
   nobody to ask, it is refused: `Not run: this call needs the user's approval for using <server>/<tool>, and this run has no one to approve it.`
   Use `--approval full` (or the interactive mode) to let calls run.
 - With `untrusted: true` (the default), the first result from the server *taints* the session:
@@ -142,10 +168,10 @@ text. An image in a result is attached for the model to see.
 
 ## What can go wrong
 
-- **A server that does not start.** You are not told in the terminal. The model learns it from `mcp_search`, whose
-  output ends with, for example, `Not available right now: tracker (the environment variable TRACKER_TOKEN named in its env is not set, retrying in 5 s)`
+- **A server that does not start.** You are told, once per reason, with why (the end of what it wrote to stderr)
+  and when it is tried again; `/mcp` shows its state. The model learns it from `mcp_search`, whose output ends with,
+  for example, `Not available right now: tracker (the environment variable TRACKER_TOKEN named in its env is not set, retrying in 5 s)`
   or `(the server process exited with code 1; stderr ends with: ...)`. `lh` keeps retrying with growing pauses.
-  To see it yourself, ask the agent to search for the tool, or run the server's command by hand.
 - **A slow server.** The first step of a turn waits up to 1.5 seconds for servers that have not answered yet; one
   that is ready later is added to the catalogue at a later step.
 - **A mistake in the file** fails the turn before anything is sent, naming the file and the key (an unknown key gets

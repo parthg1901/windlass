@@ -102,8 +102,10 @@ Other reasons it names: the front matter is not closed, a line that is not `key:
 `description`, a name with other characters, a file over 256 KiB. A skill whose name a nearer one already has is
 left out the same way: `⚠ skills: The skill at <path> is hidden by another skill of the same name: ...`.
 
-## Not yet
+## Listing them: /skills
 
-There is no command to list skills: `/skills` is a command in neither interface (the line interface sends it to the
-model as a message). To see which skills the model was given, read the `· instructions updated (skills)` line, or run a
-one-shot with `--json` and look at the `instruction.appended` event whose `source` is `skills`.
+`/skills` (in `lh` and `lh tui`) lists the skills of the session's directory as the model would be given them now:
+each with its description and the file it comes from (this project, `skills.paths`, or your own skills), then the
+ones hidden by a skill of the same name, then the ones that could not be loaded, each with its full path and the
+reason. A skill you fix is picked up at the next message. An editor gets the same list from `_light-harness/skills`
+([acp.md](acp.md)).

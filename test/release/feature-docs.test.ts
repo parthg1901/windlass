@@ -35,6 +35,7 @@ import { DEFAULT_WEBHOOK_PORT, GITHUB_SIGNATURE_HEADER, SIGNATURE_HEADER, TIMEST
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { forkUsage, parseSubcommand, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
+import { BUILTIN_COMMANDS } from "../../packages/cli/src/slash.ts"
 
 const ROOT = join(import.meta.dir, "..", "..")
 const PAGES = ["docs/mcp.md", "docs/skills.md", "docs/wake-ups.md", "docs/subagents.md", "docs/forks.md", "docs/memory.md"] as const
@@ -110,14 +111,19 @@ describe("commands", () => {
     for (const page of PAGES) {
       // A server's own arguments in a json block are not options of the program.
       const prose = text[page].replace(/```sh\n[\s\S]*?```/g, (block) => (isWebhookBlock(block) ? "" : block)).replace(/```json\n[\s\S]*?```/g, "")
+        // A slash command's own options (`/remember --me <text>`) are not the program's.
+        .replace(/`\/[a-z][^`\n]*`/g, "")
       for (const [, flag] of prose.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)) expect(known, `${page}: ${flag}`).toContain(flag!)
     }
   })
 
   test("every /command the pages name is one an interface knows, or is said not to be one", () => {
     const tui = new Set(COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]))
-    const line = new Set([...readFileSync(join(ROOT, "packages/cli/src/main.ts"), "utf8").matchAll(/["'`]\/([a-z][a-z-]*)/g)].map((match) => match[1]!))
-    const notCommands = new Set(["skills"])
+    const line = new Set([
+      ...[...readFileSync(join(ROOT, "packages/cli/src/main.ts"), "utf8").matchAll(/["'`]\/([a-z][a-z-]*)/g)].map((match) => match[1]!),
+      ...BUILTIN_COMMANDS.commands().flatMap((command) => [command.name, ...(command.aliases ?? [])]),
+    ])
+    const notCommands = new Set<string>()
     for (const page of PAGES)
       for (const [, name] of text[page].matchAll(/`\/([a-z][a-z-]*)(?: [a-z]+)?`/g)) {
         if (notCommands.has(name!)) {
@@ -245,11 +251,19 @@ describe("wake-ups against the code", () => {
     expect(readFileSync(join(ROOT, "packages/cli/src/main.ts"), "utf8")).toContain('[WAKE_ENV]: "off"')
   })
 
-  test("no client shows a webhook's secret yet", () => {
-    expect(page).toContain("**No client shows you the secret.**")
-    for (const dir of ["packages/acp/src", "packages/cli/src", "packages/tui/src"])
-      for (const file of sourceFiles().filter((path) => path.startsWith(join(ROOT, dir))))
-        expect(/\.secret\(|whsec_/.test(readFileSync(file, "utf8")), `${file} handles a webhook secret: update docs/wake-ups.md`).toBe(false)
+  test("the secret is shown by the clients and never sent as an event (docs/wake-ups.md, The secret)", () => {
+    expect(page).toContain("`/wakeups secret <id>`")
+    expect(page).toContain("`--json` never carries it")
+    // Only the answer to its own request carries it: no event or notification of the server's names a secret.
+    const server = readFileSync(join(ROOT, "packages/acp/src/server.ts"), "utf8")
+    expect(server).not.toMatch(/sendExt\([^)]*secret/i)
+    expect(readFileSync(join(ROOT, "packages/acp/src/features.ts"), "utf8")).toContain("store.secret(id)")
+  })
+
+  test("no command creates a wake-up as the user yet (docs/wake-ups.md, Not yet)", () => {
+    expect(page).toContain("**Creating a wake-up yourself.**")
+    for (const file of sourceFiles().filter((path) => ["packages/acp/src", "packages/cli/src", "packages/tui/src"].some((dir) => path.startsWith(join(ROOT, dir)))))
+      expect(/store\.create\(/.test(readFileSync(file, "utf8")), `${file} creates wake-ups: update docs/wake-ups.md`).toBe(false)
   })
 })
 
@@ -429,14 +443,18 @@ describe("quoted program messages", () => {
 describe("what the pages say is not there yet", () => {
   const clients = () => sourceFiles().filter((file) => ["packages/acp/src", "packages/cli/src", "packages/tui/src"].some((dir) => file.startsWith(join(ROOT, dir))))
 
-  test("no client approves a project's MCP server (docs/mcp.md, Not yet)", () => {
-    expect(text["docs/mcp.md"]).toContain("No client can give that approval today")
-    for (const file of clients()) expect(readFileSync(file, "utf8"), `${file} approves MCP servers now: update docs/mcp.md`).not.toContain("approveMcpServer")
+  test("the commands the pages name are in both interfaces (docs/mcp.md, skills.md, wake-ups.md, memory.md)", () => {
+    const tui = COMMANDS.map((command) => command.name)
+    const line = BUILTIN_COMMANDS.commands().map((command) => command.name)
+    for (const name of ["mcp", "skills", "wakeups", "memory", "remember", "forget"]) {
+      expect(tui, `/${name}`).toContain(name)
+      expect(line, `/${name}`).toContain(name)
+    }
+    expect(clients().some((file) => readFileSync(file, "utf8").includes("approveMcpServer"))).toBe(true)
   })
 
-  test("no client has commands for memory notes or skills (docs/memory.md, docs/skills.md)", () => {
-    const tui = COMMANDS.map((command) => command.name)
-    for (const name of ["memory", "remember", "notes", "skills"]) expect(tui, `/${name}`).not.toContain(name)
-    for (const file of clients()) expect(readFileSync(file, "utf8"), `${file} reads memory now: update docs/memory.md`).not.toMatch(/\.memory\(\)|confirmationRequests/)
+  test("nothing puts a pending memory note to the user unasked yet (docs/memory.md, Not yet)", () => {
+    expect(text["docs/memory.md"]).toContain("**Pending notes are not put to you unasked.**")
+    for (const file of clients()) expect(readFileSync(file, "utf8"), `${file} asks about pending notes now: update docs/memory.md`).not.toMatch(/renderConfirmationRequests/)
   })
 })

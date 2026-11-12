@@ -51,7 +51,7 @@ every command the agent started is stopped, and the session resumes later where 
 | `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["light-harness"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_light-harness/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["light-harness"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), and `archived: true` opens an archived session too. |
-| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort, archived? }`. With `_meta["light-harness"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first message (below). |
+| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["light-harness"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first message (below). |
 | `session/prompt` | Text, `resource_link` (named as `[file: /path]` or `[link: uri]` so the model can open it) and embedded text `resource` (the text in a fenced block under the same header). The response is the stop reason of the turn, with how it ended under `_meta["light-harness"]` (below). `_meta["light-harness/maxSteps"]` sets the step limit of the turn the prompt starts. |
 | A prompt while the agent works | Steers it: the message reaches the model at the next step boundary (after the running tool calls), in the same turn. Every prompt the turn took in is answered when it ends, with the same stop reason. |
 | `session/cancel` | Prompts not yet delivered are withdrawn and answered `cancelled` at once; the running turn is interrupted (commands are stopped) and its prompt is answered `cancelled` after its last update. A prompt sent right after a cancel starts the next turn. |
@@ -204,6 +204,10 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | A subagent's question, labelled with its task | `session/request_permission` with `_meta["light-harness"].approval.subagent`; the CLI answers for subagents only where it is attended |
 | A subagent's tool calls, one indented line each | `child.event` in the events |
 | `--models` | `_light-harness/models` |
+| `/mcp`, the question about a project's server, a server that failed to start | `_light-harness/mcp`, `_light-harness/mcp_approve`, `_light-harness/mcp_changed` |
+| `/skills` | `_light-harness/skills` |
+| `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_light-harness/wakeups`, `_light-harness/wake_cancel`, `_light-harness/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
+| `/memory`, `/remember`, `/forget` | `_light-harness/memory`, `_light-harness/memory_change` |
 | `/approval [ask\|auto\|full]` | `session/set_config_option` `approval`, then `_light-harness/approval` for the mode in force |
 | `/diff` | `_light-harness/diff` for the latest turn |
 | The sandbox marker on a command (`⊡`, `+network`, `+write <dir>`, "no sandbox") | `tool.started`'s `run.sandbox` in the events |
@@ -238,8 +242,9 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
 - A connection serves any number of sessions: `newSession`, `resolve`, `openSession` (load or resume),
   `listSessions`, `listModels`, `storedEvents`, `unarchive`. Listings never stop a server in use; `stop()` does.
 - A `ClientSession` has `events` (typed harness events with `replay`) or `items` (the events and the session's
-  notifications: turn endings, state, usage, taint, notices, in arrival order), `send` (steer or queue), `cancel`,
-  `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `close`, and the
+  notifications: turn endings, state, usage, taint, notices, MCP changes, in arrival order), `send` (steer or queue), `cancel`,
+  `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `mcp`, `approveMcp`,
+  `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `close`, and the
   features a server may lack behind `offers(method)` (`rename`, `compact`).
 - `fork(params)` (`_light-harness/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
   (`_light-harness/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
@@ -489,6 +494,64 @@ load or resume.
   message?: string                           // on idle after a failure: why
 }
 ```
+
+**The session's features.** What the engine runs for a session that a client shows the user: its MCP servers, its
+skills, its wake-ups, and its memory. Every request takes `{ sessionId }` of a session open on this connection; what
+they say is in the engine's own words where it has them.
+
+**`_light-harness/mcp`** (request) → `{ sessionId, available, servers }`, and **`_light-harness/mcp_changed`**
+(notification, the same object) whenever what a client shows changed: a server started, failed, waits for the user's
+approval, or was approved (the server looks every half second; a retry's countdown is not a change). `available:
+false`: the engine offers no MCP servers.
+
+```ts
+servers: {
+  name: string,
+  state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started",
+  transport: "stdio" | "http" | null,
+  target: string | null,          // the command with its arguments, or the address
+  tools: number | null,           // once running
+  hiddenTools: number,            // hidden by the allow/deny list
+  error: string | null,           // failed: why, with the end of its stderr
+  retryInMs: number | null,
+  origin: "user" | "project" | null, file: string | null,   // the file that defines it
+  question: { fingerprint, subject, details: string[] } | null   // awaiting_approval: the engine's question
+}[]
+```
+
+`not_started`: a file names it and no turn has read the configuration yet (servers start with a turn).
+
+**`_light-harness/mcp_approve`** (request) `{ sessionId, name, fingerprint }` → `{ approved, servers }`: the user starts
+a server the project's configuration names, exactly the definition `fingerprint` identifies (from `question`); it is
+remembered for the project for 30 days and starts at once. `approved: false` when no such server waits (the definition
+changed: ask again).
+
+**`_light-harness/skills`** (request) → `{ sessionId, available, skills: { name, description, path, scope, root }[],
+problems: { path, severity: "skipped" | "shadowed" | "warning", reason }[], roots: { dir, scope }[] }`: the skills of
+the session's directory as the model would be given them now. `scope` is `project`, `config` (`skills.paths`) or
+`user`; paths are absolute and never cut.
+
+**`_light-harness/wakeups`** (request) → `{ sessionId, available, running, wakeups }`: the session's wake-ups,
+pending and ended. Each is `{ id, trigger, description, state, nextAt, fired, maxFirings, author, message, url, lines
+}`: `lines` are the engine's listing lines (state, limits, who created it, the message), `url` a webhook's address.
+`running`: this process fires wake-ups.
+
+**`_light-harness/wake_cancel`** (request) `{ sessionId, id }` → `{ cancelled, message }`: the user cancels one.
+
+**`_light-harness/wake_secret`** (request) `{ sessionId, id }` → `{ id, url, secret, message }`: a webhook wake-up's
+address and the secret that signs its requests, for the user. It is in no event, notification or log: only in this
+answer. `secret: null` with `message` for another trigger or an unknown wake-up.
+
+**`_light-harness/memory`** (request) → `{ sessionId, enabled, off, notes, pending, problems, review, paths }`. With
+memory off (`enabled: false`), `off` says why and how to turn it on. Otherwise `notes` are the notes in force and the
+lapsed or superseded ones (`{ id, kind, scope, text, state, author, quote, created, confirmed, expires }`), `pending`
+the ones waiting for the user's confirmation (with why, and `decisions`), `problems` the note files that are not
+valid, `review` what to look at (`reviewReport`), `paths` the two directories of notes.
+
+**`_light-harness/memory_change`** (request) `{ sessionId, action, text?, scope?, kind?, id?, reason? }` → `{ ok, id,
+message }`: the user's own change. `remember` saves `text` as a note written by the user (`scope` `project` by
+default, or `user`); `retract`, `confirm`, `reject` and `renew` act on the note `id`. `message` says what happened,
+or why nothing did.
 
 ## Trying it without an editor
 
