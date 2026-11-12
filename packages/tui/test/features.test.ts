@@ -228,6 +228,28 @@ describe("background commands", () => {
     expect(after).not.toMatch(/bg +◌ bg_1/)
   })
 
+  test("the line about commands still running is said once for the same commands, however many turns end meanwhile", async () => {
+    const { session } = await open(140, 40)
+    const turn = (id: string) => [event("execution.started", { executionId: id } as never), event("execution.succeeded", { executionId: id, verification: { status: "not_configured" } } as never)]
+    session.emit(
+      event("execution.started", { executionId: "exe_1" } as never),
+      event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 500", logPath: "/tmp/x.log" } } as never),
+      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } } as never),
+      ...turn("exe_2"),
+      ...turn("exe_3"),
+    )
+    await mounted!.settle()
+    expect(flat(await mounted!.frame()).match(/background command still running/g)).toHaveLength(1)
+    // Another command joins it: the line is news again, and names both.
+    session.emit(
+      event("execution.started", { executionId: "exe_4" } as never),
+      event("spawn.started", { spawnId: "bg_2", messageId: m("m2"), callId: c("c2"), background: true, work: { kind: "command", command: "sleep 600", logPath: "/tmp/y.log" } } as never),
+      event("execution.succeeded", { executionId: "exe_4", verification: { status: "not_configured" } } as never),
+    )
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).toContain("2 background commands still running (bg_1, bg_2)")
+  })
+
   test("the message its end sends to the model is one line saying where it goes, not the message", async () => {
     const { session } = await open(140, 40)
     const told = "Background command bg_1 exited with code 0 after 5.0 s.\nCommand: sleep 5; echo built\nOutput:\nbuilt\nFull output: /tmp/.spill/shell-bg.log"

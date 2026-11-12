@@ -95,6 +95,8 @@ export class App {
   private mode: Delivery = "steer"
   private panelChoice: "auto" | "shown" | "hidden" = "auto"
   private lastInterrupt = 0
+  /** The background commands the "still running" line was last said for, so a turn that ends with the same ones does not say it again. */
+  private backgroundSaid = ""
   private leaving: Promise<number> | null = null
   private finish: ((code: number) => void) | null = null
   readonly done: Promise<number>
@@ -309,7 +311,12 @@ export class App {
           if (!item.replay) this.featureEvent(session, item.event)
           // Background work outlives the turn: said where the turn ends.
           const ended = item.event.type === "execution.succeeded" || item.event.type === "execution.failed" || item.event.type === "execution.interrupted"
-          if (ended && !item.replay && this.transcript.background.size > 0) {
+          // Said once for the commands it names: the status line and the panel keep showing them, so the same line
+          // under every later turn is noise.
+          const running = [...this.transcript.background.keys()].join(", ")
+          if (running === "") this.backgroundSaid = ""
+          if (ended && !item.replay && running !== "" && running !== this.backgroundSaid) {
+            this.backgroundSaid = running
             const ids = [...this.transcript.background.keys()]
             this.transcript.note([span(`◌ ${plural(ids.length, "background command")} still running (${ids.join(", ")}): the agent is told when ${ids.length === 1 ? "it ends" : "each ends"}; /quit stops ${ids.length === 1 ? "it" : "them"}`, "dim")], "dim", "·")
           }
