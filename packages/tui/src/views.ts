@@ -425,6 +425,10 @@ export class Dialog extends Renderable {
     if (detail.length > 0) row += 1
     if (spec.filterable) drawLine(buffer, this.theme, x + 2, y + row++, inner, [span("filter: ", "dim"), span(this.filter), span("▏", "dim")])
     if (items.length === 0 && (spec.filterable || detail.length === 0)) drawLine(buffer, this.theme, x + 2, y + row, inner, [span(spec.filterable && this.filter !== "" ? "nothing matches" : "nothing to choose", "dim")])
+    // What is said about each item starts in one column, after the longest name (of all the items, so the column
+    // stays put while a filter narrows them); a name that would take more than half the row keeps its own.
+    const headOf = (item: DialogItem) => `${item.key === undefined ? "" : `[${item.key}] `}${item.label}${item.current === true ? " (current)" : ""}`
+    const column = Math.max(0, ...spec.items.filter((item) => item.detail !== undefined).map((item) => textWidth(headOf(item))).filter((w) => w <= Math.floor(inner / 2)))
     for (let index = first; index < first + visible; index += 1) {
       const item = items[index]!
       const chosen = index === this.index
@@ -434,7 +438,7 @@ export class Dialog extends Renderable {
         span(keyLabel, "dim"),
         span(item.label, chosen ? "selected" : undefined, { bold: chosen }),
         span(item.current === true ? " (current)" : "", "dim"),
-        span(item.detail === undefined ? "" : `  ${item.detail}`, "dim"),
+        span(item.detail === undefined ? "" : `${" ".repeat(Math.max(0, column - textWidth(headOf(item))))}  ${item.detail}`, "dim"),
       ]
       drawLine(buffer, this.theme, x + 2, y + row++, inner, line)
     }

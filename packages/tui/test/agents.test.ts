@@ -42,6 +42,12 @@ describe("agents", () => {
     expect(picker).toContain("reviewer")
     expect(picker).toContain("read only · Reviews a change without editing anything.")
     expect(picker).toContain("/work/.claude/agents/broken.md: not loaded: its front matter has no `description`")
+    // What is said about each agent starts in one column, whatever the length of its name.
+    const rows = (await mounted!.frame()).split("\n")
+    const column = (text: string) => rows.find((row) => row.includes(text))!.indexOf(text)
+    expect(column("restricted · Writes documentation only.")).toBe(column("the session's own instructions"))
+    expect(column("read only · Reviews a change")).toBe(column("the session's own instructions"))
+    expect(rows.find((row) => row.includes("read only · Reviews a change"))).toMatch(/reviewer {2,}read only/)
     // Down to the first agent, Enter: the switch is asked of the server; what happened comes back as its event.
     mounted!.setup.mockInput.pressArrow("down")
     mounted!.setup.mockInput.pressEnter()
