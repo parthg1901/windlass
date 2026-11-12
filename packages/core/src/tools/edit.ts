@@ -1,4 +1,5 @@
 import type { Tool } from "../tool/tool.ts"
+import { hasPlaceholder, locate, redactedView, restore } from "./redacted.ts"
 import { shownPath, errorCode, failure, toolPath, success, statPath } from "./common.ts"
 
 export interface EditInput {
@@ -44,7 +45,12 @@ export function editTool(): Tool<EditInput> {
       const oldText = crlf ? toCrlf(input.old_string) : input.old_string
       const newText = crlf ? toCrlf(input.new_string) : input.new_string
       const occurrences = findAll(before, oldText)
-      if (occurrences.length === 0) return failure(`old_string was not found in ${shown}.${nearMatch(before, input.old_string)}`)
+      if (occurrences.length === 0) {
+        // The model may have copied a redaction placeholder out of what it was shown: then the file is compared as shown.
+        const redacted = context.redact === undefined || !hasPlaceholder(input.old_string) ? null : await editAsShown(path, shown, before, { ...input, old_string: oldText, new_string: newText }, context.redact)
+        if (redacted !== null) return redacted
+        return failure(`old_string was not found in ${shown}.${nearMatch(before, input.old_string)}`)
+      }
       const starts = lineStarts(before)
       if (occurrences.length > 1 && input.replace_all !== true)
         return failure(
@@ -62,6 +68,60 @@ export function editTool(): Tool<EditInput> {
       })
     },
   }
+}
+
+/**
+ * The edit of a file the model was shown redacted, when `old_string` holds a
+ * placeholder: the match is found in the file as shown and applied to the
+ * real text, and a placeholder in `new_string` is written as the secret it
+ * stood for (see `redacted.ts`). `null` when nothing in the file is
+ * redacted, which leaves the ordinary "not found".
+ */
+async function editAsShown(path: string, shown: string, before: string, input: EditInput, redact: NonNullable<Parameters<Tool<EditInput>["execute"]>[1]["redact"]>) {
+  const view = redactedView(before, redact)
+  if (!view.redacted) return null
+  const spans = locate(view, input.old_string)
+  if (spans === "cut")
+    return failure(`old_string begins or ends inside a redacted secret in ${shown}. A placeholder such as [REDACTED:env] stands for the whole secret: include it whole, or leave it out of old_string.`)
+  if (spans.length === 0)
+    return failure(
+      `old_string was not found in ${shown}. It contains a redaction placeholder, so the file was compared as you were shown it (secrets replaced by placeholders), and it is not there either. Read the file again and copy the text exactly.`,
+    )
+  const starts = lineStarts(before)
+  if (spans.length > 1 && input.replace_all !== true)
+    return failure(
+      `old_string occurs ${spans.length} times in ${shown} as you were shown it (on ${linesLabel(spans.map((span) => lineOf(starts, span.start) + 1))}). Include more surrounding lines to make it unique, or set replace_all to true to replace every occurrence.`,
+    )
+  const replacements = spans.map((span) => restore(input.new_string, span.secrets))
+  const unknown = replacements.find((replacement) => "unknown" in replacement)
+  if (unknown !== undefined && "unknown" in unknown)
+    return failure(
+      `new_string contains ${unknown.unknown}, which stands for nothing: a placeholder in new_string is written as the secret the same placeholder stands for in old_string, and old_string has no such placeholder left. To keep a secret, leave its placeholder where it was; you cannot write a secret you were not shown.`,
+    )
+  const parts: string[] = []
+  let from = 0
+  let restored = 0
+  let removed = 0
+  spans.forEach((span, index) => {
+    const replacement = replacements[index] as { text: string; restored: number }
+    parts.push(before.slice(from, span.start), replacement.text)
+    from = span.end
+    restored += replacement.restored
+    removed += span.secrets.length - replacement.restored
+  })
+  parts.push(before.slice(from))
+  await Bun.write(path, parts.join(""))
+  const count = spans.length === 1 ? "1 occurrence" : `${spans.length} occurrences`
+  const kept = restored === 0 ? "" : ` ${restored === 1 ? "The redacted secret in it was kept as it is in the file." : `The ${restored} redacted secrets in it were kept as they are in the file.`}`
+  const gone = removed === 0 ? "" : ` ${removed === 1 ? "One redacted secret was removed with the text it was in." : `${removed} redacted secrets were removed with the text they were in.`}`
+  // The diff a client shows is made of the real text; the harness redacts it like any other tool data before it is stored.
+  const first = spans[0]!
+  const single = spans.length === 1 ? unifiedDiff(shown, before, [first.start], first.end - first.start, (replacements[0] as { text: string }).text) : null
+  return success(`Edited ${shown}: replaced ${count} (${linesLabel(spans.map((span) => lineOf(starts, span.start) + 1))}), matching the file as you were shown it.${kept}${gone}`, {
+    path: shown,
+    replacements: spans.length,
+    diff: single,
+  })
 }
 
 function findAll(text: string, search: string): number[] {
