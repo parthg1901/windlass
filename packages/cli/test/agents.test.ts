@@ -61,7 +61,7 @@ describe("as a user types them", () => {
     const provider = new FakeProvider([[script.toolCall("c1", "write", { path: "note.txt", content: "x" })], [script.text("I may not write as the reviewer.")]])
     const run = await interactive(["--cwd", cwd, "--agent", "reviewer"], engineFor(provider, cwd), async (type, waitFor) => {
       // Which session this is says which agent it runs as, and the record is drawn with what the agent may do.
-      await waitFor(/new session ses_\w+ · agent reviewer · \/help lists the commands/)
+      await waitFor(/new session ses_\w+ · model [\w.-]+ · agent reviewer · \/help lists the commands/)
       await waitFor("⇄ working as the agent reviewer (read only)")
       type("/agent\r")
       await waitFor("Agents (this session runs as reviewer):")

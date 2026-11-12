@@ -155,6 +155,8 @@ export class PrettyRenderer implements Sink {
   /** How the previous process left the current execution, for the resume line. */
   private cutOff: "crash" | "shutdown" | null = null
   private settings: SessionSettings | null = null
+  /** The settings the stored history set, each with its event number (`primeTurns`): what a resumed session ran on. */
+  private settingsBefore: { readonly seq: number; readonly settings: SessionSettings }[] = []
   /** The instruction files of the latest baseline, so an unchanged list is not shown again. */
   private instructionFiles = ""
   /** The instruction updates shown so far, by source: the version (its fingerprint; `null`: removed) last said. */
@@ -214,10 +216,18 @@ export class PrettyRenderer implements Sink {
     this.drawStatus()
   }
 
-  /** The session's stored history, shown nowhere: so that the turns `/undo` names are counted from the first one. */
+  /**
+   * The session's stored history, shown nowhere: so that the turns `/undo` names are counted from the first one, and
+   * a change of model or effort that arrives says what it changed from.
+   */
   primeTurns(events: readonly TurnEvent[]): void {
     this.turns = new TurnTracker()
-    for (const item of events) this.turns.add(item)
+    this.settingsBefore = []
+    for (const item of events) {
+      this.turns.add(item)
+      if (item.type === "session.created") this.settingsBefore.push({ seq: item.seq, settings: (item.data as EventData<"session.created">).settings })
+      else if (item.type === "settings.changed") this.settingsBefore.push({ seq: item.seq, settings: item.data as SessionSettings })
+    }
     this.lastSeq = Math.max(this.lastSeq, events.at(-1)?.seq ?? 0)
   }
 
@@ -601,7 +611,7 @@ export class PrettyRenderer implements Sink {
         return
       }
       case "settings.changed":
-        return this.settingsChanged(event.data)
+        return this.settingsChanged(event.data, event.seq)
       case "baseline.set": {
         const files = event.data.sources.filter((entry) => entry.source.startsWith("agents:")).map((entry) => sourceLabel(entry.source))
         const list = files.join(", ")
@@ -1024,8 +1034,8 @@ export class PrettyRenderer implements Sink {
     }
   }
 
-  private settingsChanged(next: SessionSettings): void {
-    const previous = this.settings
+  private settingsChanged(next: SessionSettings, seq: number): void {
+    const previous = this.settings ?? this.settingsBefore.findLast((entry) => entry.seq < seq)?.settings ?? null
     this.settings = next
     const changes: string[] = []
     if (previous === null || previous.model !== next.model) changes.push(previous === null ? `model ${next.model}` : `model ${previous.model} → ${next.model}`)

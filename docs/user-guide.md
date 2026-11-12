@@ -63,8 +63,10 @@ windlass --session ses_9acf "and run it"
 - `-c` (`--continue`) resumes the most recent session in this directory; `--session <id>` resumes one by its ID, or
   by the start of one if it is unique. Both work with a prompt (one-shot) and without one (interactive).
 - `--cwd <dir>` works in another directory without changing to it.
-- The interactive mode starts by naming its session: `new session ses_…`, or for one it resumed
-  `resumed session ses_… "<title>" · 3 turns (1 undone)`. Leaving it prints `session ses_… · resume with: windlass --session
+- The interactive mode starts by naming its session and the model it runs on: `new session ses_… · model <name>`, or
+  for one it resumed `resumed session ses_… "<title>" · 3 turns (1 undone) · model <name>` (with `· effort <level>`
+  when one is set). A session resumed with another `--model` or `--effort` says the change under that line
+  (`⇄ model <old> → <new> · from the next step`). Leaving it prints `session ses_… · resume with: windlass --session
   ses_…`, as the full-screen interface does. A one-shot run prints neither.
 - `windlass fork` starts a new session with another's conversation, to try another way without changing the original:
   after its latest step, or after a turn with `--turn <n>` (1 is the session's first prompt; the full-screen interface
@@ -109,7 +111,7 @@ windlass --agent reviewer "review the last commit"
 - `/agent` at the prompt lists the agents defined here, marks the one in force, and says which definitions could not
   be used and why. `/agent <name>` switches (from the next step, also in the middle of a turn); `/agent none`
   switches it off. In the full-screen interface `/agent` is a picker.
-- The session line names the agent (`new session ses_… · agent reviewer`), the full-screen panel has an `agent`
+- The session line names the agent (`new session ses_… · model <name> · agent reviewer`), the full-screen panel has an `agent`
   field, and a switch is a line in the conversation (`⇄ agent reviewer → docs (restricted)`), also in a session
   opened again.
 - A call the agent may not make is not run, and its row says who refused it, with the rule under it:

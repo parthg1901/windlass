@@ -338,6 +338,9 @@ export interface SessionDescription {
   readonly events: readonly TurnEvent[]
   /** The agent the session runs as; `null` (or absent): none. */
   readonly agent?: string | null
+  /** The model the session's next step runs on, and its reasoning effort (`null`: the model's default); absent: the engine does not say. */
+  readonly model?: string
+  readonly effort?: string | null
   /** The model's task list as it stands; `null` (or absent): it has none. */
   readonly tasks?: readonly TaskItem[] | null
 }

@@ -281,9 +281,11 @@ export async function run(io: Io): Promise<number> {
   ]
   const resumed = options.session !== null || options.continue
   const flow = async (): Promise<number> => {
-    if (autoplay) return playDemo(session as FakeSession, (text) => turn({ text }) as Promise<TurnOutcome | "closed">, options.demoSpeed)
     // Which session this is, before anything else: a new one, or the one resumed with its title and its turns.
-    if (terminal !== null && demo === null) await sayOpened(sink as PrettyRenderer, session, resumed)
+    if (!autoplay && terminal !== null && demo === null) await sayOpened(sink as PrettyRenderer, session, resumed)
+    // Its events are drawn from here on: what the open itself changed (the model) comes under the line that names it.
+    turns.start()
+    if (autoplay) return playDemo(session as FakeSession, (text) => turn({ text }) as Promise<TurnOutcome | "closed">, options.demoSpeed)
     if (terminal === null) {
       // A prompt that is `/name args` for a command file is sent as that command; a `/word` that is no command is
       // not sent at all, as at the interactive prompt; anything else goes as it was typed (`//word`: the text `/word`).
@@ -306,6 +308,8 @@ export async function run(io: Io): Promise<number> {
   } finally {
     // From here a Ctrl-C or SIGTERM leaves at once instead of waiting for the engine.
     control.leaving = true
+    // A run that left before its session was named still reads its events to their end.
+    turns.start()
     // Leaving stops background work: said before it happens, with what becomes of it.
     if (terminal !== null && sink instanceof PrettyRenderer) {
       const running = sink.runningBackground()
@@ -588,18 +592,19 @@ async function interactiveLoop(context: Interactive): Promise<number> {
   return 0
 }
 
-/** The line the interactive mode starts with: which session, and for a resumed one its title and its turns. */
+/** The line the interactive mode starts with: which session, the model it runs on, and for a resumed one its title and its turns. */
 async function sayOpened(renderer: PrettyRenderer, session: Session, resumed: boolean): Promise<void> {
   const described = await session.describe?.().catch(() => null)
   // The events the stream will bring are the ones after these: the renderer counts turns from the first.
   if (described != null) renderer.primeTurns(described.events)
   const hint = " · /help lists the commands"
-  // Which agent it runs as is part of which session this is.
+  // Which model it runs on, and which agent it runs as, are part of which session this is.
+  const model = described?.model === undefined ? "" : ` · model ${described.model}${described.effort == null ? "" : ` · effort ${described.effort}`}`
   const agent = described?.agent == null ? "" : ` · agent ${described.agent}`
-  if (!resumed || described == null) return renderer.notice(`${resumed ? "resumed" : "new"} session ${session.id}${agent}${hint}`)
+  if (!resumed || described == null) return renderer.notice(`${resumed ? "resumed" : "new"} session ${session.id}${model}${agent}${hint}`)
   const title = described.title === null ? "" : ` "${truncate(flatten(described.title), 50)}"`
   const turns = `${described.turns === 1 ? "1 turn" : `${described.turns} turns`}${described.undone > 0 ? ` (${described.undone} undone)` : ""}`
-  renderer.notice(`resumed session ${session.id}${title} · ${turns}${agent}${hint}`)
+  renderer.notice(`resumed session ${session.id}${title} · ${turns}${model}${agent}${hint}`)
   // Where the conversation stands, so the user knows what they are coming back to.
   renderer.printLines(recapLines(described.events))
   // The model's task list as it stands: what it was in the middle of.
@@ -851,24 +856,33 @@ class TerminalMode {
   }
 }
 
-/** Feeds the session's events to the sink and resolves turn waiters when an execution ends. */
+/** Feeds the session's events to the sink, once started, and resolves turn waiters when an execution ends. */
 class TurnWatcher {
-  readonly ended: Promise<void>
+  private readonly finished = new Deferred<void>()
+  /** Settles when the events have ended; never before `start`. */
+  readonly ended: Promise<void> = this.finished.promise
+  private begun = false
   private waiter: ((outcome: TurnOutcome | "closed") => void) | null = null
   private done = false
   /** Whether the latest turn was ended because a call needed approval that nobody could give. */
   stoppedForApproval = false
 
   constructor(
-    session: Session,
-    sink: Sink,
+    private readonly session: Session,
+    private readonly sink: Sink,
     private readonly watch: Pick<FeatureWatch, "event"> | null = null,
-  ) {
-    this.ended = (async () => {
-      for await (const item of session.events) this.observe(item, sink)
+  ) {}
+
+  /** Begins reading the events (they wait until then). Idempotent. */
+  start(): void {
+    if (this.begun) return
+    this.begun = true
+    const reading = (async () => {
+      for await (const item of this.session.events) this.observe(item, this.sink)
       this.done = true
       this.resolve("closed")
     })()
+    reading.then(this.finished.resolve, this.finished.reject)
   }
 
   next(): Promise<TurnOutcome | "closed"> {
@@ -1006,9 +1020,11 @@ async function within(ms: number, work: Promise<unknown>): Promise<boolean> {
 class Deferred<T> {
   readonly promise: Promise<T>
   resolve!: (value: T) => void
+  reject!: (reason: unknown) => void
   constructor() {
-    this.promise = new Promise((resolve) => {
+    this.promise = new Promise((resolve, reject) => {
       this.resolve = resolve
+      this.reject = reject
     })
   }
 }

@@ -57,7 +57,8 @@ async function session(provider: FakeProvider, args: readonly string[], drive: (
 test("the session is named on start and on leaving; /help lists commands; an unknown /word is never sent; // sends one slash", async () => {
   const provider = new FakeProvider([[script.text("Paths under /etc are config.")]])
   const first = await session(provider, [], async (type, waitFor) => {
-    await waitFor(/new session ses_\w+ · \/help lists the commands/)
+    // Which session, and the model it runs on.
+    await waitFor(/new session ses_\w+ · model [\w.-]+ · \/help lists the commands/)
     type("/help\r")
     await waitFor("/undo")
     type("/hepl\r")
@@ -86,5 +87,16 @@ test("the session is named on start and on leaving; /help lists commands; an unk
     await waitFor("resumed session")
     type("\x04")
   })
-  expect(second.screen.replace(/\n\s+/g, " ")).toContain(`resumed session ${id} "/etc is where configuration lives?" · 1 turn · /help lists the commands`)
+  const model = / · model ([\w.-]+) · /.exec(first.screen)![1]!
+  expect(second.screen.replace(/\n\s+/g, " ")).toContain(`resumed session ${id} "/etc is where configuration lives?" · 1 turn · model ${model} · /help lists the commands`)
+
+  // Resumed on another model: the change is said, and the session line names the model it runs on from here.
+  const third = await session(new FakeProvider([]), ["-c", "-m", "gpt-other", "--effort", "low"], async (type, waitFor) => {
+    await waitFor("resumed session")
+    type("\x04")
+  })
+  const shown = third.screen.replace(/\n\s+/g, " ")
+  expect(shown).toContain(`resumed session ${id} "/etc is where configuration lives?" · 1 turn · model gpt-other · effort low · /help lists the commands`)
+  // Under the session's line, with what it changed from.
+  expect(shown.indexOf(`⇄ model ${model} → gpt-other · effort default → low · from the next step`)).toBeGreaterThan(shown.indexOf("resumed session"))
 })

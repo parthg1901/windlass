@@ -112,6 +112,8 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
             undone: turns.filter(isUndone).length,
             events,
             agent: session.agent()?.name ?? null,
+            model: projection.session.settings.model,
+            effort: projection.session.settings.reasoningEffort,
             tasks: currentTodos(projection.messages)?.items ?? null,
           }
         },

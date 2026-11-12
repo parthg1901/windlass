@@ -108,7 +108,7 @@ one its `disallowed-tools` name `The agent "careful" may not use the tool "backg
 ## Starting a session as an agent
 
 `--agent <name>` on `windlass` and `windlass tui`; `--agent none` starts without one. Interactively the session line
-names it (`new session ses_… · agent reviewer`), and the panel of `windlass tui` has an `agent` field. When the
+names it (`new session ses_… · model <name> · agent reviewer`), and the panel of `windlass tui` has an `agent` field. When the
 definition names a `model` or an `effort`, the session is created with them.
 
 Two warnings are given when the session starts, in a one-prompt run (`windlass --agent <name> "<prompt>"`) too:
