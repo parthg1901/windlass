@@ -1,5 +1,6 @@
 /** The wake-up tools: fixed specs, effect classes, validation, what a model-created check records, list and cancel. */
 import { afterEach, describe, expect, test } from "bun:test"
+import { estimateTool } from "../../src/context/estimate.ts"
 import type { ToolContext, ToolResult } from "../../src/tool/tool.ts"
 import { WAKE_LIMITS } from "../../src/wake/record.ts"
 import { type CreateInput, type WakeToolOptions, wakeCancelTool, wakeCreateTool, wakeListTool, wakeTools } from "../../src/wake/tools.ts"
@@ -52,8 +53,8 @@ describe("specs", () => {
 
   test("the description says when a wake-up is right and when waiting inside the turn is", () => {
     const description = wakeCreateTool(setup().options).description
-    expect(description).toContain("instead of sleeping, polling in a loop")
-    expect(description).toContain("For something that finishes within a couple of minutes, run the command")
+    expect(description).toContain("instead of sleeping or polling when the wait is longer than a couple of minutes")
+    expect(description).toContain("for a shorter wait, run the command instead")
   })
 })
 
@@ -211,3 +212,32 @@ describe("the user's wake-ups through the store", () => {
   })
 })
 
+
+describe("the cost of the create tool, and where its detail went", () => {
+  test("description and schema together stay under 400 estimated tokens: they are in every request", () => {
+    const tool = wakeCreateTool(setup().options)
+    expect(estimateTool({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })).toBeLessThanOrEqual(400)
+    // Everything a call can say is still in the schema, and the approval layer still finds the shell's arguments.
+    const schema = tool.inputSchema as { properties: Record<string, unknown>; required: string[] }
+    expect(Object.keys(schema.properties).sort()).toEqual(
+      ["at", "command", "cron", "delivery", "expiresInSeconds", "fire", "includeBody", "includeOutput", "maxFirings", "message", "minIntervalSeconds", "sandbox", "seconds", "timeZone", "timeoutSeconds", "trigger"].sort(),
+    )
+    expect(schema.required).toEqual(["message", "trigger"])
+  })
+
+  test("a call that is not valid is answered with what is wrong and how that trigger is written", async () => {
+    const { options } = setup()
+    const missing = await create(options, { message: "m", trigger: "check", command: "true" })
+    expect(missing.status).toBe("error")
+    expect(missing.output).toStartWith('The wake-up was not created: A "check" wake-up needs `seconds`: the time between runs.\nA "check" wake-up runs `command` every `seconds` (at least 15)')
+    expect(missing.output).toContain('`fire: "until"` fires once, the first time the command exits 0')
+    expect(missing.output).toContain("Any wake-up: `delivery` \"wake\" (default) starts a turn")
+    // The reference is of the trigger that was asked for, not of all six.
+    expect(missing.output).not.toContain('A "webhook" wake-up')
+    const tooFast = await create(options, { message: "m", trigger: "every", seconds: 5 })
+    expect(tooFast.status).toBe("error")
+    expect(tooFast.output).toContain('An "every" wake-up fires every `seconds` (at least 60)')
+    const misplaced = await create(options, { message: "m", trigger: "after", seconds: 60, cron: "* * * * *" })
+    expect(misplaced.output).toStartWith('The wake-up was not created: `cron` does not apply to a "after" wake-up.')
+  })
+})

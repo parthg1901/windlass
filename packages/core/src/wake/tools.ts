@@ -62,21 +62,45 @@ export interface CreateInput {
 
 const M = WAKE_LIMITS.model
 
+/**
+ * What the model needs to call the tool correctly, and no more: this text is in every request of every session.
+ * The details of each trigger (the limits, the defaults, what a check runs with) are in `TRIGGER_HELP`, which a
+ * call that is not valid is answered with, and the limits that apply are stated in every successful result.
+ */
 const CREATE_DESCRIPTION = [
-  "Set up a wake-up: a message delivered to this session later, when a time comes, when a command passes or its output changes, or when a signed webhook request arrives. Waiting costs nothing: no model call is made until it fires. When it fires you receive your message as a new turn, marked as coming from the wake-up; nobody may be watching then, so questions to the user will be refused.",
-  "",
-  "Use a wake-up instead of sleeping, polling in a loop, or keeping a command running, when what you wait for can take more than a few minutes or outlast this conversation turn: CI or a deploy finishing, a reminder at a time, retrying something every ten minutes until it passes. For something that finishes within a couple of minutes, run the command (with a timeout) or in the background instead. Tell the user what you set up.",
-  "",
-  "Triggers (`trigger`):",
-  '- "at": once at `at`, an ISO 8601 time with an offset, e.g. "2026-11-12T17:00:00+01:00".',
-  '- "after": once, `seconds` from now.',
-  '- "every": every `seconds` (at least 60), up to `maxFirings` times.',
-  '- "cron": a five-field cron expression in `cron` ("minute hour day month weekday", e.g. "0 9 * * mon-fri"), in `timeZone` or the user\'s time zone.',
-  '- "check": run `command` every `seconds` (at least 15) in the working directory, without a model call. `fire: "until"` fires once, the first time it exits 0 (e.g. `gh run view 123 --exit-status`); `fire: "on_change"` fires each time its output or exit code differs from the run before. Its output is included in the message unless `includeOutput` is false. It runs as your shell commands do, in the sandbox without network unless you ask for more with `sandbox` (the user is asked now, and it never gets more later).',
-  '- "webhook": fires when an HTTP request signed with this wake-up\'s secret arrives at its local URL. The secret is shown to the user, not to you; the request body is included as untrusted content unless `includeBody` is false.',
-  "",
-  `\`delivery\`: "wake" (default) starts a turn if the session is idle, otherwise after the current turn; "queue" only waits in the inbox for the next turn. Limits: at most ${M.maxActive} pending wake-ups per session; \`maxFirings\` up to ${M.maxFirings.max} (default ${M.maxFirings.default}); it expires after \`expiresInSeconds\` (default ${M.expiry.defaultMs / 3_600_000} hours, at most ${M.expiry.maxMs / 86_400_000} days); at least \`minIntervalSeconds\` between firings (default ${WAKE_LIMITS.minInterval.defaultMs / 1000}); and the session receives at most a fixed number of firings per hour in total.`,
-].join("\n")
+  "Have a message delivered to this session later, as a new turn; waiting costs no model call. Use it instead of sleeping or polling when the wait is longer than a couple of minutes or may outlast this turn (CI, a deploy, a reminder, a retry); for a shorter wait, run the command instead.",
+  '`trigger`: "after" `seconds`; "at" the time `at`; "every" `seconds`; "cron"; "check" runs `command` every `seconds` and fires when it exits 0 (`fire: "until"`) or when its output changes ("on_change"); "webhook" fires on a signed HTTP request.',
+  "Nobody may be watching when it fires: write `message` for yourself, and tell the user what you set up. An invalid call is answered with what to fix.",
+].join(" ")
+
+/** The reference for one trigger: what the description used to carry for every request, said when a call needs it. */
+const TRIGGER_HELP: Readonly<Record<CreateInput["trigger"], string>> = {
+  at: 'An "at" wake-up fires once at `at`, an ISO 8601 time with an offset or Z, e.g. {"trigger":"at","at":"2026-11-12T17:00:00+01:00","message":"..."}.',
+  after: 'An "after" wake-up fires once, `seconds` from now, e.g. {"trigger":"after","seconds":600,"message":"..."}.',
+  every: `An "every" wake-up fires every \`seconds\` (at least 60), up to \`maxFirings\` times (default ${M.maxFirings.default}, at most ${M.maxFirings.max}), e.g. {"trigger":"every","seconds":600,"maxFirings":6,"message":"..."}.`,
+  cron: 'A "cron" wake-up takes a five-field expression in `cron` ("minute hour day month weekday", e.g. "0 9 * * mon-fri"), read in `timeZone` (an IANA zone such as "Europe/Berlin") or else the user\'s time zone.',
+  check:
+    'A "check" wake-up runs `command` every `seconds` (at least 15) in the working directory, without a model call. `fire: "until"` fires once, the first time the command exits 0 (e.g. `gh run view 123 --exit-status`); `fire: "on_change"` fires each time its output or exit code differs from the run before. One run is stopped after `timeoutSeconds` (default 60, or the interval if shorter). Its output is in the message unless `includeOutput` is false. It runs as your shell commands do: in the sandbox, without network, unless you ask for more with `sandbox` (the user is asked now, and it never gets more later). Example: {"trigger":"check","command":"gh run view 123 --exit-status","seconds":120,"fire":"until","message":"..."}.',
+  webhook:
+    'A "webhook" wake-up fires when an HTTP request signed with its secret arrives at its local URL. The secret is shown to the user, not to you. The request body is in the message, as untrusted content, unless `includeBody` is false. Example: {"trigger":"webhook","message":"..."}.',
+}
+
+/** What every wake-up can also say, whatever its trigger. */
+const COMMON_HELP = `Any wake-up: \`delivery\` "wake" (default) starts a turn if the session is idle, otherwise after the current turn, and "queue" only waits for the next turn; it expires after \`expiresInSeconds\` (default ${M.expiry.defaultMs / 3_600_000} hours, at most ${M.expiry.maxMs / 86_400_000} days); at least \`minIntervalSeconds\` pass between two firings (default ${WAKE_LIMITS.minInterval.defaultMs / 1000}); a session has at most ${M.maxActive} pending wake-ups and receives a fixed number of firings per hour.`
+
+/** The answer to a call that is not valid: what is wrong, then how that trigger is written. */
+function invalid(problem: string, trigger: CreateInput["trigger"] | undefined): string {
+  const known = trigger !== undefined && Object.hasOwn(TRIGGER_HELP, trigger)
+  return [`The wake-up was not created: ${problem}`, known ? TRIGGER_HELP[trigger] : `Triggers: ${Object.values(TRIGGER_HELP).join(" ")}`, COMMON_HELP].join("\n")
+}
+
+/** The shell's `sandbox` argument without its prose: the same shape, so the approval layer reads it the same way. */
+const SANDBOX_SCHEMA = {
+  type: "object",
+  description: "More access for the check, as for shell.",
+  properties: { network: { type: "boolean" }, write: { type: "array", items: { type: "string", minLength: 1 }, maxItems: escalationSchema.properties.write.maxItems } },
+  additionalProperties: false,
+} as const
 
 const LIST_DESCRIPTION =
   "List this session's wake-ups: each one's ID, trigger, state, when it is next due, how often it has fired, and the limits that apply (maximum firings, expiry, minimum interval, the session's hourly ceiling). Ended ones are included with `includeEnded`."
@@ -90,22 +114,22 @@ export function wakeCreateTool(options: WakeToolOptions): Tool<CreateInput> {
     inputSchema: {
       type: "object",
       properties: {
-        message: { type: "string", minLength: 1, maxLength: WAKE_LIMITS.messageChars, description: "What you will be told when it fires: what to do then, with whatever context you will need. It is all you will get besides the trigger's output." },
-        trigger: { type: "string", enum: ["at", "after", "every", "cron", "check", "webhook"], description: "What makes it fire; see the tool description." },
-        at: { type: "string", description: 'For "at": an ISO 8601 time with an offset or Z.' },
-        seconds: { type: "integer", minimum: 1, description: 'For "after": the delay. For "every": the interval. For "check": the time between runs.' },
-        cron: { type: "string", description: 'For "cron": the five-field expression.' },
-        timeZone: { type: "string", description: 'For "cron": an IANA time zone such as "Europe/Berlin". Default: the user\'s.' },
-        command: { type: "string", minLength: 1, maxLength: WAKE_LIMITS.commandChars, description: 'For "check": the shell command, run with `-c` in the working directory.' },
-        fire: { type: "string", enum: ["until", "on_change"], description: 'For "check": "until" it exits 0 (once), or "on_change" of its output.' },
-        timeoutSeconds: { type: "integer", minimum: 1, maximum: WAKE_LIMITS.check.timeout.maxMs / 1000, description: 'For "check": seconds before one run is stopped. Default 60, or the interval if shorter.' },
-        includeOutput: { type: "boolean", description: 'For "check": include the command\'s output (its beginning and end) in the message. Default true.' },
-        sandbox: escalationSchema,
-        includeBody: { type: "boolean", description: 'For "webhook": include the request body in the message. Default true.' },
-        delivery: { type: "string", enum: ["wake", "queue"], description: '"wake" (default): start a turn when it fires. "queue": wait for the next turn.' },
-        maxFirings: { type: "integer", minimum: 1, maximum: M.maxFirings.max, description: `For repeating triggers: the most times it fires. Default ${M.maxFirings.default}.` },
-        expiresInSeconds: { type: "integer", minimum: 60, maximum: M.expiry.maxMs / 1000, description: "It stops after this long. Default one day." },
-        minIntervalSeconds: { type: "integer", minimum: WAKE_LIMITS.minInterval.minMs / 1000, description: "The least time between two firings. Default 60." },
+        message: { type: "string", minLength: 1, maxLength: WAKE_LIMITS.messageChars, description: "What to do when it fires, with the context you will need then." },
+        trigger: { type: "string", enum: ["at", "after", "every", "cron", "check", "webhook"] },
+        at: { type: "string", description: 'ISO 8601 with an offset, e.g. "2026-11-12T17:00:00+01:00".' },
+        seconds: { type: "integer", minimum: 1 },
+        cron: { type: "string", description: 'Five fields, e.g. "0 9 * * mon-fri".' },
+        timeZone: { type: "string", description: "For cron; default: the user's." },
+        command: { type: "string", minLength: 1, maxLength: WAKE_LIMITS.commandChars },
+        fire: { type: "string", enum: ["until", "on_change"] },
+        timeoutSeconds: { type: "integer", minimum: 1, maximum: WAKE_LIMITS.check.timeout.maxMs / 1000 },
+        includeOutput: { type: "boolean" },
+        sandbox: SANDBOX_SCHEMA,
+        includeBody: { type: "boolean" },
+        delivery: { type: "string", enum: ["wake", "queue"] },
+        maxFirings: { type: "integer", minimum: 1, maximum: M.maxFirings.max },
+        expiresInSeconds: { type: "integer", minimum: 60, maximum: M.expiry.maxMs / 1000 },
+        minIntervalSeconds: { type: "integer", minimum: WAKE_LIMITS.minInterval.minMs / 1000 },
       },
       required: ["message", "trigger"],
       additionalProperties: false,
@@ -114,7 +138,7 @@ export function wakeCreateTool(options: WakeToolOptions): Tool<CreateInput> {
     execute: async (input, context) => {
       const now = (options.now ?? Date.now)()
       const trigger = triggerOf(input, options.timeZone)
-      if (typeof trigger === "string") return result("error", trigger, { action: "create", id: null })
+      if (typeof trigger === "string") return result("error", invalid(trigger, input.trigger), { action: "create", id: null })
       const store = options.store(context)
       const created = store.create({
         sessionId: context.sessionId,
@@ -131,7 +155,8 @@ export function wakeCreateTool(options: WakeToolOptions): Tool<CreateInput> {
         ...(input.minIntervalSeconds === undefined ? {} : { minIntervalMs: input.minIntervalSeconds * 1000 }),
         ...(trigger.kind === "check" ? { run: decidedRun(context), cwd: context.cwd } : {}),
       })
-      if (!created.ok) return result("error", created.error, { action: "create", id: null })
+      // A session that is full is told only that; a call that is wrong is told how the trigger is written.
+      if (!created.ok) return result("error", created.limit === true ? created.error : invalid(created.error, input.trigger), { action: "create", id: null })
       options.changed?.()
       const wake = created.wake
       const lines = [`Created wake-up ${wake.id}: ${describeTrigger(wake.trigger)}.`, ...describeLines(wake, store.hourlyCeiling, options.webhookUrl)]
@@ -241,7 +266,7 @@ function triggerOf(input: CreateInput, timeZone: string | undefined): TriggerReq
     case "webhook":
       return extra(["includeBody"]) ?? { kind: "webhook", ...(input.includeBody === undefined ? {} : { includeBody: input.includeBody }) }
     default:
-      return `Unknown trigger "${String((input as { trigger: unknown }).trigger)}".`
+      return `"${String((input as { trigger: unknown }).trigger)}" is not a trigger.`
   }
 }
 

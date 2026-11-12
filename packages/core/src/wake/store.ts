@@ -145,7 +145,8 @@ export interface Claim {
 
 export type CreateResult =
   | { readonly ok: true; readonly wake: WakeUp; /** A webhook's secret, for the user; `null` otherwise. */ readonly secret: string | null }
-  | { readonly ok: false; readonly error: string }
+  /** `limit`: nothing is wrong with what was asked for; the session has no room for another wake-up. */
+  | { readonly ok: false; readonly error: string; readonly limit?: true }
 
 export type WebhookOutcome =
   | { readonly kind: "accepted"; readonly firing: Firing }
@@ -420,7 +421,7 @@ export function openWakeStore(options: WakeStoreOptions): WakeStore {
           .query<{ count: number }, [string, string]>("SELECT COUNT(*) AS count FROM wake WHERE session_id = ? AND state = 'pending' AND json_extract(provenance, '$.author') = ?")
           .get(wake.sessionId, input.author)!.count
         if (active >= cap)
-          return { ok: false, error: `This session already has ${active} pending wake-ups created by the ${input.author}, the most allowed. Cancel one that is no longer needed first.` }
+          return { ok: false, limit: true, error: `This session already has ${active} pending wake-ups created by the ${input.author}, the most allowed. Cancel one that is no longer needed first.` }
         db.run(
           `INSERT INTO wake (id, session_id, kind, message, trigger, delivery, max_firings, expires_at, min_interval_ms, provenance, run, cwd, secret,
              state, fired, next_at, errors, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, 0, ?)`,
