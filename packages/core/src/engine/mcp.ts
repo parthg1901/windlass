@@ -40,7 +40,7 @@ import { fingerprint } from "../instructions/source.ts"
 import type { AppendedSource } from "../instructions/state.ts"
 import { type CallInput, type McpBridgeBackend, type SearchInput, mcpCallTool, mcpSearchTool } from "../mcp/bridge.ts"
 import { type CatalogueServer, MCP_CATALOGUE_KEY, catalogueSource, catalogueUpdate, stableJson } from "../mcp/catalogue.ts"
-import { type McpConfigSection, type McpServerConfig, resolveMcpConfig } from "../mcp/config.ts"
+import { type McpConfigSection, type McpServerConfig, resolveMcpConfig, variableLines } from "../mcp/config.ts"
 import { type McpCallOutcome, type McpRegistry, type McpRegistryOptions, type ServerStatus, createMcpRegistry } from "../mcp/registry.ts"
 import type { Json } from "../json.ts"
 import type { Tool, ToolContext } from "../tool/tool.ts"
@@ -135,7 +135,6 @@ function mergeSections(user: McpConfigSection | undefined, project: McpConfigSec
 export function serverQuestion(plan: McpServerPlan): McpServerQuestion {
   const transport = plan.config.transport
   const subject = transport.kind === "stdio" ? [transport.command, ...transport.args].join(" ") : transport.url
-  const named = Object.keys(transport.kind === "stdio" ? transport.env : transport.headers)
   return {
     name: plan.config.name,
     fingerprint: plan.fingerprint,
@@ -144,7 +143,9 @@ export function serverQuestion(plan: McpServerPlan): McpServerQuestion {
       transport.kind === "stdio"
         ? `This project's configuration names the MCP server "${plan.config.name}", which is started by running that command${transport.cwd === null ? "" : ` in ${transport.cwd}`}. It runs outside the sandbox, with your permissions.`
         : `This project's configuration names the MCP server "${plan.config.name}", which is reached at that address. What the model sends it leaves this machine.`,
-      ...(named.length === 0 ? [] : [`It is given ${transport.kind === "stdio" ? "these variables" : "these headers"}, with values from your environment where they name one: ${named.join(", ")}.`]),
+      // Every variable of the user's environment the definition reads is named, and which look like credentials: the
+      // names the server sees are not the names of what it is given.
+      ...variableLines(transport.kind === "stdio" ? transport.env : transport.headers, transport.kind === "stdio" ? "env" : "headers"),
       "Approving it is remembered for this project for 30 days, for exactly this definition of the server.",
     ],
   }
