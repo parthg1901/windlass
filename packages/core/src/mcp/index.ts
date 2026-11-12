@@ -1,0 +1,11 @@
+/** MCP servers behind a fixed set of bridge tools. See README.md for the engine integration. */
+export * from "./protocol.ts"
+export * from "./config.ts"
+export type { Channel, ChannelDiagnostics, RpcOutcome } from "./channel.ts"
+export { openStdioChannel, type StdioOptions } from "./stdio.ts"
+export { openHttpChannel, readSse, type HttpChannel, type HttpOptions } from "./http.ts"
+export { openSession, type McpSession, type SessionOptions, type ToolListing } from "./client.ts"
+export { checkArguments, type ArgumentIssue } from "./schema.ts"
+export * from "./catalogue.ts"
+export * from "./registry.ts"
+export * from "./bridge.ts"
