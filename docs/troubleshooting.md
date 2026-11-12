@@ -21,6 +21,10 @@ lh login status
 `lh login status` prints `not signed in; run \`lh login\`` (exit code 1) when there is no saved sign-in, and says
 so when a sign-in was started but not finished: run `lh login finish` and paste the address the browser ended on.
 
+In the full-screen interface (`lh tui`) the conversation says `✗ not signed in` and how to go on: run `lh login` in
+another terminal, then type `/reconnect` in the interface, which picks the new sign-in up without a restart. Leaving
+before that exits with code 1 and prints the same sentence as the line interface.
+
 ## The sign-in expired or was revoked
 
 The access token lasts an hour and is refreshed by itself; the refresh token lasts 30 days and is renewed on every
@@ -48,8 +52,8 @@ That address belongs to an older `lh login`. Start again and paste the address f
 lh: session ses_<id> is in use by another lh process (pid <pid>): wait for it to finish or stop it (kill <pid>), or start a new session
 ```
 
-Exit code 1. One session can be open in one process at a time (another terminal, an editor, the full-screen
-interface). Wait for that process, stop it, or start a new session (`lh` without `-c` or `--session`). A process that
+Exit code 1, also from the full-screen interface when you leave it without having opened a session. One session can
+be open in one process at a time (another terminal, an editor, the full-screen interface). Wait for that process, stop it, or start a new session (`lh` without `-c` or `--session`). A process that
 died holds nothing: its sessions open normally (see "A crashed session" below).
 
 ## The sandbox is unavailable

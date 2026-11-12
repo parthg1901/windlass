@@ -64,9 +64,11 @@ lh --model gpt-6-luna --effort low "the add test fails; find out why and fix it"
 ```
 
 It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 4 steps · 7.5s`.
-The exit code says how it went (0 done, 1 failed, 3 done but the project's checks still fail).
+The exit code says how it went (0 done, 1 failed, 2 a usage error such as a mistyped option, 3 done but the
+project's checks still fail, 4 stopped because a tool call needed your approval and nobody was there).
 
-Work interactively: run `lh` with no prompt. Type a message and press Enter.
+Work interactively: run `lh` with no prompt. It names the session it opened (`new session ses_…`, or for `-c` the
+one it resumed, with its title and turns), and on leaving prints how to resume it. Type a message and press Enter.
 
 ```sh
 lh
@@ -77,7 +79,8 @@ lh
 - **Undo:** `/undo` at the prompt takes the files and the conversation back to before your last message, and shows
   what will change first. `/redo` brings it back. `/diff` shows what the last turn changed.
 - **Stop:** Ctrl-C stops the agent; Ctrl-D leaves.
-- **Continue later:** `lh -c` resumes the most recent session in this directory.
+- **Continue later:** `lh -c` resumes the most recent session in this directory; `lh fork --turn 2` starts a new
+  session with the conversation up to the end of its second turn.
 
 The full-screen interface does the same in one screen, with a panel for tokens and the prompt cache:
 
@@ -85,7 +88,22 @@ The full-screen interface does the same in one screen, with a panel for tokens a
 lh tui
 ```
 
-`/help` in it lists the keys.
+`/help` lists the commands and keys in both. A `/word` that is not a command is never sent to the model; to send a
+message that starts with a slash, begin it with two (`//etc` sends `/etc`).
+
+| Command | Line interface (`lh`) | Full-screen (`lh tui`) |
+|---|---|---|
+| `/help` | the commands and keys | the keys and commands |
+| `/undo`, `/redo` | yes | yes |
+| `/diff` | the last turn's changes | the selected step's or turn's, in a reader |
+| `/approval [ask\|auto\|full]` | yes | yes, with a picker |
+| `/clear-taint` | yes | yes |
+| `/queue <message>` | yes | yes (or Ctrl-T) |
+| `/exit`, `/quit` | yes | yes |
+| `/fork [<turn>] [copy]` | `lh fork` instead | yes |
+| `/sessions`, `/new`, `/model` | `--list-sessions`, `-c`, `--session`, `-m` instead | yes |
+| `/reconnect`, `/panel`, `/debug` | | yes |
+| `/compact`, `/rename` | | listed; they wait for an engine operation |
 
 ## Where next
 

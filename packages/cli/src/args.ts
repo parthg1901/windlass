@@ -176,7 +176,8 @@ Usage:
   ${b} tui [options]             the full-screen terminal interface (preview; ${b.toUpperCase()}_TUI=1 makes
                                  it what \`${b}\` with no prompt starts)
   ${b} fork [<session>]          a new session with the conversation so far, to try another
-                                 way without changing the original (\`${b} fork --help\`)
+                                 way without changing the original; --turn <n> forks after
+                                 turn n (\`${b} fork --help\`)
   ${b} replay [<session>]        the model again on a recorded session, every tool call
                                  answered from the recording: where does a changed prompt,
                                  tool description or model change what it does
@@ -245,7 +246,8 @@ When a tool call needs your approval (interactive mode):
   Commands that ran in the sandbox are marked ⊡ (with +network or +write <dir> when they
   were given more); one that ran without it says "no sandbox".
 
-At the prompt, while the agent is idle:
+At the prompt (/help lists every command; a /word that is not one is never sent, and
+//text sends a message that starts with a slash):
   /undo                   go back to before your last message: the files and the
                           conversation. Shows what will change first, and asks before
                           it overwrites a file edited since by you or another session

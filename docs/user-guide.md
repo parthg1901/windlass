@@ -25,6 +25,13 @@ lh --session ses_9acf "and run it"
 - `-c` (`--continue`) resumes the most recent session in this directory; `--session <id>` resumes one by its ID, or
   by the start of one if it is unique. Both work with a prompt (one-shot) and without one (interactive).
 - `--cwd <dir>` works in another directory without changing to it.
+- The interactive mode starts by naming its session: `new session ses_…`, or for one it resumed
+  `resumed session ses_… "<title>" · 3 turns (1 undone)`. Leaving it prints `session ses_… · resume with: lh --session
+  ses_…`, as the full-screen interface does. A one-shot run prints neither.
+- `lh fork` starts a new session with another's conversation, to try another way without changing the original:
+  after its latest step, or after a turn with `--turn <n>` (1 is the session's first prompt; the full-screen interface
+  shows each turn's number on its ending row, and `/fork <n>` does the same there). `lh fork --help` has the precise
+  form, an event number. Forking and listing need no sign-in.
 
 **Several at once.** Each `lh` process (and each editor using `lh acp`) works in its own session, so you can run
 several side by side in the same project. One session can be open in only one process at a time; a second one is
@@ -154,6 +161,14 @@ With `gate` (the default) a failing check is shown to the agent (`↻ the agent 
 carries on`), which then fixes the code or reports why it cannot. Each check's full output is kept in a file the
 report names. On a machine without a sandbox the checks are not run, except in `full`.
 
+## Commands at the prompt
+
+In the interactive mode an entry that starts with `/<word>` is a command, never a message: `/help` lists them all.
+A word that is not a command is not sent to the model (it would cost a request); you are told the nearest command
+instead. To send a message that really starts with a slash, begin it with two: `//etc is where the config lives`
+sends `/etc is where the config lives`. A first word with another slash in it (`/etc/hosts is wrong`) is a path and
+is sent as typed. The README has the table of the commands each interface has.
+
 ## Undo and redo
 
 At the interactive prompt, while the agent is idle:
@@ -162,6 +177,14 @@ At the interactive prompt, while the agent is idle:
   and asks before it overwrites a file that you or another session edited since.
 - `/redo` brings back what the last `/undo` took away.
 - `/diff` shows the files the last turn changed, with their diffs.
+
+`/undo` says which turn it took back (`↶ undone: turn 2 "add a test" · out of the conversation`), and `/redo` which
+it put back. In the full-screen interface an undone turn is one dim line where it was (`↶ undone turn 2: "add a
+test"`), also in a session opened again, until `/redo` shows it as before.
+
+When a file the restore would change was edited by hand since, the question says what each answer does to it:
+overwrite (it goes back, and your edits are lost; after `/undo`, `/redo` brings them back), keep (it stays exactly as
+it is now: your edits and the agent's changes in it both, while the other files are restored), or change nothing.
 
 Undo needs `git` (2.25 or newer) on `PATH`, but the project does not have to be a git repository: snapshots are
 kept in a private git directory per project inside the data directory, and your own repository is never touched. A steer you sent while the agent
@@ -192,7 +215,9 @@ the new prefix. `lh --demo list` has scripted compactions under "Compaction".
 | 141 | output closed (a pipe reader left) |
 | 143 | terminated (SIGTERM) |
 
-`lh login` uses 0, 1 (failed; for `status`: not signed in), 2 and 130.
+`lh login` uses 0, 1 (failed; for `status`: not signed in), 2 and 130. `lh tui` exits with 0 when you leave it, 1
+when you leave without a session open (not signed in, the session in use elsewhere, the engine gone; the reason is
+printed after the screen is back), and 129, 130 or 143 when a signal ends it.
 
 ## The data directory
 
