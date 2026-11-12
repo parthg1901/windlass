@@ -64,3 +64,18 @@ Reading a result:
 - A failed task is not always the agent's fault. Read the task prompt against the grader's reason before blaming either (one grader demanded behaviour the prompt never asked for).
 - `retry-after-error` fails on gpt-6-luna at low effort because the model refuses to remove a stale lock without confirmation. That is model caution, a useful signal when comparing prompts or models.
 - Keep run output and exported traces outside the repo and delete them afterwards.
+
+## Dogfooding (a real repository, the real model)
+
+`evals/dogfood/` holds the kit: `setup.ts` clones prefixlens into a throwaway workspace (origin removed, dependencies installed, the project configuration with its real `bun test` and typecheck checks, an optional seeded bug, all committed), `calls.ts` counts the requests a pass spent, and `README.md` lists ten tasks with how to judge each. A full pass is about 60 requests. Gotchas from the first pass (2026-11-12):
+
+- The line interface has no `/help` (or any unknown slash command): it is sent to the model, costs a request, and becomes the session's title. Only `/undo`, `/redo`, `/diff`, `/queue`, `/approval` (or `/mode`), `/clear-taint`, `/exit` and `/quit` are local (`packages/cli/src/main.ts`, the `submit` case).
+- An effort the model does not list (`--effort ultra` on `gpt-6-luna`) is not checked before sending: one request spent on an HTTP 400, and a failed session is left as the directory's latest for `-c`. Check `--models` first.
+- `--models` without a sign-in throws an uncaught error with a source excerpt; a prompt without a sign-in prints the clean message. Use a throwaway `XDG_DATA_HOME` for these, never the real data directory.
+- The gate runs on files changed since the last passing check, not since the turn began: a hand edit or an `/undo` between turns makes the next turn (even "reply OK") run every check and report `checks passed`. Commit or revert in the workspace before a turn whose ending you want to read.
+- Line-mode interactive needs a terminal; drive it through a private tmux server like the full-screen interface. Wait for a new ending row by counting `^(✓|✗) (done|stopped|failed)` lines in `capture-pane -S -`, since earlier endings stay in the scrollback.
+- The line interface prints no session ID anywhere (one-shot, interactive, exit). Get it from `--list-sessions` in the workspace, or from `session.created` in `--json`.
+- `--json` has no usage summary event; sum `step.ended.data.usage`, or use `calls.ts`.
+- `calls.ts --since <minutes>` counts every session in the data directory, other agents' too; count with `--cwd <workspace>`.
+- Checks run in the sandbox and tests that listen on localhost pass there (prefixlens's proxy tests).
+- The model's first command is often `find .. -name AGENTS.md`, which walks the workspace's parent: keep workspaces in their own empty parent directory so that walk stays small.
