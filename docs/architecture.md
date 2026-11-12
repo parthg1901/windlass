@@ -708,7 +708,11 @@ is a new version with a decoder for the old one.
   only lower it, the harness says so on its log, and no configuration file has a key for it.
 - A diagnostic about a session (a prefix violation, an internal error, a tool that threw) is said once: as an
   ephemeral `diagnostic` event of that session's stream, which a client shows. It goes to the engine's log instead
-  only when no open session can carry it. `onDiagnostic` hears every one.
+  only when no open session can carry it. `onDiagnostic` hears every one. A diagnostic said while nobody is
+  subscribed to the session (while `createSession` or `openSession` runs, before the caller has the session in
+  hand: a warning about the agent it starts as, a project's `agents.default` that is not followed) is kept, up to
+  64 of them, and handed to the first `subscribe` listener when it subscribes, before anything newer. The `events`
+  stream holds every event from the session's creation and needs none of that.
 
 ## Subagents and background work
 

@@ -8,6 +8,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import type { EngineEvent } from "../../src/engine/channel.ts"
 import { EngineError } from "../../src/engine/engine.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
@@ -64,13 +65,44 @@ describe("the agent a session starts as", () => {
       await h.settled()
       expect(h.session.projection().session.agent?.name).toBe("reviewer")
       expect(switches(h)).toHaveLength(1)
-      expect(h.diagnostics.map((item) => `${item.kind}: ${item.message}`)).toEqual(['agents: agents.default "docs" in the project\'s configuration (only the user\'s own configuration chooses the default agent)'])
+      expect(h.diagnostics.map((item) => `${item.kind}: ${item.message}`)).toEqual(['agents: Not followed: agents.default "docs" in the project\'s configuration (only the user\'s own configuration chooses the default agent).'])
       expect(h.engine.listAgents(files.cwd)).toMatchObject({ default: "reviewer", agents: [{ name: "docs" }, { name: "reviewer" }] })
       // Asking for none overrides the default.
       const plain = h.engine.createSession({ cwd: files.cwd, settings: { model: "gpt-test", reasoningEffort: null }, agent: "none" })
       expect(plain.projection().session.agent).toBeUndefined()
       expect(plain.agent()).toBeNull()
       h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("what is said while the session is created reaches the first listener, once: a default that was not followed, a tool that does not exist", async () => {
+    const files = project({ odd: "---\nname: odd\ndescription: Names a tool that is not there.\ntools: read, Bash\n---\nWork.\n" })
+    const h = harness(files, { config: { verify: { mode: "off" }, agents: { default: "odd" } } })
+    try {
+      // The engine says both inside `createSession`: nobody can be listening yet.
+      const session = h.engine.createSession({ cwd: files.cwd, settings: { model: "gpt-test", reasoningEffort: null }, agent: "odd" })
+      const expected = [
+        'Not followed: agents.default "odd" in the project\'s configuration (only the user\'s own configuration chooses the default agent).',
+        `The agent "odd" (${join(files.cwd, ".claude", "agents", "odd.md")}) names a tool that does not exist here, which therefore restricts nothing: Bash.`,
+      ]
+      const heard = (events: readonly EngineEvent[]) => events.flatMap((item) => (item.type === "diagnostic" ? [`${item.kind}: ${item.message}`] : []))
+      const first: EngineEvent[] = []
+      const second: EngineEvent[] = []
+      session.subscribe((item) => first.push(item))
+      session.subscribe((item) => second.push(item))
+      expect(heard(first)).toEqual(expected.map((message) => `agents: ${message}`))
+      expect(heard(second)).toEqual([])
+      // A reader of the stream had them all along, and has them once.
+      h.provider.enqueue(answer("Hello."))
+      session.send("Hi.")
+      await session.settled()
+      await session.close()
+      const stream: EngineEvent[] = []
+      for await (const item of session.events) stream.push(item)
+      expect(heard(stream)).toEqual(expected.map((message) => `agents: ${message}`))
+      expect(heard(first)).toHaveLength(2)
     } finally {
       await h.dispose()
     }

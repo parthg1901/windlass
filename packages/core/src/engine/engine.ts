@@ -745,7 +745,13 @@ export interface EngineSession {
    * that falls behind never slows the loop down; see `channel.ts`.
    */
   readonly events: AsyncIterable<EngineEvent>
-  /** A further consumer, called synchronously with each event from now on. Returns the unsubscribe function. */
+  /**
+   * A further consumer, called synchronously with each event from now on.
+   * Returns the unsubscribe function. The first one is also given, at once
+   * and in order, the diagnostics the session said while nobody was
+   * subscribed (a warning about the agent it was created as, said before
+   * its creator had the session in hand): they are in no log to read back.
+   */
   readonly subscribe: (listener: (event: EngineEvent) => void) => () => void
   /**
    * Admits a prompt into the inbox. If nothing is running an execution
@@ -1680,6 +1686,9 @@ interface TurnEnding {
   readonly hooks?: HookEnding
 }
 
+/** How many diagnostics said to nobody a session keeps for its first listener. */
+const UNHEARD_DIAGNOSTICS = 64
+
 const isSteer = (item: { readonly delivery: "steer" | "queue" }) => item.delivery === "steer"
 /** The events that end an execution's work in a process: done, failed, or interrupted (a shutdown keeps the claim, and still ends the run). */
 const isEnding = (item: StoredEvent): item is StoredEvent<"execution.succeeded"> | StoredEvent<"execution.failed"> | StoredEvent<"execution.interrupted"> =>
@@ -1801,6 +1810,8 @@ class LiveSession implements EngineSession {
   private taintHistory: TaintHistory | null = null
   /** The notices already shown in this process, so each is said once. */
   private readonly noticed = new Set<string>()
+  /** The diagnostics said while nobody was subscribed, for the first listener that is (`subscribe`). Bounded: a session read only through `events` never takes them. */
+  private readonly unheard: EphemeralEvent[] = []
   /** The snapshots of the session's working directory, opened on first use. */
   private snapshotStore: Promise<WorkspaceSnapshots | SnapshotUnavailable> | null = null
   /** A revert, an undo of one or a preview of either that is in progress. The session is idle and must stay so until it ends. */
@@ -1898,6 +1909,14 @@ class LiveSession implements EngineSession {
   subscribe = (listener: (event: EngineEvent) => void) => {
     const entry = (item: EngineEvent) => listener(item)
     this.listeners.add(entry)
+    // What was said before anyone listened is this listener's to hear: once, and before anything newer.
+    for (const item of this.unheard.splice(0)) {
+      try {
+        entry(item)
+      } catch (error) {
+        this.core.report({ kind: "listener_failed", sessionId: this.id, message: describe(error), cause: error })
+      }
+    }
     return () => {
       this.listeners.delete(entry)
     }
@@ -2360,7 +2379,10 @@ class LiveSession implements EngineSession {
    */
   diagnosed(diagnostic: Diagnostic): boolean {
     if (this.closing !== null || diagnostic.kind === "listener_failed") return false
-    this.ephemeral({ type: "diagnostic", sessionId: this.id, kind: diagnostic.kind, message: diagnostic.message })
+    const item: EphemeralEvent = { type: "diagnostic", sessionId: this.id, kind: diagnostic.kind, message: diagnostic.message }
+    // Nobody is subscribed (the session is being created or opened, or its client is changing): kept for the next one.
+    if (this.listeners.size === 0 && this.unheard.length < UNHEARD_DIAGNOSTICS) this.unheard.push(item)
+    this.ephemeral(item)
     return true
   }
 
@@ -6193,7 +6215,7 @@ function configFilesNow(core: Core, cwd: string): { readonly files: ConfigFiles 
 /** What the user should know about an agent that was selected: restrictions that name tools this build does not have. */
 function agentWarnings(core: Core, agent: AgentRecord): string[] {
   const unknown = unknownToolNames(agent.restrictions, [...core.effects.keys()])
-  return unknown.length === 0 ? [] : [`The agent "${agent.name}" (${agent.path}) names ${unknown.length === 1 ? "a tool" : "tools"} that ${unknown.length === 1 ? "does" : "do"} not exist here, which therefore restrict nothing: ${unknown.join(", ")}.`]
+  return unknown.length === 0 ? [] : [`The agent "${agent.name}" (${agent.path}) names ${unknown.length === 1 ? "a tool" : "tools"} that ${unknown.length === 1 ? "does" : "do"} not exist here, which therefore ${unknown.length === 1 ? "restricts" : "restrict"} nothing: ${unknown.join(", ")}.`]
 }
 
 /**
@@ -6228,11 +6250,13 @@ function startAs(core: Core, input: { readonly cwd: string; readonly settings: S
   const places = agentPlaces(config.files, core.agents)
   const chosen = resolveStartAgent(findAgents(input.cwd, places), asked, places)
   if (!chosen.ok) throw new EngineError("invalid_request", chosen.message)
-  if (chosen.agent === null) return { settings: usable(input.settings), agent: null, decided: true, warnings: places.ignored }
+  // What the project's file asked for and may not: said as a sentence, since nothing else is on the line with it.
+  const ignored = places.ignored.map((entry) => `Not followed: ${entry}.`)
+  if (chosen.agent === null) return { settings: usable(input.settings), agent: null, decided: true, warnings: ignored }
   const record = agentRecordOf(chosen.agent)
   const settings = agentSettings(record, input.settings, models?.map((model) => model.id))
   if (settings.notes.length > 0) throw new EngineError("unknown_model", settings.notes.join(" "))
-  return { settings: usable(settings.settings), agent: record, decided: true, warnings: [...places.ignored, ...agentWarnings(core, record)] }
+  return { settings: usable(settings.settings), agent: record, decided: true, warnings: [...ignored, ...agentWarnings(core, record)] }
 }
 
 /**
