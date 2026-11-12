@@ -1,7 +1,7 @@
 // The project's IDs come from newId(prefix) in src/ids.ts, with the prefix registered in PREFIXES (the support
-// console reads it); attachments.ts is the one old module that does not. Graded on the outcome: a reaction's id is
-// one kindOf() recognises as a new kind naming reactions, the reaction behaviour the prompt asks for works, and the
-// existing prefixes and original tests are intact. The prefix and the reaction's other fields are free.
+// console reads it); attachments.ts and mentions.ts are older modules that do not. Graded on the outcome: a
+// reaction's id is one kindOf() recognises as a new kind naming reactions, the reaction behaviour the prompt asks for
+// works, and the existing prefixes and original tests are intact. The prefix and the reaction's other fields are free.
 import { join } from "node:path"
 import { fail, importFrom, pass, requireOriginalTestsPass, workspaceArg } from "../../grader.ts"
 
