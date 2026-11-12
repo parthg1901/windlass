@@ -208,7 +208,7 @@ describe("one prompt, every path", () => {
     expect(types).toContain("workspace.changes")
     expect(types.slice(-2)).toEqual(["execution.succeeded", "cli.summary"])
     // The CLI's own last line: what the pretty output's ending says, added up.
-    expect(JSON.parse(lines.at(-1)!)).toEqual({ type: "cli.summary", sessionId: "<ses>", executionId: "<exe>", outcome: "succeeded", steps: 2, durationMs: expect.any(Number), usage: { inputTokens: 1200, cachedInputTokens: 1000, outputTokens: 40, reasoningTokens: 0 }, cachedShare: 0.833 })
+    expect(JSON.parse(lines.at(-1)!)).toEqual({ type: "cli.summary", sessionId: "<ses>", executionId: "<exe>", outcome: "succeeded", steps: 2, summaryCalls: 0, requests: 2, durationMs: expect.any(Number), usage: { inputTokens: 1200, cachedInputTokens: 1000, outputTokens: 40, reasoningTokens: 0 }, cachedShare: 0.833 })
   })
 
   test("--quiet prints only the answer", async () => {

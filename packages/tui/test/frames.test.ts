@@ -89,6 +89,7 @@ describe("the usage panel", () => {
     messageId: `a${n}`,
     model: "m",
     kind: "step",
+    requests: 1,
     usage: { inputTokens: input, cachedInputTokens: cached, outputTokens: 50, reasoningTokens: 0 },
     diagnostics: [],
     ended: "ok",
@@ -99,7 +100,7 @@ describe("the usage panel", () => {
     {
       session: { id: "ses_0123456789abcdef0123", cwd: "/home/me/project", title: null, model: "gpt-6-luna", effort: "low", taint: null },
       calls,
-      activity: { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null },
+      activity: { executing: false, turnStartedAt: null, steps: 0, summaryCalls: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null },
       now: 0,
       contextWindow: 272_000,
       connection: "connected",

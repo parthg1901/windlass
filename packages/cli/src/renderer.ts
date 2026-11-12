@@ -480,6 +480,7 @@ export class PrettyRenderer implements Sink {
         const before = this.compacting?.tokensBefore ?? 0
         this.compacting = null
         this.addUsage(event.data.usage)
+        this.addSummaryCalls(event.data.calls)
         // The sizes are the harness's estimates of the next request, before and after.
         const sizes = before > 0 && event.data.tokensAfter > 0 ? ` · about ${count(before)} → ${count(event.data.tokensAfter)} tokens` : ""
         if (event.data.source === "fallback") {
@@ -497,6 +498,7 @@ export class PrettyRenderer implements Sink {
       }
       case "compaction.failed":
         this.compacting = null
+        this.addSummaryCalls(event.data.calls)
         this.setError(errorClass(event.data.error), event.data.error.kind === "provider" ? event.data.error.error.requestId : null)
         this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg(`compaction failed: ${stepErrorText(event.data.error)}`, "red")])
         return
@@ -559,6 +561,11 @@ export class PrettyRenderer implements Sink {
           this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg("failing checks left unresolved", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), next])
           for (const line of wrap(unresolvedReason(verification), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
         }
+        // Nothing was checked although files the checks cover changed outside the turn: said, with what becomes of them.
+        if (verification.status === "not_needed" && verification.unverified === true) {
+          this.line("info", [seg(`${SYMBOL.note} nothing to check`, "dim"), next])
+          for (const line of wrap(UNVERIFIED_HINT, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+        }
         return
       }
       case "inbox.delivery_changed": {
@@ -598,7 +605,7 @@ export class PrettyRenderer implements Sink {
         // Not a failure of the work: a call needed an approval nobody could give, and the run was not to go on without it.
         if (event.data.cause === "approval") {
           const time = turn === null ? null : formatDuration(event.time - turn.start)
-          const head = [seg(`${SYMBOL.stop} `, "yellow"), seg("stopped for your approval", ["yellow", "bold"]), seg(suffix([turn === null ? null : plural(turn.steps, "step"), time]), "dim")]
+          const head = [seg(`${SYMBOL.stop} `, "yellow"), seg("stopped for your approval", ["yellow", "bold"]), seg(suffix([turn === null ? null : requestsOf(turn), time]), "dim")]
           const why = wrap(`A tool call needed your approval and nobody was here to give it (--unattended stop). ${STOPPED_FOR_APPROVAL}`, this.width - 2)
           this.summary(head, turn, why.map((line) => [seg(`  ${line}`, "dim")]))
           return
@@ -888,12 +895,16 @@ export class PrettyRenderer implements Sink {
     switch (verification.status) {
       case "passed":
         return done("checks passed")
-      case "not_needed":
-        return done("nothing to check")
+      case "not_needed": {
+        if (verification.unverified !== true) return done("nothing to check")
+        // Files the checks cover changed outside this turn: not checked now, and the user is told when they will be.
+        const hint = wrap(UNVERIFIED_HINT, this.width - 2).map((line) => [seg(`  ${line}`, "yellow")])
+        return this.summary([seg(`${SYMBOL.ok} `, "green"), seg("done", ["green", "bold"]), seg(" · nothing to check", "dim"), seg(suffix(parts), "dim")], turn, hint)
+      }
       case "not_configured":
         return done("no checks configured")
       case "left_to_parent":
-        return done("checks left to the session that started it")
+        return done(LEFT_TO_PARENT)
       case "unresolved": {
         const head = [seg(`${SYMBOL.fail} `, "red"), seg("stopped with failing checks", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), seg(suffix(parts), "dim")]
         // The reason is never cut: it is why "done" is not what this turn ended as.
@@ -1046,6 +1057,10 @@ export class PrettyRenderer implements Sink {
       outputTokens: sum.outputTokens + usage.outputTokens,
       reasoningTokens: sum.reasoningTokens + usage.reasoningTokens,
     }
+  }
+
+  private addSummaryCalls(calls: number | undefined): void {
+    if (this.turn !== null && calls !== undefined) this.turn.summaryCalls = (this.turn.summaryCalls ?? 0) + calls
   }
 
   private setError(kind: string, requestId: string | null = null): void {
@@ -1255,8 +1270,12 @@ export interface JsonSummary {
   readonly executionId: string
   /** `stopped`: a call needed an approval nobody could give (`--unattended stop`, exit code 4). */
   readonly outcome: "succeeded" | "unresolved" | "failed" | "stopped" | "interrupted"
-  /** Model calls the turn made (steps that started). */
+  /** Steps the turn made (model calls that started a step). */
   readonly steps: number
+  /** Summary requests its compactions sent: model requests that are no steps. */
+  readonly summaryCalls: number
+  /** The turn's model requests: `steps + summaryCalls`. */
+  readonly requests: number
   readonly durationMs: number
   readonly usage: Usage | null
   /** `cachedInputTokens / inputTokens`, 0 to 1; `null` without usage. */
@@ -1265,7 +1284,7 @@ export interface JsonSummary {
 
 /** Every event as one JSON line, then a `cli.summary` line after each turn, and nothing else on stdout. */
 export class JsonSink implements Sink {
-  private turn: { start: number; steps: number; usage: Usage | null } | null = null
+  private turn: { start: number; steps: number; summaryCalls: number; usage: Usage | null } | null = null
 
   constructor(
     private readonly write: (text: string) => void,
@@ -1280,18 +1299,23 @@ export class JsonSink implements Sink {
   private tally(event: EngineEvent): void {
     switch (event.type) {
       case "execution.started":
-        this.turn = { start: event.time, steps: 0, usage: null }
+        this.turn = { start: event.time, steps: 0, summaryCalls: 0, usage: null }
         return
       case "execution.resumed":
-        this.turn ??= { start: event.time, steps: 0, usage: null }
+        this.turn ??= { start: event.time, steps: 0, summaryCalls: 0, usage: null }
+        return
+      case "compaction.failed":
+        if (this.turn !== null) this.turn.summaryCalls += event.data.calls ?? 0
         return
       case "step.started":
         if (this.turn !== null) this.turn.steps += 1
         return
+      case "compaction.ended":
+        if (this.turn !== null) this.turn.summaryCalls += event.data.calls ?? 0
+        return this.add(event.data.usage)
       case "step.ended":
       case "step.failed":
       case "step.refused":
-      case "compaction.ended":
         return this.add(event.data.usage)
       case "execution.succeeded":
       case "execution.failed":
@@ -1315,6 +1339,8 @@ export class JsonSink implements Sink {
           executionId: event.data.executionId,
           outcome,
           steps: turn?.steps ?? 0,
+          summaryCalls: turn?.summaryCalls ?? 0,
+          requests: (turn?.steps ?? 0) + (turn?.summaryCalls ?? 0),
           durationMs: turn === null ? 0 : Math.max(0, event.time - turn.start),
           usage,
           cachedShare: usage === null || usage.inputTokens === 0 ? null : Math.round((usage.cachedInputTokens / usage.inputTokens) * 1000) / 1000,

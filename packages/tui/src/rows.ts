@@ -404,7 +404,7 @@ function noticeLines(row: NoticeRow, columns: number): Span[][] {
 }
 
 function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][] {
-  const parts = [row.steps > 0 ? plural(row.steps, "step") : null, row.durationMs === null ? null : formatDuration(row.durationMs), nested || row.turn === null ? null : `turn ${row.turn}`].filter((part) => part !== null)
+  const parts = [row.steps + row.summaryCalls > 0 ? requestsText(row.steps, row.summaryCalls) : null, row.durationMs === null ? null : formatDuration(row.durationMs), nested || row.turn === null ? null : `turn ${row.turn}`].filter((part) => part !== null)
   const after = parts.length === 0 ? "" : ` · ${parts.join(" · ")}`
   const lines: Span[][] = []
   const wrapped = (spans: Span[], indent = "  ") => lines.push(...wrapLine(spans, columns, [span(indent)]))
@@ -412,8 +412,12 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
     case "succeeded": {
       const status = row.verification?.status
       if (status === "passed") wrapped([span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok"), span(after, "dim")])
-      else if (status === "not_needed") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks not needed: nothing they cover changed", "dim"), span(after, "dim")])
-      else if (status === "left_to_parent") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks left to the session that started it", "dim"), span(after, "dim")])
+      else if (row.verification?.status === "not_needed" && row.verification.unverified === true) {
+        // Files the checks cover changed outside this turn: not checked now, and when they will be.
+        wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim"), span(after, "dim")])
+        wrapped([span(`  ${UNVERIFIED_HINT}`, "warn")], "    ")
+      } else if (status === "not_needed") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks not needed: nothing they cover changed", "dim"), span(after, "dim")])
+      else if (status === "left_to_parent") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(` · ${LEFT_TO_PARENT}`, "dim"), span(after, "dim")])
       else wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · no checks configured", "dim"), span(after, "dim")])
       break
     }

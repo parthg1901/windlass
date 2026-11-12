@@ -1462,7 +1462,7 @@ export class App {
       parts.push(span(`   ↑ scrolled${below > 0 ? ` · ${plural(below, "new line")} below` : ""} · Esc follows`, "warn"))
     }
     const left = parts
-    const turn = activity.executing && activity.turnStartedAt !== null ? `turn ${formatDuration(Math.max(0, now - activity.turnStartedAt))} · ${plural(activity.steps, "step")}` : ""
+    const turn = activity.executing && activity.turnStartedAt !== null ? `turn ${formatDuration(Math.max(0, now - activity.turnStartedAt))} · ${requestsText(activity.steps, activity.summaryCalls)}` : ""
     const right = [span(turn, "dim")]
     const used = left.reduce((sum, part) => sum + textWidth(part.text), 0)
     const rightWidth = textWidth(turn)

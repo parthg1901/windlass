@@ -34,7 +34,8 @@ export function summarize(calls: readonly CallUsage[]): UsageSummary {
     { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
   )
   const last = calls.at(-1) ?? null
-  return { calls: calls.length, total, last, cacheShare: share(total), lastCacheShare: last === null ? null : share(last.usage) }
+  // A compaction stands for every summary request it sent, retries and the repair included.
+  return { calls: calls.reduce((sum, call) => sum + call.requests, 0), total, last, cacheShare: share(total), lastCacheShare: last === null ? null : share(last.usage) }
 }
 
 function share(usage: Usage): number | null {
@@ -177,7 +178,7 @@ function stateText(input: PanelInput): string {
   const activity = input.activity
   if (!activity.executing) return "idle"
   const since = activity.turnStartedAt === null ? "" : ` · ${Math.max(0, Math.round((input.now - activity.turnStartedAt) / 1000))}s`
-  return `${activity.stopping ? "stopping" : "working"}${since} · ${plural(activity.steps, "step")}`
+  return `${activity.stopping ? "stopping" : "working"}${since} · ${requestsText(activity.steps, activity.summaryCalls)}`
 }
 
 function percent(value: number | null): string {

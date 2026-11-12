@@ -211,7 +211,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "",
     "The reducer folds events.",
     "",
-    "✓ done · no checks configured · 2 steps · 1.0s",
+    "✓ done · no checks configured · 2 steps + 1 summary call · 1.0s",
     "  tokens · 1,000 in · 800 cached (80%) · 50 out (10 reasoning)",
   ],
   "a-summary-that-is-still-invalid-the-checkpoint-is-built-without-the-model": [
@@ -229,7 +229,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "",
     "The expectation is wrong: 1 + 1 is 2.",
     "",
-    "✓ done · no checks configured · 2 steps · 1.5s",
+    "✓ done · no checks configured · 2 steps + 2 summary calls · 1.5s",
     "  tokens · 7,300 in · 6,900 cached (95%) · 100 out (20 reasoning)",
   ],
   // The three ways a turn ends as done, and what the checks showed on the way.

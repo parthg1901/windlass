@@ -135,6 +135,8 @@ export interface OutcomeRow extends RowBase {
   readonly outcome: "succeeded" | "unresolved" | "failed" | "interrupted" | "shutdown"
   readonly verification: VerificationOutcome | null
   readonly steps: number
+  /** Summary requests the turn's compactions sent: model requests that are no steps. */
+  readonly summaryCalls: number
   readonly durationMs: number | null
   readonly usage: Usage | null
   readonly message: string | null
@@ -177,6 +179,8 @@ export interface CallUsage {
   readonly messageId: string
   readonly model: string | null
   readonly kind: "step" | "compaction"
+  /** The model requests this entry stands for: 1 for a step; a compaction's summary calls, retries and the repair included. */
+  readonly requests: number
   readonly usage: Usage
   /** Diagnostics the server reported about this call (a broken prompt-cache prefix). */
   readonly diagnostics: readonly string[]
@@ -188,6 +192,8 @@ export interface Activity {
   executing: boolean
   turnStartedAt: number | null
   steps: number
+  /** Summary requests of the turn's compactions so far. */
+  summaryCalls: number
   call: { readonly messageId: string; readonly since: number; readonly model: string; readonly attempt: number } | null
   checking: { readonly names: readonly string[]; readonly since: number; progress: string | null } | null
   compacting: { readonly since: number; repairing: boolean } | null
@@ -600,7 +606,7 @@ export class Transcript {
         this.notice(SYMBOL.note, "dim", [span("the conversation is trusted again (/clear-taint): approvals apply as before", "dim")], [], replay, "session")
         return
       case "notice": {
-        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "a project setting was not followed" : event.kind === "checks_not_run" ? "checks not run" : String(event.kind).replace(/_/g, " ")
+        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "a project setting was not followed" : event.kind === "checks_not_run" ? "checks not run" : event.kind === "no_closing_answer" ? "no closing answer" : String(event.kind).replace(/_/g, " ")
         const [first = "", ...rest] = sanitize(event.message)
           .split("\n")
           .map((line) => line.trim())
@@ -655,8 +661,9 @@ export class Transcript {
         this.activity.compacting = null
         const open = this.compactions.get(event.data.messageId)
         this.compactions.delete(event.data.messageId)
-        if (event.data.usage !== null) this.record(event.data.messageId, event.data.usage, "compaction", "ok", open?.model ?? this.session.model)
+        if (event.data.usage !== null) this.record(event.data.messageId, event.data.usage, "compaction", "ok", open?.model ?? this.session.model, event.data.calls ?? 1)
         this.addUsage(event.data.usage)
+        this.addSummaryCalls(event.data.calls)
         const before = open?.tokensBefore ?? 0
         const sizes = before > 0 && event.data.tokensAfter > 0 ? ` · about ${thousands(before)} → ${thousands(event.data.tokensAfter)} tokens` : ""
         const fallback = event.data.source === "fallback"
@@ -672,6 +679,7 @@ export class Transcript {
         this.activity.compacting = null
         const open = this.compactions.get(event.data.messageId)
         this.compactions.delete(event.data.messageId)
+        this.addSummaryCalls(event.data.calls)
         this.setError(errorClass(event.data.error), event.data.error.kind === "provider" ? event.data.error.error.requestId : null)
         const text = [span(`compaction failed: ${stepErrorText(event.data.error)}`, "error")]
         if (open === undefined) this.notice(SYMBOL.fail, "error", text, [], replay, "work")
@@ -736,7 +744,8 @@ export class Transcript {
         if (verification.status === "passed") this.notice(SYMBOL.ok, "ok", [span("checks passed", "ok"), next], [], replay, "work")
         else if (verification.status === "unresolved")
           this.notice(SYMBOL.fail, "error", [span("failing checks left unresolved", "error", { bold: true }), span(`: ${verification.failing.join(", ")}`, "error"), next], [[span(unresolvedReason(verification), "warn")]], replay, "work")
-        else this.notice(SYMBOL.ok, "dim", [span(verification.status === "not_needed" ? "nothing to check" : verification.status === "left_to_parent" ? "checks left to the session that started it" : "no checks configured", "dim"), next], [], replay, "work")
+        else if (verification.status === "not_needed" && verification.unverified === true) this.notice(SYMBOL.ok, "dim", [span("nothing to check", "dim"), next], [[span(UNVERIFIED_HINT, "warn")]], replay, "work")
+        else this.notice(SYMBOL.ok, "dim", [span(verification.status === "not_needed" ? "nothing to check" : verification.status === "left_to_parent" ? LEFT_TO_PARENT : "no checks configured", "dim"), next], [], replay, "work")
         return
       }
       case "execution.started":
@@ -1044,6 +1053,7 @@ export class Transcript {
         outcome,
         verification: extra.verification ?? null,
         steps: turn?.steps ?? 0,
+        summaryCalls: turn?.summaryCalls ?? 0,
         durationMs: turn === null ? null : time - turn.start,
         usage: turn?.usage ?? null,
         message: extra.message ?? null,
@@ -1078,10 +1088,17 @@ export class Transcript {
     this.addUsage(usage)
   }
 
-  private record(messageId: string, usage: Usage, kind: CallUsage["kind"], ended: CallUsage["ended"], model: string | null): void {
+  private record(messageId: string, usage: Usage, kind: CallUsage["kind"], ended: CallUsage["ended"], model: string | null, requests = 1): void {
     const diagnostics = this.callDiagnostics.get(messageId) ?? []
     this.callDiagnostics.delete(messageId)
-    this.calls.push({ n: this.calls.length + 1, messageId, model, kind, usage, diagnostics, ended })
+    this.calls.push({ n: this.calls.length + 1, messageId, model, kind, requests, usage, diagnostics, ended })
+  }
+
+  /** The summary requests a compaction sent: model requests of the turn that are no steps. */
+  private addSummaryCalls(calls: number | undefined): void {
+    if (calls === undefined) return
+    if (this.turn !== null) this.turn.summaryCalls += calls
+    this.activity.summaryCalls += calls
   }
 
   private addUsage(usage: Usage | null): void {
@@ -1188,7 +1205,7 @@ function compactionOnly(turn: Turn | null): boolean {
 }
 
 function blankActivity(): Activity {
-  return { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null }
+  return { executing: false, turnStartedAt: null, steps: 0, summaryCalls: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null }
 }
 
 function key(messageId: string, callId: string): string {
