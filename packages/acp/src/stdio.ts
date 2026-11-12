@@ -21,6 +21,29 @@ import { serve } from "./server.ts"
 /** Longer than the shell tool's grace between SIGTERM and SIGKILL, so a stopped command can wind down. */
 export const SHUTDOWN_TIMEOUT_MS = 5000
 
+/**
+ * Wake-ups fire in this process: it is the long-lived one. It serves an
+ * editor, the terminal interface or an interactive command line for as long
+ * as they run, so a wake-up that comes due meanwhile (of any session of the
+ * data directory) is delivered here, its session opened for it and let go of
+ * again. Several servers may run at once: each firing is delivered by
+ * exactly one of them (the wake store's leases), and the webhook listener's
+ * port belongs to whichever bound it first (the others record nothing and
+ * are not disturbed).
+ *
+ * A client that starts the server for one prompt and ends it right after
+ * sets this variable to `off`: the server it starts would otherwise begin
+ * other sessions' wake-up turns and cut them short when it exits (they
+ * resume when their session is next opened). The tools work either way: a
+ * wake-up created there fires in the next server that runs.
+ */
+export const WAKE_ENV = `${brand.binary.toUpperCase()}_WAKE`
+
+/** Whether this server fires wake-ups, going by `WAKE_ENV`: yes unless it says `off`, `0`, `false` or `no`. */
+export function firesWakeUps(env: Record<string, string | undefined>): boolean {
+  return !["off", "0", "false", "no"].includes((env[WAKE_ENV] ?? "").trim().toLowerCase())
+}
+
 export interface StdioOptions {
   readonly env: Record<string, string | undefined>
   readonly version?: string
@@ -40,7 +63,11 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
   if (provider !== undefined) log.info(`using the scripted model in ${scriptPath} (${SCRIPT_ENV}); no real model is called`)
   // The same harness the command line builds: one data directory, a store per session, the saved sign-in. Its lines
   // (the engine's diagnostics, notices about the data directory) are what the command line prints as warnings too.
-  const harness = createHarness({ log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }) })
+  const fires = firesWakeUps(options.env)
+  const harness = createHarness({ log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }), ...(fires ? { engine: { wake: { run: true } } } : {}) })
+  // The scheduler and the webhook listener start with the engine, not with the first session: a wake-up that is
+  // due is delivered although the client has opened nothing yet.
+  if (fires) void harness.engine.wake()
 
   let outputClosed = false
   const output = new WritableStream<Uint8Array>({
