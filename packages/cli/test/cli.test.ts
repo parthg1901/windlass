@@ -49,7 +49,7 @@ describe("exit codes", () => {
 
 describe("commands", () => {
   test("--version and --help", async () => {
-    expect((await runCli(["--version"])).out).toBe(`${brand.name} 0.0.0\n`)
+    expect((await runCli(["--version"])).out).toBe(`${brand.name} 0.0.0+source (${process.platform}-${process.arch})\n`)
     const help = await runCli(["--help"])
     expect(help.code).toBe(0)
     expect(help.out).toContain(`${brand.binary} [options] <prompt...>`)

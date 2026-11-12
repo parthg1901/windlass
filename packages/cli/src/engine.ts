@@ -33,6 +33,7 @@
  *   that leaves them out has no undo, and the commands say so.
  */
 import type { DiffResult } from "@light-harness/acp/extensions"
+import { brand } from "@light-harness/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
@@ -66,7 +67,7 @@ export interface ApprovalRequest {
 export type Approver = (request: ApprovalRequest) => Promise<{ readonly choice: ChoiceId; readonly note?: string } | null>
 
 /** What the CLI suggests when the saved sign-in is missing or rejected. */
-export const SIGN_IN_ADVICE = "sign in with ChatGPT, then try again"
+export const SIGN_IN_ADVICE = `sign in with ChatGPT: \`${brand.binary} login\`, then try again`
 
 /** Which session to work in. */
 export type SessionTarget =

@@ -338,7 +338,7 @@ describe("sessions, every path", () => {
       return { code: run.code, out: run.out, err: run.err }
     })
     expect(results.acp.code).toBe(1)
-    expect(results.acp.err).toContain("(sign in with ChatGPT, then try again)")
+    expect(results.acp.err).toContain(`(sign in with ChatGPT: \`${brand.binary} login\`, then try again)`)
   })
 
   test("a session another process works in is refused with a sentence that names that process", async () => {

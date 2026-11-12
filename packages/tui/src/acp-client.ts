@@ -57,7 +57,7 @@ export { EventQueue } from "@light-harness/acp/client"
 /** The compaction method, should the server offer it. */
 export const COMPACT_METHOD = EXT.compact
 export const START_TIMEOUT_MS = 20_000
-const SIGN_IN_ADVICE = "sign in with ChatGPT (`bun scripts/login.ts start` in the checkout), then try again"
+const SIGN_IN_ADVICE = `sign in with ChatGPT (\`${brand.binary} login\`), then try again`
 
 export interface AcpClientOptions {
   /** The command that serves ACP on stdio, such as `[bun, .../cli/src/main.ts, "acp"]`. */

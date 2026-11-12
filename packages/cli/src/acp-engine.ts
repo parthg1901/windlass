@@ -33,6 +33,7 @@
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS } from "@light-harness/acp/client"
 import { type DiffResult, EXT } from "@light-harness/acp/extensions"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
+import { selfCommand } from "./self.ts"
 import { type Approver, type Engine, type EngineEvent, EngineUnavailable, type HandEditQuestion, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type SendOptions, type Session, type SessionRevertOptions, type SessionSummary } from "./engine.ts"
 
 export interface AcpEngineOptions {
@@ -56,15 +57,13 @@ export { START_TIMEOUT_MS }
 /** Overrides `START_TIMEOUT_MS`, in milliseconds. */
 export const START_TIMEOUT_ENV = `${brand.binary.toUpperCase()}_ENGINE_START_TIMEOUT_MS`
 
-const MAIN = new URL("./main.ts", import.meta.url).pathname
-
 export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
   let started: Promise<HarnessConnection> | null = null
   let opened = 0
   const stderr = options.stderr ?? ((text: string) => void process.stderr.write(text))
   const link = () =>
     (started ??= HarnessConnection.start({
-      transport: options.transport === "memory" ? { kind: "memory", ...(options.harness === undefined ? {} : { harness: options.harness }) } : { kind: "child", command: options.command ?? [process.execPath, MAIN, "acp"], env: options.env ?? process.env },
+      transport: options.transport === "memory" ? { kind: "memory", ...(options.harness === undefined ? {} : { harness: options.harness }) } : { kind: "child", command: options.command ?? selfCommand(["acp"]), env: options.env ?? process.env },
       clientInfo: { name: brand.binary, title: brand.name, version: options.version ?? "0.0.0" },
       // Only what the user should see: the server's warnings and errors, as the CLI's own lines.
       log: (line, level) => {

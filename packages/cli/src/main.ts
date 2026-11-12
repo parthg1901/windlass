@@ -14,7 +14,7 @@
  */
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
-import { brand } from "@light-harness/core"
+import { brand, versionLine, versionString } from "@light-harness/core"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
@@ -35,6 +35,7 @@ import {
 import { type FakeSession } from "./fake-engine.ts"
 import { JsonSink, PrettyRenderer, QuietSink, type Sink } from "./renderer.ts"
 import { selectEngine } from "./select-engine.ts"
+import { selfCommand } from "./self.ts"
 import { type EditorAction, Screen } from "./terminal.ts"
 import { colorEnabled, displayWidth, formatDuration } from "./text.ts"
 
@@ -84,8 +85,12 @@ export async function run(io: Io): Promise<number> {
       io.stdout.write(helpText())
       return 0
     case "version":
-      io.stdout.write(`${brand.name} ${await version()}\n`)
+      io.stdout.write(`${versionLine()}\n`)
       return 0
+    case "login": {
+      const { runLogin } = await import("./login.ts")
+      return runLogin(parsed.argv, io)
+    }
     case "error":
       return usage(io, parsed.message)
     case "acp": {
@@ -228,7 +233,7 @@ async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: str
     settings: { model: options.model, effort: options.effort, maxSteps: options.maxSteps },
     env: io.env,
     version: await version(),
-    serverCommand: [process.execPath, new URL("./main.ts", import.meta.url).pathname, "acp"],
+    serverCommand: selfCommand(["acp"]),
     demo: demo === null ? null : { scenario: demo.scenario, name: demo.name, speed: options.demoSpeed, graceMs: options.demoGraceMs },
   })
 }
@@ -559,8 +564,7 @@ function isDirectory(path: string): boolean {
 }
 
 async function version(): Promise<string> {
-  const pkg: { version?: string } = await Bun.file(new URL("../package.json", import.meta.url)).json()
-  return pkg.version ?? "0.0.0"
+  return versionString()
 }
 
 /** Whether `work` finished within `ms`. */

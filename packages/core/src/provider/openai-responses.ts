@@ -28,6 +28,7 @@ import { MissingBlobError, blobRefs, encodeRequest } from "./openai-responses-en
 import { classify, isRecord, readErrorBody, retryAfterMs, stringOr } from "./openai-responses-error.ts"
 import type { Provider, StreamEvent } from "./provider.ts"
 import { SseParser } from "./sse.ts"
+import { userAgent } from "../version.ts"
 
 export { encodeRequest, blobRefs, MissingBlobError, type EncodedRequest, type BlobBytes } from "./openai-responses-encode.ts"
 export { ResponsesStreamMapper } from "./openai-responses-decode.ts"
@@ -173,7 +174,7 @@ export class OpenAIResponsesProvider implements Provider {
   ): Promise<{ response: Response } | { error: ProviderError }> {
     const sent = this.fetch(`${this.baseUrl}/responses`, {
       method: "POST",
-      headers: { ...headers, authorization: `Bearer ${token}` },
+      headers: { ...headers, "user-agent": userAgent(), authorization: `Bearer ${token}` },
       body,
       signal: controller.signal,
     })
@@ -281,7 +282,7 @@ export async function listModels(options: {
   try {
     response = await fetcher(`${baseUrl}/models`, {
       method: "GET",
-      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+      headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": userAgent() },
       signal: options.signal,
     })
     text = await response.text()

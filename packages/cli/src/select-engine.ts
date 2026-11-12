@@ -54,12 +54,19 @@ export async function selectEngine(
   return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "memory", ...(harness === null ? {} : { harness }) } satisfies AcpEngineOptions])
 }
 
+/** The engines of this build, imported by name so that a compiled executable bundles them. */
+const BUNDLED: Readonly<Record<string, () => Promise<Record<string, unknown>>>> = {
+  [REAL_ENGINE_MODULE]: () => import("./real-engine.ts"),
+  [ACP_ENGINE_MODULE]: () => import("./acp-engine.ts"),
+}
+
 async function loadRealEngine(module: string, name: string, args: readonly unknown[]): Promise<Selected> {
+  const bundled = BUNDLED[module]
   const url = new URL(module, import.meta.url)
-  if (!(await Bun.file(url).exists())) return { kind: "unavailable", reason: null }
+  if (bundled === undefined && !(await Bun.file(url).exists())) return { kind: "unavailable", reason: null }
   let loaded: Record<string, unknown>
   try {
-    loaded = await import(url.href)
+    loaded = bundled === undefined ? await import(url.href) : await bundled()
   } catch (error) {
     return { kind: "unavailable", reason: `failed to load: ${describe(error)}` }
   }

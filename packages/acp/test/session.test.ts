@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
+import { brand } from "@light-harness/core"
 import { script } from "@light-harness/core/testing"
 import { SIGN_IN_HINT } from "../src/server.ts"
 import { EXT, META } from "../src/extensions.ts"
@@ -104,7 +105,7 @@ test("signed out: session creation fails with auth-required and says how to sign
   const attempt = harness.connection.agent.request(methods.agent.session.new, { cwd: harness.workspace, mcpServers: [] })
   await expect(attempt).rejects.toMatchObject({ code: -32000 })
   const error = (await attempt.catch((caught: unknown) => caught)) as { message: string }
-  expect(error.message).toContain("bun scripts/login.ts start")
+  expect(error.message).toContain(`${brand.binary} login`)
   await expect(harness.connection.agent.request(methods.agent.authenticate, { methodId: "chatgpt" })).rejects.toMatchObject({ code: -32000 })
   await expect(harness.connection.agent.request(methods.agent.session.load, { sessionId: "ses_x", cwd: harness.workspace, mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
 })

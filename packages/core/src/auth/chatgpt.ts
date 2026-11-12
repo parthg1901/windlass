@@ -61,32 +61,61 @@ export function dataDir() {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), brand.directory)
 }
 
-export const credentialsPath = () => join(dataDir(), "auth.json")
-export const pendingPath = () => join(dataDir(), "auth-pending.json")
-const hostIdPath = () => join(dataDir(), "host-id")
+/**
+ * Where the sign-in talks to and where it keeps its files. Production uses
+ * `CHATGPT_AUTH`; a test passes its own (a fake authorization server and a
+ * temporary directory) to every function that takes one.
+ */
+export interface AuthConfig {
+  /** The `iss` an ID token must carry. */
+  readonly issuer: string
+  readonly authorizeUrl: string
+  readonly tokenUrl: string
+  readonly jwksUrl: string
+  /** The directory `auth.json`, `auth-pending.json` and `host-id` are kept in. */
+  readonly dataDir: () => string
+}
 
-export async function loadCredentials(): Promise<Credentials | undefined> {
-  const file = Bun.file(credentialsPath())
+export const CHATGPT_AUTH: AuthConfig = { issuer: ISSUER, authorizeUrl: AUTHORIZE_URL, tokenUrl: TOKEN_URL, jwksUrl: JWKS_URL, dataDir }
+
+/** The loopback port the browser is sent back to, unless `beginLogin` is given another. */
+export const LOGIN_PORT = DEFAULT_PORT
+
+export const credentialsPath = (config: AuthConfig = CHATGPT_AUTH) => join(config.dataDir(), "auth.json")
+export const pendingPath = (config: AuthConfig = CHATGPT_AUTH) => join(config.dataDir(), "auth-pending.json")
+const hostIdPath = (config: AuthConfig) => join(config.dataDir(), "host-id")
+
+export async function loadCredentials(config: AuthConfig = CHATGPT_AUTH): Promise<Credentials | undefined> {
+  const file = Bun.file(credentialsPath(config))
   if (!(await file.exists())) return undefined
   return (await file.json()) as Credentials
 }
 
-export async function loadPending(): Promise<PendingLogin | undefined> {
-  const file = Bun.file(pendingPath())
+export async function loadPending(config: AuthConfig = CHATGPT_AUTH): Promise<PendingLogin | undefined> {
+  const file = Bun.file(pendingPath(config))
   if (!(await file.exists())) return undefined
   return (await file.json()) as PendingLogin
 }
 
+/** Forgets the saved sign-in and any sign-in in progress. The host ID stays, so the next sign-in reuses this host's registration. */
+export async function forgetCredentials(config: AuthConfig = CHATGPT_AUTH): Promise<boolean> {
+  const had = await Bun.file(credentialsPath(config)).exists()
+  await rm(credentialsPath(config), { force: true })
+  await rm(pendingPath(config), { force: true })
+  return had
+}
+
 /** Builds the authorize URL and saves the PKCE state so a later process can finish the login. */
-export async function beginLogin(options: { port?: number } = {}): Promise<{ url: string; pending: PendingLogin }> {
-  const saved = await loadCredentials()
+export async function beginLogin(options: { port?: number; config?: AuthConfig } = {}): Promise<{ url: string; pending: PendingLogin }> {
+  const config = options.config ?? CHATGPT_AUTH
+  const saved = await loadCredentials(config)
   const verifier = randomToken(48)
   const pending: PendingLogin = {
     state: randomToken(24),
     nonce: randomToken(24),
     verifier,
     redirectUri: `http://127.0.0.1:${options.port ?? DEFAULT_PORT}/auth/callback`,
-    hostId: saved?.hostId ?? (await hostId()),
+    hostId: saved?.hostId ?? (await hostId(config)),
     ...(saved ? { clientId: saved.clientId } : {}),
     createdAt: Date.now(),
   }
@@ -104,16 +133,16 @@ export async function beginLogin(options: { port?: number } = {}): Promise<{ url
     code_challenge_method: "S256",
     code_challenge: await sha256Base64Url(verifier),
   })
-  await writePrivate(pendingPath(), pending)
-  return { url: `${AUTHORIZE_URL}?${params}`, pending }
+  await writePrivate(pendingPath(config), pending)
+  return { url: `${config.authorizeUrl}?${params}`, pending }
 }
 
 /**
  * Completes a login from the callback URL (or just its query string). Works both for a
  * loopback listener and for a URL pasted from a browser on another machine.
  */
-export async function finishLogin(callback: string, pending?: PendingLogin): Promise<Credentials> {
-  const login = pending ?? (await loadPending())
+export async function finishLogin(callback: string, pending?: PendingLogin, config: AuthConfig = CHATGPT_AUTH): Promise<Credentials> {
+  const login = pending ?? (await loadPending(config))
   if (!login) throw new AuthError("no_pending_login", "No sign-in is in progress. Start one first.")
   const params = callbackParams(callback)
   if (params.get("state") !== login.state)
@@ -129,7 +158,7 @@ export async function finishLogin(callback: string, pending?: PendingLogin): Pro
   if (!clientId || clientId === REGISTRATION_CLIENT_ID)
     throw new AuthError("registration_incomplete", "Registration did not return an issued client ID.")
 
-  const tokens = await tokenRequest({
+  const tokens = await tokenRequest(config, {
     grant_type: "authorization_code",
     client_id: clientId,
     code,
@@ -137,15 +166,15 @@ export async function finishLogin(callback: string, pending?: PendingLogin): Pro
     redirect_uri: login.redirectUri,
     resource: RESOURCE,
   })
-  const claims = await verifyIdToken(tokens.id_token, clientId, login.nonce)
-  const previous = await loadCredentials()
+  const claims = await verifyIdToken(config, tokens.id_token, clientId, login.nonce)
+  const previous = await loadCredentials(config)
   if (previous && previous.clientId === clientId && previous.account.sub !== claims.sub)
     throw new AuthError("account_mismatch", "This sign-in is for a different account than the saved one.")
   const credentials = toCredentials(tokens, clientId, login.hostId, claims, [])
   if (!credentials.scopes.includes(PLAN_USAGE_SCOPE))
     throw new AuthError("plan_usage_not_granted", "Sign-in succeeded but ChatGPT plan usage was not granted.")
-  await writePrivate(credentialsPath(), credentials)
-  await rm(pendingPath(), { force: true })
+  await writePrivate(credentialsPath(config), credentials)
+  await rm(pendingPath(config), { force: true })
   return credentials
 }
 
@@ -154,18 +183,18 @@ export async function finishLogin(callback: string, pending?: PendingLogin): Pro
 let refreshing: Promise<Credentials> | undefined
 
 /** Returns a usable access token, refreshing and saving the rotated tokens when needed. */
-export async function accessToken(): Promise<string> {
-  const credentials = await loadCredentials()
+export async function accessToken(config: AuthConfig = CHATGPT_AUTH): Promise<string> {
+  const credentials = await loadCredentials(config)
   if (!credentials) throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
   if (credentials.expiresAt - Date.now() > REFRESH_MARGIN_MS) return credentials.accessToken
-  refreshing ??= refresh(credentials).finally(() => {
+  refreshing ??= refresh(config, credentials).finally(() => {
     refreshing = undefined
   })
   return (await refreshing).accessToken
 }
 
-async function refresh(credentials: Credentials): Promise<Credentials> {
-  const tokens = await tokenRequest({
+async function refresh(config: AuthConfig, credentials: Credentials): Promise<Credentials> {
+  const tokens = await tokenRequest(config, {
     grant_type: "refresh_token",
     client_id: credentials.clientId,
     refresh_token: credentials.refreshToken,
@@ -178,7 +207,7 @@ async function refresh(credentials: Credentials): Promise<Credentials> {
     credentials.account,
     credentials.scopes,
   )
-  await writePrivate(credentialsPath(), next)
+  await writePrivate(credentialsPath(config), next)
   return next
 }
 
@@ -190,8 +219,8 @@ type TokenResponse = {
   scope?: string
 }
 
-async function tokenRequest(body: Record<string, string>): Promise<TokenResponse> {
-  const response = await fetch(TOKEN_URL, {
+async function tokenRequest(config: AuthConfig, body: Record<string, string>): Promise<TokenResponse> {
+  const response = await fetch(config.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": `${AGENT_NAME}/0` },
     body: new URLSearchParams(body),
@@ -229,7 +258,7 @@ function toCredentials(
 
 type IdClaims = { sub: string; email?: string }
 
-async function verifyIdToken(token: string, audience: string, nonce: string): Promise<IdClaims> {
+async function verifyIdToken(config: AuthConfig, token: string, audience: string, nonce: string): Promise<IdClaims> {
   const [headerPart, payloadPart, signaturePart] = token.split(".")
   if (!headerPart || !payloadPart || !signaturePart) throw new AuthError("bad_id_token", "The ID token is malformed.")
   const header = parseJson(decodeBase64Url(headerPart))
@@ -243,7 +272,7 @@ async function verifyIdToken(token: string, audience: string, nonce: string): Pr
         ? { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" }
         : undefined
   if (!algorithm) throw new AuthError("bad_id_token", `Unsupported ID token algorithm: ${String(header.alg)}`)
-  const jwks = (await (await fetch(JWKS_URL)).json()) as { keys?: Array<Record<string, unknown> & { kid?: string }> }
+  const jwks = (await (await fetch(config.jwksUrl)).json()) as { keys?: Array<Record<string, unknown> & { kid?: string }> }
   const jwk = jwks.keys?.find((key) => key.kid === header.kid)
   if (!jwk) throw new AuthError("bad_id_token", "No published key matches the ID token.")
   const key = await crypto.subtle.importKey("jwk", jwk as webcrypto.JsonWebKey, algorithm, false, ["verify"])
@@ -256,7 +285,7 @@ async function verifyIdToken(token: string, audience: string, nonce: string): Pr
   if (!valid) throw new AuthError("bad_id_token", "The ID token signature is invalid.")
 
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud]
-  if (claims.iss !== ISSUER) throw new AuthError("bad_id_token", "The ID token has the wrong issuer.")
+  if (claims.iss !== config.issuer) throw new AuthError("bad_id_token", "The ID token has the wrong issuer.")
   if (!audiences.includes(audience)) throw new AuthError("bad_id_token", "The ID token is for a different client.")
   if (typeof claims.exp !== "number" || claims.exp * 1000 < Date.now())
     throw new AuthError("bad_id_token", "The ID token has expired.")
@@ -265,11 +294,11 @@ async function verifyIdToken(token: string, audience: string, nonce: string): Pr
   return { sub: claims.sub, ...(typeof claims.email === "string" ? { email: claims.email } : {}) }
 }
 
-async function hostId() {
-  const file = Bun.file(hostIdPath())
+async function hostId(config: AuthConfig) {
+  const file = Bun.file(hostIdPath(config))
   if (await file.exists()) return (await file.text()).trim()
   const id = `urn:uuid:${crypto.randomUUID()}`
-  await writePrivate(hostIdPath(), id)
+  await writePrivate(hostIdPath(config), id)
   return id
 }
 

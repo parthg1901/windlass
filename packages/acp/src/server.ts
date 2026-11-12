@@ -92,8 +92,8 @@ import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText } from "./prompt.ts"
 import { type Output, Translator, type TurnEnd } from "./translate.ts"
 
-/** The instruction a signed-out user gets. The CLI has no sign-in command yet; this is the developer helper. */
-export const SIGN_IN_HINT = `run \`bun scripts/login.ts start\` in the ${brand.name} checkout and finish the ChatGPT sign-in, then try again`
+/** The instruction a signed-out user gets. */
+export const SIGN_IN_HINT = `run \`${brand.binary} login\` and finish the ChatGPT sign-in, then try again`
 
 /** The one auth method: the ChatGPT-plan sign-in, which the user completes outside the client. */
 export const AUTH_METHOD_ID = "chatgpt"
