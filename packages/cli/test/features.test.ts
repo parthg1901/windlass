@@ -18,7 +18,10 @@ import { type CallId, type MessageId, brand, event } from "@windlass/core"
 import { FakeProvider, script } from "@windlass/core/testing"
 import { loadConfig } from "../../core/src/config/load.ts"
 import { createAcpEngine } from "../src/acp-engine.ts"
-import { wakeMessageSummary } from "../src/features.ts"
+import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
+import type { Session } from "../src/engine.ts"
+import { FeatureWatch } from "../src/feature-commands.ts"
+import { mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeMessageSummary } from "../src/features.ts"
 import { successSummary } from "../src/tools.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -92,13 +95,19 @@ describe("MCP servers", () => {
     const cwd = workspace({ mcp: { servers: { theirs: { command: process.execPath, args: [SERVER, "--only", "echo"] } } } })
     const provider = new FakeProvider([[script.text("Hello.")]])
     const run = await interactive(cwd, provider, async (type, waitFor) => {
+      // Before the first message the engine has not looked at the servers: that is said, with what to do.
       type("/mcp\r")
-      await waitFor("not started yet: servers start with the next message")
+      await waitFor("not looked at yet: a project's server is asked about once the first message is sent")
+      type("/mcp approve theirs\r")
+      await waitFor('The MCP server "theirs" cannot be approved yet: a session looks at its MCP servers when its first message is sent.')
       type("hello\r")
+      await waitFor('This project\'s configuration names the MCP server "theirs". A project\'s server starts only once you have approved it')
       await waitFor('? Start the MCP server "theirs" that this project\'s configuration names?')
       await waitFor("[y] start it · [N] not now")
       type("y\r")
+      // Said plainly: it starts now, and the agent has it from the next message.
       await waitFor('approved: "theirs" starts now')
+      await waitFor(/the agent has its tools from your next message|ask again in your next message, when it has them/)
       // It starts in the background: asked again until it runs.
       for (let tries = 0; ; tries += 1) {
         type("/mcp\r")
@@ -225,5 +234,55 @@ describe("what the renderer says", () => {
     expect(out).toContain("⏰ wake-up wk_7a3c12139dd8: it fired")
     expect(out).toContain("Look at the canary.")
     expect(out).not.toContain("› [Wake-up")
+  })
+})
+
+describe("what the project's configuration asks for is settled before a message is sent", () => {
+  const server = (state: McpServerInfo["state"], origin: "user" | "project"): McpServerInfo => ({ name: "issues", state, transport: "stdio", target: "bun server.ts", argv: ["bun", "server.ts"], tools: null, hiddenTools: 0, error: null, retryInMs: null, origin, file: "/w/config.json", question: state === "awaiting_approval" ? { fingerprint: "f1", subject: "bun server.ts", details: [] } : null })
+
+  test("the words: a server not looked at yet, one that cannot be approved yet, and an approval in the middle of a turn", () => {
+    expect(mcpStateWords(server("not_started", "project"))).toBe("not looked at yet: a project's server is asked about once the first message is sent")
+    expect(mcpStateWords(server("not_started", "user"))).toBe("not started yet: servers start with the next message")
+    expect(mcpNotWaitingText(server("not_started", "project"))).toContain("Send your message: if this project's server still needs your approval you are asked then (/mcp approve issues asks again)")
+    expect(mcpNotWaitingText(server("not_started", "user"))).toBe('The MCP server "issues" is your own and needs no approval: it starts with your next message.')
+    expect(mcpNotWaitingText(server("running", "project"))).toBe('the MCP server "issues" does not wait for an approval: it is running')
+    expect(mcpApprovedText({ name: "issues" }, false)).toBe('approved: "issues" starts now; the agent has its tools from your next message. /mcp shows it.')
+    expect(mcpApprovedText({ name: "issues" }, true)).toContain("The turn in progress began without it, so the agent may already have said it has no such tools: ask again in your next message")
+    expect(mcpFirstMessageText([server("not_started", "user"), server("running", "project")])).toBeNull()
+    expect(mcpFirstMessageText([server("not_started", "project")])).toContain('names the MCP server "issues". A project\'s server starts only once you have approved it')
+  })
+
+  test("a hook, a language server and an MCP server that wait are asked about, and answered, before the message goes", async () => {
+    const said: string[] = []
+    const answers = ["y", "n", "y"]
+    const approved: string[] = []
+    const hooks: HooksStateResult = { sessionId: "s", available: true, maxStopRounds: 2, ignored: [], hooks: [{ name: "fmt", point: "afterTool", state: "awaiting_approval", command: "bun fmt", tools: null, paths: null, timeoutSeconds: 10, onError: "refuse", sandbox: true, origin: "project", file: "/w/config.json", fingerprint: "h1", error: null, question: "This project's configuration asks to run a hook \"fmt\" after a tool call:\n    bun fmt" }] }
+    const lsp: LspStateResult = { sessionId: "s", available: true, off: null, waitMs: 1500, servers: [{ name: "pyright", state: "awaiting_approval", command: "pyright --stdio", argv: ["pyright", "--stdio"], languages: [], processes: [], error: null, origin: "project", file: "/w/config.json", question: { fingerprint: "l1", subject: "pyright --stdio", details: [] } }] }
+    const mcp: McpStateResult = { sessionId: "s", available: true, servers: [server("awaiting_approval", "project")] }
+    const session = {
+      id: "ses_x",
+      hooks: async () => hooks,
+      lsp: async () => lsp,
+      mcp: async () => mcp,
+      approveHook: async (fingerprint: string) => (approved.push(`hook ${fingerprint}`), true),
+      approveLsp: async (name: string) => (approved.push(`lsp ${name}`), true),
+      approveMcp: async (name: string) => (approved.push(`mcp ${name}`), true),
+    } as unknown as Session
+    const io = { out: { lines: (lines: readonly { text: string }[]) => void said.push(...lines.map((line) => line.text)), notice: (text: string) => void said.push(text) }, ask: async (_question: string, print: () => void) => (print(), answers.shift() ?? null) }
+    const watch = new FeatureWatch(session, io, { attended: true, secrets: false })
+    await watch.beforeMessage()
+    // All three were put, in turn, and what was allowed was recorded before the message could go.
+    expect(approved).toEqual(["hook h1", "mcp issues"])
+    expect(said.join("\n")).toContain('? This project\'s configuration asks to run a hook "fmt" after a tool call:')
+    expect(said.join("\n")).toContain('not allowed: the language server "pyright" is not started; /lsp approve pyright asks again')
+    expect(said.join("\n")).toContain('approved: "issues" starts now; the agent has its tools from your next message. /mcp shows it.')
+    // Asked once: the next message goes without a question.
+    said.length = 0
+    await watch.beforeMessage()
+    expect(said).toEqual([])
+    // With nobody to ask, nothing is put before a message.
+    const unattended = new FeatureWatch(session, { ...io, ask: null }, { attended: false, secrets: false })
+    await unattended.beforeMessage()
+    expect(said).toEqual([])
   })
 })

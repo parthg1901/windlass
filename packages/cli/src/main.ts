@@ -204,8 +204,10 @@ export async function run(io: Io): Promise<number> {
   // A tool call that needs approval asks at the prompt, the way `/undo` asks about hand edits.
   if (questions !== null) session.setApprover?.(approverAt({ ask: (question) => questions.urgent(question) }, session))
   // What the CLI says about MCP servers and wake-ups unasked. Not in `--json`: that stream is the engine's events only.
-  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print) }
+  let watching: FeatureWatch | null = null
+  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print), working: () => watching?.working === true }
   const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
+  watching = watch
   watch?.start()
   const terminal = early
   const leaving = new Deferred<number>()
@@ -236,6 +238,8 @@ export async function run(io: Io): Promise<number> {
   const turns = new TurnWatcher(session, sink, watch)
   const turn = async (entry: Entry): Promise<TurnOutcome | "closed" | "not_sent"> => {
     control.running = true
+    // What the project's configuration asks for and the user has not answered yet is asked before the message goes.
+    await watch?.beforeMessage()
     const done = turns.next()
     const command = entry.command
     if (command === undefined) await session.send(entry.text)

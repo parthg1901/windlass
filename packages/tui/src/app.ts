@@ -22,7 +22,7 @@ import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend,
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
-import { COPY_NOTE, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
@@ -104,6 +104,9 @@ export class App {
   private paletteDismissed: string | null = null
   /** The session's command files as last listed: what the palette offers after the interface's own commands. */
   private commandFiles: CommandsResult | null = null
+  /** Messages held until the questions about the project's configuration are answered, and the answers being recorded. */
+  private readonly featureWaiters: (() => void)[] = []
+  private featureAnswering = 0
   /** The entry starts with a slash: the command files were listed when it began to. */
   private typingCommand = false
   private contextWindows = new Map<string, number | null>()
@@ -506,12 +509,52 @@ export class App {
         "warn",
       )
     this.conversation.toBottom()
-    session.send(text, delivery).then(
-      (id) => {
-        if (id === null) this.say("not sent: the session is not taking input right now", "warn")
-      },
-      (error: unknown) => this.say(`not sent: ${error instanceof Error ? error.message : String(error)}`, "error"),
+    void this.beforeMessage(session).then(() =>
+      session.send(text, delivery).then(
+        (id) => {
+          if (id === null) this.say("not sent: the session is not taking input right now", "warn")
+        },
+        (error: unknown) => this.say(`not sent: ${error instanceof Error ? error.message : String(error)}`, "error"),
+      ),
     )
+  }
+
+  /**
+   * Before a message that starts a turn is sent: whatever of the project's
+   * configuration waits for an approval (a hook, a language server, an MCP
+   * server the engine has looked at) is put in the dock now, and the message
+   * goes once it is answered, so the turn starts with what the user allowed.
+   * Before a session's first message the engine has not looked at the MCP
+   * servers yet: a project's are named, with what to expect.
+   */
+  private async beforeMessage(session: BackendSession): Promise<void> {
+    if (this.transcript.activity.executing) return
+    const look = async <T>(read: (() => Promise<T>) | undefined, tell: (state: T) => void) => {
+      const state = read === undefined ? undefined : await read.call(session).catch(() => undefined)
+      if (state !== undefined && this.session === session) tell(state)
+    }
+    await look(session.hooks, (state) => this.hooksChanged(session, state))
+    await look(session.lsp, (state) => this.lspChanged(session, state))
+    await look(session.mcp, (state) => {
+      this.mcpChanged(session, state)
+      const first = this.transcript.turns.turns.length > 0 || this.asked.has("first-message") ? null : mcpFirstMessageText(state.servers)
+      this.asked.add("first-message")
+      if (first !== null) this.say(first)
+    })
+    if (this.featuresSettled()) return
+    this.say("your message is sent once the question below is answered")
+    await new Promise<void>((resolve) => this.featureWaiters.push(resolve))
+  }
+
+  /** No question about the project's configuration waits or shows, and no answer to one is still being recorded. */
+  private featuresSettled(): boolean {
+    return this.featureQuestions.length === 0 && this.dock?.feature === undefined && this.featureAnswering === 0
+  }
+
+  /** Lets go of the messages that waited for those questions. */
+  private releaseFeatureWaiters(): void {
+    if (!this.featuresSettled() && this.session !== null && this.leaving === null) return
+    for (const release of this.featureWaiters.splice(0)) release()
   }
 
   private ctrlC(): void {
@@ -665,6 +708,7 @@ export class App {
       if (this.connection !== "connected") return this.say("not sent: no session is open; /reconnect first, or /quit", "warn")
       this.conversation.toBottom()
       const delivery = this.transcript.activity.executing ? this.mode : "steer"
+      await this.beforeMessage(session)
       return session.sendCommand(file.name, rest, delivery).then(
         (id) => {
           if (id === null) this.say("not sent: the session is not taking input right now", "warn")
@@ -1126,9 +1170,9 @@ export class App {
   /** Puts the next question about what the project's configuration names in the dock, when the dock is free. */
   private nextServerQuestion(): void {
     const session = this.session
-    if (this.dock !== null || session === null || this.leaving !== null) return
+    if (this.dock !== null || session === null || this.leaving !== null) return this.releaseFeatureWaiters()
     const feature = this.featureQuestions.shift()
-    if (feature === undefined) return
+    if (feature === undefined) return this.releaseFeatureWaiters()
     const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
     const state = new DockState(feature.ask, null, { focused: quiet, now: this.now(), withNote: false, whole: true })
     this.printWholeCommand(feature.id, state)
@@ -1140,7 +1184,14 @@ export class App {
         this.dock = null
         this.layout()
         // `null`: it stepped aside for a tool call's question, or the session went; it is not an answer.
-        if (answer !== null) void feature.answer(answer.choice === "once")
+        if (answer !== null) {
+          // What waits for the answer (a message held back) goes once the answer is recorded.
+          this.featureAnswering += 1
+          void feature.answer(answer.choice === "once").finally(() => {
+            this.featureAnswering -= 1
+            this.releaseFeatureWaiters()
+          })
+        }
         this.nextServerQuestion()
       },
     }
@@ -1153,7 +1204,7 @@ export class App {
     if (!start) return this.say(`MCP server "${server.name}" not started; /mcp approve ${server.name} asks again`)
     try {
       const approved = (await session.approveMcp?.(server.name, server.question!.fingerprint)) ?? false
-      if (approved) this.transcript.note([span(`approved: MCP server "${server.name}" starts now`), span(" · its tools reach the agent at its next step · /mcp shows it", "dim")], "accent", "✓")
+      if (approved) this.transcript.note([span(mcpApprovedText(server, this.transcript.activity.executing))], "accent", "✓")
       else this.say(`MCP server "${server.name}" no longer waits for an approval (its definition changed); /mcp shows it`, "warn")
       this.redraw()
     } catch (error) {
@@ -1197,7 +1248,7 @@ export class App {
           if (words[0] !== "approve" || words.length !== 2) return this.say("/mcp takes nothing (the listing) or approve <server>", "warn")
           const server = state.servers.find((candidate) => candidate.name === words[1])
           if (server === undefined) return this.say(`there is no MCP server "${words[1]}" in this session; /mcp lists them`, "warn")
-          if (server.state !== "awaiting_approval" || server.question === null) return this.say(`the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
+          if (server.state !== "awaiting_approval" || server.question === null) return this.say(mcpNotWaitingText(server))
           return this.askFeature(this.mcpQuestion(session, server))
         }
         case "hooks": {

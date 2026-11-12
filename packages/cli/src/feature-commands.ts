@@ -11,11 +11,14 @@
  * The words are `features.ts`'s and `hooks.ts`'s, shared with the TUI.
  */
 import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
-import type { EngineEvent, Session } from "./engine.ts"
+import { type EngineEvent, type Session, turnOutcomeOf } from "./engine.ts"
 import {
   type Line,
+  mcpApprovedText,
   mcpFailureText,
+  mcpFirstMessageText,
   mcpLines,
+  mcpNotWaitingText,
   mcpQuestionLines,
   mcpUnattendedText,
   memoryAction,
@@ -36,6 +39,8 @@ export interface FeatureOutput {
 export interface FeatureIo {
   readonly out: FeatureOutput
   readonly ask: ((question: string, print: () => void) => Promise<string | null>) | null
+  /** Whether a turn is running now: what is approved then is there from the next message, and that is said. */
+  readonly working?: () => boolean
 }
 
 export const FEATURE_COMMANDS = ["mcp", "hooks", "lsp", "skills", "wakeups", "memory", "remember", "forget"] as const
@@ -59,7 +64,7 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
         const state = await session.mcp()
         const server = state.servers.find((candidate) => candidate.name === words[1])
         if (server === undefined) return out.notice(`there is no MCP server "${words[1]}" in this session; /mcp lists them`, "warn")
-        if (server.state !== "awaiting_approval" || server.question === null) return out.notice(`the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
+        if (server.state !== "awaiting_approval" || server.question === null) return out.notice(mcpNotWaitingText(server))
         if (io.ask === null) return out.notice("nobody can answer here; run this interactively", "warn")
         return void (await askMcpServer(server, session, io))
       }
@@ -139,7 +144,7 @@ async function askMcpServer(server: McpServerInfo, session: Session, io: Feature
     return false
   }
   const approved = await session.approveMcp!(server.name, server.question!.fingerprint)
-  io.out.notice(approved ? `approved: "${server.name}" starts now; its tools reach the agent at its next step, and /mcp shows it` : `"${server.name}" no longer waits for an approval (its definition changed); /mcp shows it`, approved ? "info" : "warn")
+  io.out.notice(approved ? mcpApprovedText(server, io.working?.() === true) : `"${server.name}" no longer waits for an approval (its definition changed); /mcp shows it`, approved ? "info" : "warn")
   return approved
 }
 
@@ -178,6 +183,9 @@ export class FeatureWatch {
   private readonly asked = new Set<string>()
   private readonly work = new Set<Promise<unknown>>()
   private unsubscribe: (() => void) | null = null
+  /** A turn is running; and whether the session has had one (its servers are looked at when the first starts). */
+  private executing = false
+  private started = false
 
   constructor(
     private readonly session: Session,
@@ -190,8 +198,42 @@ export class FeatureWatch {
     this.unsubscribe = () => off.forEach((each) => each?.())
   }
 
+  /** Whether a turn is running, as the session's events say. */
+  get working(): boolean {
+    return this.executing
+  }
+
+  /**
+   * Before a message is sent that starts a turn, with someone at the prompt:
+   * whatever of the project's configuration waits for an approval (a hook, a
+   * language server, an MCP server the engine has looked at) is asked about
+   * now, and answered, so the turn starts with what the user allowed and no
+   * question interrupts it. Before a session's first message the engine has
+   * not looked at the MCP servers yet: a project's are named, with what to
+   * expect.
+   */
+  async beforeMessage(): Promise<void> {
+    if (!this.options.attended || this.io.ask === null) return
+    const session = this.session
+    const look = async <T>(read: (() => Promise<T>) | undefined, tell: (state: T) => void) => {
+      const state = read === undefined ? undefined : await read.call(session).catch(() => undefined)
+      if (state !== undefined) tell(state)
+    }
+    await look(session.hooks, (state) => this.hooks(state))
+    await look(session.lsp, (state) => this.lsp(state))
+    await look(session.mcp, (state) => {
+      this.mcp(state)
+      const first = this.started || this.told.has("first-message") ? null : mcpFirstMessageText(state.servers)
+      this.told.add("first-message")
+      if (first !== null) this.io.out.notice(first)
+    })
+    await this.settled()
+  }
+
   /** Every event of the session, after the renderer has shown it. */
   event(event: EngineEvent): void {
+    if (event.type === "execution.started" || event.type === "execution.resumed") this.executing = this.started = true
+    if (turnOutcomeOf(event) !== null) this.executing = false
     // The engine says a project's server was not started: the question (or how to approve it) follows at once.
     if (event.type === "diagnostic" && event.kind === "mcp" && this.session.mcp !== undefined) this.track(this.session.mcp().then((state) => this.mcp(state)))
     // So for a hook or a language server it did not run: asked about at once, or said how to approve.

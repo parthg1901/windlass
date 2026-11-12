@@ -67,7 +67,7 @@ describe("MCP servers", () => {
     await mounted!.settle()
     expect(approved).toEqual(["theirs:0123456789abcdef"])
     const after = flat(await mounted!.frame())
-    expect(after).toContain('approved: MCP server "theirs" starts now')
+    expect(after).toContain('approved: "theirs" starts now; the agent has its tools from your next')
     expect(after).not.toContain("[a] Start it for this project")
   })
 

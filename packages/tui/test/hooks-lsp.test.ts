@@ -246,3 +246,61 @@ describe("what a hook did, and what the language servers said", () => {
     expect(frame).toContain('⚠ hook: The hook "fmt" (after a tool call) could not answer')
   })
 })
+
+describe("before a message is sent", () => {
+  test("a project's hook that waits is asked about first: the message is held until the answer, then sent with what was allowed", async () => {
+    const backend = new ScriptBackend()
+    mounted = await mount({ width: 150, height: 44, backend })
+    const session = backend.session!
+    const approved: string[] = []
+    const waiting = hook("exit 2", "d".repeat(64))
+    session.hooks = async () => hooks(session.id, [waiting])
+    session.approveHook = async (fingerprint) => (approved.push(fingerprint), true)
+    // Typed before the server said anything about the hooks: the question is put now, and the message waits for it.
+    await mounted.setup.mockInput.typeText("fix the test")
+    mounted.setup.mockInput.pressEnter()
+    await mounted.settle()
+    const held = flat(await mounted.frame())
+    expect(backend.sent).toEqual([])
+    expect(held).toContain("your message is sent once the question below is answered")
+    expect(held).toContain("[a] Allow it for this project")
+    // Nothing is being typed any more: the question has the keys.
+    mounted.clock.now += ARMING_MS + 10
+    await mounted.setup.mockInput.typeText("a")
+    await mounted.settle()
+    expect(approved).toEqual(["d".repeat(64)])
+    expect(backend.sent).toEqual([{ text: "fix the test", delivery: "steer" }])
+    // Asked once: the next message goes at once.
+    await mounted.setup.mockInput.typeText("and the docs")
+    mounted.setup.mockInput.pressEnter()
+    await mounted.settle()
+    expect(backend.sent.map((item) => item.text)).toEqual(["fix the test", "and the docs"])
+  })
+
+  test("a project's MCP server the engine has not looked at yet is named before the first message, and approving one mid-turn says when the agent has it", async () => {
+    const backend = new ScriptBackend()
+    mounted = await mount({ width: 200, height: 44, backend })
+    const session = backend.session!
+    const server = { name: "issues", state: "not_started" as const, transport: "stdio" as const, target: "bun server.ts", argv: ["bun", "server.ts"], tools: null, hiddenTools: 0, error: null, retryInMs: null, origin: "project" as const, file: PROJECT_FILE, question: null }
+    session.mcp = async () => ({ sessionId: session.id, available: true, servers: [server] })
+    await command("/mcp approve issues")
+    expect(flat(await mounted.frame())).toContain('The MCP server "issues" cannot be approved yet: a session looks at its MCP servers when its first message is sent.')
+    await mounted.setup.mockInput.typeText("hello")
+    mounted.setup.mockInput.pressEnter()
+    await mounted.settle()
+    expect(backend.sent).toEqual([{ text: "hello", delivery: "steer" }])
+    expect(flat(await mounted.frame())).toContain('This project\'s configuration names the MCP server "issues". A project\'s server starts only once you have approved it')
+    // The turn runs; the engine has looked, and the question is put: a yes now says the agent has it from the next message.
+    session.approveMcp = async () => true
+    session.emit(event("execution.started", { executionId: "exe_1" as never }))
+    mounted.clock.now += QUIET_MS + 10
+    session.pushMcp({ sessionId: session.id, available: true, servers: [{ ...server, state: "awaiting_approval", question: { fingerprint: "f1", subject: "bun server.ts", details: [] } }] })
+    await mounted.settle()
+    mounted.clock.now += ARMING_MS + 10
+    await mounted.setup.mockInput.typeText("a")
+    await mounted.settle()
+    const after = flat(await mounted.frame())
+    expect(after).toContain('approved: "issues" starts now. The turn in progress began without it, so the agent may already have said it has no such tools')
+    expect(after).toContain("ask again in your next message")
+  })
+})

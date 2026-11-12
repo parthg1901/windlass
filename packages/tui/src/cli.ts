@@ -13,8 +13,11 @@ export { changeLabel, handEditChoices } from "../../cli/src/commands.ts"
 export {
   COPY_NOTE,
   type Line,
+  mcpApprovedText,
   mcpFailureText,
+  mcpFirstMessageText,
   mcpLines,
+  mcpNotWaitingText,
   memoryAction,
   memoryLines,
   rememberArgs,
