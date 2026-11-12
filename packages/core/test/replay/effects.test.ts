@@ -269,6 +269,19 @@ describe("the workspace a replay ended with", () => {
 })
 
 describe("the comparison as the replay report prints it", () => {
+  test("counts of zero and one are said as a person would say them", () => {
+    const same = (acts: number) => ({ same: true, matched: acts, recordedActs: acts, replayedActs: acts, first: null })
+    const line = (rendered: string, index: number) => rendered.split("\n")[index]
+    // No act on either side is not "the same 0 acts".
+    expect(line(renderComparison({ effects: same(0), lenient: null, sameWorkspace: true }), 1)).toBe("  side effects   none on either side: the recording changed nothing, and neither did the replay")
+    expect(line(renderComparison({ effects: same(1), lenient: null, sameWorkspace: true }), 1)).toBe("  side effects   the same 1 act as the recording")
+    expect(line(renderComparison({ effects: same(2), lenient: null, sameWorkspace: true }), 1)).toBe("  side effects   the same 2 acts as the recording")
+    // One read is "1 read".
+    expect(line(renderComparison({ effects: same(0), lenient: { served: 1, mustRun: 0, left: null }, sameWorkspace: true }), 2)).toBe("  lenient        would have stayed on the recording (1 read answerable from the recording, 0 not)")
+    expect(line(renderComparison({ effects: same(0), lenient: { served: 0, mustRun: 1, left: null }, sameWorkspace: true }), 2)).toBe("  lenient        would have stayed on the recording (0 reads answerable from the recording, 1 not)")
+    expect(line(renderComparison({ effects: same(0), lenient: { served: 2, mustRun: 0, left: null }, sameWorkspace: true }), 2)).toBe("  lenient        would have stayed on the recording (2 reads answerable from the recording, 0 not)")
+  })
+
   test("says what was compared and what could not be", () => {
     expect(renderComparison({ effects: null, lenient: null, sameWorkspace: null })).toBe(
       [

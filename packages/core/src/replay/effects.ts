@@ -529,11 +529,14 @@ export function renderComparison(comparison: ReplayComparison): string {
     comparison.effects === null
       ? "  side effects   not compared: the replay stopped before an answer of its own (use --policy execute)"
       : comparison.effects.same
-        ? `  side effects   the same ${comparison.effects.recordedActs} act${comparison.effects.recordedActs === 1 ? "" : "s"} as the recording`
+        ? // Nothing on either side is said as that, not as "the same 0 acts".
+          comparison.effects.recordedActs === 0
+          ? "  side effects   none on either side: the recording changed nothing, and neither did the replay"
+          : `  side effects   the same ${comparison.effects.recordedActs} act${comparison.effects.recordedActs === 1 ? "" : "s"} as the recording`
         : `  side effects   differ at ${comparison.effects.first} (recorded ${comparison.effects.recordedActs}, replayed ${comparison.effects.replayedActs})`,
   )
   if (comparison.lenient !== null)
-    lines.push(`  lenient        ${comparison.lenient.left === null ? "would have stayed on the recording" : `would have left at ${comparison.lenient.left}`} (${comparison.lenient.served} reads answerable from the recording, ${comparison.lenient.mustRun} not)`)
+    lines.push(`  lenient        ${comparison.lenient.left === null ? "would have stayed on the recording" : `would have left at ${comparison.lenient.left}`} (${comparison.lenient.served} read${comparison.lenient.served === 1 ? "" : "s"} answerable from the recording, ${comparison.lenient.mustRun} not)`)
   lines.push(`  files          ${comparison.sameWorkspace === null ? "not known (no copy, or no snapshot)" : comparison.sameWorkspace ? "the same as the recording's at its end" : "differ from the recording's at its end"}`)
   return lines.join("\n")
 }
