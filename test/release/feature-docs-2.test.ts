@@ -671,12 +671,13 @@ describe("the module pages for integrators, where users read them too", () => {
     for (const file of ["packages/cli/src/renderer.ts", "packages/tui/src/transcript.ts"]) expect(read(join(ROOT, file)), file).toContain("tasksOf(")
   })
 
-  test("the agents page says which problems a session's start misses, and that the clients are built", () => {
+  test("the agents page says a session's start warnings reach its first listener, and that the clients are built", () => {
     const agents = page("packages/core/src/agents/README.md")
     expect(agents).not.toContain("(still to do)")
     expect(agents).toContain("## For the clients (done)")
-    expect(agents).toContain("They are not\n  all delivered when a session starts.")
-    // Said while the session is created, before a client subscribes (the same fact docs/agents.md marks).
+    expect(agents).not.toContain("all delivered when a session starts")
+    expect(agents).toContain("delivered to the session's first listener")
+    // Said while the session is created; the engine keeps what is said with nobody subscribed for the first listener.
     expect(read(join(ROOT, "packages/core/src/engine/engine.ts"))).toContain('for (const warning of start.warnings) session.say("agents", warning)')
     // The clients' part: the option, the listing and the command exist.
     expect(read(join(ROOT, "packages/acp/src/server.ts"))).toContain('agent: "agent"')

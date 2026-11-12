@@ -230,13 +230,9 @@ What the spine pass built, where it differs from what this page first proposed, 
 - **The index** is appended under `agent-index` to sessions whose frozen tool list has `subagent`, with
   `detail: { kind: "agents", agents: [{ name, path }] }`.
 - **Problems** (definitions that could not be used, unknown tool names in restrictions, a model that is not
-  offered, a project's `agents.default`) are `diagnostic` events of kind `agents`, never model input. They are not
-  all delivered when a session starts. A definition that could not be used is said with the session's first turn,
-  where a client is listening. The warnings about the agent a session starts as (a tool name in its `tools` or
-  `disallowed-tools` that does not exist here, a project's `agents.default` that was not followed) are said while
-  the session is created, before any client has subscribed, so a one-prompt run (`--agent <name> "<prompt>"`)
-  prints neither; a switch in a running session says the first, and the listing (`/agent`) has the second
-  (`docs/agents.md`, "Not yet").
+  offered, a project's `agents.default`) are `diagnostic` events of kind `agents`, never model input. A warning said while the session is being created, before any client has
+  subscribed, is kept and delivered to the session's first listener, so a one-prompt run
+  (`--agent <name> "<prompt>"`) prints it too.
 - **Configuration.** The `agents` section is a known key of both files; the engine resolves it with
   `resolveAgentsConfig(user, project)`.
 
