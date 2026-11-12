@@ -331,6 +331,45 @@ describe("a compaction the user asks for", () => {
     )
   })
 
+  test("a process killed during the summary call leaves nothing to resume either: the next start closes the compaction, releases the claim, and history is as it was", async () => {
+    await project(
+      async (h) => {
+        h.provider.enqueue([...write("a.ts", "2\n"), at(3000)], [script.text("Changed a."), at(3200)], () => {
+          // The process dies while the summary is being written: nothing more reaches the log.
+          h.kill()
+          return [script.hang()]
+        })
+        h.create().send("Change a.ts.")
+        await h.settled()
+        const view = selectModelHistory(h.session.projection()).messages.map((message) => message.id)
+        const before = h.log().length
+        void h.session.compact()
+        while (h.provider.calls.length < 3) await new Promise((resolve) => setTimeout(resolve, 1))
+
+        // The next start, in the mode that takes a claim up again: there is none to take up.
+        h.provider.enqueue([script.text(SUMMARY)])
+        const session = h.restart("start")
+        await h.settled()
+        const recovered = h.log().slice(before)
+        expect(recovered.map((item) => item.type)).toEqual(["execution.started", "compaction.started", "compaction.failed", "execution.interrupt_requested", "execution.interrupted"])
+        expect(recovered[2]!.data).toMatchObject({ error: { kind: "crashed" } })
+        expect(recovered.at(-1)!.data).toMatchObject({ reason: "user" })
+        // No summary was asked for behind the user's back, and nothing was resumed.
+        expect(h.provider.calls).toHaveLength(3)
+        expect(h.log().some((item) => item.type === "execution.resumed")).toBe(false)
+        expect(session.projection().session.execution).toBeNull()
+        expect(session.projection().session.compaction).toBeNull()
+        expect(session.projection().messages.filter((message) => message.kind === "synthetic")).toEqual([])
+        expect(selectModelHistory(session.projection()).messages.map((message) => message.id)).toEqual(view)
+        // Asked again, the compaction is made under an execution of its own.
+        expect(await session.compact()).toMatchObject({ kind: "compacted" })
+        await h.settled()
+        expect(h.log().slice(before + recovered.length).map((item) => item.type)).toEqual(["execution.started", "compaction.started", "compaction.ended", "snapshot.taken", "execution.succeeded"])
+      },
+      { limits: { manualCompactionMinTokens: 0 } },
+    )
+  })
+
   test("a shutdown during a turn that the compaction was asked in still keeps the turn for the next start", async () => {
     await project(
       async (h) => {

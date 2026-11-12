@@ -4117,7 +4117,10 @@ else.
 2. **The claim is `running` and no interrupt was requested.** The process crashed. Settle every unsettled call, close
    the open step with `step.failed crashed`, append the marker, then write `execution.resumed`, which counts the
    crash, or `execution.failed` when `crashResumes` has reached the cap. With no step open there is nothing to close
-   and no marker.
+   and no marker. An execution with no turn (nothing was said under the claim and nothing waits: it was started only
+   to make a compaction the user asked for) is not resumed: the open compaction is closed with `compaction.failed
+   crashed`, and `execution.interrupt_requested user` · `execution.interrupted user` release the claim, as a clean
+   shutdown of such an execution does. History is as it was.
 3. **The claim is `suspended`.** The last process shut down cleanly. Write `execution.resumed`; it is not counted.
 
 An open run of checks is closed with `checks.failed` in cases 1 and 2 (interrupted for the reason, or crashed). It

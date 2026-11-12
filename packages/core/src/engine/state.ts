@@ -49,7 +49,8 @@ export function wouldGoIdle(projection: Projection): boolean {
  * withdrawn before it was delivered). It is not a turn: a stop of it cuts
  * nothing the model was doing short, so no marker is left for the model, and
  * there is nothing to take up again at the next start, so a shutdown ends it
- * as a user's stop does instead of keeping its claim.
+ * as a user's stop does instead of keeping its claim, and recovery after a
+ * kill ends it the same way instead of resuming it.
  */
 export function turnless(projection: Projection): boolean {
   return latestSpoken(projection) === undefined && projection.inbox.length === 0

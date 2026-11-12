@@ -15,6 +15,11 @@
  *    Recovery never writes `execution.succeeded`: even with nothing open and
  *    nothing left to answer, ending as done is the verification gate's
  *    decision, so the execution is resumed and the loop makes it.
+ *    An execution with no turn (`turnless`: it was started only to make a
+ *    compaction the user asked for) is not resumed: nobody is left to hear
+ *    of that compaction, and nothing else was asked of it. It is ended as a
+ *    clean shutdown ends it, as a user's stop with no marker, so the claim
+ *    is released and history is as it was.
  * 3. The claim is `suspended`. Nothing to repair; whoever resumes it writes
  *    `execution.resumed`, which is not counted.
  *
@@ -67,6 +72,14 @@ export function recover(
       events.push(marker(reason === "user" ? NOTE_TEXT.interruptedByUser : NOTE_TEXT.interruptedByRestart))
     events.push(event("execution.interrupted", { executionId: execution.id, reason }))
     return { events, claim: reason === "user" ? "none" : "suspended" }
+  }
+
+  // An execution without a turn has nothing to take up again: it ends as a clean shutdown ends it (`shutdown`
+  // in the engine), which is as a user's stop, and the open compaction above is closed as crashed. (A replay is
+  // given up by the engine, in its own words.)
+  if (turnless(projection) && projection.session.replay === undefined) {
+    events.push(event("execution.interrupt_requested", { executionId: execution.id, reason: "user" }), event("execution.interrupted", { executionId: execution.id, reason: "user" }))
+    return { events, claim: "none" }
   }
 
   if (cutShort) events.push(marker(NOTE_TEXT.interruptedByRestart))

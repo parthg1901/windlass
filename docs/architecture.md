@@ -699,8 +699,10 @@ is a new version with a decoder for the old one.
   interrupted one leaves nothing behind: the compaction fails as interrupted, no marker is left for the model, so
   the conversation is as it was, and the claim is released. That holds for a shutdown too: the session is closed
   while the summary is being written, the interrupt is requested and recorded with the reason `user`, not
-  `shutdown`, because `shutdown` means a claim kept for the next start and there is no turn to take up. The next
-  request for a compaction starts an execution of its own.
+  `shutdown`, because `shutdown` means a claim kept for the next start and there is no turn to take up. A process
+  that was killed instead ends the same way at the next start: recovery (`engine/recovery.ts`) closes the open
+  compaction as crashed and releases the claim with the same two events, where any other execution would be
+  resumed. The next request for a compaction starts an execution of its own.
 - *The task list.* The model's task list is the `display` of its latest successful `todo` call (`tools/todo.ts`;
   nothing is stored outside the log). When a compaction removes that call from the model's view, the checkpoint
   carries the list as the call left it, after the summary.
