@@ -137,6 +137,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   }
   lines.push([])
 
+  const cacheHeading = lines.length
   heading("Cache per call", [span("  █ cached ░ new", "dim")])
   const marks = [
     input.calls.some((call) => call.diagnostics.length > 0) ? "⚠ diagnostic" : null,
@@ -147,7 +148,8 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   const room = Math.max(1, rows - lines.length - legendRows)
   const shown = input.calls.slice(-room)
   if (input.calls.length === 0) lines.push([span("bars appear after the first call", "dim")])
-  if (shown.length < input.calls.length) lines[lines.length - 1] = [...lines.at(-1)!, span(` (last ${shown.length})`, "dim")]
+  // When only the latest calls fit, the heading says how many: in its own words, since the legend fills the rest of the row.
+  if (shown.length < input.calls.length) lines[cacheHeading] = [span(`Cache, last ${shown.length}`, undefined, { bold: true }), span("  █ cached ░ new", "dim")]
   const max = Math.max(1, ...shown.map((call) => call.usage.inputTokens))
   const numberWidth = String(input.calls.length).length
   const bar = Math.max(4, inner - numberWidth - 1 - 2 - 6 - 5)

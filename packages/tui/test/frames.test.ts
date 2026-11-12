@@ -131,6 +131,28 @@ describe("the usage panel", () => {
   })
 })
 
+test("the panel's heading over the bars says how many calls it shows when not all fit, within the panel's width", () => {
+  const calls: CallUsage[] = Array.from({ length: 40 }, (_, index) => ({ n: index + 1, messageId: `a${index}`, model: "m", kind: "step", requests: 1, usage: { inputTokens: 5_000, cachedInputTokens: 4_000, outputTokens: 5, reasoningTokens: 0 }, diagnostics: [], ended: "ok" }))
+  const lines = panelLines(
+    {
+      session: { id: "ses_0123456789abcdef0123", cwd: "/home/me/project", title: null, model: "gpt-6-luna", effort: "low", taint: null },
+      calls,
+      activity: { executing: false, turnStartedAt: null, steps: 0, summaryCalls: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null },
+      now: 0,
+      contextWindow: 272_000,
+      connection: "connected",
+      home: "/home/me",
+    },
+    34,
+    30,
+  ).map((line) => line.map((part) => part.text).join(""))
+  const bars = lines.filter((line) => /^\d+ /.test(line))
+  expect(bars.length).toBeLessThan(40)
+  expect(lines).toContain(`Cache, last ${bars.length}  █ cached ░ new`)
+  expect(lines.every((line) => Bun.stringWidth(line) <= 34)).toBe(true)
+  expect(lines.join("\n")).not.toContain("…")
+})
+
 test("NO_COLOR keeps attributes and drops every colour", () => {
   const plain = new Theme(false)
   const colored = new Theme(true)
