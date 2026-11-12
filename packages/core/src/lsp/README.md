@@ -98,7 +98,7 @@ After a successful `edit` or `write` of a file a server serves, if the edit made
 tool's own output:
 
 ```
-Edited src/app.ts (1 change).
+Edited src/app.ts: replaced 1 occurrence (line 12).
 
 [Diagnostics from the language server "typescript" for src/app.ts after this edit: 2 new errors]
 src/app.ts:12:5: error 2304: Cannot find name 'fetchUser'. (typescript)

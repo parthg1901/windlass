@@ -612,6 +612,14 @@ describe("the module pages for integrators, where users read them too", () => {
     expect(hooks).not.toMatch(/Edited [^\n]*\(1 change\)/)
     expect(read(join(ROOT, "packages/core/src/tools/edit.ts"))).toContain("return success(`Edited ${shown}: replaced ${count} (${linesLabel(newLines)}).`")
   })
+
+  test("the diagnostics page quotes the edit result as the tool prints it", () => {
+    const lsp = page("packages/core/src/lsp/README.md")
+    expect(lsp).toContain(`${edited("src/app.ts", 12)}\n\n[Diagnostics from the language server "typescript" for src/app.ts after this edit: 2 new errors]`)
+    expect(lsp).not.toMatch(/Edited [^\n]*\(1 change\)/)
+    // The same form as the page for users.
+    expect(text["docs/diagnostics.md"]).toContain(edited("math.ts", 1))
+  })
 })
 
 describe("names against the code", () => {
