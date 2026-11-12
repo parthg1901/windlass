@@ -20,7 +20,7 @@ exports[`the approval dock shows the tool, the command, why, how it runs, and ea
                                                                 │
 ─ ? Allow network access for this command? ─────────────────────────────────────────────────────────
   shell  curl -s https://example.com/notes
-  why: it needs network access for this command
+  why: network access for this command
   runs: in the sandbox ⊡ · with network access
   With network access the command can send anything it can read to any host.
 › [a] Allow once

@@ -133,7 +133,7 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
   const what: Span[][] = subject.length === 0 ? [] : wrapLine([span("  "), span(toolName === null ? "" : `${toolName}  `, undefined, { bold: true }), span(subject[0]!, "accent")], columns, [span("    ")]).slice(0, 2)
   if (subject.length > 1) what.push([span(`    … and ${plural(subject.length - 1, "more line")}`, "dim")])
   const needs = ask.needs.map(describeNeed)
-  const why = needs.length === 0 ? [] : wrapLine([span("  why: ", "dim"), span(`it needs ${needs.join(", ")}`)], columns, [span("       ")])
+  const why = needs.length === 0 ? [] : wrapLine([span("  why: ", "dim"), span(needs.length === 1 ? needs[0]! : `${needs.slice(0, -1).join(", ")} and ${needs.at(-1)}`)], columns, [span("       ")])
   const runs = ask.then.kind === "run_sandboxed" ? runsText(ask.then) : [span("  runs: ", "dim"), span("without the sandbox, with your permissions", "warn")]
   const runLine = ask.then.kind === "run" && !needs.some((need) => need.includes("command")) ? [] : [runs]
   const details = question.details.flatMap((detail) => wrapLine([span(`  ${sanitize(detail)}`, "dim")], columns, [span("  ")]))

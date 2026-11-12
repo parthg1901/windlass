@@ -69,7 +69,8 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   // Cut at a word where it can, without a stray full stop before the ellipsis.
   if (session.title !== null && session.title !== "") field("title", shorten(session.title, inner - 7))
   const approval = input.approval ?? null
-  if (approval !== null) field("mode", `approval: ${approval.mode ?? "?"}${approval.sandbox ? " · sandbox ⊡" : " · no sandbox"}`, approval.sandbox ? undefined : "warn")
+  if (approval !== null)
+    lines.push([span("approval ", "dim"), span(approval.mode ?? "?", undefined, { bold: true }), span(approval.sandbox ? " · sandbox ⊡" : " · no sandbox", approval.sandbox ? "dim" : "warn")])
   if (session.taint !== null) field("trust", "untrusted · /clear-taint", "warn")
   lines.push([])
 
@@ -147,7 +148,7 @@ function tilde(path: string, home: string | null): string {
 }
 
 /** Shortens at the last word boundary that fits (or at a character when none does), with `…`. */
-function shorten(text: string, max: number): string {
+export function shorten(text: string, max: number): string {
   if (width(text) <= max) return text
   const cut = truncate(text, max).slice(0, -1)
   // A cut that ends a word keeps it; otherwise back to the last space.

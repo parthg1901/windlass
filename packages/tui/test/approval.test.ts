@@ -66,7 +66,7 @@ describe("the approval dock", () => {
       expect(lines.every((line) => Bun.stringWidth(line) <= width)).toBe(true)
       expect(frame).toContain("? Allow network access for this command?")
       expect(frame).toContain("shell  curl -s https://example.com/notes")
-      expect(frame).toContain("why: it needs network access for this command")
+      expect(frame).toContain("why: network access for this command")
       if (height >= 30) expect(frame).toContain("runs: in the sandbox ⊡ · with network access")
       expect(frame).toContain("[a] Allow once")
       expect(frame).toMatch(/\[s\] Allow for this session +remembers network for/)
@@ -292,7 +292,9 @@ describe("commands", () => {
     await mounted.settle()
     let frame = await mounted.frame()
     expect(frame).toContain("Approval mode")
-    expect(frame).toContain("[1] Ask  Reads run; every edit, command and network call asks")
+    expect(frame).toContain("Ask          Reads run; every edit, command and network call asks")
+    expect(frame).toContain("Full access  Everything runs without the sandbox and without asking")
+    expect(frame).toContain("[1] Ask")
     expect(frame).toMatch(/\[2\] Auto \(current\)/)
     expect(frame).toContain("[3] Full access")
     await keys().typeText("1")
@@ -300,7 +302,7 @@ describe("commands", () => {
     expect(set).toEqual(["approval=ask"])
     frame = await mounted.frame()
     expect(frame).toContain("approval mode: auto → ask · from the next tool call")
-    expect(frame).toContain("mode   approval: ask · sandbox ⊡")
+    expect(frame).toContain("approval ask · sandbox ⊡")
   })
 
   test("/diff: the per-file diff view, file by file, binary files flagged", async () => {

@@ -22,7 +22,7 @@ import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
 import { fileList, formatDuration } from "./cli.ts"
 import { plural, truncate, width as textWidth } from "./layout.ts"
-import { PANEL_WIDTH, panelLines } from "./panel.ts"
+import { PANEL_WIDTH, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { type OutcomeRow, type Row, Transcript, expandable } from "./transcript.ts"
@@ -642,7 +642,7 @@ export class App {
         { id: "\u0000new", label: "+ new session" },
         ...sessions.map((row) => ({
           id: row.id,
-          label: truncate(row.title ?? "(untitled)", 34),
+          label: row.title === null ? "(untitled)" : shorten(row.title, 34),
           detail: `${ago(this.now() - row.updatedAt)} · ${row.model}${row.effort === null ? "" : ` ${row.effort}`}${row.archived ? " · archived" : ""} · ${row.id.slice(0, 12)}`,
           current: row.id === current,
         })),
@@ -828,8 +828,13 @@ export class App {
         ? (choices.choices.find((choice) => choice.value === named)?.value ?? null)
         : await this.dialog.show({
             title: "Approval mode",
-            detail: [[span("When a tool call asks before it runs. Applies from the next tool call; a project's settings can only make it stricter.", "dim")]],
-            items: choices.choices.map((choice) => ({ id: choice.value, label: choice.name, ...(choice.description === null ? {} : { detail: choice.description }), current: choice.value === current, key: String(choices.choices.indexOf(choice) + 1) })),
+            // What each mode does is the point of the choice: said in full above the list, never cut.
+            detail: [
+              [span("When a tool call asks before it runs. Applies from the next tool call; a project's settings can only make it stricter.", "dim")],
+              [],
+              ...choices.choices.map((choice) => [span(`${choice.name.padEnd(13)}`, "accent"), span(choice.description ?? "")]),
+            ],
+            items: choices.choices.map((choice) => ({ id: choice.value, label: choice.name, current: choice.value === current, key: String(choices.choices.indexOf(choice) + 1) })),
             filterable: false,
             footer: "Enter choose · keys · Esc keeps it",
             cancel: null,

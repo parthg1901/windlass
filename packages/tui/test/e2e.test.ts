@@ -258,7 +258,7 @@ describe("approvals and safety, against lh acp", () => {
     await dockReady(term)
     const asked = await term.waitFor("? waiting for your answer")
     expect(conversation(asked)).toContain(`Allow write: writing ${target}?`)
-    expect(asked).toContain("why: it needs writing")
+    expect(asked).toContain("why: writing")
     term.type("a")
     const frame = await term.waitFor("Finished.", { timeoutMs: 20_000 })
     expect(frame).toMatch(/✓ write .* · allowed once/)
