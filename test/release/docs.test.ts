@@ -22,7 +22,9 @@ import { brand } from "../../packages/core/src/brand.ts"
 import { TEST_CONTEXT_WINDOW_ENV } from "../../packages/core/src/assembly.ts"
 import { parseConfigFile } from "../../packages/core/src/config/schema.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
+import { BUILTIN_COMMANDS } from "../../packages/cli/src/slash.ts"
 import { forkUsage, replayUsage } from "../../packages/cli/src/subcommands.ts"
+import { COMMANDS } from "../../packages/tui/src/commands.ts"
 import { ROOT, hostTarget, parseBuildArgs } from "../../scripts/build.ts"
 
 const PAGES = ["README.md", "docs/user-guide.md", "docs/troubleshooting.md"] as const
@@ -112,7 +114,8 @@ describe("commands in the documentation", () => {
 
   test("every --option the pages name exists", () => {
     const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags])
-    for (const page of PAGES) for (const [, flag] of text[page].matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)) expect(known, `${page}: ${flag}`).toContain(flag!)
+    // A slash command's own options (`/remember [--me] <text>`) are not the program's.
+    for (const page of PAGES) for (const [, flag] of text[page].replace(/`\/[a-z][^`\n]*`/g, "").matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)) expect(known, `${page}: ${flag}`).toContain(flag!)
   })
 })
 
@@ -250,6 +253,31 @@ describe("the user guide against what the program prints and keeps", () => {
     const remove = commands.find(({ words: [command] }) => command === "rm")!
     expect(remove.words).toContain(`~/.local/share/${brand.directory}-work`)
     expect(remove.words).toContain(`~/.local/share/${brand.directory}`)
+  })
+})
+
+describe("the README's table of slash commands", () => {
+  const readme = text["README.md"]
+  const start = readme.indexOf("| Command | Line interface")
+  const rows = readme.slice(start).split("\n").slice(2)
+  const table = rows.slice(0, rows.findIndex((row) => !row.startsWith("|"))).map((row) => row.replace(/\\\|/g, "/").split("|").map((cell) => cell.trim()))
+  /** The commands a row names, and whether the row says each interface has them. */
+  const named = table.flatMap(([, commandCell, lineCell, screenCell]) =>
+    [...commandCell!.matchAll(/`\/([a-z][a-z-]*)/g)].map((match) => ({ name: match[1]!, inLine: lineCell !== "" && !lineCell!.includes("instead"), onScreen: screenCell !== "" })),
+  )
+
+  test("it names every command of both interfaces, and says rightly which interface has each", () => {
+    const line = new Map(BUILTIN_COMMANDS.commands().flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => [name, command.name] as const)))
+    const screen = new Map(COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => [name, command.name] as const)))
+    expect(named.length).toBeGreaterThan(20)
+    for (const { name, inLine, onScreen } of named) {
+      expect(line.has(name), `/${name} in the line interface`).toBe(inLine)
+      expect(screen.has(name), `/${name} in the full-screen interface`).toBe(onScreen)
+    }
+    // Every command is in the table under its own name or an alias.
+    const inTable = new Set(named.map((entry) => entry.name))
+    for (const command of BUILTIN_COMMANDS.commands()) expect([command.name, ...(command.aliases ?? [])].some((name) => inTable.has(name)), `/${command.name} (line interface)`).toBe(true)
+    for (const command of COMMANDS) expect([command.name, ...(command.aliases ?? [])].some((name) => inTable.has(name)), `/${command.name} (full-screen)`).toBe(true)
   })
 })
 

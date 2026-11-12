@@ -103,6 +103,11 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 | `/agent [name\|none]` | the agents and the one in force; a name switches | yes, with a picker |
 | `/rename <title>` | yes | yes |
 | `/compact` | yes | yes |
+| `/mcp [approve <server>]` | the MCP servers and their state; approves one the project names | yes |
+| `/skills` | the skills the model can load here | yes |
+| `/wakeups [cancel\|secret <id>]` | the session's wake-ups; cancels one, shows a webhook's secret | yes |
+| `/memory [confirm\|reject\|renew\|forget <id>]` | the notes later sessions are given, and the ones waiting for you | yes |
+| `/remember [--me] <text>`, `/forget <id>` | save a note, retract one (memory is off unless turned on) | yes |
 | `/queue <message>` | yes | yes (or Ctrl-T) |
 | `/exit`, `/quit` | yes | yes |
 | `/fork [<turn>] [copy]` | `windlass fork` instead | yes |
