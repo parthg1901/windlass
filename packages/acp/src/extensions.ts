@@ -52,6 +52,12 @@ export const EXT = {
   taint: `${prefix}/taint`,
   /** Notification `{ sessionId, kind, message }`: something about how the session's tools run that the user should read once. */
   notice: `${prefix}/notice`,
+  /** Request `DiffParams` → `DiffResult`: the files a turn or a step changed, with bounded per-file patches, from the workspace snapshots. */
+  diff: `${prefix}/diff`,
+  /** Request `{ sessionId, title }` → `{ title }`: renames a session. Offered only when the engine can (`EngineSession.rename`). */
+  rename: `${prefix}/rename`,
+  /** Request `{ sessionId }` → `{}`: compacts the conversation now. Offered only when the engine can (`EngineSession.compact`). */
+  compact: `${prefix}/compact`,
 } as const
 
 export const META = {
@@ -221,4 +227,80 @@ export interface StateNotification {
   readonly stopReason?: string
   /** On `idle` after a failure: the failure, as a sentence. */
   readonly message?: string
+}
+
+/** Params of `<prefix>/diff`: a turn (`executionId`, the latest by default) or one step (`messageId` of its assistant message). */
+export interface DiffParams {
+  readonly sessionId: string
+  readonly executionId?: string
+  readonly messageId?: string
+  /** `false`: the list of files without patches. Default `true`. */
+  readonly patch?: boolean
+}
+
+/** One changed file of a diff. Patches are bounded per file and in total; binary files are flagged and have none. */
+export interface DiffFile {
+  /** Relative to the session's working directory, `/`-separated. */
+  readonly path: string
+  readonly status: "added" | "deleted" | "modified" | "mode_changed" | "type_changed"
+  readonly binary: boolean
+  /** The `diff --git` section of the file (headers and hunks), or `null` (binary, omitted, or patches not asked for). */
+  readonly patch: string | null
+  /** The patch was cut at a line boundary: the file's change is larger than the per-file limit. */
+  readonly truncated: boolean
+  /** The total patch budget ran out before this file. */
+  readonly omitted: boolean
+  readonly added: number
+  readonly removed: number
+}
+
+/** Result of `<prefix>/diff`. */
+export type DiffResult =
+  | {
+      readonly available: true
+      readonly scope: "turn" | "step"
+      readonly executionId: string | null
+      readonly messageId: string | null
+      /** The snapshots compared. */
+      readonly from: string
+      readonly to: string
+      readonly files: readonly DiffFile[]
+    }
+  | {
+      readonly available: false
+      /** `not_found`: no such turn or step; `no_snapshots`: none was recorded around it (nothing changed files, or snapshots were off); `unavailable`: the snapshot store cannot be read (gone, pruned, no git). */
+      readonly reason: "not_found" | "no_snapshots" | "unavailable"
+      readonly message: string
+    }
+
+/** The longest derived title, in characters. */
+export const TITLE_LENGTH = 60
+
+/**
+ * A session's title when it has none of its own: the first line of its first
+ * message, trimmed, with runs of spaces collapsed, shortened at a word
+ * boundary to `TITLE_LENGTH` characters. Deterministic and free: no model call.
+ * `null` for a message with no text.
+ */
+export function deriveTitle(message: string): string | null {
+  const line = message
+    .split("\n")
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .find((part) => part !== "")
+  if (line === undefined) return null
+  if (line.length <= TITLE_LENGTH) return line
+  const cut = line.slice(0, TITLE_LENGTH - 1)
+  const space = cut.lastIndexOf(" ")
+  return `${(space >= TITLE_LENGTH / 2 ? cut.slice(0, space) : cut).replace(/[\s,.;:–-]+$/, "")}…`
+}
+
+/** The derived title of a session from the start of its log: its first message from the user (`deriveTitle`), or `null`. */
+export function titleFromEvents(events: readonly { readonly type: string; readonly data?: unknown }[]): string | null {
+  for (const item of events) {
+    if (item.type !== "inbox.enqueued") continue
+    const data = item.data as { origin?: unknown; content?: readonly { type: string; text?: string }[] }
+    if (data.origin !== null) continue
+    return deriveTitle((data.content ?? []).map((part) => (part.type === "text" ? (part.text ?? "") : "")).join(""))
+  }
+  return null
 }

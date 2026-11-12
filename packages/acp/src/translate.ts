@@ -64,6 +64,8 @@ export interface TranslatorOptions {
   readonly contextWindow: (model: string) => number | null
   /** Whether a delivered user message is shown to the client: true for input the client did not send as a prompt. */
   readonly echo: (messageId: string) => boolean
+  /** On a replay: the files an ended turn changed, worked out from its snapshots, or `null` when they cannot be told. */
+  readonly replayedChanges?: (executionId: string) => readonly string[] | null
 }
 
 interface ToolState {
@@ -388,7 +390,7 @@ export class Translator {
       sessionId: this.options.sessionId,
       ...details,
       stopReason: end.kind === "stop" ? end.stopReason : "error",
-      changedFiles: replay ? null : this.turn.changedFiles,
+      changedFiles: replay ? (this.options.replayedChanges?.(details.executionId) ?? null) : this.turn.changedFiles,
       ...(replay ? { replay: true } : {}),
     }
     const out: Output[] = [{ type: "ext", method: EXT.turn, params: { ...turn } }]

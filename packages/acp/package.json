@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./extensions": "./src/extensions.ts"
+    "./extensions": "./src/extensions.ts",
+    "./client": "./src/client.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.5.0",

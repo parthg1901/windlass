@@ -69,11 +69,14 @@ import {
   approvalModes,
   brand,
 } from "@light-harness/core"
+import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import {
   APPROVAL_META,
   type ApprovalRequestMeta,
   type ApprovalStateResult,
   type ClientMeta,
+  type DiffFile,
+  type DiffResult,
   type ErrorData,
   EXT,
   HAND_EDIT_OPTIONS,
@@ -82,6 +85,7 @@ import {
   type RevertParams,
   type SessionState,
   type StateNotification,
+  titleFromEvents,
 } from "./extensions.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
@@ -98,6 +102,12 @@ export const CONFIG = { model: "model", effort: "effort", approval: "approval" }
 const UNATTENDED = ["deny", "stop"] as const
 const DEFAULT_EFFORT_VALUE = "default"
 const LIST_PAGE = 100
+/** How many of the latest turns a `session/load` replays the changed files of. */
+const REPLAYED_TURN_CHANGES = 50
+/** How far into a session's log its first message is looked for, for a derived title. */
+const TITLE_SCAN_EVENTS = 60
+/** Derived titles by session, for the life of the process: a session's first message never changes. */
+const derivedTitles = new Map<string, string>()
 
 export interface ServeOptions {
   readonly log: Logger
@@ -126,7 +136,7 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice],
   promptMeta: [META.delivery, META.maxSteps],
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
@@ -178,6 +188,10 @@ function buildAgent(state: ConnectionState): AgentApp {
       }),
     )
     .onRequest(EXT.clearTaint, parseObject, ({ params }) => state.clearTaint(requireString(params, "sessionId")))
+    .onRequest(EXT.diff, parseObject, ({ params }) => {
+      if (params.patch !== undefined && typeof params.patch !== "boolean") throw RequestError.invalidParams(undefined, "patch must be a boolean")
+      return state.diff(requireString(params, "sessionId"), { executionId: optionalString(params, "executionId"), messageId: optionalString(params, "messageId"), patch: params.patch !== false })
+    })
 }
 
 interface Pending {
@@ -197,6 +211,7 @@ class ConnectionState {
   fidelity: { readonly events: boolean; readonly updates: boolean } = { events: false, updates: true }
   private readonly views = new Map<string, SessionView>()
   private closing: Promise<void> | null = null
+  private readonly snapshotStores = new Map<string, Promise<Snapshots | { readonly message: string }>>()
 
   readonly catalog: ModelCatalog
 
@@ -261,7 +276,7 @@ class ConnectionState {
     const settings = await this.harness.settingsFor(cwd, asked)
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings }))
     applyApproval(session, meta)
-    const view = this.attach(session, cwd, session.projection().lastSeq)
+    const view = this.attach(session, cwd, session.projection().lastSeq, new Map())
     // A full-fidelity client gets the session from its first event, as the engine's own stream has it.
     if (this.fidelity.events) for (const item of session.readEvents()) view.queueEvent(item, false)
     await view.flushed()
@@ -282,6 +297,9 @@ class ConnectionState {
       throw RequestError.invalidParams({ cwd, sessionCwd: summary.session.cwd }, `session ${sessionId} works in ${summary.session.cwd}, not ${cwd}`)
     this.views.get(sessionId)?.detach()
     await models
+    // The files each earlier turn changed, from its snapshots, for the replayed turn endings. Read before the open: the
+    // turns that have ended are history and do not change.
+    const changes = replay ? await this.replayChanges(sessionId as SessionId, cwd) : new Map<string, readonly string[]>()
     // What the log held before this open: events after it (a crashed claim's recovery) are news to a client.
     const openedAt = summary.lastSeq
     // A claim left by a process that died is repaired here; a suspended one (a clean shutdown in the middle of a
@@ -293,7 +311,7 @@ class ConnectionState {
     // event either is in the log read here or arrives after it, never both and never neither.
     const history = session.readEvents()
     const lastSeq = history.at(-1)?.seq ?? 0
-    const view = this.attach(session, cwd, lastSeq, (translator) => {
+    const view = this.attach(session, cwd, lastSeq, changes, (translator) => {
       // Without a replay the log is still folded, so the translator knows the model and the calls in it.
       const outputs = translator.replay(history)
       return replay ? outputs.filter((output) => output.type === "update" || (output.type === "ext" && output.method === EXT.turn)) : []
@@ -321,7 +339,7 @@ class ConnectionState {
     const sessions: SessionInfo[] = page.map((summary) => ({
       sessionId: summary.session.id,
       cwd: summary.session.cwd,
-      title: summary.session.title,
+      title: this.titleOf(summary.session.id, summary.session.title),
       updatedAt: new Date(summary.updatedAt).toISOString(),
       _meta: {
         [META.capabilities]: {
@@ -552,6 +570,88 @@ class ConnectionState {
     return { cleared: this.requireView(sessionId).session.clearTaint() }
   }
 
+  /**
+   * `_<ns>/diff`: what a turn or a step changed, from the snapshots the engine
+   * recorded around it (`snapshot.taken`). A turn runs from the workspace as
+   * it was when its first message was delivered to the last snapshot before
+   * it ended; a step from its `step_start` to its `step_end`. Read from the
+   * stored log, so it works for any session, open here or not.
+   */
+  async diff(sessionId: string, options: { readonly executionId: string | undefined; readonly messageId: string | undefined; readonly patch: boolean }): Promise<DiffResult> {
+    const summary = this.engineErrors(() => this.harness.engine.getSession(sessionId as SessionId), sessionId)
+    if (summary === null) throw RequestError.sessionNotFound(sessionId)
+    const events = this.engineErrors(() => this.harness.engine.readEvents(sessionId as SessionId), sessionId)
+    const range = options.messageId !== undefined ? stepRange(events, options.messageId) : turnRange(events, options.executionId ?? null)
+    if ("reason" in range) return { available: false, ...range }
+    const store = await this.snapshotsOf(summary.session.cwd)
+    if ("message" in store) return { available: false, reason: "unavailable", message: store.message }
+    const changes = range.from === range.to ? [] : await store.diff(range.from as SnapshotId, range.to as SnapshotId, { patch: options.patch }).catch((error: unknown) => describeError(error))
+    if (typeof changes === "string") return { available: false, reason: "unavailable", message: `the snapshots of this ${options.messageId === undefined ? "turn" : "step"} cannot be read: ${changes}` }
+    return { available: true, scope: options.messageId === undefined ? "turn" : "step", executionId: range.executionId, messageId: options.messageId ?? null, from: range.from, to: range.to, files: changes.map(diffFile) }
+  }
+
+  /** The files each ended turn of a stored session changed, by execution, for a replay. The latest turns only: each costs a tree comparison. */
+  private async replayChanges(sessionId: SessionId, cwd: string): Promise<Map<string, readonly string[]>> {
+    const changes = new Map<string, readonly string[]>()
+    const events = (() => {
+      try {
+        return this.harness.engine.readEvents(sessionId)
+      } catch {
+        return []
+      }
+    })()
+    const ended = events.flatMap((item) => (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted" ? [item.data.executionId] : []))
+    if (ended.length === 0) return changes
+    const store = await this.snapshotsOf(cwd)
+    if ("message" in store) return changes
+    for (const executionId of [...new Set(ended)].slice(-REPLAYED_TURN_CHANGES)) {
+      const range = turnRange(events, executionId)
+      if ("reason" in range) continue
+      const files = range.from === range.to ? [] : await store.changedFiles(range.from as SnapshotId, range.to as SnapshotId).catch(() => null)
+      if (files !== null) changes.set(executionId, files)
+    }
+    return changes
+  }
+
+  /** The snapshot store of a working directory, as the engine opens it (`<dataDir>/snapshots`), once per directory. */
+  private snapshotsOf(cwd: string): Promise<Snapshots | { readonly message: string }> {
+    let opened = this.snapshotStores.get(cwd)
+    if (opened === undefined) {
+      opened = openSnapshots(cwd, { dataDir: join(this.harness.dataDir, "snapshots") }).then(
+        (store) => (store.kind === "ready" ? store : { message: `no snapshots can be read here: ${store.message}` }),
+        (error: unknown) => ({ message: `no snapshots can be read here: ${describeError(error)}` }),
+      )
+      this.snapshotStores.set(cwd, opened)
+      // A failure is not remembered: git may be installed, the directory created, in the meantime.
+      void opened.then((store) => {
+        if ("message" in store) this.snapshotStores.delete(cwd)
+      })
+    }
+    return opened
+  }
+
+  /**
+   * A session's title: its own (`session.renamed`, or given at creation), or
+   * else the first line of its first message, shortened (`deriveTitle`).
+   * Deterministic and without a model call; remembered once found.
+   */
+  titleOf(sessionId: string, own: string | null): string | null {
+    if (own !== null && own.trim() !== "") return own
+    const known = derivedTitles.get(sessionId)
+    if (known !== undefined) return known
+    const events = (() => {
+      try {
+        return this.harness.engine.readEvents(sessionId as SessionId, { limit: TITLE_SCAN_EVENTS })
+      } catch {
+        return []
+      }
+    })()
+    const title = titleFromEvents(events)
+    // Only a title found is remembered: a session without a message yet gets one later.
+    if (title !== null) derivedTitles.set(sessionId, title)
+    return title
+  }
+
   /** Runs something that may find the session closed in the meantime; that is no error worth a log line. */
   private guard(work: () => unknown): void {
     try {
@@ -580,7 +680,7 @@ class ConnectionState {
       sessionId,
       state,
       cwd: session.cwd,
-      title: session.title,
+      title: this.titleOf(session.id, session.title),
       model: view.settings.model,
       effort: view.settings.reasoningEffort,
       archived: session.archived,
@@ -667,8 +767,8 @@ class ConnectionState {
     if (this.views.get(view.session.id) === view) this.views.delete(view.session.id)
   }
 
-  private attach(session: EngineSession, cwd: string, fromSeq: number, prime?: (translator: Translator) => Output[]): SessionView {
-    const view = new SessionView(this, session, cwd, fromSeq)
+  private attach(session: EngineSession, cwd: string, fromSeq: number, changes: ReadonlyMap<string, readonly string[]>, prime?: (translator: Translator) => Output[]): SessionView {
+    const view = new SessionView(this, session, cwd, fromSeq, changes)
     if (prime !== undefined) view.queueOutputs(prime(view.translator), true)
     view.listen()
     this.views.set(session.id, view)
@@ -742,6 +842,7 @@ class SessionView {
     readonly session: EngineSession,
     cwd: string,
     private fromSeq: number,
+    changes: ReadonlyMap<string, readonly string[]>,
   ) {
     const catalog = connection.catalog
     const capabilities = connection.clientCapabilities
@@ -753,8 +854,13 @@ class SessionView {
       compaction: capabilities.session?.compaction != null,
       contextWindow: (model) => catalog.cached().find((entry) => entry.id === model)?.contextWindow ?? null,
       echo: (messageId) => this.echo.has(messageId),
+      replayedChanges: (executionId) => changes.get(executionId) ?? null,
     })
+    this.titled = connection.titleOf(session.id, session.projection().session.title) !== null
   }
+
+  /** Whether the client has a title for the session; the first message gives one to a session without. */
+  private titled: boolean
 
   get settings(): SessionSettings {
     return this.requested ?? this.session.projection().session.settings
@@ -852,7 +958,7 @@ class SessionView {
     this.enqueue(() =>
       this.connection.sendUpdate(this.session.id, {
         sessionUpdate: "session_info_update",
-        title: session.title,
+        title: this.connection.titleOf(this.session.id, session.title),
         updatedAt: new Date(projection.updatedAt).toISOString(),
       }),
     )
@@ -874,6 +980,13 @@ class SessionView {
       if (pending !== undefined) pending.enqueuedSeq = item.seq
     }
     if (item.type === "settings.changed") this.requested = null
+    if (item.type === "inbox.enqueued" && item.data.origin === null && !this.titled) {
+      const title = this.connection.titleOf(this.session.id, this.session.projection().session.title)
+      if (title !== null) {
+        this.titled = true
+        this.enqueue(() => this.connection.sendUpdate(this.session.id, { sessionUpdate: "session_info_update", title, updatedAt: new Date(item.time).toISOString() }))
+      }
+    }
     if (this.connection.fidelity.events) this.queueEvent(item, false)
     for (const output of this.translator.translate(item)) this.handleOutput(output, false, seq)
     // The question goes out after the events and updates that lead up to it, so the client can show the call it is about.
@@ -1145,4 +1258,49 @@ function lastUsage(history: readonly StoredEvent[]): { used: number; model: stri
       last = { used: item.data.usage.inputTokens + item.data.usage.outputTokens, model }
   }
   return last
+}
+
+/** The snapshots around a turn: from the workspace when its first message was delivered to the last snapshot before it ended. */
+function turnRange(events: readonly StoredEvent[], executionId: string | null): { from: string; to: string; executionId: string } | { reason: "not_found" | "no_snapshots"; message: string } {
+  const starts = events.filter((item) => item.type === "execution.started")
+  const start = executionId === null ? starts.at(-1) : starts.find((item) => item.type === "execution.started" && item.data.executionId === executionId)
+  if (start === undefined || start.type !== "execution.started")
+    return { reason: "not_found", message: executionId === null ? "this session has no turn yet" : `there is no turn ${executionId} in this session` }
+  const id = start.data.executionId
+  const end = events.find((item) => item.seq > start.seq && (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted") && item.data.executionId === id)
+  const until = end?.seq ?? Number.POSITIVE_INFINITY
+  // The delivery snapshot is recorded just before the message enters history, which may be before the execution's own start.
+  const previousEnd = events.findLast((item) => item.seq < start.seq && (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted"))?.seq ?? 0
+  const marks = events.filter((item): item is StoredEvent<"snapshot.taken"> => item.type === "snapshot.taken" && item.seq > previousEnd && item.seq < until)
+  const from = marks.find((item) => item.data.point === "delivery")
+  if (from === undefined) return { reason: "no_snapshots", message: "no snapshot was recorded for this turn (snapshots were off or unavailable)" }
+  const to = marks.findLast((item) => item.seq >= from.seq)!
+  return { from: from.data.id, to: to.data.id, executionId: id }
+}
+
+/** The snapshots around one step: its `step_start` and its `step_end` (or whatever was recorded next, for a step cut short). */
+function stepRange(events: readonly StoredEvent[], messageId: string): { from: string; to: string; executionId: string | null } | { reason: "not_found" | "no_snapshots"; message: string } {
+  const step = events.find((item) => item.type === "step.started" && item.data.messageId === messageId)
+  if (step === undefined) return { reason: "not_found", message: `there is no step ${messageId} in this session` }
+  const start = events.find((item): item is StoredEvent<"snapshot.taken"> => item.type === "snapshot.taken" && item.data.point === "step_start" && item.data.messageId === messageId)
+  if (start === undefined) return { reason: "no_snapshots", message: "this step ran no tool that can change files, so no snapshot was taken around it" }
+  const end = events.find((item): item is StoredEvent<"snapshot.taken"> => item.type === "snapshot.taken" && item.seq > start.seq)
+  const execution = events.findLast((item) => item.seq < step.seq && item.type === "execution.started")
+  return { from: start.data.id, to: end?.data.id ?? start.data.id, executionId: execution?.type === "execution.started" ? execution.data.executionId : null }
+}
+
+function diffFile(change: FileChange): DiffFile {
+  const patch = change.patch
+  const text = patch?.kind === "text" ? patch.text : null
+  const lines = text === null ? [] : text.split("\n")
+  return {
+    path: change.path,
+    status: change.status,
+    binary: patch?.kind === "binary",
+    patch: text,
+    truncated: patch?.kind === "text" && patch.truncated,
+    omitted: patch?.kind === "omitted",
+    added: lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length,
+    removed: lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length,
+  }
 }

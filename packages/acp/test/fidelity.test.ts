@@ -136,7 +136,7 @@ describe("how a turn ended", () => {
     expect(response._meta?.[NS]).toMatchObject({ outcome: "unresolved", verification: { status: "unresolved", reason: "report_mode", failing: ["lint"] } })
   })
 
-  test("session/load replays how every earlier turn ended, marked replay, without the changed files", async () => {
+  test("session/load replays how every earlier turn ended, marked replay, with the files each changed (none here)", async () => {
     const first = await start({
       responses: [[script.text("One.")], [script.toolCall("call_1", "shell", { command: "sleep 20" })]],
     })
@@ -152,8 +152,8 @@ describe("how a turn ended", () => {
     const loader = await start({ dataDir: first.dataDir })
     await loader.connection.agent.request(methods.agent.session.load, { sessionId, cwd: first.workspace, mcpServers: [] })
     expect(turns(loader, sessionId).map((turn) => [turn.outcome, turn.stopReason, turn.reason ?? null, turn.changedFiles, turn.replay])).toEqual([
-      ["succeeded", "end_turn", null, null, true],
-      ["interrupted", "cancelled", "user", null, true],
+      ["succeeded", "end_turn", null, [], true],
+      ["interrupted", "cancelled", "user", [], true],
     ])
   })
 
