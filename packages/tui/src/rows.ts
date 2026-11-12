@@ -265,6 +265,18 @@ function runLines(row: ToolRow, columns: number): Span[][] {
   return lines
 }
 
+/**
+ * How the result of an MCP call begins. Its output starts with a line of the harness's for the model (which tool
+ * it came from, and that it is not the user's word); on the row that line would take all the room and say nothing
+ * the row does not, so the row shows the result's own first line. `null`: the output is not in that form.
+ */
+export function mcpResultStart(output: string): string | null {
+  const lines = output.split("\n")
+  if (!/^Result of MCP tool \S+.*:$/.test(lines[0] ?? "")) return null
+  const first = lines.slice(1).find((line) => line.trim() !== "")
+  return first === undefined ? "an empty result" : first.trim()
+}
+
 function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[] {
   // A subagent's row names the agent it runs as: its instructions and what it may do are that agent's.
   const name = span(`${row.name || "tool"}${row.subagent?.agent == null ? "" : ` (${row.subagent.agent})`}`, undefined, { bold: true })
@@ -333,7 +345,7 @@ function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: stri
   if (refused !== null) return { symbol: "⊘", role: "warn", text: refused.head }
   switch (row.outcome) {
     case "success":
-      return { symbol: "✓", role: "ok", text: successSummary(row.name, data) }
+      return { symbol: "✓", role: "ok", text: (row.name === "mcp_call" ? mcpResultStart(data.output) : null) ?? successSummary(row.name, data) }
     case "error":
       return { symbol: "✗", role: "error", text: errorSummary(row.name, data) }
     case "not_started":
