@@ -413,7 +413,10 @@ export class Transcript {
         return
       case "notice": {
         const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "a project setting was not followed" : event.kind === "checks_not_run" ? "checks not run" : String(event.kind).replace(/_/g, " ")
-        const [first = "", ...rest] = sanitize(event.message).split("\n")
+        const [first = "", ...rest] = sanitize(event.message)
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line !== "")
         this.notice(SYMBOL.unknown, "warn", [span(`${what}: `, "warn", { bold: true }), span(first, "warn")], rest.map((line) => [span(line, "dim")]), replay, "session")
         return
       }

@@ -274,15 +274,11 @@ export class PrettyRenderer implements Sink {
       case "diagnostic": {
         // Something is wrong with the harness itself. It is said in full: this is what a bug report quotes.
         const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind.replace(/_/g, " ")
-        this.line("info", [seg(`${SYMBOL.unknown} ${what}: `, "yellow")])
-        for (const line of wrap(flatten(event.message), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
-        return
+        return this.headed(what, [flatten(event.message)])
       }
       case "notice": {
         const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "project setting not followed" : "checks not run"
-        this.line("info", [seg(`${SYMBOL.unknown} ${what}: `, "yellow")])
-        for (const part of event.message.split("\n")) for (const line of wrap(flatten(part), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
-        return
+        return this.headed(what, event.message.split("\n").map(flatten))
       }
       case "approval.requested": {
         // The question, in full: what would run and what each answer means. The choices are asked for at the prompt.
@@ -766,6 +762,16 @@ export class PrettyRenderer implements Sink {
       default:
         this.line("info", [seg(`${SYMBOL.note} note to the model (${origin})`, "dim")])
     }
+  }
+
+  /**
+   * A warning with a heading: `⚠ <what>: <first line>`, wrapped under itself,
+   * then the other lines indented. Blank lines are left out.
+   */
+  private headed(what: string, parts: readonly string[]): void {
+    const [first = "", ...rest] = parts.map((part) => part.trim()).filter((part) => part !== "")
+    wrap(`${what}: ${first}`.trimEnd(), this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.unknown} ` : "  ", "yellow"), seg(line, "yellow")]))
+    for (const part of rest) for (const line of wrap(part, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
   }
 
   /**

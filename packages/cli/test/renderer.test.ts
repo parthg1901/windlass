@@ -482,9 +482,22 @@ describe("verification, the workspace and reverts", () => {
       message: "session ses_test: the next request does not extend the previous one (params block 0 changed) and no event allows that",
     }
     const out = render([diagnostic], { columns: () => 50 }).split("\n").filter((line) => line !== "")
-    expect(out[0]).toBe("⚠ prompt cache: ")
-    expect(out.slice(1).join(" ").replace(/\s+/g, " ")).toContain("does not extend the previous one (params block 0 changed) and no event allows that")
+    // The heading carries the start of the message: no line of its own ending in ": " (it was, with a stray break after it).
+    expect(out[0]).toBe("⚠ prompt cache: session ses_test: the next request")
+    expect(out.join(" ").replace(/\s+/g, " ")).toContain("does not extend the previous one (params block 0 changed) and no event allows that")
     expect(out.every((line) => displayWidth(line) <= 50)).toBe(true)
+  })
+
+  test("the no-sandbox notice: its heading and the reason on one line, then the remedy, with no blank or dangling line", () => {
+    const notice: EphemeralEvent = {
+      type: "notice",
+      sessionId: SES,
+      kind: "sandbox_unavailable",
+      message: "Commands cannot be sandboxed on this machine: bubblewrap is not installed\nInstall it with your package manager (bubblewrap).\n\nUntil then every command asks before it runs.",
+    }
+    expect(render([notice], { columns: () => 100 })).toBe(
+      ["⚠ no sandbox: Commands cannot be sandboxed on this machine: bubblewrap is not installed", "  Install it with your package manager (bubblewrap).", "  Until then every command asks before it runs.", ""].join("\n"),
+    )
   })
 
   test("a model call that took too long is named as such in the retry line", () => {
