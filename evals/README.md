@@ -77,7 +77,7 @@ with the real CLI; the export reads a copy of the session's file and never holds
 | `--timeout <s>`, `--grace <s>` | override every task's time limit; time between SIGINT and SIGKILL |
 | `--db <path>` | where to export traces from: a harness data directory, or a single database file (default: the CLI's data directory, under the agent's `XDG_DATA_HOME`) |
 | `--no-classify` | skip the trace export and cache classification |
-| `--memory with\|without` | one side of the memory A/B: tasks from `memory-tasks/`, each run with its own user configuration, memory on and the task's notes seeded, or memory off (see "The memory A/B task set") |
+| `--memory with\|without` | one side of the memory A/B: tasks from `memory-tasks/`, each run with its own user configuration, memory on and the task's notes seeded in the data directory, or memory off (see "The memory A/B task set") |
 
 A task can ask for its own run settings with `run` in its task.json. The only one is `contextWindow` (tokens): the
 runner sets the test context window variable (`<BRAND>_TEST_CONTEXT_WINDOW`, docs/architecture.md, "The context
@@ -315,44 +315,79 @@ TypeScript fails to start.
 `memory-tasks/` holds the tasks that decide whether memory ships (`memory-compare.ts`; the rule in
 `packages/core/src/memory/README.md`, "Measuring it"). They are kept out of `tasks/` so they never mix into the
 general baseline, `--all` or the nightly run. Each is a task like any other plus `memory/`, the notes a person or an
-earlier session left, in the file format a person can edit (one terse, one with a detail slightly out of date). In
-every task the convention can be found in the workspace with effort, and the note only saves the search:
+earlier session left, in the file layout a person can edit.
 
-| task | the convention | where it can be found without memory | passed without memory |
+A fair set needs tasks the model solves *sometimes* without notes: then a note can help, do nothing, or hurt. The
+first five tasks were all-or-nothing (three always passed, two never did); the set was rebalanced by moving each
+convention nearer to or further from the code being changed (a consistent file, a split one, a misleading minority, a
+document the model may or may not open), and two tasks were added where memory can only cost or mislead.
+
+| task | the convention | where it is found without notes | what it is for |
 | --- | --- | --- | --- |
-| `changelog-fragments` | changelog entries are fragment files in `.changes/`; CHANGELOG.md is generated | CONTRIBUTING.md, `scripts/release.ts`, the hidden `.changes/` directory | 3/3 (6 of 6 over two versions) |
-| `amounts-in-cents` | every amount is integer cents | a comment at the end of `src/types.ts`, `src/ui/format.ts` dividing by 100 | 3/3 (9 of 9 over three versions) |
-| `error-codes` | bad input raises `AppError` with a new registered, documented `E4xxx` code; `users.ts` is old code | `docs/errors.md` (the README points at it), `orders.ts`, `payments.ts` | 0/3 (0 of 6) |
-| `prefixed-ids` | ids come from `newId(prefix)` with the prefix registered; two old modules use `randomUUID` | `src/ids.ts`, `threads.ts`, `comments.ts` | 3/3 (6 of 6) |
-| `commit-convention` | commit messages are `area: lowercase summary`, blank line, `Refs: #<issue>` | `git log` (CONTRIBUTING.md says to follow it) | 0/3 (0 of 6) |
+| `amounts-in-cents` | every amount is integer cents | `src/ui/format.ts`, `src/catalog.ts`'s prices, the rounding in `src/tax.ts` | middle |
+| `changelog-fragments` | changelog entries are `.changes/<issue>.<type>.md`; CHANGELOG.md is generated | CONTRIBUTING.md, `scripts/release.ts`, the hidden `.changes/` | middle |
+| `commit-convention` | `area: lowercase summary`, blank line, `Refs: #N` | `git log` (CONTRIBUTING.md says to follow it) | **ceiling**: never passes without notes |
+| `env-registry` | every variable is declared in `src/config/settings.ts` and read with `env()` | that file, `mailer.ts`, `queue.ts`; `digest.ts` and `sms.ts` read `process.env` directly | middle (high) |
+| `error-codes` | bad input is an `AppError` with a new registered, documented `E4xxx` code | `codes.ts` (points at the docs table), `docs/errors.md`, `createUser`'s other checks | near-ceiling |
+| `i18n-strings` | shown text comes from `t()` with a key in `en.json` | README → `src/i18n/README.md`, `orders.ts`; `cart.ts` is an older page with none | middle |
+| `injected-clock` | time comes from `now()` in `src/lib/runtime.ts` | CONTRIBUTING.md, `sessions.ts`, `invites.ts`; `resets.ts` calls `Date.now()` | middle (high) |
+| `prefixed-ids` | ids are `newId(prefix)` with a registered prefix | `src/ids.ts`, `threads.ts`, `polls.ts`; three older modules use `randomUUID` | middle |
+| `stale-timestamps` | response timestamps are ISO strings (decision 7); **the seeded note says unix seconds**, the rule before | `shipments.ts` itself, `time.ts`, `docs/decisions/0007` | can only hurt: a stale note |
+| `unrelated-notes` | none; five seeded notes about other parts of the project | - | can only cost: notes that do not apply |
 
-Measured without memory (3 runs each, `gpt-6-luna`, low effort) the set is lopsided, not "sometimes": three tasks
-always pass and two always fail. Each was adjusted once after the first measurement (the convention moved further
-from the code, or a pointer to it was added) without moving it. In the passing ones the model's routine first steps
-(`glob **/*`, reading the files it edits whole) find the convention; in the failing ones it follows the code nearest
-to the change (`users.ts` throws plain errors) or ignores what it saw (every `commit-convention` run ran
-`git log --oneline` and still wrote `Fix oversized upload error typo`). The three that always pass cannot show a gain;
-the two that always fail can, and the pooled test still has room (9 of 15 without; 15 of 15 with would be p < 0.01).
-More tasks in the middle are the next thing this set needs.
+Measured on `gpt-6-luna` at low effort (2026-11-12, a loaded two-core machine). Without memory, during
+rebalancing, on the final version of each task, six runs in two batches of three: `error-codes` 1/6,
+`amounts-in-cents` 3/6, `i18n-strings` 3/6, `prefixed-ids` 4/6, `env-registry` 5/6, `injected-clock` 5/6,
+`changelog-fragments` 7/9, `commit-convention` 0/6, `stale-timestamps` 6/6, `unrelated-notes` 6/6. The final A/B,
+six runs per task on each side (two batches of three, run back to back):
+
+| task | with memory | without memory | median input tokens, with / without |
+| --- | --- | --- | --- |
+| `amounts-in-cents` | 6/6 | 5/6 | 41.2k / 33.9k |
+| `changelog-fragments` | 6/6 | 6/6 | 71.5k / 52.1k |
+| `commit-convention` | 5/6 | 0/6 | 44.0k / 30.8k |
+| `env-registry` | 6/6 | 5/6 | 59.9k / 60.7k |
+| `error-codes` | 6/6 | 2/6 | 86.2k / 43.1k |
+| `i18n-strings` | 4/6 | 5/6 | 63.3k / 52.2k |
+| `injected-clock` | 6/6 | 4/6 | 83.3k / 75.5k |
+| `prefixed-ids` | 5/6 | 4/6 | 93.2k / 72.5k |
+| `stale-timestamps` | 6/6 | 6/6 | 61.3k / 42.7k |
+| `unrelated-notes` | 6/6 | 6/6 | 44.1k / 32.0k |
+
+`memory-compare.ts` on all of it: **gain at a cost**, 93% (56/60) with, 72% (43/60) without, Fisher one-sided
+p=0.002, median input-token ratio 1.33 against the limit of 1.25. Without the ceiling task it is still a gain at a
+cost (51/54 against 43/54, p=0.021, ratio 1.29); without `error-codes` as well it is no significant difference
+(45/48 against 41/48, p=0.158, ratio 1.25), which the comparison reports as "worse" because the cost is at the
+limit. Every session's first request is about 1,050 input tokens larger with memory (the three memory tools in
+the frozen tool list and the delivered notes), and that is paid on every request; on these 5- to 13-step tasks
+it is most of the ratio. The stale note did not mislead (6/6 on both sides: the file at hand uses `iso()`); the
+two `i18n-strings` failures with memory were a turn that ended after announcing its plan and one that hard-coded
+the text despite the note. Read it as: one small model, low effort, synthetic workspaces, notes written for the
+tasks they help.
 
 Run both sides with the same model and effort, then compare:
 
 ```
-bun evals/run-agent.ts --all --memory without --model gpt-6-luna --effort low --repeat 3 --out /tmp/mem-without
-bun evals/run-agent.ts --all --memory with    --model gpt-6-luna --effort low --repeat 3 --out /tmp/mem-with
+bun evals/run-agent.ts --all --memory without --model gpt-6-luna --effort low --repeat 3 --concurrency 2 --out /tmp/mem-without
+bun evals/run-agent.ts --all --memory with    --model gpt-6-luna --effort low --repeat 3 --concurrency 2 --out /tmp/mem-with
 bun evals/memory-compare.ts --with /tmp/mem-with --without /tmp/mem-without
 ```
 
 `--memory` reads the tasks from `memory-tasks/` and gives every run its own user configuration directory
 (`XDG_CONFIG_HOME`, beside the workspace, removed with it). On the `with` side its `config.json` is
-`{ "memory": { "enabled": true, "inRepository": true } }` and the task's notes are copied into the workspace's
-`.<brand.directory>/memory/` after setup, so they are project notes of that workspace; on the `without` side it is
-`{ "memory": { "enabled": false } }` and nothing is seeded. Both sides therefore ignore any user configuration on the
-machine; the sign-in and the session files stay in the data directory. Two things differ between the sides beyond
-the delivered notes, and both are part of the treatment: the `with` side has the three memory tools in its tool
-list, and its notes are files in the workspace (the model may find them with `ls -a`, and `git status` shows them as
-untracked in `commit-convention`). Graders ignore them. The notes lapse 90 days (a fact) or a year (a preference or
-correction) after their dates; re-date them if the comparison is run after that.
+`{ "memory": { "enabled": true } }` and the task's notes are written where a user's project notes live by default:
+the agent's data directory, `memory/projects/<key of the workspace's project>/` (`memoryPaths`), after setup, and
+removed when the run ends. They are outside the workspace, so the model gets them only by delivery and the memory
+tools, never from a file listing or `git status`, and no grader sees them. The runner refuses a data directory that
+holds user notes (they would be delivered too) and a project notes directory that already exists. On the `without`
+side the configuration is `{ "memory": { "enabled": false } }` and nothing is seeded. The sign-in and the session
+files stay in the data directory. The one difference between the sides beyond the notes is part of the treatment:
+the `with` side has the three memory tools in its tool list.
+
+The notes are written as of `NOTES_WRITTEN_AS_OF` in `memory-tasks/source.ts` (2026-11-12); seeding moves each
+note's `created`, `confirmed` and dated `expires` by the time since then, so a note three weeks old stays three
+weeks old whenever the set is run and never lapses. Dates in workspace files (an ADR's "Accepted" line) are fixed
+text and are not moved.
 
 ## The nightly run
 
