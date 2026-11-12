@@ -143,7 +143,8 @@ describe("/undo", () => {
       "  1 file changed since the turn by you or another program: notes.md",
       "  2 files changed since the turn while session ses_other was working in this directory: a.ts, b.ts",
       "  1 file changed since the turn while other sessions were working in this directory: c.ts",
-      "  1 file changed since the turn, and it cannot be told by whom (it may be this session's own command or checks): d.ts",
+      // Changed while a command or the checks ran and no call named it: said as that, with whose work it may be.
+      "  1 file changed since the turn while a command or the checks ran (the command's own work, or yours meanwhile): d.ts",
     ])
     await type("n\r")
     await screen.commandsSettled()

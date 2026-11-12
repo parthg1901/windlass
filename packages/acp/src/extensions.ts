@@ -977,8 +977,9 @@ export interface PlannedChange {
  * with who changed each as far as the engine can tell (`editedBy`), one
  * sentence per answer: by the user or another program while no session
  * worked; while another session worked in the same directory (named, or
- * several); or by nobody that can be told, which may be this session's own
- * command or checks. `since` is what the change came after (`since the
+ * several); or while a command or the checks of this session ran and no
+ * call named the file, which may be the command's own work or the user's
+ * meanwhile (`unknown`). `since` is what the change came after (`since the
  * turn`, `since the /undo`). No sentence ends with a full stop.
  */
 export function handEditSentences(changes: readonly PlannedChange[], since: string): string[] {
@@ -993,7 +994,7 @@ export function handEditSentences(changes: readonly PlannedChange[], since: stri
           ? by.sessionId === null
             ? " while other sessions were working in this directory"
             : ` while session ${by.sessionId} was working in this directory`
-          : ", and it cannot be told by whom (it may be this session's own command or checks)"
+          : " while a command or the checks ran (the command's own work, or yours meanwhile)"
     groups.set(who, [...(groups.get(who) ?? []), change.path])
   }
   return [...groups].map(([who, paths]) => `${paths.length === 1 ? "1 file" : `${paths.length} files`} changed ${since}${who}: ${paths.join(", ")}`)

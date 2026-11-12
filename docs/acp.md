@@ -399,7 +399,8 @@ latest by default), the files and the conversation, and undo that. Only while th
 // plan: { fromSeq, messageId, messages, target, unrestorable, changes: { path, status, handEdited, editedBy? }[], kept }
 // editedBy (there when handEdited): who changed the file outside the session's own work, as far as the snapshots tell:
 //   { kind: "outside" } (you or another program), { kind: "session", sessionId: string | null } (while another
-//   session, or with null several, worked in the directory), { kind: "unknown" }
+//   session, or with null several, worked in the directory), { kind: "unknown" } (while a command or the checks of
+//   this session ran, and no call named the file: the command's own work, or the user's meanwhile)
 ```
 
 **`_windlass/diff`** (request): the files a turn or a step changed, with bounded per-file patches, from the
