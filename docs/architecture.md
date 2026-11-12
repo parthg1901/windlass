@@ -506,6 +506,14 @@ is a new version with a decoder for the old one.
   declined instead, and a call waiting in the line cannot be stopped ahead of its turn), one that has its
   result, one already asked to stop, while the turn is being interrupted (everything stops then), and in a
   replay. An interrupt after the request winds the call down by the interrupt's rules.
+- *The identical-call guard.* A call is refused, without running, when the two calls before it in the turn were
+  the same call (same tool, same arguments) and gave the same result (`repeatsItself`, `engine/state.ts`): the
+  model is going in a circle. A tool whose result changes without any call of the model's says so with
+  `Tool.varies`, and the guard leaves it alone: `background_output` (a command that printed nothing new for a
+  while is polled again, and a subagent's state moves by itself), `wake_list` (wake-ups fire and expire by the
+  clock), `mcp_search` and `mcp_call` (a server elsewhere may answer differently, and one that was starting is
+  there a moment later). `varies` is a property of the tool like its effect class, not of its spec: the name,
+  the description and the schema the model is sent are the same with it. The step limit still bounds the turn.
 - *The order of the calls of one step.* Calls the loop itself refuses are settled first. Reads are decided at
   once and run side by side. Every call that can change something (a write, a command, a network or MCP tool)
   keeps its place in one line: it is decided when the one before it in the line has its result, and runs alone.

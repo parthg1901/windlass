@@ -117,6 +117,8 @@ export function mcpSearchTool(backend: () => McpBridgeBackend | null): Tool<Sear
       additionalProperties: false,
     },
     effect: "read",
+    // The servers' tools are listed as they are now: one that was still starting is there a moment later.
+    varies: true,
     execute: async (input) => {
       const registry = backend()
       if (registry === null) return result("success", "No MCP servers are configured.", source("search", [], null, false, null))
@@ -190,6 +192,8 @@ export function mcpCallTool(backend: () => McpBridgeBackend | null): Tool<CallIn
       additionalProperties: false,
     },
     effect: "network",
+    // A server elsewhere answers: the same call may be answered differently the next time (a job's status, a queue).
+    varies: true,
     execute: async (input, context) => {
       const registry = backend()
       if (registry === null) return result("error", "No MCP servers are configured.", source("call", [], input.tool, false, "refused"))

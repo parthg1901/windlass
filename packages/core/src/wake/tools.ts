@@ -177,6 +177,8 @@ export function wakeListTool(options: WakeToolOptions): Tool<{ readonly includeE
       additionalProperties: false,
     },
     effect: "read",
+    // Wake-ups fire, expire and are cancelled by the clock and by the user, not by a call of the model's.
+    varies: true,
     execute: async (input, context) => {
       const store = options.store(context)
       const wakes = store.list({ sessionId: context.sessionId, includeEnded: input.includeEnded === true })

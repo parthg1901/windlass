@@ -1246,6 +1246,8 @@ interface Core {
   readonly spawning: { readonly subagent: AnyTool; readonly management: readonly AnyTool[] }
   /** The names of the tools whose calls need no decision and run side by side (`Tool.delegates`). */
   readonly delegating: ReadonlySet<string>
+  /** The names of the tools whose result changes without a call of the model's (`Tool.varies`): the identical-call guard does not apply to them. */
+  readonly varying: ReadonlySet<string>
   readonly exportSnapshot: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number } | SnapshotUnavailable>
   /** Skills: the tool and where the user's own are kept. `null` when the build offers none. */
   readonly skills: { readonly tool: AnyTool; readonly configDir: string; readonly home: string | undefined } | null
@@ -1423,6 +1425,7 @@ export function createEngine(options: EngineOptions): Engine {
       management: spawning.management.map((tool) => runnable.find((other) => other.name === tool.name)!),
     },
     delegating: new Set(runnable.filter((tool) => tool.delegates === true).map((tool) => tool.name)),
+    varying: new Set(runnable.filter((tool) => tool.varies === true).map((tool) => tool.name)),
     exportSnapshot: options.exportSnapshot ?? ((workspace, snapshot, into) => exportSnapshot(workspace, snapshot, into, { dataDir: join(options.dataDir, "snapshots") })),
     skills: options.skills == null ? null : { tool: runnable.find((tool) => tool.name === skill.name)!, configDir: skillsDir, home: options.skills.home },
     mcp:
@@ -3630,7 +3633,8 @@ class LiveSession implements EngineSession {
         if (recorded(call)) return [launch(call)]
         if (toolChoice === "none") return refuse(call, TOOL_TEXT.toolsDisabled) && []
         if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
-        if (repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
+        // A tool whose result changes by itself (`Tool.varies`) is asked again however often it answered the same.
+        if (!this.core.varying.has(call.name) && repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
         const effect = effects.get(call.name)
         // The agent's restrictions come before the approval layer, and only take away: a call they let through is
         // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)

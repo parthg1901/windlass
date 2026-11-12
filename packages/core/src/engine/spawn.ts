@@ -96,6 +96,8 @@ export function spawnTools(hostOf: (sessionId: SessionId) => SpawnHost | null): 
       "Look at background work without waiting for it: for a command started with the shell tool's `background`, its output so far and whether it still runs; for a subagent, what it is doing and its latest words. `id` is the handle the start returned (or the subagent's session ID).",
     inputSchema: { type: "object", properties: { id: { type: "string", minLength: 1 } }, required: ["id"], additionalProperties: false },
     effect: "read",
+    // What it reports is the work's state as it is now: polled, it answers the same until something happens.
+    varies: true,
     execute: async (input, context) => hostOf(context.sessionId)?.output(input.id, context) ?? closed(context.sessionId),
   }
   const stop: Tool<{ readonly id: string }> = {

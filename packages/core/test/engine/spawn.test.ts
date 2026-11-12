@@ -7,6 +7,7 @@
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
+import { TOOL_TEXT } from "../../src/engine/constants.ts"
 import type { EngineSession } from "../../src/engine/engine.ts"
 import { SUBAGENT_NOTE } from "../../src/engine/spawn.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
@@ -412,6 +413,29 @@ describe("a background command", () => {
         content: [{ type: "text", text: "Background command bg_1 exited with code 0 after 2.5 s.\nCommand: bun test\nOutput:\n3 pass\n0 fail\nFull output: /tmp/.spill/bg.log" }],
       })
       expect(session.projection().session.spawned?.running).toEqual([])
+    }))
+
+  test("polled again and again while it prints nothing new, every call runs: the identical-call guard leaves a tool whose result changes by itself alone", () =>
+    withHarness(async (h) => {
+      const build = fakeCommand("bun run build")
+      const poll = () => [script.toolCall("call_1", "background_output", { id: "bg_1" }), U()]
+      h.provider.enqueue([bgShell("bun run build"), U()], poll(), poll(), poll(), poll(), [script.toolCall("call_1", "background_stop", { id: "bg_1" }), U()], [script.text("Stopped it."), U()])
+      let polls = 0
+      h.tools.on("shell", (input, context) => {
+        build.state.printed = "compiling\n"
+        return background(h, build)(input, context)
+      })
+      h.at("tool.started", 5, () => {
+        // Before the fourth poll runs the command prints: three identical answers were not the last word.
+        polls += 1
+        build.state.printed = "compiling\ndone\n"
+      })
+      h.create().send("Build in the background and watch it.")
+      await h.settled()
+      const same = ["success", "bg_1 is still running.\nOutput so far:\ncompiling"]
+      expect(outputs(h).slice(1, 5)).toEqual([same, same, same, ["success", "bg_1 is still running.\nOutput so far:\ncompiling\ndone"]])
+      expect(polls).toBe(1)
+      expect(outputs(h).map(([, output]) => output)).not.toContain(TOOL_TEXT.identicalCall)
     }))
 
   test("can be read while it runs and stopped by the model; an interrupt and a shutdown stop it too", () =>

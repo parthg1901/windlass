@@ -246,6 +246,15 @@ export interface Tool<Input = Json> extends ToolSpec {
    */
   readonly delegates?: boolean
   /**
+   * The result of a call depends on something that changes without any call
+   * of the model's: work that runs in the background, a clock, a server
+   * elsewhere. The same call made twice with the same result then says
+   * nothing about a third (a command that printed nothing new for a while is
+   * polled again), so the identical-call guard leaves the tool alone. Not
+   * part of the tool's spec.
+   */
+  readonly varies?: boolean
+  /**
    * For a tool that stands for many (the MCP bridge, whose one `mcp_call`
    * reaches every tool of every server): the name a call with this input is
    * asked about and remembered by, e.g. `github/create_issue`. Without it
