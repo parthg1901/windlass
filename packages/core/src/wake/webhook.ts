@@ -7,6 +7,8 @@
  * - GitHub style: `X-Hub-Signature-256: sha256=<hex>` over the body, as GitHub sends it. It has no timestamp, so
  *   each signature is accepted once for the life of the wake-up: a resent delivery, or a captured request
  *   replayed later, is refused. Its `ping` event (sent when the webhook is set up) is answered and fires nothing.
+ * The `v1=` and `sha256=` prefixes may be left out, and the hex is lowercase. "Accepted once" is of the signature,
+ * not of the header as written: the same signature with or without its prefix is refused the second time.
  * Signatures are compared in constant time. An unknown wake-up is checked against a random key, so it takes as
  * long as a known one, and every refusal before the signature is proven valid is the same 401 with the same body:
  * nothing tells a caller which wake-ups exist. A valid request is recorded as a firing before the 202 is sent.
@@ -133,18 +135,22 @@ export function createWebhookListener(options: WebhookListenerOptions): WebhookL
     let seenUntil: number
     if (native !== null) {
       const timestamp = request.headers.get(TIMESTAMP_HEADER) ?? ""
-      const valid = equalHex(native.replace(/^v1=/, ""), nativeMac(key, timestamp, body))
+      const expected = nativeMac(key, timestamp, body)
+      const valid = equalHex(native.replace(/^v1=/, ""), expected)
       const seconds = /^\d{1,12}$/.test(timestamp) ? Number(timestamp) : Number.NaN
       const fresh = Math.abs(now - seconds * 1000) <= WAKE_LIMITS.webhook.toleranceMs
       if (!valid || !fresh || secret === null) return refused()
-      digest = `v1:${native}`
+      // What is remembered is the signature itself, the MAC it was found equal to, never the header as written: a
+      // replay with the prefix taken off (or written any other way that is accepted) is the same signature.
+      digest = `v1:${expected}`
       seenUntil = seconds * 1000 + WAKE_LIMITS.webhook.toleranceMs
     } else if (github !== null) {
-      const valid = equalHex(github.replace(/^sha256=/, ""), createHmac("sha256", key).update(body).digest("hex"))
+      const expected = createHmac("sha256", key).update(body).digest("hex")
+      const valid = equalHex(github.replace(/^sha256=/, ""), expected)
       if (!valid || secret === null) return refused()
       // GitHub sends a signed `ping` when the webhook is set up: answer it, fire nothing.
       if (request.headers.get("x-github-event") === "ping") return json(200, { pong: true })
-      digest = `gh:${github}`
+      digest = `gh:${expected}`
       seenUntil = Number.MAX_SAFE_INTEGER
     } else {
       // Still compute one MAC, so a request without a signature costs what one with a bad signature costs.
