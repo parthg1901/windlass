@@ -29,6 +29,7 @@ import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
+import { ReviewView, reviewTarget } from "./review-view.ts"
 import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable } from "./transcript.ts"
 import { forkPointOfTurn } from "@windlass/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
@@ -133,6 +134,9 @@ export class App {
   private unwatchMcp: (() => void) | null = null
   private readonly dockView: LinesView
   readonly pager: Pager
+  /** The review of a turn's changes, and the turn whose diff the reader shows (r opens its review). */
+  readonly review: ReviewView
+  private diffTurn: { readonly executionId: string | null } | null = null
   /** When the user last typed in the input: the dock does not take the focus from someone typing. */
   private lastTyped = 0
   /** How the session's tool calls are approved, as the server last said. */
@@ -200,6 +204,8 @@ export class App {
     root.add(this.dialog)
     this.pager = new Pager(renderer, theme, { id: "pager", left: 0, top: 0, width: "100%", height: "100%" })
     root.add(this.pager)
+    this.review = new ReviewView(renderer, theme, { id: "review", left: 0, top: 0, width: "100%", height: "100%" })
+    root.add(this.review)
     this.input.focus()
 
     renderer.keyInput.on("keypress", (key: KeyEvent) => this.onKey(key))
@@ -361,8 +367,16 @@ export class App {
       this.dialog.key(name, key.sequence, ctrl, meta)
       return handled()
     }
+    if (this.review.open) {
+      // A key the review does not take is text for the comment being written: its editor gets it.
+      if (!this.review.key(key)) return
+      return handled()
+    }
     if (this.pager.open) {
-      this.pager.key(name, key.sequence, ctrl)
+      if (key.sequence === "r" && this.diffTurn !== null) {
+        this.pager.close()
+        void this.openReview(this.diffTurn.executionId)
+      } else this.pager.key(name, key.sequence, ctrl)
       return handled()
     }
     if (ctrl && name === "c") {
@@ -694,6 +708,7 @@ export class App {
       case "clear-taint":
         return session?.clearTaint !== undefined
       case "diff":
+      case "review":
         return session?.diff !== undefined
       case "rename":
         return session?.rename !== undefined
@@ -814,6 +829,8 @@ export class App {
           return await this.clearTaint()
         case "diff":
           return await this.showDiff()
+        case "review":
+          return await this.openReview()
         case "rename":
           return await this.rename(rest)
         case "fork":
@@ -1643,6 +1660,7 @@ export class App {
     }
     if (result.files.length === 0) return this.say(`the ${result.scope} changed no file`)
     const what = result.scope === "step" ? "this step" : "this turn"
+    this.diffTurn = result.scope === "turn" ? { executionId: result.executionId } : null
     await this.pager.show({
       title: `Changes of ${what}: ${plural(result.files.length, "file")} · +${result.files.reduce((sum, file) => sum + file.added, 0)} -${result.files.reduce((sum, file) => sum + file.removed, 0)}`,
       body: (columns) => {
@@ -1655,9 +1673,27 @@ export class App {
         }
         return { lines, marks }
       },
-      footer: "↑↓ PgUp PgDn scroll · n p next/previous file · Esc close",
+      footer: `↑↓ PgUp PgDn scroll · n p next/previous file · ${this.diffTurn === null ? "" : "r review and comment · "}Esc close`,
     })
     this.redraw()
+  }
+
+  /**
+   * `/review`: the changes of the selected turn (the latest by default) line
+   * by line, to comment on. Sending the review sends one ordinary message
+   * made of the comments; leaving keeps them for the turn (`review-view.ts`).
+   */
+  private async openReview(executionId: string | null = null): Promise<void> {
+    const session = this.session
+    if (session?.diff === undefined) return this.say("reviewing a turn's changes is not available with this engine", "warn")
+    const delivery = () => (!this.transcript.activity.executing ? "sends it" : this.mode === "steer" ? "sends it into the running turn (steer)" : "queues it for after the running turn")
+    const came = await this.review.run({ ...reviewTarget(this.transcript.rows, this.conversation.selectedRow(), executionId), sessionId: session.id, diff: (params) => session.diff!(params), delivery })
+    this.input.focus()
+    // A question that came up meanwhile waits for Tab: a key meant for the review must not answer it.
+    if (this.dock !== null) this.dock.state.focused = false
+    this.layout()
+    if (came.say !== null) this.say(came.say.text, came.say.tone)
+    if (came.message !== null) this.send(came.message, this.transcript.activity.executing ? this.mode : "steer")
   }
 
   private toggle(row: Row): void {

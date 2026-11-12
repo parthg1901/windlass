@@ -1,0 +1,67 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`/review in the app comments on a removed and an added line, the last look, and the one message that is sent 1`] = `
+"Review of turn 1 · ◆ 2 comments · 3 files · +4 -1
+▸ src/add.ts · +2 -1  ◆ 2
+  logo.png · new file · binary
+  notes.md · new file · +2 -0
+─ file 1 of 3 ──────────────────────────────────────────────────────────────────────────────────────
+   src/add.ts · +2 -1
+   @@ -1,4 +1,4 @@
+    1  1  export function add(a: number, b: number) {
+ ◆  2    -  return a - b
+          ╰ Why was this a subtraction?
+            Is a caller relying on it?
+▌◆     2 +  return a + b
+▌         ╰ Good.
+    3  3  }
+    4  4
+   @@ -20,3 +20,4 @@ export function last() {
+   20 20  // the end
+      21 +// one more
+   21 22  export {}
+   the line above has no newline at its end
+
+   logo.png · new file · binary
+   binary file: it has no lines to show or comment on; a comment on the file's line above is about
+   the file as a whole
+
+   notes.md · new file · +2 -0
+   @@ -0,0 +1,2 @@
+       1 +one
+       2 +two
+↑↓ line · [ ] hunk · n p file · c edit · d delete · s send (2) · Esc leave, comments kept"
+`;
+
+exports[`/review in the app comments on a removed and an added line, the last look, and the one message that is sent 2`] = `
+"Send this review to the agent? · ◆ 2 comments on 1 file of turn 1
+─ the message, as it will be sent ──────────────────────────────────────────────────────────────────
+ Review of the changes in turn 1 (the latest turn): 2 comments on 1 file.
+
+ Overall: Nearly there.
+
+ 1. src/add.ts, line 2 of the old file (removed)
+    >   return a - b
+    Why was this a subtraction?
+    Is a caller relying on it?
+
+ 2. src/add.ts, line 2 (added)
+    >   return a + b
+    Good.
+
+
+
+
+
+
+
+
+
+
+
+
+
+─ an overall note, if you want one: it goes above the comments ─────────────────────────────────────
+› Nearly there.
+Enter sends it · Alt-Enter new line · Esc back to the review"
+`;

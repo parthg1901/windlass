@@ -23,6 +23,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "approval", args: "[ask|auto|full]", description: "when tool calls ask before they run", aliases: ["mode"] },
   { name: "clear-taint", args: "", description: "say you trust the untrusted content in the conversation" },
   { name: "diff", args: "", description: "per-file diffs of the selected step or turn (the latest by default)" },
+  { name: "review", args: "", description: "review the selected turn's changes line by line (the latest turn by default): comment on lines, then send the comments to the agent as one message" },
   { name: "mcp", args: "[approve <server>]", description: "the MCP servers: state, tools, where each is defined; approve one the project names" },
   { name: "hooks", args: "[approve <hook>]", description: "the hooks: when each runs, its command, its state, where it is defined; approve one the project names" },
   { name: "lsp", args: "[approve <server>]", description: "the language servers that add diagnostics to edits: state, the files each serves, where it is defined; approve one the project names", aliases: ["diagnostics"] },

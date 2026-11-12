@@ -58,7 +58,7 @@ describe("parsing and completing", () => {
   test("the palette offers the command files after the interface's own, with their argument hint, and not one a command of its own hides", () => {
     const files = fileCommands(LISTING)
     expect(files.map((command) => [command.name, command.args])).toEqual([["frontend:test", ""], ["release-notes", "<version> [previous-version]"]])
-    expect(complete("/re", () => true, files).map((command) => command.name)).toEqual(["redo", "remember", "rename", "reconnect", "release-notes"])
+    expect(complete("/re", () => true, files).map((command) => command.name)).toEqual(["redo", "review", "remember", "rename", "reconnect", "release-notes"])
     expect(complete("/frontend:", () => true, files).map((command) => command.name)).toEqual(["frontend:test"])
     expect(complete("/", () => true, files).length).toBe(COMMANDS.length + 2)
     expect(findFileCommand(files, "Release-Notes")?.name).toBe("release-notes")
