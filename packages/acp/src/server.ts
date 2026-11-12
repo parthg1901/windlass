@@ -59,6 +59,7 @@ import {
   type MessageId,
   type ModelEntry,
   ModelListError,
+  type ReplayRequest,
   type RevertOptions,
   type RevertPlan,
   type RevertResult,
@@ -68,6 +69,7 @@ import {
   StoreError,
   approvalModes,
   brand,
+  renderReplayReport,
 } from "@light-harness/core"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import {
@@ -79,10 +81,15 @@ import {
   type DiffResult,
   type ErrorData,
   EXT,
+  type ForkParams,
+  type ForkResult,
   HAND_EDIT_OPTIONS,
   META,
   type OpenMeta,
+  type ReplayParams,
+  type ReplayResult,
   type RevertParams,
+  type SubagentRef,
   type SessionState,
   type StateNotification,
   titleFromEvents,
@@ -136,14 +143,14 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff],
-  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay],
+  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child],
   promptMeta: [META.delivery, META.maxSteps],
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort", "approval", "unattended", "attended"],
-  /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call. */
+  openMeta: ["model", "effort", "approval", "unattended", "attended", "children"],
+  /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
 
@@ -192,6 +199,8 @@ function buildAgent(state: ConnectionState): AgentApp {
       if (params.patch !== undefined && typeof params.patch !== "boolean") throw RequestError.invalidParams(undefined, "patch must be a boolean")
       return state.diff(requireString(params, "sessionId"), { executionId: optionalString(params, "executionId"), messageId: optionalString(params, "messageId"), patch: params.patch !== false })
     })
+    .onRequest(EXT.fork, parseForkParams, ({ params }) => state.fork(params))
+    .onRequest(EXT.replay, parseReplayParams, ({ params, signal }) => state.replay(params, signal))
 }
 
 interface Pending {
@@ -277,6 +286,7 @@ class ConnectionState {
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings }))
     applyApproval(session, meta)
     const view = this.attach(session, cwd, session.projection().lastSeq, new Map())
+    view.children = meta?.children !== false
     // A full-fidelity client gets the session from its first event, as the engine's own stream has it.
     if (this.fidelity.events) for (const item of session.readEvents()) view.queueEvent(item, false)
     await view.flushed()
@@ -322,6 +332,7 @@ class ConnectionState {
         if (replay) prime.queueOutputs(outputs.filter((output) => output.type === "update" || (output.type === "ext" && output.method === EXT.turn)), true)
       }
     })
+    view.children = meta?.children !== false
     view.syncState(history)
     // As the command line does on --session and --continue: the model or effort named is switched to, durably.
     if (asked.model !== null || asked.effort !== null) {
@@ -509,20 +520,27 @@ class ConnectionState {
    * `project`, `deny`), each named with what it remembers. Whatever is not a
    * selection (a cancelled request, a client that cannot answer) declines.
    */
-  async askApproval(view: SessionView, data: EventData<"approval.requested">): Promise<void> {
+  async askApproval(view: SessionView, data: EventData<"approval.requested">, child: SubagentRef | null = null): Promise<void> {
     const client = this.client
-    const target = { messageId: data.messageId, callId: data.callId }
-    const decline = () => void this.guard(() => view.session.answer(target, { choice: "deny" }))
+    // A subagent's question is answered through its parent's `answer`, which hands it on to the subagent.
+    const target = { messageId: data.messageId, callId: data.callId, ...(child === null ? {} : { sessionId: child.sessionId as SessionId }) }
+    const decline = () => {
+      // The parent's interrupt is durable before its subagents are stopped: a question withdrawn by that is left to the subagent's own interrupt.
+      if (child !== null && view.session.projection().session.execution?.interrupting != null) return
+      this.guard(() => view.session.answer(target, { choice: "deny" }))
+    }
     if (client === null) return decline()
     const question = data.question
-    const meta: ApprovalRequestMeta = { messageId: data.messageId, callId: data.callId, question, needs: data.needs, then: data.then }
+    const meta: ApprovalRequestMeta = { messageId: data.messageId, callId: data.callId, question, needs: data.needs, then: data.then, ...(child === null ? {} : { subagent: child }) }
+    const asker = child === null ? [] : [`Asked by a subagent working on: ${child.title}`]
     const request: RequestPermissionRequest = {
       sessionId: view.session.id,
       toolCall: {
-        toolCallId: `${data.messageId}/${data.callId}`,
-        title: question.title,
+        // A subagent's call is not one of the session's own: it gets an ID of its own, which names the subagent's session.
+        toolCallId: child === null ? `${data.messageId}/${data.callId}` : `${child.sessionId}/${data.messageId}/${data.callId}`,
+        title: child === null ? question.title : `Subagent "${shorten(child.title, 48)}": ${question.title}`,
         status: "pending",
-        content: [{ type: "content", content: { type: "text", text: [question.subject, ...question.details].join("\n") } }],
+        content: [{ type: "content", content: { type: "text", text: [question.subject, ...question.details, ...asker].join("\n") } }],
       },
       options: question.choices.map((choice) => ({
         optionId: choice.id,
@@ -547,7 +565,8 @@ class ConnectionState {
   approval(sessionId: string, change: { readonly mode: string | null; readonly unattended: string | null; readonly attended: boolean | null }): ApprovalStateResult {
     const view = this.requireView(sessionId)
     const session = view.session
-    if (change.attended !== null) session.setAttended(change.attended)
+    // Whoever answers for the session answers for its subagents, unless the session was opened saying otherwise.
+    if (change.attended !== null) session.setAttended(change.attended, { children: change.attended && view.children })
     if (change.mode !== null || change.unattended !== null)
       session.setApproval({
         ...(change.mode === null ? {} : { mode: change.mode as (typeof approvalModes)[number] }),
@@ -570,6 +589,108 @@ class ConnectionState {
 
   clearTaint(sessionId: string) {
     return { cleared: this.requireView(sessionId).session.clearTaint() }
+  }
+
+  /**
+   * `_<ns>/fork`: a new session with the history of `sessionId` up to a step
+   * boundary (`Engine.forkSession`). The parent is only read, so it may be
+   * open here, in another process, or nowhere. The fork is let go of at once:
+   * a client opens it (`session/load`) to work in it, here or elsewhere.
+   */
+  async fork(params: ForkParams): Promise<ForkResult> {
+    const engine = this.harness.engine
+    const summary = this.engineErrors(() => engine.getSession(params.sessionId as SessionId), params.sessionId)
+    if (summary === null) throw RequestError.sessionNotFound(params.sessionId)
+    let settings: SessionSettings | undefined
+    if (params.model !== undefined || params.effort !== undefined) {
+      const current = summary.session.settings
+      const asked = { model: params.model ?? current.model, effort: params.effort === undefined ? current.reasoningEffort : params.effort }
+      if (params.model !== undefined) await this.validate(summary.session.cwd, asked)
+      settings = { model: asked.model, reasoningEffort: asked.effort }
+    }
+    const forked = await this.engineErrors(
+      () =>
+        engine.forkSession(params.sessionId as SessionId, {
+          ...(params.throughSeq === undefined ? {} : { throughSeq: params.throughSeq }),
+          ...(settings === undefined ? {} : { settings }),
+          ...(params.title === undefined ? {} : { title: params.title }),
+          ...(params.workspace === undefined ? {} : { workspace: params.workspace }),
+        }),
+      params.sessionId,
+    )
+    const session = forked.projection().session
+    const lineage = session.lineage
+    const result: ForkResult = {
+      sessionId: forked.id,
+      parentSessionId: params.sessionId,
+      throughSeq: lineage?.kind === "fork" ? lineage.throughSeq : 0,
+      cwd: session.cwd,
+      copiedFrom: lineage?.kind === "fork" ? (lineage.copied?.from ?? null) : null,
+      title: this.titleOf(forked.id, session.title),
+      model: session.settings.model,
+      effort: session.settings.reasoningEffort,
+    }
+    // Held only while it was made: whoever continues in it opens it.
+    await forked.close()
+    return result
+  }
+
+  /**
+   * `_<ns>/replay`: replays a recorded session (`Engine.replaySession`). The
+   * replay session is shown on this connection while it runs, as any session
+   * is: `_<ns>/replay_started` names it, then its events (and updates)
+   * follow, and `session/cancel` on it ends the replay as incomplete. The
+   * answer is the report, once the replay is over; the replay session is
+   * then let go of.
+   */
+  async replay(params: ReplayParams, signal: AbortSignal): Promise<ReplayResult> {
+    await this.requireSignIn()
+    const engine = this.harness.engine
+    const summary = this.engineErrors(() => engine.getSession(params.sessionId as SessionId), params.sessionId)
+    if (summary === null) throw RequestError.sessionNotFound(params.sessionId)
+    if (params.model !== undefined) await this.validate(summary.session.cwd, { model: params.model, effort: params.effort ?? null })
+    const request: ReplayRequest = {
+      ...(params.policy === undefined ? {} : { policy: params.policy }),
+      ...(params.systemPrompt === undefined ? {} : { systemPrompt: params.systemPrompt }),
+      ...(params.toolDescriptions === undefined ? {} : { toolDescriptions: params.toolDescriptions }),
+      ...(params.model === undefined ? {} : { model: params.model }),
+      ...(params.effort === undefined ? {} : { effort: params.effort }),
+      ...(params.strict === undefined ? {} : { strict: params.strict }),
+      ...(params.throughSeq === undefined ? {} : { throughSeq: params.throughSeq }),
+      ...(params.workspace === undefined ? {} : { workspace: params.workspace }),
+    }
+    const run = await this.engineErrors(() => engine.replaySession(params.sessionId as SessionId, request), params.sessionId)
+    const session = run.session
+    // What the replay appended before this point is read and queued, then the rest is listened to, in one synchronous block.
+    const history = session.readEvents()
+    const view = this.attach(session, session.projection().session.cwd, history.at(-1)?.seq ?? 0, new Map(), (prime) => {
+      prime.queueExt(EXT.replayStarted, { sessionId: session.id, sourceSessionId: params.sessionId, ref: params.ref ?? null })
+      for (const item of history) {
+        if (this.fidelity.events) prime.queueEvent(item, false)
+        prime.queueOutputs(prime.translator.translate(item), false)
+      }
+    })
+    const stop = () => session.interrupt()
+    signal.addEventListener("abort", stop, { once: true })
+    try {
+      const outcome = await run.done
+      await session.settled()
+      await view.drained()
+      return {
+        sourceSessionId: params.sessionId,
+        sessionId: outcome.sessionId,
+        policy: params.policy ?? "stop",
+        workspace: outcome.workspace,
+        requests: outcome.requests,
+        usage: outcome.usage,
+        report: outcome.report as unknown as ReplayResult["report"],
+        text: renderReplayReport(outcome.report),
+      }
+    } finally {
+      signal.removeEventListener("abort", stop)
+      view.detach()
+      await session.close().catch((error: unknown) => this.log.warn(`closing the replay session ${session.id} failed: ${describeError(error)}`))
+    }
   }
 
   /**
@@ -810,7 +931,7 @@ class ConnectionState {
         throw new RequestError(-32603, error.message, errorData({ reason: "session_in_use", holderPid: error.holderPid, message: error.message }))
       if (error instanceof EngineError && error.code === "session_not_found")
         throw new RequestError(-32002, "Resource not found", { sessionId: sessionId ?? "", ...errorData({ reason: "session_not_found", message: error.message }) })
-      if (error instanceof EngineError && (error.code === "ambiguous_session" || error.code === "unknown_model"))
+      if (error instanceof EngineError && (error.code === "ambiguous_session" || error.code === "unknown_model" || error.code === "invalid_request"))
         throw new RequestError(-32602, error.message, errorData({ reason: error.code, message: error.message }))
       if (error instanceof EngineError) throw new RequestError(-32603, error.message, { reason: error.message, ...errorData({ reason: "closed", message: error.message }) })
       if (error instanceof StoreError && error.code === "schema_mismatch") {
@@ -840,6 +961,10 @@ class SessionView {
   readonly echo = new Set<string>()
   /** A settings change this connection asked for that has not reached the log yet. */
   requested: SessionSettings | null = null
+  /** Whether the client answers the questions of this session's subagents when it is attended (`OpenMeta.children`). */
+  children = true
+  /** The parent's `subagent` call of each subagent seen starting here, by the subagent's session. */
+  private readonly spawnCalls = new Map<string, string>()
   private readonly pending: Pending[] = []
   private outbox: Promise<void> = Promise.resolve()
   private unlisten: (() => void) | null = null
@@ -942,6 +1067,11 @@ class SessionView {
     for (const output of outputs) this.handleOutput(output, replay, null)
   }
 
+  /** An extension notification, in order with the session's updates. */
+  queueExt(method: string, params: Record<string, unknown>): void {
+    this.enqueue(() => this.connection.sendExt(method, params))
+  }
+
   /** One harness event as is, for a client that asked for them (`ClientMeta.events`). */
   queueEvent(item: EngineEvent, replay: boolean): void {
     const params = { sessionId: this.session.id, event: item, ...(replay ? { replay: true } : {}) }
@@ -1001,6 +1131,23 @@ class SessionView {
     if (item.type === "approval.requested") {
       const data = item.data
       this.enqueue(async () => void this.connection.askApproval(this, data))
+    }
+    if (item.type === "spawn.started" && item.data.work.kind === "subagent") this.spawnCalls.set(item.data.work.sessionId, `${item.data.messageId}/${item.data.callId}`)
+    if (item.type === "child.event") this.onChildEvent(item)
+  }
+
+  /**
+   * A durable event of a subagent, forwarded by the engine. A client that
+   * takes the harness's events has it as `child.event` already; any other
+   * gets `<prefix>/child`. A question the subagent asks is put to this
+   * client, labelled with the subagent, when it answers for subagents.
+   */
+  private onChildEvent(item: Extract<EngineEvent, { type: "child.event" }>): void {
+    const child: SubagentRef = { sessionId: item.child, title: item.title, spawnId: item.spawnId, toolCallId: this.spawnCalls.get(item.child) ?? null }
+    if (!this.connection.fidelity.events) this.queueExt(EXT.child, { ...child, sessionId: this.session.id, childSessionId: item.child, event: item.event })
+    if (item.event.type === "approval.requested") {
+      const data = item.event.data
+      this.enqueue(async () => void this.connection.askApproval(this, data, child))
     }
   }
 
@@ -1109,6 +1256,7 @@ function openMeta(meta: unknown): OpenMeta | null {
     approval: oneOfOrNull(value.approval, approvalModes, `_meta.${META.capabilities}.approval`),
     unattended: oneOfOrNull(value.unattended, UNATTENDED, `_meta.${META.capabilities}.unattended`),
     ...(typeof value.attended === "boolean" ? { attended: value.attended } : {}),
+    ...(typeof value.children === "boolean" ? { children: value.children } : {}),
   }
 }
 
@@ -1126,7 +1274,9 @@ function oneOfOrNull<const T extends readonly string[]>(value: unknown, allowed:
  * unattended behaviour for this session.
  */
 function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
-  session.setAttended(meta?.attended ?? true)
+  const attended = meta?.attended ?? true
+  // Whoever answers for the session answers for its subagents too, unless the client says it does not.
+  session.setAttended(attended, { children: attended && meta?.children !== false })
   const mode = meta?.approval ?? null
   const unattended = meta?.unattended ?? null
   if (mode !== null || unattended !== null)
@@ -1231,6 +1381,69 @@ function requireDirectory(cwd: string): void {
     }
   })()
   if (info === null || !info.isDirectory()) throw RequestError.invalidParams({ cwd }, `cwd is not a directory: ${cwd}`)
+}
+
+function parseForkParams(raw: unknown): ForkParams {
+  const params = parseObject(raw)
+  const sessionId = requireString(params, "sessionId")
+  const throughSeq = optionalInteger(params, "throughSeq", 1)
+  const workspace = params.workspace
+  if (workspace !== undefined && workspace !== "shared" && (typeof workspace !== "object" || workspace === null || Array.isArray(workspace)))
+    throw RequestError.invalidParams(undefined, 'workspace must be "shared" or { copyTo?: string }')
+  const copyTo = typeof workspace === "object" && workspace !== null ? (workspace as Record<string, unknown>).copyTo : undefined
+  if (copyTo !== undefined && (typeof copyTo !== "string" || !isAbsolute(copyTo))) throw RequestError.invalidParams(undefined, "workspace.copyTo must be an absolute path")
+  const model = optionalString(params, "model")
+  if (params.effort !== undefined && params.effort !== null && (typeof params.effort !== "string" || params.effort === "")) throw RequestError.invalidParams(undefined, "effort must be a non-empty string or null")
+  if (params.title !== undefined && params.title !== null && typeof params.title !== "string") throw RequestError.invalidParams(undefined, "title must be a string or null")
+  return {
+    sessionId,
+    ...(throughSeq === undefined ? {} : { throughSeq }),
+    ...(workspace === undefined ? {} : { workspace: workspace === "shared" ? "shared" : copyTo === undefined ? {} : { copyTo: copyTo as string } }),
+    ...(model === undefined ? {} : { model }),
+    ...(params.effort === undefined ? {} : { effort: params.effort as string | null }),
+    ...(params.title === undefined ? {} : { title: params.title as string | null }),
+  }
+}
+
+const REPLAY_POLICIES = ["stop", "execute-read-only", "execute"] as const
+
+function parseReplayParams(raw: unknown): ReplayParams {
+  const params = parseObject(raw)
+  const sessionId = requireString(params, "sessionId")
+  const policy = oneOfOrNull(params.policy, REPLAY_POLICIES, "policy")
+  const systemPrompt = params.systemPrompt
+  if (systemPrompt !== undefined && typeof systemPrompt !== "string") throw RequestError.invalidParams(undefined, "systemPrompt must be a string")
+  const descriptions = params.toolDescriptions
+  if (descriptions !== undefined && (typeof descriptions !== "object" || descriptions === null || Array.isArray(descriptions) || Object.values(descriptions).some((value) => typeof value !== "string")))
+    throw RequestError.invalidParams(undefined, "toolDescriptions must map tool names to descriptions")
+  const model = optionalString(params, "model")
+  if (params.effort !== undefined && params.effort !== null && (typeof params.effort !== "string" || params.effort === "")) throw RequestError.invalidParams(undefined, "effort must be a non-empty string or null")
+  if (params.strict !== undefined && typeof params.strict !== "boolean") throw RequestError.invalidParams(undefined, "strict must be a boolean")
+  const workspace = optionalString(params, "workspace")
+  if (workspace !== undefined && !isAbsolute(workspace)) throw RequestError.invalidParams(undefined, "workspace must be an absolute path")
+  const throughSeq = optionalInteger(params, "throughSeq", 1)
+  const ref = optionalString(params, "ref")
+  return {
+    sessionId,
+    ...(policy === null ? {} : { policy }),
+    ...(systemPrompt === undefined ? {} : { systemPrompt: systemPrompt as string }),
+    ...(descriptions === undefined ? {} : { toolDescriptions: descriptions as Record<string, string> }),
+    ...(model === undefined ? {} : { model }),
+    ...(params.effort === undefined ? {} : { effort: params.effort as string | null }),
+    ...(params.strict === undefined ? {} : { strict: params.strict as boolean }),
+    ...(throughSeq === undefined ? {} : { throughSeq }),
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(ref === undefined ? {} : { ref }),
+  }
+}
+
+/** `text` cut at a word to at most `max` characters, with an ellipsis. */
+function shorten(text: string, max: number): string {
+  const line = text.replace(/\s+/g, " ").trim()
+  if (line.length <= max) return line
+  const cut = line.slice(0, max - 1)
+  const space = cut.lastIndexOf(" ")
+  return `${space > max / 2 ? cut.slice(0, space) : cut}…`
 }
 
 /** Params of `_<ns>/steer` and `_<ns>/queue`. Content blocks are checked by `promptText`. */

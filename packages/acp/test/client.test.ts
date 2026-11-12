@@ -202,6 +202,68 @@ describe("in memory", () => {
     expect(items.every((item) => ("event" in item ? item.replay : item.signal.kind !== "turn" || item.signal.turn.replay === true))).toBe(true)
     expect(items.map(kind)).toContain("execution.succeeded")
   })
+
+  test("fork: a new session with the history, opened and prompted like any other", async () => {
+    const { link, workspace } = await memory([[script.text("One.")], [script.text("In the fork.")]])
+    const session = await link.newSession(workspace)
+    await session.send("first")
+    await collect(session, turnEnded)
+    const forked = await link.fork({ sessionId: session.id })
+    expect(forked).toMatchObject({ parentSessionId: session.id, cwd: workspace, title: "first" })
+    expect((await link.listSessions(workspace)).map((row) => row.id)).toEqual([forked.sessionId, session.id])
+    const opened = await link.openSession(forked.sessionId, forked.cwd, { replay: true })
+    await opened.send("second")
+    const items = await collect(opened, (item) => turnEnded(item) && !(item as { signal: { turn: { replay?: boolean } } }).signal.turn.replay)
+    expect(items.filter((item) => "event" in item && item.replay).length).toBeGreaterThan(0)
+    expect(items.map(kind)).toContain("execution.succeeded")
+  })
+
+  test("replay: onStart hands over the replay session, whose events are its progress; the answer is the report", async () => {
+    const { link, workspace } = await memory([[script.text("Hello.")], [script.text("Hello.")]])
+    const session = await link.newSession(workspace)
+    await session.send("say hello")
+    await collect(session, turnEnded)
+    const seen: string[] = []
+    let reading: Promise<void> | null = null
+    const result = await link.replay(
+      { sessionId: session.id },
+      {
+        cwd: workspace,
+        onStart: (replaying) => {
+          reading = (async () => {
+            for await (const item of replaying.events) seen.push(item.event.type)
+          })()
+        },
+      },
+    )
+    await reading
+    expect(result.report.status).toBe("identical")
+    expect(result.text).toContain("IDENTICAL")
+    expect(seen[0]).toBe("session.created")
+    expect(seen).toContain("replay.ended")
+  })
+
+  test("a subagent's question reaches the session's approver with the subagent's label and session", async () => {
+    const { link, workspace } = await memory([
+      [script.toolCall("p1", "subagent", { task: "Write the file outside" })],
+      [writeOutside("c3")],
+      [script.text("Written.")],
+      [script.text("Done.")],
+    ])
+    const session = await link.newSession(workspace)
+    const asked: ApprovalAsk[] = []
+    session.approver = async (ask) => {
+      asked.push(ask)
+      return { choice: "once" }
+    }
+    await session.send("delegate it")
+    const items = await collect(session, turnEnded)
+    expect(asked).toHaveLength(1)
+    const child = items.flatMap((item) => ("event" in item && item.event.type === "child.event" ? [item.event] : []))
+    expect(asked[0]).toMatchObject({ sessionId: session.id, subagent: "Write the file outside", subagentSessionId: child[0]!.child })
+    expect(child.map((item) => item.event.type)).toContain("approval.answered")
+    expect(readFileSync(join(elsewhere, "c3.txt"), "utf8")).toBe("outside\n")
+  })
 })
 
 describe("as a child process", () => {

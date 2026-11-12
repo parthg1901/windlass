@@ -335,6 +335,8 @@ export class Translator {
       case "session.archived":
       case "session.unarchived":
       case "history.reverted":
+      // A subagent's events: the server forwards them on their own (`<prefix>/child`) and puts its questions.
+      case "child.event":
         break
       default:
         this.options.log.debug(`event type ${(item as { type: string }).type} is not translated; ignored`)

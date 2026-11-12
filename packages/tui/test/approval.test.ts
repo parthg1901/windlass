@@ -29,7 +29,7 @@ const QUESTION = UNTIL_QUESTION.at(-1) as StoredEvent<"approval.requested">
 
 function askOf(item: StoredEvent<"approval.requested">, subagent: string | null = null): ApprovalAsk {
   const data = item.data
-  return { sessionId: "ses_script", toolCallId: `${data.messageId}/${data.callId}`, messageId: data.messageId, callId: data.callId, question: data.question, needs: data.needs, then: data.then, subagent }
+  return { sessionId: "ses_script", toolCallId: `${data.messageId}/${data.callId}`, messageId: data.messageId, callId: data.callId, question: data.question, needs: data.needs, then: data.then, subagent, subagentSessionId: subagent === null ? null : "ses_child" }
 }
 
 async function asked(options: { width?: number; height?: number; typing?: string; subagent?: string | null } = {}) {

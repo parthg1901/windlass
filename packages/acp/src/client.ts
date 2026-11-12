@@ -42,8 +42,12 @@ import {
   type DiffParams,
   type DiffResult,
   EXT,
+  type ForkParams,
+  type ForkResult,
   META,
   type OpenMeta,
+  type ReplayParams,
+  type ReplayResult,
   type RevertParams,
   type StateNotification,
   type TurnNotification,
@@ -92,8 +96,10 @@ export interface ApprovalAsk {
   readonly needs: readonly Need[]
   /** How the call runs if approved. */
   readonly then: RunDecision
-  /** Who asks, when a subagent does: its label. `null` for the session's own agent (or a server that does not say). */
+  /** Who asks, when a subagent does: its label (the first line of its task). `null` for the session's own agent (or a server that does not say). */
   readonly subagent: string | null
+  /** The asking subagent's own session, when the server names it. The call (`messageId`, `callId`) is that session's. */
+  readonly subagentSessionId: string | null
 }
 
 /** The answer to an approval question: one of its choices, and a note for the model. */
@@ -208,6 +214,9 @@ export class HarnessConnection {
   private stopping: Promise<void> | null = null
   private lostReason: Gone | null = null
   private offered: { methods: readonly string[]; notifications: readonly string[] } = { methods: [], notifications: [] }
+  /** Replays this connection asked for whose session is not known yet, by the `ref` they were started with. */
+  private readonly replays = new Map<string, { readonly cwd: string; readonly onStart: (session: ClientSession) => void }>()
+  private nextRef = 1
   readonly connection: ClientConnection
   /** Resolves once the connection has ended, asked to or not. */
   readonly ended: Promise<void>
@@ -354,6 +363,39 @@ export class HarnessConnection {
     return this.request(EXT.unarchive, { sessionId }).then(() => undefined)
   }
 
+  /** `<prefix>/fork`: a new session with another's history up to a step boundary. Nothing is opened: `openSession` the result to work in it. */
+  fork(params: ForkParams): Promise<ForkResult> {
+    return this.request<ForkResult>(EXT.fork, { ...params })
+  }
+
+  /**
+   * `<prefix>/replay`: replays a recorded session and resolves with the
+   * report once it is over. `onStart` gets the replay session as soon as the
+   * server names it: its `events` are the replay's progress, and its
+   * `cancel()` ends the replay as incomplete. It ends with the replay.
+   */
+  async replay(params: Omit<ReplayParams, "ref">, options: { readonly cwd?: string; readonly onStart?: (session: ClientSession) => void } = {}): Promise<ReplayResult> {
+    const ref = `r${this.nextRef++}`
+    let started: ClientSession | null = null
+    this.replays.set(ref, {
+      cwd: options.cwd ?? "",
+      onStart: (session) => {
+        started = session
+        options.onStart?.(session)
+      },
+    })
+    try {
+      return await this.request<ReplayResult>(EXT.replay, { ...params, ref })
+    } finally {
+      this.replays.delete(ref)
+      const session = started as ClientSession | null
+      if (session !== null) {
+        this.forget(session.id)
+        session.end()
+      }
+    }
+  }
+
   /** Any request, with the server's refusals as `ClientError`s. */
   request<T>(method: string, params: Record<string, unknown>): Promise<T> {
     return this.call(() => this.agent.request(method as never, params as never) as Promise<T>)
@@ -414,6 +456,14 @@ export class HarnessConnection {
     const params = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : null
     if (sessionId === null) return
+    if (method === EXT.replayStarted) {
+      const waiting = typeof params.ref === "string" ? this.replays.get(params.ref) : undefined
+      if (waiting === undefined) return
+      this.replays.delete(params.ref as string)
+      // Attached before its events are handled: they follow this notification on the wire.
+      waiting.onStart(this.attach(sessionId, waiting.cwd))
+      return
+    }
     const signal = signalOf(method, params)
     if (signal !== null) this.route(sessionId, (session) => session.signal(signal))
   }
@@ -808,6 +858,7 @@ function parseApproval(params: RequestPermissionRequest, raw: unknown): Approval
     needs: Array.isArray(value.needs) ? (value.needs as Need[]) : [],
     then: (value.then as RunDecision | undefined) ?? { kind: "run" },
     subagent: labelOf(value.subagent ?? value.agent),
+    subagentSessionId: typeof value.subagent === "object" && value.subagent !== null && typeof (value.subagent as { sessionId?: unknown }).sessionId === "string" ? (value.subagent as { sessionId: string }).sessionId : null,
   }
 }
 
@@ -816,7 +867,7 @@ function labelOf(value: unknown): string | null {
   if (typeof value === "string" && value.trim() !== "") return value.trim()
   if (typeof value !== "object" || value === null) return null
   const fields = value as Record<string, unknown>
-  for (const key of ["label", "name", "title", "id"]) if (typeof fields[key] === "string" && (fields[key] as string).trim() !== "") return (fields[key] as string).trim()
+  for (const key of ["label", "name", "title", "id", "sessionId"]) if (typeof fields[key] === "string" && (fields[key] as string).trim() !== "") return (fields[key] as string).trim()
   return null
 }
 

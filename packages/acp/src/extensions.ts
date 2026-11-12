@@ -58,6 +58,14 @@ export const EXT = {
   rename: `${prefix}/rename`,
   /** Request `{ sessionId }` → `{}`: compacts the conversation now. Offered only when the engine can (`EngineSession.compact`). */
   compact: `${prefix}/compact`,
+  /** Request `ForkParams` → `ForkResult`: a new session with the history of another up to a step boundary. The fork is not opened; load it to work in it. */
+  fork: `${prefix}/fork`,
+  /** Request `ReplayParams` → `ReplayResult`: replays a recorded session against a changed baseline. Its progress is the replay session's events, after `replayStarted`. */
+  replay: `${prefix}/replay`,
+  /** Notification `ReplayStartedNotification`: a replay this connection asked for has its session; its events follow under that session. */
+  replayStarted: `${prefix}/replay_started`,
+  /** Notification `ChildNotification`: one durable event of a subagent of a session open here, for a client that does not take the harness's events. */
+  child: `${prefix}/child`,
 } as const
 
 export const META = {
@@ -103,6 +111,13 @@ export interface OpenMeta {
    * script, an eval) says `false`, and nothing ever waits for it.
    */
   readonly attended?: boolean
+  /**
+   * Whether this client also answers the questions of the session's
+   * subagents (`session/request_permission` with `approval.subagent`).
+   * Default: when it is attended. `false`: a subagent's call that would ask
+   * is refused, as for nobody present.
+   */
+  readonly children?: boolean
 }
 
 /** The `_meta[<ns>]` of the permission request that asks about a tool call (`APPROVAL_META`). */
@@ -115,6 +130,97 @@ export interface ApprovalRequestMeta {
   readonly needs: unknown
   /** How the call runs if the answer approves. */
   readonly then: unknown
+  /** Set when a subagent of the session asks: the call is the subagent's, and the answer goes to it. */
+  readonly subagent?: SubagentRef
+}
+
+/** A subagent of a session, as the server names it. */
+export interface SubagentRef {
+  /** The subagent's own session. */
+  readonly sessionId: string
+  /** The first line of its task: what to label it with. */
+  readonly title: string
+  readonly spawnId: string
+  /** The parent's `subagent` call that started it (`<message>/<call>`), when this connection saw it start. */
+  readonly toolCallId: string | null
+}
+
+/** `<prefix>/child`: one durable event of a subagent, as the engine forwards it (`child.event`). */
+export interface ChildNotification extends SubagentRef {
+  /** The parent session, open on this connection. */
+  readonly sessionId: string
+  readonly childSessionId: string
+  /** The subagent's event as stored in its own log. */
+  readonly event: unknown
+}
+
+/** Params of `<prefix>/fork`. */
+export interface ForkParams {
+  readonly sessionId: string
+  /** The last event of the parent the fork inherits; must be a step boundary. Default: the latest boundary. */
+  readonly throughSeq?: number
+  /** `"shared"` (default): the parent's working directory. `{ copyTo? }`: a copy of the workspace of its own (default place under the work directory). */
+  readonly workspace?: "shared" | { readonly copyTo?: string }
+  /** The fork's model and effort; default the parent's. `effort: null` is the model's default. */
+  readonly model?: string
+  readonly effort?: string | null
+  readonly title?: string | null
+}
+
+/** Result of `<prefix>/fork`. */
+export interface ForkResult {
+  readonly sessionId: string
+  readonly parentSessionId: string
+  readonly throughSeq: number
+  /** Where the fork works: the parent's directory, or the copy. */
+  readonly cwd: string
+  /** The directory the copy was made from, when the fork has a copy of its own. */
+  readonly copiedFrom: string | null
+  readonly title: string | null
+  readonly model: string
+  readonly effort: string | null
+}
+
+/** Params of `<prefix>/replay`: `Engine.replaySession`'s request, and the recording. */
+export interface ReplayParams {
+  /** The recorded session. */
+  readonly sessionId: string
+  readonly policy?: "stop" | "execute-read-only" | "execute"
+  readonly systemPrompt?: string
+  readonly toolDescriptions?: Readonly<Record<string, string>>
+  readonly model?: string
+  /** `null`: the model's default effort. */
+  readonly effort?: string | null
+  readonly strict?: boolean
+  readonly throughSeq?: number
+  /** Where the copy of the workspace is made, for the policies that run tools. */
+  readonly workspace?: string
+  /** Echoed in `<prefix>/replay_started`, so a client can tell its replays apart. */
+  readonly ref?: string
+}
+
+/** `<prefix>/replay_started`. */
+export interface ReplayStartedNotification {
+  /** The replay session: its events follow under this ID. `session/cancel` on it ends the replay as incomplete. */
+  readonly sessionId: string
+  readonly sourceSessionId: string
+  readonly ref: string | null
+}
+
+/** Result of `<prefix>/replay`. */
+export interface ReplayResult {
+  readonly sourceSessionId: string
+  readonly sessionId: string
+  readonly policy: string
+  /** The copy the replay carried on in, or `null` when it ran nothing for real. */
+  readonly workspace: string | null
+  /** How many model calls the replay made. */
+  readonly requests: number
+  readonly usage: { readonly inputTokens: number; readonly cachedInputTokens: number; readonly outputTokens: number; readonly reasoningTokens: number } | null
+  /** The engine's report (`ReplayReport`): `status` is `identical`, `diverged`, `unsupported` or `incomplete`. */
+  readonly report: { readonly status: string; readonly reason: string } & Record<string, unknown>
+  /** The report as the harness prints it. */
+  readonly text: string
 }
 
 /** Result of `<prefix>/approval`. */
@@ -147,6 +253,8 @@ export interface ErrorData {
     /** A failed turn that was ended because a call needed approval and nobody was present (`unattended: "stop"`). */
     | "approval_required"
     | "model_list_failed"
+    /** The engine cannot do what was asked as asked (a fork point inside a step, a replay of a recording without a step). */
+    | "invalid_request"
     | "closed"
   /** `session_in_use`: the process that holds the session, when it could be told. */
   readonly holderPid?: number | null
