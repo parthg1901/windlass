@@ -623,21 +623,52 @@ is a new version with a decoder for the old one.
   chooses to overwrite (the undo point keeps them) or to keep them. A target with no snapshot rewinds the
   conversation only, and says so. `undoRevert()` restores the snapshot taken before the latest revert and puts its
   messages back. Both work only while idle; a session opened with a restore still open finishes it.
+- *What the session's own work changed, and what someone else changed meanwhile.* Between the stretches of the
+  session's own work (between turns, between steps) nothing of the harness runs, so a change there is somebody
+  else's and the restore asks. Inside a stretch (the snapshots `step_start` and `step_end` around a step's
+  tools, the ones around a run of checks) a change cannot be told from its content: a command of the session's,
+  or the user in an editor while the command ran. Counting the whole stretch as the session's own, as the
+  loop did, let an undo remove a file the user created while a slow command ran and take back an edit of
+  theirs without a word. What can be known is what the session's own calls said, and the rule
+  (`ownPathsSince` in `engine/engine.ts`, `namedPaths` in `engine/workspace.ts`) is built on that alone. A
+  file that changed inside a stretch is the session's own, and is restored without a question, when
+  - a file tool of the range being undone wrote it (`write` and `edit` name their path, `Tool.touches`), in
+    that step or any other;
+  - a call of that step that can change files without saying which (a command) names it in its arguments:
+    the path as a word (`rm a.txt`, `sed -i … notes.md`, `> report.txt`), or a directory above it written as
+    a path, with a slash (`--outdir ./dist/`, `bun test test/unit`, `'src/**/*.ts'`). A bare word names no
+    directory (`bun test` does not name `test/`), and `.` names nothing;
+  - the step handed work to a subagent: the subagent's calls are in its own log, and everything in such a
+    step counts as the session's, as before.
+
+  Every other file that changed there is asked about, with `editedBy: unknown`: the session's command may
+  have changed it, or the user. That is the user's new file and their edit in the case above; it is also a
+  file a command changed without naming it (a formatter run over the whole tree, a code generator, a lock
+  file a package manager rewrote) and anything that changed while the project's checks ran, which name
+  nothing. It is not every file of a command turn: what the turn's file tools wrote and what its commands
+  named are not asked about, and neither is anything snapshots leave out, which is where a test run's cache
+  and a build's output usually are (ignored files are in no snapshot and no restore). Whatever the user
+  chooses, the undo point is taken first and holds the workspace as it was, so overwriting is undone by
+  `undoRevert()`, a file the restore removed included. *What stays undetectable:* a hand edit to a file the
+  turn itself wrote, or that a command of the step named (the two changes are one difference, and the undo
+  takes back both); a hand edit made while a subagent worked; a hand edit made while a restore ran; and,
+  the other way round, the rule cannot say that an unnamed file was the command's, so it asks.
 - *Two sessions in one working directory.* Nothing prevents it; it is the user's choice. Each session records its
   own snapshots (its own refs in the workspace's private git directory), and neither's undo overwrites the other's
   work without asking. What the other session changed between this session's steps or after its turn is a change
   outside its own work, like a hand edit. What it changed while this session's own tools ran would look like this
   session's work, so when the snapshot store shows that another session recorded the directory since the point the
   undo goes back to, a step's changes count as its own only for the paths its write calls name; everything a
-  command, a run of checks or a restore spans is asked about. A session that is alone in its directory is never
-  asked about what its own commands changed.
+  command, a run of checks or a restore spans is asked about. A session that is alone in its directory is asked
+  only about what no call of its own named (the paragraph before this one).
 - *Who changed a file the restore asks about.* Each such file in a revert's plan says who it was, as far as the
   snapshots tell (`changes[].editedBy`, set exactly when `handEdited` is): `outside` when nothing of any
   session ran as it changed, so the user or another program; `session` with the other session's ID when it
   changed inside that session's own work, read off that session's log and snapshots (`changedInOwnWork`; the
   ID is `null` when the work of more than one session spans the change); `unknown` when it cannot be told: the
-  file changed while this session's own command ran and another session was recording the directory, in none
-  of whose own work it shows, or the snapshots in between are gone. A client words its question from that
+  file changed while this session's own command or checks ran and no call of the session's named it (the
+  user may have edited it meanwhile), or another session was recording the directory and it shows in none of
+  that session's own work, or the snapshots in between are gone. A client words its question from that
   instead of calling every such file edited by hand.
 - *Snapshot retention.* After each execution, and when a session is archived, the loop drops snapshots of that
   session, never one a revert or an undo could still need (`neededSnapshots` in `engine/workspace.ts`): the

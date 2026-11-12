@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type Engine, createEngine } from "../../src/engine/engine.ts"
-import { firstDelivery, handEditedPaths, snapshotsAfter, snapshotsSinceDelivery } from "../../src/engine/workspace.ts"
+import { firstDelivery, handEditedPaths, isNamed, namedPaths, snapshotsAfter, snapshotsSinceDelivery } from "../../src/engine/workspace.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
 import type { Json } from "../../src/json.ts"
@@ -185,6 +185,34 @@ describe("a session without snapshots", () => {
     }))
 })
 
+describe("the paths a call's arguments name", () => {
+  const named = (command: string) => namedPaths(JSON.stringify({ command }), "/repo")
+  test("a word names a file; only a word written with a slash names what lies below it", () => {
+    expect(named("rm a.txt && sed -i 's/1/2/' ./src/b.ts > out.log")).toEqual([
+      { path: "rm", directory: false },
+      { path: "a.txt", directory: false },
+      { path: "sed", directory: false },
+      { path: "-i", directory: false },
+      { path: "s/1/2", directory: true },
+      { path: "src/b.ts", directory: true },
+      { path: "out.log", directory: false },
+    ])
+    const build = named("bun test test/unit && prettier --write 'src/**/*.ts' /repo/docs/ ./dist")
+    expect(["test/unit/a.test.ts", "src/deep/a.ts", "docs/guide.md", "dist/a.js"].map((path) => isNamed(build, path))).toEqual([true, true, true, true])
+    // `bun test` does not name the directory `test`, and nothing names a sibling.
+    expect(["test/a.test.ts", "test/units/a.ts", "source/a.ts", "bun"].map((path) => isNamed(named("bun test"), path))).toEqual([false, false, false, true])
+  })
+  test("the whole workspace, a path outside it and a bare wildcard name nothing", () => {
+    expect(named("prettier --write . && cat ../other/a.ts /etc/hosts *.ts")).toEqual([
+      { path: "prettier", directory: false },
+      { path: "--write", directory: false },
+      { path: "cat", directory: false },
+    ])
+    // Arguments that are not JSON are read as they are.
+    expect(namedPaths("touch a.txt", "/repo")).toEqual([{ path: "touch", directory: false }, { path: "a.txt", directory: false }])
+  })
+})
+
 describe("revert", () => {
   test("a dry run says what would happen and changes nothing", () =>
     withWorkspace(async (h, files) => {
@@ -267,6 +295,122 @@ describe("revert", () => {
         },
       })
     }))
+
+  test("a file the user created and one they edited while a command of the turn ran should be asked about, and overwriting them is undoable", () =>
+    withWorkspace(async (h, files) => {
+      h.provider.enqueue(call("shell", { command: "sleep 9" }), say("Waited."))
+      // While the command runs, the user creates a file and edits another. The command itself changes nothing.
+      h.tools.on("shell", () => {
+        files.set("mine.txt", "written by hand\n")
+        files.set("notes.md", "my notes\n")
+        return "(no output)"
+      })
+      h.create().send("Wait for the server.")
+      await h.settled()
+      const before = h.log().length
+      // Both changed between the snapshots that bracket the command, and no call of the turn named either:
+      // it cannot be told whether the command or the user changed them, so the restore asks.
+      expect(await h.session.revert()).toMatchObject({
+        kind: "hand_edited",
+        plan: {
+          changes: [
+            { path: "mine.txt", status: "deleted", handEdited: true, editedBy: { kind: "unknown" } },
+            { path: "notes.md", status: "modified", handEdited: true, editedBy: { kind: "unknown" } },
+          ],
+        },
+      })
+      expect(h.log()).toHaveLength(before)
+      expect(files.get("mine.txt")).toBe("written by hand\n")
+      // Keeping them leaves both as they are.
+      expect(await h.session.revert({ handEdits: "keep" })).toMatchObject({ kind: "reverted", restore: { changed: 0, kept: [{ path: "mine.txt" }, { path: "notes.md" }] } })
+      expect(Object.fromEntries(files)).toEqual({ "a.ts": "1\n", "mine.txt": "written by hand\n", "notes.md": "my notes\n" })
+      expect(await h.session.undoRevert()).toMatchObject({ kind: "reverted" })
+      // Overwriting removes the new file and puts the other back; the undo point kept both, so the undo brings them back.
+      expect(await h.session.revert({ handEdits: "overwrite" })).toMatchObject({ kind: "reverted", restore: { written: 1, removed: 1 } })
+      expect(Object.fromEntries(files)).toEqual({ "a.ts": "1\n", "notes.md": "notes\n" })
+      expect(await h.session.undoRevert()).toMatchObject({ kind: "reverted", restore: { written: 2, removed: 0 } })
+      expect(Object.fromEntries(files)).toEqual({ "a.ts": "1\n", "mine.txt": "written by hand\n", "notes.md": "my notes\n" })
+    }))
+
+  test("what a command names, and what the turn's file tools wrote, is the turn's own: an undo of a command turn does not ask about those", () =>
+    withWorkspace(
+      async (h, files) => {
+        h.provider.enqueue(
+          write("src/a.ts", "2\n"),
+          call("shell", { command: "bun run build --outdir ./dist/ && sed -i s/1/2/ notes.md && bun test test/unit > report.txt" }),
+          say("Built."),
+        )
+        // The command writes what it names (a directory, a file, a redirect) and reformats the file the turn wrote before.
+        h.tools.on("shell", () => {
+          files.set("dist/a.js", "2\n")
+          files.set("dist/chunks/b.js", "b\n")
+          files.set("notes.md", "notes 2\n")
+          files.set("report.txt", "1 pass\n")
+          files.set("test/unit/a.snap", "2\n")
+          files.set("src/a.ts", "2;\n")
+          return "built"
+        })
+        h.create().send("Build it.")
+        await h.settled()
+        const plan = await h.session.revert({ dryRun: true })
+        expect(plan.kind === "preview" ? plan.plan.changes.map((change) => [change.path, change.handEdited]) : plan).toEqual([
+          ["dist/a.js", false],
+          ["dist/chunks/b.js", false],
+          ["notes.md", false],
+          ["report.txt", false],
+          ["src/a.ts", false],
+          ["test/unit/a.snap", false],
+        ])
+        expect(await h.session.revert()).toMatchObject({ kind: "reverted", restore: { changed: 6 } })
+      },
+      { "src/a.ts": "1\n", "notes.md": "notes\n" },
+    ))
+
+  test("a file a command changed without naming it is asked about like a hand edit: the two cannot be told apart", () =>
+    withWorkspace(
+      async (h, files) => {
+        h.provider.enqueue(write("src/a.ts", "2\n"), call("shell", { command: "bun test" }), say("Tested."))
+        // `bun test` names no path: not the directory `test` either, which it was not written as.
+        h.tools.on("shell", () => {
+          files.set("test/a.test.ts", "edited while the tests ran\n")
+          files.set("coverage.txt", "90%\n")
+          return "1 pass"
+        })
+        h.create().send("Test it.")
+        await h.settled()
+        const plan = await h.session.revert({ dryRun: true })
+        expect(plan.kind === "preview" ? plan.plan.changes.map((change) => [change.path, change.handEdited, change.editedBy?.kind]) : plan).toEqual([
+          ["coverage.txt", true, "unknown"],
+          ["src/a.ts", false, undefined],
+          ["test/a.test.ts", true, "unknown"],
+        ])
+      },
+      { "src/a.ts": "1\n", "test/a.test.ts": "expect(1)\n" },
+    ))
+
+  test("a file that changed while the project's checks ran is asked about: a run of checks names nothing", async () => {
+    const h = new Harness({ workspace: new FakeWorkspace({ "a.ts": "1\n", "notes.md": "notes\n" }), config: { checks: [{ name: "test", command: "bun test" }] } })
+    try {
+      h.tools.on("write", (input) => {
+        h.workspace!.files.set(String(input.path), String(input.content))
+        return "Wrote a.ts"
+      })
+      // The user edits a file while the checks of the turn run.
+      h.checks.on("test", () => {
+        h.workspace!.files.set("notes.md", "edited while the tests ran\n")
+        return "passed"
+      })
+      h.provider.enqueue(write("a.ts", "2\n"), say("Done."))
+      h.create().send("Change it.")
+      await h.settled()
+      expect(await h.session.revert()).toMatchObject({
+        kind: "hand_edited",
+        plan: { changes: [{ path: "a.ts", handEdited: false }, { path: "notes.md", handEdited: true, editedBy: { kind: "unknown" } }] },
+      })
+    } finally {
+      await h.dispose()
+    }
+  })
 
   test("is possible only while idle", () =>
     withWorkspace(async (h) => {
@@ -512,6 +656,47 @@ describe("with the real snapshot module and the real tools", () => {
       // Nothing was created in the workspace by the harness.
       expect(existsSync(join(workspace, ".git"))).toBe(false)
       expect(diagnostics).toEqual([])
+      expectRebuildEqualsLive(store, session.id)
+    } finally {
+      await engine.close()
+      store.close()
+    }
+  })
+
+  test("what the user did by hand while a slow command ran is not undone without asking, and a redo brings back the file an overwrite removed", async () => {
+    const { workspace, store, provider, engine } = project()
+    try {
+      provider.enqueue([script.toolCall("call_1", "shell", { command: "sleep 1.5" })], say("Waited."))
+      const session = engine.createSession({ cwd: workspace, settings: { model: "gpt-test", reasoningEffort: null } })
+      session.send("Wait for the server.")
+      // The command is running: the user creates a file and edits an existing one in their editor.
+      while (!store.readEvents(session.id).some((item) => item.type === "tool.started")) await Bun.sleep(10)
+      await Bun.sleep(200)
+      writeFileSync(join(workspace, "mine.txt"), "written by hand\n")
+      writeFileSync(join(workspace, "a.txt"), "alpha, edited by hand\n")
+      await session.settled()
+
+      const asked = await session.revert()
+      expect(asked).toMatchObject({
+        kind: "hand_edited",
+        plan: {
+          changes: [
+            { path: "a.txt", status: "modified", handEdited: true, editedBy: { kind: "unknown" } },
+            { path: "mine.txt", status: "deleted", handEdited: true, editedBy: { kind: "unknown" } },
+          ],
+        },
+      })
+      // Nothing was touched.
+      expect(readFileSync(join(workspace, "mine.txt"), "utf8")).toBe("written by hand\n")
+      expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("alpha, edited by hand\n")
+      // The user decides to overwrite: the new file is removed and the edit is gone...
+      expect(await session.revert({ handEdits: "overwrite" })).toMatchObject({ kind: "reverted", restore: { written: 1, removed: 1 } })
+      expect(existsSync(join(workspace, "mine.txt"))).toBe(false)
+      expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("alpha\n")
+      // ...and the undo point kept both: the redo writes the removed file again, and the edit.
+      expect(await session.undoRevert()).toMatchObject({ kind: "reverted", restore: { written: 2, removed: 0 } })
+      expect(readFileSync(join(workspace, "mine.txt"), "utf8")).toBe("written by hand\n")
+      expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("alpha, edited by hand\n")
       expectRebuildEqualsLive(store, session.id)
     } finally {
       await engine.close()

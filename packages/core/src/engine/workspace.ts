@@ -142,11 +142,58 @@ export function isHarnessWork(point: SnapshotPoint): boolean {
 }
 
 /**
- * Whose a stretch of the session's own work is, when another session was at
- * work in the same directory: the paths its tools themselves wrote. Any
- * other path that changed in that stretch may be the other session's.
+ * Whose a stretch of the session's own work is: the paths that are surely
+ * the session's own among the ones that changed in it. Any other path that
+ * changed in that stretch may be someone else's (the user's, another
+ * session's), and a restore asks before it overwrites one. The engine's
+ * `ownPathsSince` has the rule.
  */
-export type OwnPaths = (from: Pick<SnapshotMark, "id" | "point"> & Partial<Pick<SnapshotMark, "messageId">>) => ReadonlySet<string>
+export type OwnPaths = (from: Pick<SnapshotMark, "id" | "point"> & Partial<Pick<SnapshotMark, "messageId">>) => { has(path: string): boolean }
+
+/**
+ * The paths the arguments of a call name, for a call that can change files
+ * without saying which (a command, a call to a server's tool): every word of
+ * every string in its arguments, read as a path of the workspace. A word is
+ * split off at whitespace, quotes and the shell's operators; `./` in front
+ * and `/` behind are dropped, an absolute path below `cwd` is made relative,
+ * a pattern (`src/**` + `/*.ts`) names the directory before its first
+ * wildcard, and a word that is empty, `.` or leads out of the workspace
+ * names nothing. `directory` says whether the word was written with a `/`:
+ * only then does it name what lies below it (`bun test` does not name the
+ * directory `test`; `bun test test/engine` names `test/engine`).
+ */
+export function namedPaths(input: string, cwd: string): { readonly path: string; readonly directory: boolean }[] {
+  const strings: string[] = []
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") strings.push(value)
+    else if (Array.isArray(value)) value.forEach(collect)
+    else if (typeof value === "object" && value !== null) Object.values(value).forEach(collect)
+  }
+  try {
+    collect(JSON.parse(input))
+  } catch {
+    strings.push(input)
+  }
+  const root = cwd.endsWith("/") ? cwd : `${cwd}/`
+  const named = new Map<string, boolean>()
+  for (const word of strings.flatMap((value) => value.split(/[\s"'`;|&()<>=,]+/))) {
+    let path = word.startsWith(root) ? word.slice(root.length) : word
+    if (path.startsWith("/")) continue
+    const wildcard = path.search(/[*?[{]/)
+    if (wildcard !== -1) path = path.slice(0, path.lastIndexOf("/", wildcard) + 1)
+    const directory = path.includes("/")
+    while (path.startsWith("./")) path = path.slice(2)
+    path = path.replace(/\/+$/, "")
+    if (path === "" || path === "." || path.split("/").includes("..")) continue
+    named.set(path, (named.get(path) ?? false) || directory)
+  }
+  return [...named].map(([path, directory]) => ({ path, directory }))
+}
+
+/** Whether one of the named paths is `path`, or a directory above it that was named as one. */
+export function isNamed(named: readonly { readonly path: string; readonly directory: boolean }[], path: string): boolean {
+  return named.some((entry) => entry.path === path || (entry.directory && path.startsWith(`${entry.path}/`)))
+}
 
 /**
  * The paths that changed outside the harness's own work along `timeline` and
@@ -156,10 +203,9 @@ export type OwnPaths = (from: Pick<SnapshotMark, "id" | "point"> & Partial<Pick<
  * them must say so first.
  *
  * Inside the session's own work (a step's tools, a run of checks, a
- * restore) every change is the session's, as long as it is alone in the
- * directory. When it is not, `own` is given: of the changes in such a
- * stretch only the paths it names are the session's own, and the rest count
- * as edited by someone else.
+ * restore) `own` says which of the changes are surely the session's: the
+ * rest count as possibly edited by someone else. Without `own` every change
+ * in such a stretch is the session's.
  */
 export async function handEditedPaths(
   store: Pick<WorkspaceSnapshots, "changedFiles">,
@@ -174,10 +220,11 @@ export async function handEditedPaths(
  * The same paths, each with where its change fell: `between` the stretches
  * of the session's own work (nothing of the harness ran there, so it was
  * the user, another program or another session), or only `during` one of
- * them, which is asked about because another session was at work in the
- * directory and the session's own calls do not say they wrote the path.
- * There the session's own command may have changed it as well. A path that
- * changed in both is `between`.
+ * them, which is asked about because nothing the session's own calls say
+ * names the path: the user may have edited it while a command ran, or
+ * another session at work in the directory may have. There the session's
+ * own command may have changed it as well. A path that changed in both is
+ * `between`.
  */
 export async function editedOutside(
   store: Pick<WorkspaceSnapshots, "changedFiles">,

@@ -230,6 +230,8 @@ import {
   coverageOf,
   firstDelivery,
   changedInOwnWork,
+  isNamed,
+  namedPaths,
   editedOutside,
   neededSnapshots,
   snapshotsAfter,
@@ -643,9 +645,11 @@ export interface RevertOptions {
  *   `sessionId` is that session, or `null` when more than one session's
  *   work spans the change. (The user may have changed it too.)
  * - `unknown`: it cannot be told. The file changed while this session's own
- *   command, checks or restore ran and another session was recording the
- *   same directory, in none of whose own work the change shows; or the
- *   snapshots in between are gone. It may be this session's own change.
+ *   command or checks ran, and no call of the session's named it: the user
+ *   may have edited it meanwhile, or the command changed it (`ownPathsSince`
+ *   has the rule). Or another session was recording the same directory and
+ *   the change shows in none of its own work; or the snapshots in between
+ *   are gone. It may be this session's own change.
  */
 export type EditedBy = { readonly kind: "outside" } | { readonly kind: "session"; readonly sessionId: SessionId | null } | { readonly kind: "unknown" }
 
@@ -6423,43 +6427,81 @@ class LiveSession implements EngineSession {
   }
 
   /**
-   * Whether another session recorded the same working directory since the
-   * event at `sinceSeq`, and if so, which paths each stretch of this
-   * session's own work wrote itself. Two sessions may work in one directory
-   * (that is the user's choice), and then a file that changed while this
-   * session's tools ran is not necessarily this session's: only what its
-   * calls say they wrote is. A step that ran a command, a run of checks and
-   * a restore name no paths, so everything they span counts as possibly the
-   * other session's, and the restore asks. `undefined` when this session is
-   * alone in the directory: then its own work is all its own, as always.
+   * Which of the files that changed in a stretch of this session's own work
+   * are surely its own, from the event at `sinceSeq` on. A restore asks
+   * about every other one before it overwrites it.
+   *
+   * What changes a file inside such a stretch cannot be told from its
+   * content: a command of the session's, the user in an editor meanwhile,
+   * another session in the same directory. What can be known is what the
+   * session's own calls said:
+   *
+   * - a file tool that writes says which path (`Tool.touches`), so a path a
+   *   `write` or `edit` of the range named is the session's own, in any
+   *   stretch of it: the range's change to that file is undone whoever else
+   *   touched it;
+   * - a call that can change files without saying which (a command) names
+   *   paths in its arguments (`namedPaths`): a path it names, or one below a
+   *   directory it names as one, is its own in the stretch of its step;
+   * - a call that hands its work to a subagent names nothing, and the
+   *   subagent's calls are in another log: everything in such a step counts
+   *   as the session's, as it always did;
+   * - a run of checks names nothing: every file that changed while it ran
+   *   is asked about; a restore writes what it was asked to.
+   *
+   * So a file the user created or edited while a command ran, and that no
+   * call named, is asked about, and so is a file a command changed without
+   * naming it (a formatter over the whole tree, a generator): the two
+   * cannot be told apart. A file snapshots leave out (an ignored cache or
+   * build directory) is in no restore and is never asked about.
+   *
+   * When another session recorded the same directory since `sinceSeq`
+   * (two sessions in one directory are the user's choice), the rule is
+   * stricter, as before: a step that ran a command, a run of checks and a
+   * restore have nothing of their own, and a step of file tools only what
+   * that step's calls named.
    */
-  private async ownPathsSince(store: WorkspaceSnapshots, sinceSeq: number): Promise<OwnPaths | undefined> {
-    if (store.list === undefined) return undefined
+  private async ownPathsSince(store: WorkspaceSnapshots, sinceSeq: number): Promise<OwnPaths> {
     const since = this.sinceTime(sinceSeq)
-    const others = (await store.list()).some((ref) => ref.session !== this.id && ref.takenAt >= since)
-    if (!others) return undefined
+    const others = store.list !== undefined && (await store.list()).some((ref) => ref.session !== this.id && ref.takenAt >= since)
     const projection = this.projection()
     const cwd = projection.session.cwd
-    return (from) => {
-      const none = new Set<string>()
-      if (from.point !== "step_start" || from.messageId === null || from.messageId === undefined) return none
-      const message = projection.messages.findLast((candidate) => candidate.id === from.messageId)
-      if (message?.kind !== "assistant") return none
-      const own = new Set<string>()
+    const none = new Set<string>()
+    const all = { has: () => true }
+    /** What the calls of one step say: the paths its file tools wrote, and the arguments of its calls that name none. */
+    const said = (message: AssistantMessage) => {
+      const wrote = new Set<string>()
+      const loose: string[] = []
+      let delegated = false
       for (const part of message.parts) {
         if (part.type !== "tool_call" || part.state.status === "pending" || (part.state.status === "settled" && part.state.outcome === "not_started")) continue
         const effect = part.state.status === "running" ? part.state.effect : this.core.effects.get(part.name)
         if (effect === "read") continue
+        if (this.core.delegating.has(part.name)) delegated = true
         const touches = this.core.touches.get(part.name)
-        // A call that can change anything (a command), or that does not say what it writes: nothing in this step is surely its own.
-        if (effect !== "write" || touches === undefined) return none
+        // A call that can change anything (a command), or that does not say what it writes.
+        if (effect !== "write" || touches === undefined) {
+          loose.push(part.input)
+          continue
+        }
         try {
-          for (const path of touches(JSON.parse(part.input))) own.add(relative(cwd, resolvePath(cwd, path)).split(sep).join("/"))
+          for (const path of touches(JSON.parse(part.input))) wrote.add(relative(cwd, resolvePath(cwd, path)).split(sep).join("/"))
         } catch {
-          return none
+          loose.push(part.input)
         }
       }
-      return own
+      return { wrote, loose, delegated }
+    }
+    const steps = new Map(projection.messages.flatMap((message) => (message.kind === "assistant" && message.seq >= sinceSeq ? [[message.id, said(message)] as const] : [])))
+    const written = new Set([...steps.values()].flatMap((step) => [...step.wrote]))
+    return (from) => {
+      if (from.point !== "step_start") return others || from.point !== "restore_start" ? none : all
+      const step = from.messageId == null ? undefined : steps.get(from.messageId)
+      if (step === undefined) return none
+      if (others) return step.loose.length > 0 ? none : step.wrote
+      if (step.delegated) return all
+      const named = step.loose.flatMap((input) => namedPaths(input, cwd))
+      return { has: (path) => written.has(path) || isNamed(named, path) }
     }
   }
 
