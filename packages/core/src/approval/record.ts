@@ -172,6 +172,9 @@ export class TaintHistory {
         this.names.delete(id)
         if (began === undefined || tool === undefined) return
         const bridge = bridgeResult(event.data.display)
+        // A running subagent's words, shown while its own conversation holds untrusted content: a source like its answer.
+        const relayed = relayedSubagent(event.data.display)
+        if (relayed !== null) this.entries.push({ kind: "subagent_result", at: event.seq, session: relayed })
         this.entries.push({
           kind: "tool_result",
           at: event.seq,
@@ -225,6 +228,21 @@ export function bridgeResult(display: unknown): { readonly untrusted: boolean; r
   if (typeof untrusted !== "boolean") return null
   const server = Array.isArray(servers) && typeof servers[0] === "string" ? servers[0] : null
   return { untrusted, tool: kind === "call" && server !== null && typeof tool === "string" ? `${server}/${tool}` : null }
+}
+
+/**
+ * What a result that shows a running subagent's words recorded in its
+ * `display` (`subagent`: the child session, and `tainted` when the child's
+ * conversation held untrusted content as its words were read): the child's
+ * session when such a result carries that content on, else `null`. Fields
+ * of the stored event, never the model-facing text.
+ */
+export function relayedSubagent(display: unknown): string | null {
+  if (typeof display !== "object" || display === null || Array.isArray(display)) return null
+  const source = (display as { readonly subagent?: unknown }).subagent
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return null
+  const { sessionId, tainted } = source as { readonly sessionId?: unknown; readonly tainted?: unknown }
+  return tainted === true && typeof sessionId === "string" && sessionId !== "" ? sessionId : null
 }
 
 function key(data: { readonly messageId: string; readonly callId: string }) {

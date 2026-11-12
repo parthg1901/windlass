@@ -11,7 +11,9 @@
  * - a file tool result naming a path outside the workspace or in a hidden path;
  * - a file tool result naming a workspace path that matches `untrustedPaths`;
  * - a shell command that ran with network access the harness granted (an escalation);
- * - the result of a subagent whose own conversation was tainted when it ended;
+ * - the result of a subagent whose own conversation was tainted when it ended,
+ *   and what a running subagent has said so far, shown to its parent while
+ *   the subagent's conversation is tainted;
  * - a wake-up's firing that carries a webhook's body or the output of a check
  *   that ran with the network or without the sandbox, from its admission on.
  *

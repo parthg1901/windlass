@@ -3436,10 +3436,13 @@ class LiveSession implements EngineSession {
     }
     const child = live.child!
     const found = childResult(child.readEvents({ afterSeq: live.fromSeq }))
+    // Its words may carry on what its own conversation holds: when that is untrusted content, the result says so,
+    // and this session is tainted from this result on, as it would be by the child's answer when it ends.
+    const tainted = found.answer !== "" && child.commandsNow()?.tainted === true
     return toolResult(
       "success",
       `Subagent ${child.id} is still working: ${found.steps} step${found.steps === 1 ? "" : "s"}, ${found.toolCalls} tool call${found.toolCalls === 1 ? "" : "s"} so far.${found.answer === "" ? "" : `\n\nIts latest words:\n${found.answer}`}`,
-      { subagent: { sessionId: child.id, spawnId: live.spawnId }, running: true },
+      { subagent: { sessionId: child.id, spawnId: live.spawnId, ...(tainted ? { tainted: true } : {}) }, running: true },
     )
   }
 
