@@ -427,8 +427,8 @@ describe("quoted program messages", () => {
     { page: "docs/hooks.md", quote: '⚠ ended with the stop hook "<name>" unsatisfied', pieces: ["ended with ", "the stop hook ", " unsatisfied"] },
     {
       page: "docs/hooks.md",
-      quote: "not run: 1 hook that this project's configuration names and you have not approved.",
-      pieces: ["not run: ", '"hook"', " that this project's configuration names and you have not approved. To approve "],
+      quote: "not run: 1 hook that this project's configuration names and you have not approved. To approve it",
+      pieces: ["not run: ", " that this project's configuration names and you have not approved. To approve "],
     },
     { page: "docs/hooks.md", quote: 'note from the hook "no-todo", added to the result: ', pieces: ["note from the hook ", ", added to the result: "] },
     {
@@ -499,8 +499,8 @@ describe("quoted program messages", () => {
     { page: "docs/diagnostics.md", quote: "after this edit: 1 new error, 1 new warning]", pieces: ["after this edit: ", "new "] },
     {
       page: "docs/diagnostics.md",
-      quote: "not run: 1 language server that this project's configuration names and you have not approved.",
-      pieces: ["not run: ", '"language server"', " that this project's configuration names and you have not approved. To approve "],
+      quote: "not run: 1 language server that this project's configuration names and you have not approved. To approve it",
+      pieces: ["not run: ", "language server", " that this project's configuration names and you have not approved. To approve "],
     },
     {
       page: "docs/diagnostics.md",

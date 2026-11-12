@@ -117,10 +117,11 @@ Before that, `/mcp` lists the server as `waiting for your approval: not started`
 once.
 
 In a one-shot run nobody can answer, so the server stays stopped and `windlass` says so in one sentence that
-counts what of the project's was not run and how to approve it (`not run: 1 MCP server that this project's
-configuration names and you have not approved. To approve it, run \`windlass\` in this directory and answer the
-question it asks; ...`). The approval is remembered, so later one-shot runs in the project start it. You can also
-copy the definition into your own file (`~/.config/windlass/config.json`) after reading what it runs.
+counts what of the project's was not run and how to approve it, by running `windlass` in the directory and
+answering its question:
+`not run: 1 MCP server that this project's configuration names and you have not approved. To approve it, ...`.
+The approval is remembered, so later one-shot runs in the project start it. You can also copy the definition into
+your own file (`~/.config/windlass/config.json`) after reading what it runs.
 
 ## Seeing the servers: /mcp
 

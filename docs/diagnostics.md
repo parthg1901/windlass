@@ -148,8 +148,9 @@ The agent is not told, and its edits go through without notes.
   project's file names as soon as the session opens, before your first message, showing the whole command, the
   files it serves and the file that defines it; `/lsp approve <server>` asks again after a no. A one-prompt run
   cannot ask: the server is not started, and one sentence counts what of the project's was not run and says how to
-  approve it (`not run: 1 language server that this project's configuration names and you have not approved. ...`,
-  [hooks.md](hooks.md)). An edited definition is asked about again.
+  approve it ([hooks.md](hooks.md)):
+  `not run: 1 language server that this project's configuration names and you have not approved. To approve it, ...`.
+  An edited definition is asked about again.
 - **Listing.** `/lsp` shows each server, the files it serves, the file that defines it and its state (started,
   waiting for your approval, failed and why).
 - **Seeing the note.** The row of an edit that got diagnostics says how many and from which server. `--json` has

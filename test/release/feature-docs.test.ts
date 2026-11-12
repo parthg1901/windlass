@@ -501,7 +501,7 @@ describe("quoted program messages", () => {
     { page: "docs/mcp.md", quote: 'approved: "tracker" starts now; the agent has its tools from your next message.', pieces: ["approved: ", " starts now; the agent has its tools from your next message."] },
     {
       page: "docs/mcp.md",
-      quote: "not run: 1 MCP server that this project's configuration names and you have not approved.",
+      quote: "not run: 1 MCP server that this project's configuration names and you have not approved. To approve it",
       pieces: ["not run: ", "MCP server", " that this project's configuration names and you have not approved. To approve "],
     },
     {
