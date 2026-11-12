@@ -106,8 +106,8 @@ An edit's result waits for the server at most `waitMs` (1.5 seconds by default).
 stored without a note, the agent is told nothing, and you are told once:
 
 ```text
-⚠ lsp: The language server "<name>" did not give diagnostics within 1500 ms of an edit, so the edit got none. This is said once; it may keep happening if the server is slow.
-⚠ lsp: The language server "<name>" was still starting when an edit needed its diagnostics; the edit got none. Later edits get them once it is ready.
+· language server: The language server "<name>" did not give diagnostics within 1500 ms of an edit, so the edit got none. This is said once; it may keep happening if the server is slow.
+· language server: The language server "<name>" was still starting when an edit needed its diagnostics; the edit got none. Later edits get them once it is ready.
 ```
 
 A slow server costs each edit the whole wait: with a server that took 3 seconds to answer, both edits of a turn
@@ -120,11 +120,11 @@ The diagnostics of a late answer are not delivered afterwards.
   with the end of what the server wrote:
 
   ```text
-  ⚠ lsp: The language server "<name>" could not be started: could not start "<command>": Executable not found in $PATH: "<command>". Edits get no diagnostics from it; it is tried again at the next edit after 1 s.
+  · language server: The language server "<name>" could not be started: could not start "<command>": Executable not found in $PATH: "<command>". Edits get no diagnostics from it; it is tried again at the next edit after 1 s.
   ```
 
 - **The server crashes.** The same, noticed at once rather than after the wait:
-  `⚠ lsp: The language server "<name>" stopped (the server process exited with code 3; it wrote: ...). Edits get no diagnostics until it is started again, at the next edit after 1 s.`
+  `· language server: The language server "<name>" stopped (the server process exited with code 3; it wrote: ...). Edits get no diagnostics until it is started again, at the next edit after 1 s.`
 - **Changes made by a command are not seen.** Only `edit` and `write` are followed by a note; a file the agent
   changes with a shell command gets none, and neither does a file no server's `languages` match.
 - **A language server runs outside the sandbox**, with your permissions, like an MCP server.
@@ -133,11 +133,11 @@ The diagnostics of a late answer are not delivered afterwards.
 
 A server can also be named in the project's file, `.windlass/config.json`. Like a project's MCP server
 ([mcp.md](mcp.md)), it **is not started** until you approve it: opening a repository must not run a command the
-repository chose. You are told at the first turn, and once more when an edit would have used it:
+repository chose. You are told when the session opens, and once more when an edit would have used it:
 
 ```text
-⚠ lsp: This project's configuration names the language server "<name>" (<command and arguments>). It was not started: a server a project names runs only after you approve it.
-⚠ lsp: The language server "<name>" from this project's configuration is not started: it waits for your approval.
+· language server: This project's configuration names the language server "<name>" (<command and arguments>). It was not started: a server a project names runs only after you approve it.
+· language server: The language server "<name>" from this project's configuration is not started: it waits for your approval.
 ```
 
 The agent is not told, and its edits go through without notes.
@@ -145,8 +145,10 @@ The agent is not told, and its edits go through without notes.
 ## Approving, listing and seeing diagnostics
 
 - **Approving a project's server.** An interactive `windlass` and `windlass tui` ask you about a language server a
-  project's file names, showing the whole command; `/lsp approve <server>` answers it later. A one-prompt run
-  cannot ask: it says once that the server was not started and how to approve it. An edited definition is asked
+  project's file names as soon as the session opens, before your first message, showing the whole command, the
+  files it serves and the file that defines it; `/lsp approve <server>` asks again after a no. A one-prompt run
+  cannot ask: it says once that the server was not started and how to approve it
+  (`Approving the language server "<name>" needs someone at the terminal: ...`). An edited definition is asked
   about again.
 - **Listing.** `/lsp` shows each server, the files it serves, the file that defines it and its state (started,
   waiting for your approval, failed and why).
