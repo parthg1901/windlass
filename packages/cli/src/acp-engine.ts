@@ -100,12 +100,18 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
 /** One way to the server: a stream of messages and how to let go of it. */
 interface Transport {
   readonly stream: Stream
-  /** Resolves with how the server went, once it has (the child exited). Never rejects. */
-  readonly gone: Promise<string>
+  /** Resolves with how the server went, once it has (the child exited), and its last words. Never rejects. */
+  readonly gone: Promise<Gone>
   /** Closes the server's input and waits for it to finish. */
   stop(): Promise<void>
   /** Stops the server at once (it did not start in time). */
   kill(): void
+}
+
+/** How the server went away: `how` completes "the engine process ..."; `said` is the last line it logged, if it failed. */
+interface Gone {
+  readonly how: string
+  readonly said: string | null
 }
 
 /** The connection to the server, for one CLI run. */
@@ -114,8 +120,8 @@ class Link {
   /** Events for a session whose `session/new` has not been answered yet. */
   private readonly early = new Map<string, EngineEvent[]>()
   private stopping: Promise<void> | null = null
-  /** Why the server went away without being asked to, once it has. */
-  private lostReason: string | null = null
+  /** How the server went away without being asked to, once it has. */
+  private lostReason: Gone | null = null
   readonly connection: ClientConnection
 
   private constructor(
@@ -146,11 +152,12 @@ class Link {
           clientCapabilities: { _meta: { [NS]: { events: true, updates: false } } },
           clientInfo: { name: brand.binary, title: brand.name, version: options.version ?? "0.0.0" },
         }),
-        transport.gone.then((how) => {
-          throw failed(`the engine process ${how} before it was ready`)
+        transport.gone.then((gone) => {
+          throw failed(`the engine process ${gone.how} before it was ready${gone.said === null ? "" : `: ${gone.said}`}`)
         }),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(failed(`the engine process did not start within ${Math.round(timeoutMs / 1000)} s; giving up`)), timeoutMs)
+          const seconds = timeoutMs < 10_000 ? (timeoutMs / 1000).toFixed(1) : String(Math.round(timeoutMs / 1000))
+          timer = setTimeout(() => reject(failed(`the engine process did not start within ${seconds} s; giving up`)), timeoutMs)
         }),
       ])
       const offered = (init.agentCapabilities?._meta?.[NS] as { notifications?: unknown } | undefined)?.notifications
@@ -158,9 +165,12 @@ class Link {
         throw failed(`the engine process does not send ${brand.name}'s events (${EXT.event}); it may be another version`)
       return link
     } catch (error) {
+      // The connection closes a moment before the process is reaped: an exit is the better explanation.
+      const gone = error instanceof EngineUnavailable ? null : await Promise.race([transport.gone, Bun.sleep(1000).then(() => null)])
       transport.kill()
       await link.stop()
       if (error instanceof EngineUnavailable) throw error
+      if (gone !== null) throw failed(`the engine process ${gone.how} before it was ready${gone.said === null ? "" : `: ${gone.said}`}`)
       throw failed(`the engine process did not answer as expected: ${describe(error)}`)
     } finally {
       clearTimeout(timer)
@@ -248,14 +258,16 @@ class Link {
 
   /** Why the server went away on its own, for the session `id`, or `null`. */
   lost(id: string): string | null {
-    if (this.lostReason === null) return null
-    return `the engine process ${this.lostReason} in the middle of the session; its work is recovered when it is opened again (${brand.binary} --session ${id})`
+    const gone = this.lostReason
+    if (gone === null) return null
+    const said = gone.said === null ? "" : ` (${gone.said})`
+    return `the engine process ${gone.how} in the middle of the session${said}; its work is recovered when the session is opened again: ${brand.binary} --session ${id}`
   }
 
   /** The error the CLI prints for something the server refused, or for the server being gone. */
   unavailable(error: unknown): EngineUnavailable {
     if (error instanceof EngineUnavailable) return error
-    if (this.lostReason !== null) return new EngineUnavailable(`the engine process ${this.lostReason}`)
+    if (this.lostReason !== null) return new EngineUnavailable(`the engine process ${this.lostReason.how}`)
     const data = errorData(error)
     if (data?.reason === "auth_required" && typeof data.message === "string") return new EngineUnavailable(`${data.message} (${SIGN_IN_ADVICE})`)
     if (typeof data?.message === "string") return new EngineUnavailable(data.message)
@@ -414,7 +426,7 @@ function childTransport(options: AcpEngineOptions): Transport {
     await logged
     const how = child.signalCode !== null ? `was killed (${child.signalCode})` : `exited with code ${code}`
     const last = tail.filter((line) => line.trim() !== "").at(-1)
-    return last === undefined || code === 0 ? how : `${how}: ${last.replace(/^\S+ acp \w+: /, "")}`
+    return { how, said: last === undefined || code === 0 ? null : last.replace(/^\S+ acp \w+: /, "") }
   })
   const input = new WritableStream<Uint8Array>({
     write: (chunk) => {
@@ -452,7 +464,7 @@ async function memoryTransport(options: AcpEngineOptions): Promise<Transport> {
     log,
     ...(options.version === undefined ? {} : { version: options.version }),
   })
-  const gone = served.done.then(() => "closed the connection")
+  const gone = served.done.then(() => ({ how: "closed the connection", said: null }))
   return {
     stream: { writable: toAgent.writable, readable: toClient.readable } as unknown as Stream,
     gone,

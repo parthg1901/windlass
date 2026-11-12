@@ -10,6 +10,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   type ClientConnection,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
   type SessionNotification,
   type SessionUpdate,
   type Stream,
@@ -41,6 +43,8 @@ export interface HarnessOptions {
   readonly clientCapabilities?: Record<string, unknown>
   /** Reuse the data directory of an earlier harness (a restart). */
   readonly dataDir?: string
+  /** Answers `session/request_permission`; cancelled when left out. Every request is recorded in `permissions`. */
+  readonly onPermission?: (request: RequestPermissionRequest) => RequestPermissionResponse | Promise<RequestPermissionResponse>
 }
 
 export interface Harness {
@@ -55,6 +59,8 @@ export interface Harness {
   readonly updates: SessionNotification[]
   /** Every extension notification the client received, in order. */
   readonly ext: { method: string; params: Message }[]
+  /** Every `session/request_permission` the agent sent, in order. */
+  readonly permissions: RequestPermissionRequest[]
   /** Every message the agent wrote, in order. */
   readonly wire: Message[]
   /** Schema violations found in the agent's messages. */
@@ -115,9 +121,14 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
 
   const updates: SessionNotification[] = []
   const ext: { method: string; params: Message }[] = []
+  const permissions: RequestPermissionRequest[] = []
   const connection = client({ name: "test-client" })
     .onNotification(methods.client.session.update, ({ params }) => {
       updates.push(params)
+    })
+    .onRequest(methods.client.session.requestPermission, async ({ params }) => {
+      permissions.push(params)
+      return options.onPermission === undefined ? { outcome: { outcome: "cancelled" } } : options.onPermission(params)
     })
     .onNotification("*", ({ method, params }) => {
       ext.push({ method, params: params as Message })
@@ -133,6 +144,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     connection,
     updates,
     ext,
+    permissions,
     wire,
     violations,
     initialize: () =>
@@ -188,6 +200,7 @@ function validate(message: Message, requests: Map<unknown, string>): string | nu
     if (message.jsonrpc !== "2.0") return `not JSON-RPC 2.0: ${JSON.stringify(message)}`
     if (typeof message.method === "string") {
       if (message.method === "session/update") schemas.zSessionNotification.parse(message.params)
+      else if (message.method === "session/request_permission") schemas.zRequestPermissionRequest.parse(message.params)
       else if (!message.method.startsWith("_")) return `unexpected method from the agent: ${message.method}`
       else if (typeof message.params !== "object" || message.params === null) return `${message.method} without params object`
       return null
