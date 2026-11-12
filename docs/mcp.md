@@ -114,7 +114,10 @@ tool call's question always comes first: the server's question steps aside and i
 project's server can be approved before anything is sent. `windlass` puts the question when you send your first
 message, before the message goes: the first turn starts with what you allowed, and no question interrupts it.
 Before that, `/mcp` lists the server as `waiting for your approval: not started` and `/mcp approve <name>` asks at
-once.
+once. `windlass tui` asks as soon as the session opens, after the project's hooks and language servers, in the box
+above the input (`[a] Start it for this project`, `[n] Not now`); the status line says
+`? waiting for your answer · the MCP server "<name>"` until you answer, and a message you type meanwhile is sent
+once you have.
 
 In a one-shot run nobody can answer, so the server stays stopped and `windlass` says so in one sentence that
 counts what of the project's was not run and how to approve it, by running `windlass` in the directory and
