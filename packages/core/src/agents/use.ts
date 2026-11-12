@@ -1,6 +1,7 @@
 /**
- * Using an agent, in the three places it can be used. All pure: the engine
- * passes in what it read and appends what comes back.
+ * Using an agent, in the three places it can be used. All pure (nothing is
+ * read or written; paths are only compared): the engine passes in what it
+ * read and appends what comes back.
  *
  * (a) A new session started as an agent: `agentRecord` is recorded with the
  *     session; `agentSource` is one section of its first baseline (key
@@ -23,10 +24,11 @@
  * its definition). After a compaction the new baseline is built from the
  * record too.
  */
+import { resolve, sep } from "node:path"
 import { fingerprint } from "../instructions/source.ts"
 import { type Infer, type Validator, array, nonEmptyString, nullable, object, oneOf, string } from "../validate.ts"
 import { APPROVAL_MODES, type AgentRestrictions, NO_AGENT } from "./definition.ts"
-import type { AgentDefinition, AgentSet } from "./discover.ts"
+import type { AgentDefinition, AgentRoot, AgentSet } from "./discover.ts"
 import { combineRestrictions, describeRestrictions, isRestricted } from "./restrictions.ts"
 
 /** The instruction source key of the active agent's instructions, in a baseline and in a switch message. */
@@ -197,14 +199,50 @@ export function findAgent(set: AgentSet, name: string, disabled: readonly string
  * `"none"`), else the configured default, else none. Fails closed: a named
  * or default agent that cannot be found is an error for the user, never a
  * session that silently runs without the restrictions they asked for.
+ *
+ * A requested name is found by precedence, as everywhere (`findAgent`): the
+ * user typed it here, for this directory. The default is different. Only
+ * the user's own file names it, for every directory, so it is looked for
+ * among the user's own definitions first (`ownDefinition`): a repository
+ * that carries a definition of the same name does not replace it, and one
+ * of the user's own that cannot be used fails the start instead of giving
+ * way to the repository's. Only a name of which the user has no definition
+ * at all is found by precedence (a default kept in the project itself).
  */
-export function resolveStartAgent(set: AgentSet, requested: string | null | undefined, config: { readonly default: string | null; readonly disabled?: readonly string[] }): { readonly ok: true; readonly agent: AgentDefinition | null } | { readonly ok: false; readonly message: string } {
+export function resolveStartAgent(
+  set: AgentSet,
+  requested: string | null | undefined,
+  config: { readonly default: string | null; readonly disabled?: readonly string[]; /** `AgentsConfig.ownPaths`. */ readonly ownPaths?: readonly string[] },
+): { readonly ok: true; readonly agent: AgentDefinition | null } | { readonly ok: false; readonly message: string } {
   const name = requested ?? config.default
   if (name === null || name.trim().toLowerCase() === NO_AGENT) return { ok: true, agent: null }
+  if (requested !== undefined && requested !== null) return findAgent(set, name, config.disabled)
+  const fix = ` (It is the default agent, agents.default; change that, or start with the agent "${NO_AGENT}".)`
+  const own = ownDefinition(set, name, config.ownPaths ?? [])
+  if (own !== null) return own.ok ? own : { ok: false, message: `${own.message}${fix}` }
   const found = findAgent(set, name, config.disabled)
-  if (found.ok) return found
-  const fix = requested === undefined || requested === null ? ` (It is the default agent, agents.default; change that, or start with the agent "${NO_AGENT}".)` : ""
-  return { ok: false, message: `${found.message}${fix}` }
+  return found.ok ? found : { ok: false, message: `${found.message}${fix}` }
+}
+
+/**
+ * The definition of `name` among the user's own: those of the user's config
+ * directory and of the paths the user's own file names (`ownPaths`,
+ * absolute), never a project directory's or a path only a project's file
+ * names. Exactly or else ignoring case, the nearest first. `null`: the user
+ * has none of that name. A miss with a message: the user has one and it
+ * could not be used.
+ */
+export function ownDefinition(set: AgentSet, name: string, ownPaths: readonly string[]): AgentLookup | null {
+  const wanted = name.trim()
+  const named = new Set(ownPaths.map((path) => resolve(path)))
+  const isOwn = (root: AgentRoot) => root.scope === "user" || (root.scope === "config" && named.has(root.dir))
+  // In precedence order: for one name, the definition in `agents` is nearer than those in `shadowed`.
+  const mine = [...set.agents, ...(set.shadowed ?? [])].filter((agent) => isOwn(agent.root))
+  const agent = mine.find((candidate) => candidate.name === wanted) ?? mine.find((candidate) => candidate.name.toLowerCase() === wanted.toLowerCase())
+  if (agent !== undefined) return { ok: true, agent }
+  const dirs = set.roots.filter(isOwn).map((root) => `${root.dir}${sep}`)
+  const broken = set.problems.find((problem) => problem.severity === "skipped" && problem.name !== null && problem.name.toLowerCase() === wanted.toLowerCase() && dirs.some((dir) => problem.path.startsWith(dir)))
+  return broken === undefined ? null : { ok: false, message: `The agent "${wanted}" (${broken.path}) cannot be used: ${broken.reason}.` }
 }
 
 /**

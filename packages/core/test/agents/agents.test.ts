@@ -438,6 +438,84 @@ describe("using an agent", () => {
     expect(broken.ok === false && broken.message).toContain("no `description`")
   })
 
+  describe("the default agent is the user's own", () => {
+    const OWN = "name: careful\ndescription: Reads and reports.\neffects: read"
+    const THEIRS = "name: careful\ndescription: Does whatever the task needs."
+    const scopeOf = (result: ReturnType<typeof resolveStartAgent>) => (result.ok ? (result.agent === null ? "none" : `${result.agent.root.scope}: ${result.agent.description}`) : result.message)
+
+    test("a project's definition of the default's name does not replace the user's; by name the nearest still wins", async () => {
+      const { cwd, configDir } = layout()
+      await agent(project(cwd), "careful.md", THEIRS)
+      await agent(join(configDir, "agents"), "careful.md", OWN)
+      const set = discoverAgents({ cwd, configDir })
+      // Discovery is unchanged: the project's is the agent of that name, the user's is reported as hidden and kept.
+      expect(set.agents.map((a) => a.root.scope)).toEqual(["project"])
+      expect(set.shadowed!.map((a) => a.path)).toEqual([join(configDir, "agents", "careful.md")])
+      expect(scopeOf(resolveStartAgent(set, undefined, { default: "careful", ownPaths: [] }))).toBe("user: Reads and reports.")
+      expect(scopeOf(resolveStartAgent(set, null, { default: "careful" }))).toBe("user: Reads and reports.")
+      // The default's name ignoring case, as a name is found everywhere.
+      expect(scopeOf(resolveStartAgent(set, undefined, { default: "Careful" }))).toBe("user: Reads and reports.")
+      // A name the user typed is for this directory: the documented precedence.
+      expect(scopeOf(resolveStartAgent(set, "careful", { default: "careful" }))).toBe("project: Does whatever the task needs.")
+      expect(scopeOf(resolveStartAgent(set, "none", { default: "careful" }))).toBe("none")
+      const byName = findAgent(set, "careful")
+      expect(byName.ok && byName.agent.root.scope).toBe("project")
+    })
+
+    test("a definition in a path the user's own file names is the user's; one in a path only the project's file names is not", async () => {
+      const { base, cwd, configDir } = layout()
+      const mine = join(base, "team-agents")
+      const theirs = join(base, "vendored-agents")
+      await agent(theirs, "careful.md", THEIRS)
+      await agent(mine, "careful.md", OWN)
+      // The project's file names its path, which comes first; the user's file names `mine`.
+      const places = resolveAgentsConfig({ paths: [mine], default: "careful" }, { paths: [theirs] })
+      const set = discoverAgents({ cwd, configDir, extraPaths: places.paths })
+      expect(set.agents.map((a) => a.path)).toEqual([join(theirs, "careful.md")])
+      expect(scopeOf(resolveStartAgent(set, undefined, places))).toBe("config: Reads and reports.")
+      // Among the user's own the nearest wins: a path of the user's file before the user's directory.
+      await agent(join(configDir, "agents"), "careful.md", "name: careful\ndescription: The directory's.")
+      expect(scopeOf(resolveStartAgent(discoverAgents({ cwd, configDir, extraPaths: places.paths }), undefined, places))).toBe("config: Reads and reports.")
+      // Without the paths of the user's file no configured path counts as the user's.
+      expect(scopeOf(resolveStartAgent(discoverAgents({ cwd, configDir, extraPaths: places.paths }), undefined, { default: "careful" }))).toBe("user: The directory's.")
+    })
+
+    test("the user's directory stays the user's when a project's file names it as a path too", async () => {
+      const { cwd, configDir } = layout()
+      await agent(project(cwd), "careful.md", THEIRS)
+      await agent(join(configDir, "agents"), "careful.md", OWN)
+      const places = resolveAgentsConfig({ default: "careful" }, { paths: [join(configDir, "agents")] })
+      const set = discoverAgents({ cwd, configDir, extraPaths: places.paths })
+      expect(set.roots.filter((root) => root.dir === join(configDir, "agents"))).toEqual([{ dir: join(configDir, "agents"), scope: "user" }])
+      expect(scopeOf(resolveStartAgent(set, undefined, places))).toBe("user: Reads and reports.")
+    })
+
+    test("the user's own definition that cannot be used fails the start; the project's of the same name does not take its place", async () => {
+      const { cwd, configDir } = layout()
+      await agent(project(cwd), "careful.md", THEIRS)
+      await Bun.write(join(configDir, "agents", "careful.md"), "---\nname: careful\n---\nRead only.\n")
+      const set = discoverAgents({ cwd, configDir })
+      expect(set.agents.map((a) => a.root.scope)).toEqual(["project"])
+      const refused = resolveStartAgent(set, undefined, { default: "careful" })
+      expect(refused.ok === false && refused.message).toBe(
+        `The agent "careful" (${join(configDir, "agents", "careful.md")}) cannot be used: ${set.problems.find((problem) => problem.severity === "skipped")!.reason}. (It is the default agent, agents.default; change that, or start with the agent "none".)`,
+      )
+      // By name it is still there, as the project's.
+      expect(scopeOf(resolveStartAgent(set, "careful", { default: "careful" }))).toBe("project: Does whatever the task needs.")
+    })
+
+    test("a default of which the user has no definition is found by precedence, as before; one that is disabled fails the start", async () => {
+      const { cwd, configDir } = layout()
+      await agent(project(cwd), "careful.md", THEIRS)
+      await agent(join(configDir, "agents"), "other.md", "name: other\ndescription: Another.")
+      const set = discoverAgents({ cwd, configDir })
+      expect(scopeOf(resolveStartAgent(set, undefined, { default: "careful" }))).toBe("project: Does whatever the task needs.")
+      await agent(join(configDir, "agents"), "careful.md", OWN)
+      const disabled = resolveStartAgent(discoverAgents({ cwd, configDir, disabled: ["careful"] }), undefined, { default: "careful", disabled: ["careful"] })
+      expect(disabled.ok === false && disabled.message).toBe('The agent "careful" is disabled in the configuration (agents.disabled). (It is the default agent, agents.default; change that, or start with the agent "none".)')
+    })
+  })
+
   test("(b) a subagent: the name is checked when the call runs; restrictions are combined with the parent's", async () => {
     const { set, get } = await setup()
     const miss = findAgent(set, "fxer")
@@ -510,8 +588,10 @@ describe("configuration", () => {
 
   test("resolves: ~ expanded, project paths first, the default only from the user's file", () => {
     const resolved = resolveAgentsConfig({ paths: ["~/mine"], disabled: ["a"], default: "reviewer" }, { paths: ["/proj"], disabled: ["b"], default: "yolo" }, "/home/u")
-    expect(resolved).toEqual({ paths: ["/proj", "/home/u/mine"], disabled: ["a", "b"], default: "reviewer", ignored: [expect.stringContaining('agents.default "yolo"')] })
-    expect(resolveAgentsConfig(undefined)).toEqual({ paths: [], disabled: [], default: null, ignored: [] })
+    expect(resolved).toEqual({ paths: ["/proj", "/home/u/mine"], ownPaths: ["/home/u/mine"], disabled: ["a", "b"], default: "reviewer", ignored: [expect.stringContaining('agents.default "yolo"')] })
+    expect(resolveAgentsConfig(undefined)).toEqual({ paths: [], ownPaths: [], disabled: [], default: null, ignored: [] })
+    // A path both files name is the user's own; one only the project's file names never is.
+    expect(resolveAgentsConfig({ paths: ["~/team"] }, { paths: ["/home/u/team", "/elsewhere"] }, "/home/u")).toMatchObject({ paths: ["/home/u/team", "/elsewhere"], ownPaths: ["/home/u/team"] })
     expect(resolveAgentsConfig({ default: "None" }).default).toBeNull()
   })
 })

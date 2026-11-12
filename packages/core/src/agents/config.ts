@@ -15,7 +15,10 @@
  * is read from the user's file only: a repository choosing which agent
  * every session in it starts as would be the repository choosing the
  * instructions, model and effort the user's sessions run with.
- * `resolveAgentsConfig(user, project)` applies that.
+ * `resolveAgentsConfig(user, project)` applies that, and keeps the paths the
+ * user's own file names apart (`ownPaths`): the default is looked for among
+ * the user's own definitions first, so that a repository cannot replace it
+ * with a definition of the same name (`resolveStartAgent`).
  */
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
@@ -30,6 +33,8 @@ export interface AgentsConfigSection {
 
 export interface AgentsConfig {
   readonly paths: readonly string[]
+  /** The paths among `paths` that the user's own file names. A project's file cannot add to them. */
+  readonly ownPaths: readonly string[]
   readonly disabled: readonly string[]
   /** `null`: no default agent. */
   readonly default: string | null
@@ -75,6 +80,7 @@ export function resolveAgentsConfig(user: AgentsConfigSection | null | undefined
   const fallback = user?.default ?? null
   return {
     paths,
+    ownPaths: [...new Set((user?.paths ?? []).map(expand))],
     disabled,
     default: fallback === null || fallback.toLowerCase() === NO_AGENT ? null : fallback,
     ignored: project?.default === undefined ? [] : [`agents.default "${project.default}" in the project's configuration (only the user's own configuration chooses the default agent)`],

@@ -211,7 +211,8 @@ What the spine pass built, where it differs from what this page first proposed, 
 - **The approval mode** in force is `effectiveApprovalMode(the resolved mode, session.agent)`; a looser one is
   said once as a `diagnostic` of kind `agents`.
 - **Starting.** `Engine.createSession({ cwd, settings, title?, agent? })`: `agent` is a name, `"none"`, or absent
-  (the user's `agents.default`). It throws `EngineError` and creates nothing when the agent cannot be found
+  (the user's `agents.default`, looked for among the user's own definitions first: `resolveStartAgent` is given
+  the `AgentsConfig`, whose `ownPaths` are the paths the user's own file names). It throws `EngineError` and creates nothing when the agent cannot be found
   (`invalid_request`, the message suggests close names) or names a model the provider's listing lacks
   (`unknown_model`). The agent's model and effort are in `session.created.settings`. The configuration is read
   without waiting (`loadConfigSync`); when it cannot be read and no agent was named, the session is created and

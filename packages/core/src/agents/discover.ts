@@ -10,7 +10,9 @@
  * 2. extra directories from the configuration (`agents.paths`), in order;
  * 3. the user's `<config dir>/agents`.
  * The nearest definition of a name wins; the others are reported as
- * shadowed. Within one root the first by path wins.
+ * shadowed and kept in `AgentSet.shadowed`. Within one root the first by
+ * path wins. One use does not follow this order: the default agent is
+ * looked for among the user's own definitions first (`resolveStartAgent`).
  *
  * In a root, files at most `MAX_AGENT_DEPTH` levels down are read (so definitions
  * can be grouped in folders). Dot-entries, `node_modules` and `README.md`
@@ -54,6 +56,11 @@ export interface AgentSet {
   /** Sorted by path, then reason. */
   readonly problems: readonly AgentProblem[]
   readonly roots: readonly AgentRoot[]
+  /**
+   * The usable definitions a nearer one of the same name hides, nearest first; each also has a `shadowed`
+   * problem. Absent in a set that was not discovered (no definitions could be looked for).
+   */
+  readonly shadowed?: readonly AgentDefinition[]
 }
 
 export interface AgentDiscoveryInput {
@@ -77,19 +84,24 @@ export function discoverAgents(input: AgentDiscoveryInput): AgentSet {
   const disabled = new Set(input.disabled ?? [])
   const problems: AgentProblem[] = []
   const byName = new Map<string, AgentDefinition>()
+  const shadowed: AgentDefinition[] = []
   for (const root of found) {
     for (const agent of scanRoot(root, problems)) {
       if (disabled.has(agent.name)) continue
       const winner = byName.get(agent.name)
       if (winner === undefined) byName.set(agent.name, agent)
       else if (winner.root === root) problems.push({ path: agent.path, severity: "skipped", name: agent.name, reason: `another definition in the same directory is named "${agent.name}" (${winner.path})` })
-      else problems.push({ path: agent.path, severity: "shadowed", name: agent.name, reason: `the agent "${agent.name}" at ${winner.path} takes precedence` })
+      else {
+        shadowed.push(agent)
+        problems.push({ path: agent.path, severity: "shadowed", name: agent.name, reason: `the agent "${agent.name}" at ${winner.path} takes precedence` })
+      }
     }
   }
   return {
     agents: [...byName.values()].sort((a, b) => byCodeUnits(a.name, b.name)),
     problems: problems.sort((a, b) => byCodeUnits(a.path, b.path) || byCodeUnits(a.reason, b.reason)),
     roots: found,
+    shadowed,
   }
 }
 

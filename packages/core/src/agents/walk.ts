@@ -22,8 +22,9 @@ export function roots(input: { readonly cwd: string; readonly configDir: string;
     for (const name of [`.${brand.directory}`, ".agents", ".claude"]) project.push({ dir: join(dir, name, kind), scope: "project" })
     if (dir === top || dirname(dir) === dir) break
   }
-  const extra = (input.extraPaths ?? []).map((dir): Root => ({ dir: resolve(cwd, dir), scope: "config" }))
   const user: Root = { dir: join(resolve(input.configDir), kind), scope: "user" }
+  // The user's own directory stays the user's when a configured path names it too (a project's file may name any path).
+  const extra = (input.extraPaths ?? []).map((dir): Root => (resolve(cwd, dir) === user.dir ? user : { dir: resolve(cwd, dir), scope: "config" }))
   const seen = new Set<string>()
   return [...project, ...extra, user].filter((root) => !seen.has(root.dir) && (seen.add(root.dir), true))
 }

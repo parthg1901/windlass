@@ -52,7 +52,8 @@ A definition is a file `<name>.md`. Searched in this order; when two have the sa
    every project.
 
 A definition may sit up to two folders below one of these directories, so you can group them. A `README.md` there
-is not read as an agent. A definition that another one of the same name hides is reported, not used:
+is not read as an agent. A definition that another one of the same name hides is reported, not used (except as
+your default agent, below):
 
 ```text
 ⚠ agents: The agent definition at <path> is hidden by another agent of the same name: the agent "reviewer" at <path> takes precedence
@@ -150,6 +151,15 @@ windlass: There is no agent named "nobody". Agents: careful, docs, reviewer. (It
 A project's file cannot choose the default (a repository would be choosing the instructions and model of your
 sessions). It is not followed, and `/agent` says so:
 `not followed: agents.default "docs" in the project's configuration (only the user's own configuration chooses the default agent)`.
+
+For the same reason **a repository cannot replace your default by defining an agent of the same name.** A name
+you type (`--agent careful`, `/agent careful`, a subagent's `agent`) is found in the order under "Where
+definitions live", the project's first. The default is looked for among your own definitions first: your own
+agents directory and the `paths` your own file lists. With `"default": "careful"` and your own `careful.md`, a
+session you start in a repository that has a `careful.md` too runs as yours, with your restrictions; the
+repository's is used only when you ask for it by name there. If your own `careful.md` cannot be loaded, the start
+fails with the reason; the repository's does not take its place. Only a default of which you have no definition
+is found in the usual order, so a default you keep in your project's own directory still works.
 
 ## Switching: /agent
 
