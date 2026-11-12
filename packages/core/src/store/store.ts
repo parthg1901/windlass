@@ -115,7 +115,21 @@ export interface SessionSummary {
   readonly session: SessionState
   readonly lastSeq: number
   readonly updatedAt: number
+  /**
+   * The beginning of the first thing the user said in the session (at most
+   * `FIRST_PROMPT_CHARS` characters of its text): what a client names a
+   * session by when nobody gave it a title. The first user message of its
+   * history that is not reverted or refused (for a fork, an inherited one
+   * counts: its rows are the fork's own), or, before anything was
+   * delivered, the first prompt that waits. `null` when the user has said
+   * nothing yet. It is read with the summary and kept with it in the
+   * listing cache, so a listing never opens a session's log for a title.
+   */
+  readonly firstPrompt: string | null
 }
+
+/** How much of the user's first prompt a session's summary carries. */
+export const FIRST_PROMPT_CHARS = 400
 
 export interface Store {
   // ---- the log ----

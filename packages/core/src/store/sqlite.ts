@@ -81,6 +81,7 @@ import {
   type RequestStart,
   type SessionSummary,
   type Store,
+  FIRST_PROMPT_CHARS,
   StoreError,
 } from "./store.ts"
 
@@ -329,7 +330,26 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     session: decodeJson(sessionState, row.state, `session ${row.id} state`),
     lastSeq: row.last_seq,
     updatedAt: row.time_updated,
+    firstPrompt: firstPrompt(row.id),
   })
+
+  /** The beginning of the user's first prompt: the first user message in view, else the first one that waits. */
+  const firstPrompt = (id: string): string | null => {
+    const said = sql.firstUserMessage.get(id)
+    const first = said === null ? null : decodeMessage(id, said.data)
+    const content =
+      first?.kind === "user"
+        ? first.content
+        : sql.inbox
+            .all(id)
+            .map((data) => decodeJson(inboxItem, data.data, `session ${id} inbox item`))
+            .find((item) => item.origin === null)?.content
+    if (content === undefined) return null
+    return content
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("")
+      .slice(0, FIRST_PROMPT_CHARS)
+  }
 
   const readModelHistory: Store["readModelHistory"] = (id) => {
     const row = sql.session.get(id)
@@ -635,6 +655,7 @@ function prepare(database: Database) {
        ORDER BY seq`,
     ),
     messageById: database.query<Data, [string, string]>("SELECT data FROM message WHERE session_id = ? AND id = ?"),
+    firstUserMessage: database.query<Data, [string]>("SELECT data FROM message WHERE session_id = ? AND kind = 'user' AND excluded IS NULL ORDER BY seq LIMIT 1"),
     inbox: database.query<Data, [string]>("SELECT data FROM inbox WHERE session_id = ? ORDER BY seq"),
     upsertInbox: database.query<unknown, [string, string, number, string, string]>(
       `INSERT INTO inbox (session_id, message_id, seq, delivery, data) VALUES (?, ?, ?, ?, ?)

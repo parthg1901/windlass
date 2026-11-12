@@ -11,6 +11,14 @@ import type { Projection } from "../../src/message/message.ts"
 import { reduceAll } from "../../src/message/reducer.ts"
 import { canonicalJson } from "../../src/request/canonical.ts"
 import type { SqliteStore } from "../../src/store/sqlite.ts"
+import { FIRST_PROMPT_CHARS } from "../../src/store/store.ts"
+
+/** What a summary says the user's first prompt was, from the rebuilt state: the first user message in view, else the first one that waits. */
+function firstPromptOf(projection: Projection): string | null {
+  const said = projection.messages.find((message) => message.kind === "user" && message.excluded === null)
+  const content = said?.kind === "user" ? said.content : projection.inbox.find((item) => item.origin === null)?.content
+  return content === undefined ? null : content.map((part) => (part.type === "text" ? part.text : "")).join("").slice(0, FIRST_PROMPT_CHARS)
+}
 
 /** Asserts that the session's rows equal the rebuild from its log, byte for byte. Returns the rebuild. */
 export function expectRebuildEqualsLive(store: SqliteStore, sessionId: SessionId): Projection {
@@ -26,6 +34,7 @@ export function expectRebuildEqualsLive(store: SqliteStore, sessionId: SessionId
     session: rebuilt.session,
     lastSeq: rebuilt.lastSeq,
     updatedAt: rebuilt.updatedAt,
+    firstPrompt: firstPromptOf(rebuilt),
   })
   expect(store.readMessages(sessionId)).toStrictEqual(rebuilt.messages)
   expect(store.readInbox(sessionId)).toStrictEqual(rebuilt.inbox)

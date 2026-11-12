@@ -215,6 +215,46 @@ describe("listing", () => {
     directory.close()
   })
 
+  test("a summary carries the beginning of the user's first prompt, and an unchanged session's comes from the cache", () => {
+    const { dir, directory, session } = open()
+    session("ses_a")
+    session("ses_b")
+    // Read from each session's own file, with its summary row.
+    expect(directory.get(sid("ses_a"))?.firstPrompt).toBe("What is this?")
+    expect(directory.list().map((summary) => summary.firstPrompt)).toEqual(["What is this?", "What is this?"])
+    age(dir)
+    directory.list()
+    const settled = indexRows(dir)
+    // The cache's row is what a listing returns while the file is unchanged: no session is opened for it.
+    const index = new Database(join(dir, INDEX_FILE))
+    index.run("UPDATE session_index SET first_prompt = 'from the cache' WHERE id = 'ses_a'")
+    index.close()
+    const again = directory.list()
+    expect(again.find((summary) => summary.session.id === "ses_a")?.firstPrompt).toBe("from the cache")
+    expect(again.find((summary) => summary.session.id === "ses_b")?.firstPrompt).toBe("What is this?")
+    expect(indexRows(dir)).toEqual(settled)
+    // A session that changed is read again, and its row with it.
+    const other = openSessionDirectory({ dataDir: dir, notice: () => {} })
+    const store = other.open(sid("ses_a"))
+    store.append(sid("ses_a"), [enqueue("u2", "more")])
+    store.close()
+    other.close()
+    expect(directory.list().find((summary) => summary.session.id === "ses_a")?.firstPrompt).toBe("What is this?")
+    directory.close()
+  })
+
+  test("a session nobody has spoken in has no first prompt; one whose prompt still waits is named by it", () => {
+    const { directory } = open()
+    const store = directory.create(sid("ses_new"))
+    const driver = new Driver(store, sid("ses_new"))
+    driver.add(created("/work/demo", null))
+    expect(store.getSession(sid("ses_new"))?.firstPrompt).toBeNull()
+    driver.add(enqueue("u1", "Rename the module."))
+    expect(store.getSession(sid("ses_new"))?.firstPrompt).toBe("Rename the module.")
+    store.close()
+    directory.close()
+  })
+
   test("a file changed a moment ago is read again whatever its signature says", async () => {
     const { dir, directory, session } = open()
     session("ses_a")
@@ -245,7 +285,7 @@ describe("listing", () => {
     // Tamper with the cache as a bug or a stray tool might: a wrong summary under a stale signature, and a ghost row.
     const index = new Database(join(dir, INDEX_FILE))
     index.run("UPDATE session_index SET cwd = '/wrong', last_seq = 999, signature = 'stale' WHERE id = 'ses_a'")
-    index.run("INSERT INTO session_index SELECT 'ses_ghost', cwd, archived, last_seq, time_updated, state, signature, checked_at FROM session_index WHERE id = 'ses_b'")
+    index.run("INSERT INTO session_index SELECT 'ses_ghost', cwd, archived, last_seq, time_updated, state, first_prompt, signature, checked_at FROM session_index WHERE id = 'ses_b'")
     index.run("DELETE FROM session_index WHERE id = 'ses_b'")
     index.close()
 

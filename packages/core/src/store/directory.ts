@@ -26,7 +26,9 @@
  * ## Listing without opening every file
  *
  * The session files are the truth; `index.db` is a cache of each session's
- * summary row, and it is never trusted without a check. A listing reads the
+ * summary row (its state, and the beginning of the user's first prompt, by
+ * which a client names a session nobody titled), and it is never trusted
+ * without a check. A listing reads the
  * directory and stats each session's database and write-ahead log. A cached
  * row is used only when its recorded signature (size and modification time,
  * in nanoseconds, of both files) still matches and was taken well after the
@@ -315,7 +317,7 @@ function moveLegacyDatabase(dataDir: string, notice: (line: string) => void): vo
 // ---------------------------------------------------------------- the listing cache
 
 /** Changes with the cache's own tables or with the shape of the summaries it holds. */
-const INDEX_VERSION = SCHEMA_VERSION * 100 + 1
+const INDEX_VERSION = SCHEMA_VERSION * 100 + 2
 
 const INDEX_SQL = `
 CREATE TABLE session_index (
@@ -326,6 +328,8 @@ CREATE TABLE session_index (
   time_updated INTEGER NOT NULL,
   -- JSON of SessionState, as the session's own row has it.
   state        TEXT NOT NULL,
+  -- The beginning of the user's first prompt (SessionSummary.firstPrompt), NULL when there is none.
+  first_prompt TEXT,
   -- The signature of the files this row was read from, and when it was taken (ms).
   signature    TEXT NOT NULL,
   checked_at   INTEGER NOT NULL
@@ -491,9 +495,9 @@ class SessionIndex {
 
   private summary(id: SessionId): SessionSummary | null {
     return this.guarded((database) => {
-      const row = database.query<{ state: string; last_seq: number; time_updated: number }, [string]>("SELECT state, last_seq, time_updated FROM session_index WHERE id = ?").get(id)
+      const row = database.query<{ state: string; last_seq: number; time_updated: number; first_prompt: string | null }, [string]>("SELECT state, last_seq, time_updated, first_prompt FROM session_index WHERE id = ?").get(id)
       if (row === null) return null
-      return { session: sessionState(JSON.parse(row.state), `index entry ${id}`), lastSeq: row.last_seq, updatedAt: row.time_updated }
+      return { session: sessionState(JSON.parse(row.state), `index entry ${id}`), lastSeq: row.last_seq, updatedAt: row.time_updated, firstPrompt: row.first_prompt }
     }, null)
   }
 
@@ -504,9 +508,9 @@ class SessionIndex {
     if (fresh.size === 0 && gone.length === 0) return
     this.guarded((database) => {
       const upsert = database.query(
-        `INSERT INTO session_index (id, cwd, archived, last_seq, time_updated, state, signature, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO session_index (id, cwd, archived, last_seq, time_updated, state, first_prompt, signature, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET cwd = excluded.cwd, archived = excluded.archived, last_seq = excluded.last_seq,
-           time_updated = excluded.time_updated, state = excluded.state, signature = excluded.signature, checked_at = excluded.checked_at`,
+           time_updated = excluded.time_updated, state = excluded.state, first_prompt = excluded.first_prompt, signature = excluded.signature, checked_at = excluded.checked_at`,
       )
       const remove = database.query("DELETE FROM session_index WHERE id = ?")
       database
@@ -514,7 +518,7 @@ class SessionIndex {
           for (const id of gone) remove.run(id)
           for (const [id, entry] of fresh) {
             const { summary } = entry
-            upsert.run(id, summary.session.cwd, summary.session.archived ? 1 : 0, summary.lastSeq, summary.updatedAt, JSON.stringify(summary.session), entry.signature.text, entry.checkedAt)
+            upsert.run(id, summary.session.cwd, summary.session.archived ? 1 : 0, summary.lastSeq, summary.updatedAt, JSON.stringify(summary.session), summary.firstPrompt, entry.signature.text, entry.checkedAt)
           }
         })
         .immediate()

@@ -1,27 +1,28 @@
 /**
- * Known defect 7 (a measurement, not a `test.failing`): listing sessions is slow.
+ * Listing sessions does not open each session for its title.
  *
- * Reported: `--list-sessions` took 1.2 to 4.3 s with about 180 sessions in
- * the data directory, on a loaded two-core machine. The design says a
- * listing costs one `readdir`, two `stat` calls per session and one small
- * read per changed session (docs/architecture.md, "Listing without opening
- * every file").
+ * The design says a listing costs one `readdir`, two `stat` calls per
+ * session and one small read per changed session (docs/architecture.md,
+ * "Listing without opening every file"). A session nobody named is shown by
+ * the beginning of the user's first prompt, and that is part of the summary
+ * the listing cache keeps (`SessionSummary.firstPrompt`, `store/directory.ts`):
+ * it is read from the session's own file once, with the summary row, under
+ * the cache's staleness rules, and never again while the file is unchanged.
+ * (Before, a client derived the title by reading the start of each
+ * session's log through a connection of its own, at every listing, and its
+ * cache of that died with its process.)
  *
- * This builds a throwaway data directory with `<BRAND>_DEFECT7_SESSIONS`
- * (default 60; the report used 200) untitled one-turn sessions through the real assembly and a
+ * This builds a throwaway data directory with `<BINARY>_LISTING_SESSIONS`
+ * (default 60) untitled one-turn sessions through the real assembly and a
  * scripted model, then times, in this process:
  * - the floor the design names: `readdir` plus two `stat` calls per session;
- * - `Engine.listSessions` cold (no `index.db`), then warm, several times;
- * - what the ACP server does per listed session on top of the listing: an
- *   untitled session's title is derived from its log (`titleOf` in
- *   `packages/acp/src/server.ts`: `engine.readEvents(id, { limit: 60 })`,
- *   a read-only connection per session, and the cache of derived titles is
- *   per server process, so cold in every `--list-sessions`, whose server
- *   child lives for that one listing);
+ * - `Engine.listSessions` cold (no `index.db`), then warm, several times,
+ *   and checks that every summary carries its session's first prompt;
+ * - for comparison, what deriving the title from each session's log costs
+ *   (`engine.readEvents(id, { limit: 60 })`, a read-only connection each);
  * and, through the CLI from source with `XDG_DATA_HOME` pointing at the
- * throwaway directory: `--version` (process start), and `--list-sessions`
- * (start, the ACP server child, the listing, the titles). Only a generous
- * bound is asserted. The numbers and what they mean are in the report.
+ * throwaway directory: `--version` (process start), and `--list-sessions`.
+ * Asserted: a warm listing opens no session file, and generous bounds.
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
@@ -32,8 +33,8 @@ import { brand } from "../../src/brand.ts"
 import type { SessionId } from "../../src/id.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 
-const COUNT = Number(process.env[`${brand.binary.toUpperCase()}_DEFECT7_SESSIONS`] ?? 60)
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-defect-7-")))
+const COUNT = Number(process.env[`${brand.binary.toUpperCase()}_LISTING_SESSIONS`] ?? 60)
+const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-listing-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const CLI = resolve(import.meta.dir, "../../../cli/src/main.ts")
@@ -45,7 +46,7 @@ const time = <T>(work: () => T): [T, number] => {
   return [value, performance.now() - start]
 }
 
-describe("known defect 7: listing sessions", () => {
+describe("listing sessions", () => {
   test(
     "measures where the time of a listing goes, in-process and through the CLI",
     async () => {
@@ -72,7 +73,7 @@ describe("known defect 7: listing sessions", () => {
 
       // ---- in-process.
       const harness = createHarness({ ...options, provider: new FakeProvider(), log: () => {} })
-      const lines: string[] = [`defect 7: ${COUNT} sessions made in ${(madeMs / 1000).toFixed(1)} s`]
+      const lines: string[] = [`listing: ${COUNT} sessions made in ${(madeMs / 1000).toFixed(1)} s`]
       try {
         const sessionsDir = join(data, "sessions")
         const floor: number[] = []
@@ -91,18 +92,26 @@ describe("known defect 7: listing sessions", () => {
         rmSync(join(data, "index.db"), { force: true })
         const [listed, cold] = time(() => harness.engine.listSessions({ cwd }))
         expect(listed).toHaveLength(COUNT)
+        // Nobody named these sessions: each is listed with the beginning of its first prompt.
+        expect(listed.every((summary) => summary.session.title === null)).toBe(true)
+        expect(listed.map((summary) => summary.firstPrompt).sort()).toEqual(Array.from({ length: COUNT }, (_, index) => `Question number ${index}: what does module ${index} export?`).sort())
         // The cache uses a row only when it was checked more than two seconds after the file last changed.
         await Bun.sleep(2100)
         const second = time(() => harness.engine.listSessions({ cwd }))[1]
         const warm: number[] = []
         for (let round = 0; round < 5; round += 1) warm.push(time(() => harness.engine.listSessions({ cwd }))[1])
+        // A warm listing answers from the cache, first prompts included (`test/store/directory.test.ts` shows that
+        // it is the cache's row that is returned).
+        const again = harness.engine.listSessions({ cwd })
+        expect(again.map((summary) => summary.firstPrompt).sort()).toEqual(listed.map((summary) => summary.firstPrompt).sort())
         const titles: number[] = []
         for (let round = 0; round < 3; round += 1)
           titles.push(time(() => listed.forEach((summary) => harness.engine.readEvents(summary.session.id as SessionId, { limit: 60 })))[1])
         lines.push(
           `  readdir + 2 stats per session: ${spread(floor)}`,
           `  Engine.listSessions: cold ${cold.toFixed(0)} ms; the next (racy rows read again) ${second.toFixed(0)} ms; warm ${spread(warm)}`,
-          `  the ACP server's title per untitled session (readEvents, limit 60, each): ${spread(titles)} for ${COUNT}`,
+          `  first prompts: in every summary of the listing, at no cost beyond it`,
+          `  for comparison, a title derived from each session's log (readEvents, limit 60, each): ${spread(titles)} for ${COUNT}`,
         )
         expect(median(warm)).toBeLessThan(30_000)
       } finally {
