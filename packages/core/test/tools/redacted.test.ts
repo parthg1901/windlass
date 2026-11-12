@@ -150,7 +150,7 @@ describe("the view of a file as it was shown", () => {
     expect(view.pieces.map((piece) => piece.original).join("")).toBe(real)
     const spans = locate(view, "Bearer [REDACTED:authorization]\nkey=")
     expect(spans).toEqual([{ start: 6, end: real.indexOf(KEY), secrets: [{ placeholder: "[REDACTED:authorization]", original: "abcdef0123456789abcdef" }] }])
-    expect(restore("token [REDACTED:authorization]", (spans as { secrets: never }[])[0]!.secrets)).toEqual({ text: "token abcdef0123456789abcdef", restored: 1 })
+    expect(restore("token [REDACTED:authorization]", spans === "cut" ? [] : spans[0]!.secrets)).toEqual({ text: "token abcdef0123456789abcdef", restored: 1 })
   })
 
   test("the pieces' texts joined are exactly what redact returns, for the redactor's own examples", () => {
