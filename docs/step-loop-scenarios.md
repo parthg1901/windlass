@@ -12,8 +12,8 @@ The scenarios live in `packages/core/test/scenarios/`, one module per family, an
 `@light-harness/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state
 after each phase, and checks, one test per entry, that the reducer rejects every wrong move listed with a phase.
 
-`packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario with the scripted provider
-and compares the events it wrote with the scenario's. One scenario differs from what the loop writes, by one stated
+`packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario (84 of them) with the
+scripted provider and compares the events it wrote with the scenario's. One scenario differs from what the loop writes, by one stated
 detail (the runtime's wording for malformed arguments, in "Malformed tool arguments"); the test lists it with the
 reason. Every other scenario, the eight of the Compaction family included, is reproduced event for event.
 
@@ -41,6 +41,10 @@ the two differ.
   other scenario runs with the layer off: each call runs as it is, `tool.started` carries no `run` facts, and the
   log holds no `approval.*` or `taint.*` event. With the layer on, `tool.started` shows the mode, `sandboxed` for a
   command that ran in the sandbox (`+network` when it had the network) and where each path argument lies.
+- The scenarios of the family "Forks, replays, subagents and background work" are each one session's log. A
+  fork's log holds its parent's events first (a scenario is one log, so they carry the scenario's session ID); a
+  replay's and a subagent's start at seq 1 and name the session they come from (`ses_other`). Subagents and
+  background work are switched on for the scenarios about them and off everywhere else.
 - *Model sees next* is `selectModelHistory` after the last event: what the next request is built from.
 - *The reducer rejects* lists events the loop must not write at the end of the named phase, with the error code.
 - Scenario constants: an attempt budget of 5 per logical step (1 + the spec's 4 retries), a crash-resume cap of 3,

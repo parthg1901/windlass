@@ -43,7 +43,9 @@ packages/core/src
                   shapes, texts and search)
   engine/         the step loop: engine.ts (sessions, the drain, cancel, retries, compaction, the verification gate,
                   revert), history.ts (the history tools as the loop offers them),
-                  recovery.ts (start-up recovery), state.ts (what the loop reads off the projection),
+                  recovery.ts (start-up recovery), replay.ts (what a replay may change, its changed baseline),
+                  spawn.ts (the subagent and background tools, what is read off a child's log),
+                  worktree.ts (a subagent's git worktree and the merge back), state.ts (what the loop reads off the projection),
                   workspace.ts (what it reads off the log about snapshots), constants.ts (limits and frozen texts),
                   channel.ts (the event stream), clock.ts
   snapshot/       the working tree as git tree objects in a private git directory: take, diff, restore, prune
@@ -54,6 +56,7 @@ packages/core/src
   sandbox/        the OS sandbox for commands: policy.ts (what a command may write, read and reach), bwrap.ts
                   and seatbelt.ts (Linux and macOS), detect.ts, command.ts (the policy of a command in a
                   session's workspace: its temp directory, the git hardening)
+  replay/         a recorded session as a tape, the matcher, the replaying tool executor, the divergence report
   approval/       the decision layer, without I/O: decide.ts (run, run sandboxed, ask or deny), policy.ts (the
                   modes and the configuration section), paths.ts (where a path argument really points),
                   escalation.ts (the shell call's explicit `sandbox` argument, the hint), grants.ts (remembered
@@ -84,14 +87,16 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 
 | Group | Events |
 | --- | --- |
-| Session | `session.created` (cwd, title, lineage, settings), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
+| Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint) |
 | Inbox | `inbox.enqueued`, `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
-| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run) |
+| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
 | Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.settled` |
 | Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
+| Spawned work | `spawn.started` (a subagent's child session, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge) |
+| Replay | `replay.call` (per call: matched, normalised, dropped, diverged or off the recording; whether the tool ran for real), `replay.diverged` (the copy the replay carries on in, and the snapshot it was restored from), `replay.ended` (the outcome, the reason, the report) |
 | Compaction | `compaction.started` (the trigger, the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after), `compaction.failed` |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
 | Verification | `checks.started`, `checks.finished` (the evidence), `checks.failed`; the gate's outcome is on `execution.succeeded` |
@@ -112,7 +117,8 @@ is a new version with a decoder for the old one.
   each instruction source, the effect class of a started tool, the model and effort of the session.
 - An interruption always has a reason (`user` or `shutdown`). There is no default, in the schema or in the abort token.
 - Nothing is deleted. Revert and refusal are ranges of `seq` that set a flag; compaction is a marker; a fork is
-  "the parent's events up to `throughSeq`, then my own, starting at `throughSeq + 1`". A range may hold a
+  "the parent's events up to `throughSeq`, then my own, starting at `throughSeq + 1`". A subagent and a replay
+  inherit no events: they name the session they come from and start at `seq` 1. A range may hold a
   compaction, which is then excluded like any message: reverting to before a compaction undoes it for the model.
 - A model call can be rebuilt from the log alone, a compaction's summary calls included: the cut, the prompt and the
   one repair of a compaction are fields of its events, written before the request they shape is sent.
@@ -167,10 +173,19 @@ is a new version with a decoder for the old one.
     run), has one terminal event, and nothing else happens while it is open. `execution.succeeded` is rejected
     while a run is open, and a check report may stay unanswered only when the execution, or the turn before a
     queued message, ends as `unresolved`.
+  - *Spawned work.* `spawn.started` is written by a tool call that is running, once per piece of work, and never
+    for a child that is still running; `spawn.ended` only for work that is running. A fork is created only at a
+    step boundary of its parent, at exactly the seq it names.
+  - *Replay.* `replay.call`, `replay.diverged` and `replay.ended` are accepted only in a replay session; a matched
+    call names the recorded call it matched and only a matched call does; a replay leaves its recording once, never
+    under the `stop` policy, and ends once.
   - *Reverts.* A revert and its undo happen only while no execution holds the claim. One that restores files is
     announced first (`revert.started`), nothing starts while it is open, and its record must be of the announced
     restore. Only the latest revert can be undone, until an execution starts; the undo puts back exactly the
     messages that revert excluded.
+- The session state also holds what the session spawned (`spawned`: the work that is running, every child it
+  ever started, and what the children's model calls cost, added up from each `spawn.ended`) and, for a replay,
+  the copy it carries on in and how it ended (`replay`).
 - The session state also holds what the loop decides from: the latest snapshot and what snapshots leave out; the
   workspace state checks are selected against (`verification.verified`: the first snapshot, then the state at each
   verification that passed) and the latest run of checks; and the reverts that can still be undone.
@@ -315,7 +330,8 @@ is a new version with a decoder for the old one.
   replays history), `revert`, `undoRevert`, an event stream and `close`. Closing a session closes that session:
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
   other sessions carry on.
-- The engine offers `createSession`, `openSession`, `listSessions` (by directory, without archived ones unless
+- The engine offers `forkSession` (see "Forks"), `replaySession` (see "Replay" and `docs/replay.md`),
+  `createSession`, `openSession`, `listSessions` (by directory, without archived ones unless
   asked), `latestSession`, `getSession`, `resolveSession` (an ID or a unique prefix), `readEvents` (of any session,
   open or not, held here or elsewhere), `archiveSession` and `unarchiveSession` (through the session's log, holding
   it only for that append), and `validateSettings`, which rejects a model the provider does not offer, naming the
@@ -485,6 +501,112 @@ is a new version with a decoder for the old one.
   ephemeral `diagnostic` event of that session's stream, which a client shows. It goes to the engine's log instead
   only when no open session can carry it. `onDiagnostic` hears every one.
 
+## Subagents and background work
+
+Two things run beside a session's own steps: subagents and background commands. Both are *spawned work*: recorded
+in the session's log when they start (`spawn.started`) and when they end (`spawn.ended`), stopped with the session,
+and reported to the model when they end. `engine/spawn.ts` has the tools and their texts; the session owns the
+writes. `createHarness` switches them on (`EngineOptions.spawn`); an engine built without the option offers none.
+
+**The tools.** Three are in a session's frozen tool list from its first baseline, with fixed specs: `subagent`
+(`task`, and optionally `session`, `background`, `worktree`), `background_output` and `background_stop` (`id`). The
+shell tool has a `background` argument.
+
+**What a subagent is.** A real session (`lineage.kind = "spawn"`: its parent, the spawned work that started it, its
+depth, its worktree). It starts with a fresh conversation: its own baseline (the same base prompt, the project's
+instruction files discovered for its working directory, the environment, the date) and its task as its first user
+message, with one line saying who reads its answer. It sees nothing of its parent's history. It runs the same loop
+with the same tools, the parent's model settings, the parent's approval settings and, by default, the parent's
+workspace. It has a cache key of its own. Its conversation stays: a follow-up by reference (`subagent` with
+`session`) is delivered to it while it runs, and starts a new piece of work (a new `spawnId`) once it has ended.
+
+**Decisions.**
+
+- *Depth.* One level by default (`spawn.maxDepth`): a session a person started may spawn; its children may not. A
+  session at the limit is not offered `subagent` at all (its tool list is frozen without it), and a call it makes
+  anyway is refused with the reason.
+- *Running side by side.* `subagent` is side-effecting for the purpose of snapshots (a step that calls it is
+  bracketed, so the parent's undo covers what the child changed) but needs no decision of its own, because every
+  call the child makes goes through the approval layer of its own session (`Tool.delegates`). So several calls in
+  one response start at once instead of waiting in the line of calls that can change something.
+- *The result.* In the foreground the call waits for the child and settles with the child's final answer and a
+  reference: `[subagent <session>: finished after N steps, M tool calls]`. A child that failed, was stopped or ended
+  without an answer comes back as an error result that says so and quotes its last words; never as an empty answer.
+- *In the background.* The call returns at once with the reference. When the child ends, `spawn.ended` and a
+  harness message (`subagent_result`) with the answer are one append; the message is a steer, delivered at the next
+  step boundary. If the session is idle it starts a new execution. When the model has nothing more to do while a
+  background subagent still works, **the turn does not end**: the loop waits at the boundary for the next input
+  instead of running the gate, because the checks would see the child's work half done.
+- *Verification.* The gate applies to the parent's turn. Children do not run it (their `execution.succeeded` says
+  `not_configured`, and they are not offered the acknowledgement tool): several children each running the whole
+  check suite in one workspace would mostly report each other's unfinished work, and the parent's turn is verified
+  once their work is in.
+- *Interrupts.* Interrupting or closing a session stops everything it spawned, after its own interrupt is durable:
+  background commands are killed, children are interrupted (as by their user) and wind down by the usual rules.
+  Each end is recorded (`stopped`); a background child's end waits in the inbox for the next prompt and wakes nothing.
+- *Questions.* A child asks through its parent's client, or nobody. A client opts in with
+  `setAttended(true, { children: true })`; the child's `approval.requested` then arrives in the parent's stream
+  inside a `child.event`, shows as `approval().pending` with `child` (its session and the first line of its task),
+  and is answered through the parent's `answer` (`sessionId` names the child). Without the opt-in a child's call
+  that would ask is refused as unattended. A child has no approvals remembered for the session (its parent's are
+  the parent's); approvals remembered for the project apply to it as to any session.
+- *Taint.* A child's taint is its own while it runs. When its result is delivered, `spawn.ended.tainted` says
+  whether its conversation held untrusted content, and from that event on the parent is tainted too (source kind
+  `subagent`), as by any tool result.
+- *Usage.* `spawn.ended.usage` is what the child's model calls cost during that piece of work; the parent's
+  `spawned.usage` adds them up. They are not part of the parent's own request ledger.
+- *Events for a client.* The parent's stream carries each durable event of a child as an ephemeral `child.event`
+  (the child's session, the spawned work, the task's first line, the event). Nothing of it is stored in the parent:
+  the child's own log is the record.
+
+**A worktree of its own** (`worktree: true`; `engine/worktree.ts`). Only in a git repository; elsewhere the call is
+refused with the reason and nothing starts. The child gets a git worktree under `<work dir>/worktrees/` on a new
+branch (`<binary>/subagent-<id>`) that starts from the parent's workspace as it stands, uncommitted and untracked
+files included: that state is written as one commit with a private index, so the user's index, branches, HEAD and
+stash are not touched. When the child finishes, every file it changed is merged three ways into the parent's
+working directory (the branch's start, the child's result, the file as it is now). All results are computed first:
+if one file conflicts nothing is written, the worktree is removed, the branch is kept with the child's work as a
+commit, and the result tells the model which files conflict and how to look at the work. Otherwise the files are
+written (nothing is committed or staged) and the worktree and the branch are removed. Merges into one repository
+run one at a time. A child that did not finish has its work committed to its branch and nothing merged. No hook of
+the repository runs for any of this.
+
+**Background commands.** `shell` with `background: true` spawns the command exactly as a foreground one (the same
+sandbox decision, its own process group, the guard that kills the group when the harness process dies) and hands
+it to the session, which records it and returns a handle. Its output goes to a log file in the session's temp
+directory as it arrives. `background_output` shows the output so far, `background_stop` stops it. When it exits,
+`spawn.ended` (with the exit code) and a harness message (`background_command`) with the end of its output are one
+append, and the message wakes the session if it is idle. It has no time limit unless one is given.
+
+**Recovery.** A session that is opened with spawned work its log says is running, and that nobody in this process
+runs, lost it to a restart (`reapSpawned`). A command is recorded as `lost` (its guard killed it). A subagent is
+looked at: one that had finished on its own (it was opened and ran on while its parent was gone) delivers its
+answer now, and its worktree is merged now; one that was cut off has its turn ended (its claim is released as an
+interrupt) and is recorded as `lost`, with what it had done committed to its branch. Either way a harness message
+(`spawn_lost`, or the answer) tells the model. Opening a session starts nothing, so the message waits for the next
+prompt unless the session's own turn was cut off too: then the turn is resumed and does not end before the message
+is in. A worktree merge that was cut off is finished the same way: merging again is idempotent, because a file
+that already holds the child's change merges to itself.
+
+**Where the directories are.** Worktrees, a fork's copy and a replay's copy are made under the *work directory*,
+`<data dir>-work` (`EngineOptions.workDir`): beside the data directory, never inside it. The sandbox hides the data
+directory from commands, and commands must run in these.
+
+## Replay
+
+`Engine.replaySession` creates a replay session (`lineage.kind = "replay"`) and runs it; `docs/replay.md` is the
+user's page. In the loop (`replayLoop`): the baseline is the recording's with the caller's overrides, set without
+discovery; before each step the recording's inputs that are due are added as the messages they were; a step is the
+ordinary `step`, and `runTools` hands the step's calls to the replaying executor, which matches them against the
+recording together and answers each (`replay.call` is written with the call's result). While the replay is on its
+recording the loop takes no snapshot, runs no check, asks nobody, adds none of its own notes (the recording's are
+the notes) and never compacts. Under `stop` a call that is not on the recording settles as not started and the
+execution ends, without an answer, as `execution.failed` with `cause: "replay"`. Under the policies that run
+tools, the first such call restores the recorded snapshot into the copy (`replay.diverged`) and from there the
+ordinary loop finishes the turn in the copy, with the approval layer forced to `auto` and nobody present. A replay
+session takes no prompts and is not reverted or forked. One whose process stopped is closed as after any crash and
+ended as `incomplete`; it is never taken up again.
+
 ## How the loop writes the common sequences
 
 These are the shapes the scenarios spell out event by event.
@@ -509,6 +631,14 @@ These are the shapes the scenarios spell out event by event.
 - **Archiving.** `session.archived`, appended while the session is held only for that; `session.unarchived` undoes it.
 - **Instructions found on the way.** A step whose calls touch a new directory ends · `instruction.appended` for the
   `AGENTS.md` found there · the next `step.started`.
+- **A subagent.** In the parent: `tool.called` · `tool.started` · `spawn.started` (the child is named before it
+  exists) · the child's own log · `spawn.ended` · `tool.settled` with its answer. In the background: `tool.settled`
+  at once; later, in one append, `spawn.ended` and `inbox.enqueued` (`subagent_result`), then its delivery.
+- **A background command.** `tool.called` · `tool.started` · `spawn.started` · `tool.settled` with the handle;
+  when it exits, in one append, `spawn.ended` and `inbox.enqueued` (`background_command`); if idle, `execution.started`.
+- **A replay.** `session.created` (replay) · `execution.started` · `baseline.set` (changed) · the recording's
+  prompt · per step `tool.called`, `tool.started` (when the recorded call had started), `replay.call`,
+  `tool.settled` · `execution.succeeded` or `execution.failed` (`replay`) · `replay.ended`.
 - **Recovery at start-up.** For each claimed session: finish a requested interrupt, or close the crashed step (and
   an open run of checks) and write `execution.resumed`, or resume a suspended claim. Recovery never ends an
   execution as done; the loop does, through the gate. A revert whose restore was announced and not recorded is
@@ -531,6 +661,8 @@ Everything is under the harness data directory (`$XDG_DATA_HOME/<brand.directory
 sessions/<session id>.db          one SQLite database per session (WAL, with its -wal and -shm)
 sessions/<session id>.db-lock     that session's writer lock; never deleted
 sessions/<session id>.db-holder   the process holding the lock, for the error message only
+../<data dir>-work/               beside the data directory: workspaces/ (a fork's copy), worktrees/ (a subagent's
+                                  git worktree), replays/ (a replay's copy): where sandboxed commands must run
 approvals/<workspace hash>.json   approvals remembered for a project (30 days), keyed by its real path
 index.db                          the listing cache; can be deleted at any time
 blobs/<aa>/<sha256>               media, content-addressed
@@ -573,14 +705,40 @@ listing is computed from the files alone. "The most recent session for this dire
 "resolve an ID or a unique prefix" are all this listing (the prefix needs only the file names). The cost of a
 listing is one `readdir` and two `stat` calls per session, plus one small read per session that changed.
 
-**Forks.** A fork's log is its parent's events through the fork point followed by its own, and the parent is another
+**Forks.** `Engine.forkSession(id, options)` forks a session at a step boundary (the latest one by default, or the
+event `throughSeq` names, which is refused when it lies inside a step). What the fork inherits, as of that point:
+the history (messages, the baseline, the compaction in force), the model settings (unless it is given its own), the
+title, the taint (the content came with the history: the reducer copies the noticed taint, and the decisions
+derive it from the inherited results) and the root session's ID as its cache key, so its first request is its
+parent's last request plus what is appended. What it does not inherit: the inbox, the claim, the snapshots, the
+verification state, the undo history, and the approvals remembered for the session. An approval was given to one
+line of work, and a fork is another that may go somewhere else (and may work in another directory); approvals
+remembered for the project still apply.
+
+*The workspace.* By default the fork works in the parent's working directory. That is two sessions editing the
+same files, with the rules of "Two sessions in one working directory": nothing prevents it, each records its own
+snapshots, and neither's undo overwrites the other's work without asking. With `workspace: { copyTo }` the fork
+gets a directory of its own and works there: the workspace as it stands when the fork point is the parent's latest
+state and the parent is idle (a fresh snapshot is taken for it, so hand edits are in), otherwise the snapshot that
+was current at the fork point. The copy holds what a snapshot holds (no ignored files, no large untracked files,
+nothing of nested repositories); its default place is `<work dir>/workspaces/<fork id>`. The fork's lineage
+records the snapshot and the directory it was copied from. The parent's working directory in the inherited tool
+calls and in the baseline's environment section is still the parent's; the changed directory is appended as an
+instruction update at the fork's first step, like any source that changed.
+
+Measured on the real provider: a fork of a session that had just finished, with one more prompt, sent 3,539 input
+tokens in its first request and read 3,072 of them from the cache (the parent's last request: 3,500, of which
+3,200 cached). The cache is tied to the `session-id` header, which is the root session's ID for both.
+
+A fork's log is its parent's events through the fork point followed by its own, and the parent is another
 file, possibly open for writing in another process. The fork reads it through a read-only connection, and only
 events at or before the fork point. That is safe because those events are committed, and the log is append-only
 (the schema's triggers refuse updates and deletes): whoever writes to the parent meanwhile only adds events after
 them. When a fork is created, its inherited messages, baseline and compaction are copied into its own rows, so a
 fork whose parent file is later missing still opens, runs and is listed; reading its inherited events then fails
 with `parent_missing`, which names the parent. Creating a fork of a session that cannot be found fails the same
-way. (The engine offers no fork operation yet; this is the store's contract.)
+way. A process that dies while it forks leaves at most the copy of the workspace: the fork's session is created
+in one append, so it either exists whole or is not listed.
 
 **What sessions share.** Media is one file per blob, named by its SHA-256, written to a temporary file and then
 hard-linked into place: a reader never sees half a blob, two writers of the same bytes agree, and the first media
