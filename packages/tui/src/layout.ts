@@ -68,18 +68,20 @@ export function padLine(line: Line, columns: number): Span[] {
   return used >= columns ? [...line] : [...line, { text: " ".repeat(columns - used) }]
 }
 
+/** A run of spaces, or a word: its pieces, one per span it runs through (`see `, then a code span, then `).`). */
 interface Token {
-  readonly text: string
-  readonly style: Span
+  readonly pieces: { readonly text: string; readonly style: Span; readonly width: number }[]
   readonly space: boolean
-  readonly width: number
+  width: number
 }
 
 /**
  * Word-wraps one logical line of spans to `columns`. Rows after the first
  * start with `indent` (a hanging indent); spaces at the start of those rows
- * are dropped. A word longer than a row is broken across rows. Never returns
- * an empty list: an empty line is one empty row.
+ * are dropped. A word is what stands between spaces, whatever its styling:
+ * inline code with the comma after it, a bold word with its colon, stay
+ * together. Only a word longer than a row is broken across rows. Never
+ * returns an empty list: an empty line is one empty row.
  */
 export function wrapLine(line: Line, columns: number, indent: Line = []): Span[][] {
   const room = Math.max(1, columns)
@@ -98,28 +100,32 @@ export function wrapLine(line: Line, columns: number, indent: Line = []): Span[]
     row = indentWidth > 0 ? [...indent] : []
     used = indentWidth
   }
+  const whole = (token: Token) => {
+    for (const piece of token.pieces) push(piece.style, piece.text, piece.width)
+  }
   for (const token of tokens(line)) {
     if (token.space) {
       if (used === indentWidth && rows.length > 0) continue
-      if (used + token.width <= room) push(token.style, token.text, token.width)
+      if (used + token.width <= room) whole(token)
       else newRow()
       continue
     }
     if (used + token.width <= room) {
-      push(token.style, token.text, token.width)
+      whole(token)
       continue
     }
     if (token.width <= room - indentWidth && used > indentWidth) {
       newRow()
-      push(token.style, token.text, token.width)
+      whole(token)
       continue
     }
     // Longer than a row: broken at grapheme boundaries.
-    for (const { segment } of graphemes.segment(token.text)) {
-      const w = width(segment)
-      if (used + w > room && used > indentWidth) newRow()
-      push(token.style, segment, w)
-    }
+    for (const piece of token.pieces)
+      for (const { segment } of graphemes.segment(piece.text)) {
+        const w = width(segment)
+        if (used + w > room && used > indentWidth) newRow()
+        push(piece.style, segment, w)
+      }
   }
   rows.push(row)
   return rows.map(trimEnd)
@@ -150,9 +156,18 @@ function tokens(line: Line): Token[] {
     if (budget <= 0) break
     const text = part.text.length > budget ? `${part.text.slice(0, budget)}… (${(part.text.length - budget).toLocaleString("en-US")} more characters)` : part.text
     budget -= part.text.length
+    let first = true
     for (const piece of text.split(/(\s+)/)) {
       if (piece === "") continue
-      out.push({ text: piece, style: part, space: /^\s+$/.test(piece), width: width(piece) })
+      const space = /^\s+$/.test(piece)
+      const w = width(piece)
+      const last = out.at(-1)
+      // A span that begins where the one before it ended, with no space between: the same word goes on.
+      if (first && !space && last !== undefined && !last.space) {
+        last.pieces.push({ text: piece, style: part, width: w })
+        last.width += w
+      } else out.push({ pieces: [{ text: piece, style: part, width: w }], space, width: w })
+      first = false
     }
   }
   return out
