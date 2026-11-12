@@ -18,6 +18,7 @@
  * prompt and gives it the next entry as the answer.
  */
 import { type CommandIo, type RevertableSession, runSessionCommand, sessionCommand } from "./commands.ts"
+import { lookup } from "./slash.ts"
 import { type Segment, displayWidth, formatBytes, plural, renderLine, renderWrapped, seg, stripAnsi, truncate } from "./text.ts"
 
 export interface ScreenOptions {
@@ -59,7 +60,7 @@ export class Screen {
   private pasting = false
   private pasted = ""
   /** A command's question that is waiting for its answer: the next entry (or a Ctrl-C) goes to it. */
-  private asking: { readonly answer: (text: string | null) => void; readonly prompt: string; readonly hint: string } | null = null
+  private asking: { readonly answer: (text: string | null) => void; readonly question: string; readonly prompt: string; readonly hint: string } | null = null
   /** The command that is running, so that a second one waits its turn. */
   private command: Promise<void> = Promise.resolve()
   /** The session `/undo` and `/redo` act on, when it can revert. */
@@ -164,29 +165,42 @@ export class Screen {
   private dispatch(action: EditorAction, handle: (action: EditorAction) => void): void {
     const asking = this.asking
     if (asking !== null) {
+      // A `/word` is a command, never an answer: it is not run now and decides nothing; the question is put again.
+      // (`//word` answers with the text `/word`.)
+      const typed = action.kind === "submit" ? lookup(action.text) : null
+      if (typed !== null && typed.kind !== "message") {
+        const word = /^\s*(\/\S+)/.exec(action.kind === "submit" ? action.text : "")?.[1] ?? "the command"
+        this.say([seg(`a question is waiting for your answer, so ${word} was not run; answer the question, then type ${word} again`, "yellow")])
+        return this.display(asking.question)
+      }
       // Ctrl-C and Ctrl-D back out of the question; they do not reach the turn or leave the program.
       this.asking = null
       this.display(asking.prompt, asking.hint)
-      return asking.answer(action.kind === "submit" ? action.text : null)
+      return asking.answer(typed?.text ?? null)
     }
     const command = action.kind === "submit" ? sessionCommand(action.text) : null
     if (command === null) return handle(action)
     const io: CommandIo = {
-      // What a command says is never cut: a line that does not fit is wrapped.
-      print: (line) => this.write(`${renderWrapped(line, Math.max(10, this.options.columns()) - 1, this.options.color).join("\n")}\n`),
+      print: (line) => this.say(line),
       ask: (question) =>
         new Promise((answer) => {
-          this.asking = { answer, prompt: this.prompt, hint: this.hint }
+          this.asking = { answer, question, prompt: this.prompt, hint: this.hint }
           this.display(question)
         }),
     }
     this.command = this.command.then(() => runSessionCommand(command, this.session, io))
   }
 
+  /** A line of the editor's own above the input. Never cut: a line that does not fit is wrapped. */
+  private say(line: readonly Segment[]): void {
+    this.write(`${renderWrapped(line, Math.max(10, this.options.columns()) - 1, this.options.color).join("\n")}\n`)
+  }
+
   /**
    * Puts a question in place of the prompt and resolves with what is
    * submitted next, or `null` when the user backs out (Ctrl-C, Ctrl-D). The
    * way `/undo` asks, for anything else that must ask while the input is open.
+   * A `/word` submitted meanwhile is no answer (`dispatch`).
    */
   ask(question: string): Promise<string | null> {
     return new Promise((answer) => {
@@ -194,7 +208,7 @@ export class Screen {
       const before = this.asking
       this.asking = null
       before?.answer(null)
-      this.asking = { answer, prompt: before?.prompt ?? this.prompt, hint: before?.hint ?? this.hint }
+      this.asking = { answer, question, prompt: before?.prompt ?? this.prompt, hint: before?.hint ?? this.hint }
       this.display(question)
     })
   }

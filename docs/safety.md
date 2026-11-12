@@ -120,7 +120,9 @@ agent the sandbox has no network.
 
 In the interactive mode the question appears above the prompt. Answer with `a` (once), `s` (session), `p`
 (project) or `n`; words after the letter go to the agent as your note, and anything else you type declines with
-those words as the note. Ctrl-C stops the turn instead of answering.
+those words as the note. A slash command typed at a question (`/mcp`) is not an answer: it is not run, the line
+interface says that a question is waiting, and the question stays; begin a note with two slashes (`//etc …`) to
+have it start with one. Ctrl-C stops the turn instead of answering.
 
 ## Taint: untrusted content in the conversation
 

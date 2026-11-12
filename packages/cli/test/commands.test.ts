@@ -238,6 +238,29 @@ describe("/redo", () => {
   })
 })
 
+describe("a /word typed at a question", () => {
+  test("is no answer: it is not run, the question stays, and the next entry answers it; //word answers with one slash", async () => {
+    session({ kind: "preview", plan: agentOnly })
+    const { screen, type, actions, output } = setup()
+    const answers: (string | null)[] = []
+    void screen.ask("[y] start it · [N] not now › ").then((answer) => answers.push(answer))
+    await type("/mcp\r")
+    await type("/undo\r")
+    await type("/hepl\r")
+    // Nothing was answered, nothing reached the session or the prompt's own commands, and each was said.
+    expect(answers).toEqual([])
+    expect(actions).toEqual([])
+    expect(output().join(" ").replace(/\s+/g, " ")).toContain("a question is waiting for your answer, so /mcp was not run; answer the question, then type /mcp again")
+    expect(output().join(" ")).toContain("so /undo was not run")
+    expect(output().join(" ")).toContain("so /hepl was not run")
+    await type("y\r")
+    expect(answers).toEqual(["y"])
+    void screen.ask("[a]llow once · [N]o › ").then((answer) => answers.push(answer))
+    await type("//etc is not where it goes\r")
+    expect(answers).toEqual(["y", "/etc is not where it goes"])
+  })
+})
+
 describe("everything else", () => {
   test("is handed on as before, while a question is not pending", async () => {
     session({ kind: "preview", plan: agentOnly })

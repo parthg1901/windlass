@@ -5,7 +5,7 @@
  * that starts with a slash, and leaving says how to come back.
  */
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { brand } from "@windlass/core"
@@ -99,4 +99,32 @@ test("the session is named on start and on leaving; /help lists commands; an unk
   expect(shown).toContain(`resumed session ${id} "/etc is where configuration lives?" · 1 turn · model gpt-other · effort low · /help lists the commands`)
   // Under the session's line, with what it changed from.
   expect(shown.indexOf(`⇄ model ${model} → gpt-other · effort default → low · from the next step`)).toBeGreaterThan(shown.indexOf("resumed session"))
+})
+
+test("a slash command typed at an approval question does not answer it: the question waits, and the answer that follows is the answer", async () => {
+  const provider = new FakeProvider([
+    [script.toolCall("c1", "write", { path: "one.txt", content: "1\n" }), script.toolCall("c2", "write", { path: "two.txt", content: "2\n" })],
+    [script.text("Both written.")],
+  ])
+  const run = await session(provider, ["--approval", "ask"], async (type, waitFor) => {
+    type("write two files\r")
+    await waitFor(/one\.txt\?[\s\S]*\[N\]o › /)
+    type("a\r")
+    await waitFor(/two\.txt\?[\s\S]*\[N\]o › /)
+    type("/mcp\r")
+    await waitFor("so /mcp was not run")
+    type("a\r")
+    await waitFor("✓ done")
+    type("\x04")
+  })
+  expect(run.code).toBe(0)
+  const flat = run.screen.replace(/\n\s+/g, " ")
+  expect(flat).toContain("a question is waiting for your answer, so /mcp was not run; answer the question, then type /mcp again")
+  // Neither call was declined, and no listing of servers was printed in the middle of the question.
+  expect(flat).not.toContain("not allowed")
+  expect(flat).not.toContain("MCP servers")
+  expect(flat.match(/✓ allowed once/g)).toHaveLength(2)
+  expect([existsSync(join(workspace, "one.txt")), existsSync(join(workspace, "two.txt"))]).toEqual([true, true])
+  // What became of the first answer is said before the second question is put.
+  expect(flat.indexOf("✓ allowed once")).toBeLessThan(flat.indexOf("two.txt?"))
 })

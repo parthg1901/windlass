@@ -232,3 +232,8 @@ Reading a result:
 - The model's cost on a task changes with the time of day by more than between runs made together (`audit-every-handler`: a median of 16 steps / 181k input tokens in one sitting, 24 to 39 steps / 300k to 508k the same evening on the same code; `answer-question` 3/3 then 0/3). Before blaming a change for a cost or pass-rate finding, rerun the baseline's commit in the same sitting as a control.
 - A baseline holds one batch per results directory. Record it from two sittings hours apart: `bun evals/baseline.ts <evening dir> <morning dir>`. When the control itself fails the cost rules, add its directory as a third batch.
 - Against a baseline with one batch (the committed one until it is recorded again) cost findings are `WARNING` lines that do not change the verdict or the nightly's exit code; with two or more they are regressions only when every run is above the baseline's most expensive run and the median is 1.5 times over the highest batch median.
+
+## Questions at the line interface's prompt (2026-11-12)
+
+- A `/word` typed while a question waits (an approval, a project's hook or server, `/undo`'s question) answers nothing and runs nothing: `a question is waiting for your answer, so /mcp was not run; …`, and the question stays. `//word` answers with the text `/word`.
+- The next question about a project's hook, language server or MCP server is put only after the answer before it was carried out and its `approved: …` / `not allowed: …` line printed. To test the order, compare the positions of that line and of the next `? …` in the capture.
