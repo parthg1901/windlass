@@ -1971,9 +1971,10 @@ export class App {
   private statusLine(columns: number): Span[] {
     const activity = this.transcript.activity
     const now = this.now()
+    const turnText = activity.executing && activity.turnStartedAt !== null ? `turn ${formatDuration(Math.max(0, now - activity.turnStartedAt))} · ${requestsText(activity.steps, activity.summaryCalls)}` : ""
     const parts: Span[] = []
     if (this.connection !== "connected") parts.push(span(this.connection === "starting" ? "⋯ starting the engine" : `✗ ${this.connection}`, this.connection === "starting" ? "dim" : "error"))
-    else if (activity.executing) parts.push(...this.activityText(now))
+    else if (activity.executing) parts.push(...this.activityText(now, columns - (turnText === "" ? 0 : textWidth(turnText) + 2)))
     else if (this.dock?.feature !== undefined && !this.dock.state.withdrawn)
       // A question about the project's configuration waits: the session is not ready for a message until it is answered.
       parts.push(span("? ", "warn", { bold: true }), span("waiting for your answer", "warn"), span(` · ${this.dock.feature.subject}${this.dock.state.focused ? "" : " · Tab to answer"}`, "dim"))
@@ -1983,7 +1984,7 @@ export class App {
     if (this.connection === "connected" && subagents.length > 0 && (!activity.executing || subagents.some((view) => view.background)))
       parts.push(span(` · ${plural(subagents.length, "subagent")} at work${subagents.length === 1 ? `: ${truncate(subagents[0]!.title ?? "", 30)}` : ""}`, "accent"))
     const commands = [...this.transcript.background.entries()]
-    const turn = activity.executing && activity.turnStartedAt !== null ? `turn ${formatDuration(Math.max(0, now - activity.turnStartedAt))} · ${requestsText(activity.steps, activity.summaryCalls)}` : ""
+    const turn = turnText
     const scrolled: Span[] = []
     if (this.conversation.scrolledAway) {
       const below = this.conversation.newBelow
@@ -2006,7 +2007,8 @@ export class App {
     return [...left, span(" ".repeat(columns - used - rightWidth)), ...right]
   }
 
-  private activityText(now: number): Span[] {
+  /** What the turn is doing, in at most `room` columns: what runs or waits is named with as much of it as fits (at least 40). */
+  private activityText(now: number, room: number): Span[] {
     const activity = this.transcript.activity
     const spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[Math.floor(now / 100) % 10]!
     const running = this.transcript.rows.filter((row) => row.kind === "tool" && row.phase === "running") as Extract<Row, { kind: "tool" }>[]
@@ -2014,7 +2016,8 @@ export class App {
       const row = this.transcript.rows.find((candidate) => candidate.kind === "tool" && candidate.key === activity.waiting!.key) as Extract<Row, { kind: "tool" }> | undefined
       const what = row === undefined ? "a tool call" : `${row.name} ${row.arg}`.trim()
       const where = this.dock === null || this.dock.state.focused ? "" : " · Tab to answer"
-      return [span("? ", "warn", { bold: true }), span("waiting for your answer", "warn"), span(` · ${truncate(what, 40)} · ${formatDuration(Math.max(0, now - activity.waiting.since))}${where}`, "dim")]
+      const since = ` · ${formatDuration(Math.max(0, now - activity.waiting.since))}${where}`
+      return [span("? ", "warn", { bold: true }), span("waiting for your answer", "warn"), span(` · ${truncate(what, Math.max(40, room - textWidth(`? waiting for your answer · ${since}`) - 4))}${since}`, "dim")]
     }
     if (activity.stopping) {
       const waiting = running.length > 0 ? ` · waiting for ${running.length === 1 ? running[0]!.name : `${running.length} tools`} to stop` : ""
@@ -2024,7 +2027,7 @@ export class App {
       const first = running[0]!
       const since = Math.min(...running.map((row) => row.runningSince ?? now))
       const what = running.length === 1 ? `running ${first.name} ${first.arg}` : `${running.length} tools running: ${running.map((row) => row.name).join(", ")}`
-      return [span(`${spinner} `, "accent"), span(truncate(what, 60)), span(` · ${formatDuration(now - since)}`, "dim")]
+      return [span(`${spinner} `, "accent"), span(truncate(what, Math.max(60, room - 2 - 10))), span(` · ${formatDuration(now - since)}`, "dim")]
     }
     if (activity.checking !== null) {
       const tail = activity.checking.progress?.split("\n").filter((line) => line.trim() !== "").at(-1)

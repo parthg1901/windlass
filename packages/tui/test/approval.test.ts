@@ -52,6 +52,26 @@ const arm = () => {
   mounted!.clock.now += ARMING_MS + 10
 }
 
+test("while a question waits, the status line names as much of the command as it has room for", async () => {
+  const long = "curl -s https://example.com/notes/release-2026-11.txt --retry 3 --max-time 20"
+  const backend = new ScriptBackend()
+  mounted = await mount({ width: 160, height: 30, backend })
+  const events = UNTIL_QUESTION.map(({ sessionId: _, seq: __, time: ___, ...rest }) =>
+    rest.type === "tool.called" && rest.data.callId === QUESTION.data.callId ? { ...rest, data: { ...rest.data, input: JSON.stringify({ command: long }) } } : rest,
+  )
+  backend.session!.emit(...(events as never[]))
+  await mounted.settle()
+  mounted.clock.now += QUIET_MS + 10
+  void backend.onApproval(askOf(QUESTION), new AbortController().signal)
+  await mounted.settle()
+  const status = (await mounted.frame()).split("\n").find((line) => line.startsWith("? waiting for your answer"))!
+  expect(status).toContain(`· shell ${long} · `)
+  // Narrow, it is cut, never below 40 characters.
+  mounted.setup.resize(80, 30)
+  await mounted.settle()
+  expect((await mounted.frame()).split("\n").find((line) => line.startsWith("? waiting for your answer"))).toMatch(/· shell curl -s https:\/\/example\.com\/notes\S*…/)
+})
+
 describe("the approval dock", () => {
   for (const [width, height] of [
     [100, 30],
