@@ -98,6 +98,28 @@ bun test packages/tui/test/e2e.test.ts      # tmux only: demo turn, steer, Ctrl-
 bun test packages/tui/test/frames.test.ts --update-snapshots   # after an intended change to the showcase frames
 ```
 
+## Quick manual pass (two minutes, no model)
+
+Worth doing after any change to the TUI, before the test suite:
+
+```sh
+T="tmux -L lh-manual"
+$T new-session -d -s tui -x 120 -y 34 "bun packages/cli/src/main.ts tui --demo find-and-fix-a-failing-test --demo-speed 3; echo status=\$?; sleep 120"
+until $T capture-pane -p -t tui | grep -q "● ready"; do sleep 0.1; done
+$T send-keys -t tui Enter                                   # the demo prompt is pre-filled; Enter plays the turn
+until $T capture-pane -p -t tui | grep -qE "○ done|✓ done"; do sleep 0.1; done
+$T capture-pane -p -t tui                                   # read the whole frame
+$T send-keys -t tui M-Up; $T send-keys -t tui M-Up; $T send-keys -t tui C-o   # select a tool row and expand it
+$T capture-pane -p -t tui
+$T kill-server; rm -f /tmp/tmux-$(id -u)/lh-manual
+```
+
+What a good frame shows: tool rows with outcome and duration, the turn ending row with its verification state, the changed-files line, and on the right the panel with session totals, the last call, and one cache bar per model call (the first call 0% cached, later ones high).
+
+Open cosmetic issues seen on screen (2026-11-12, 120 columns):
+- The one-line demo hint at the top is cut off by the panel ("/help li…"); it should wrap or shorten.
+- In demo mode the panel shows "context 9.5k (window unknown)"; with the real server it should show the window.
+
 ## Known issues and gotchas
 
 Everything here was hit while building and testing the TUI (2026-11-12).
