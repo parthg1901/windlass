@@ -1083,9 +1083,15 @@ export class PrettyRenderer implements Sink {
     const head: Segment[] = [seg("  "), seg(`${outcome.symbol} `, outcome.tone)]
     // What the language servers said about an edit: how many new diagnostics its note lists, and from which server.
     const diagnosed = diagnosticsSummary(data.diagnostics)
-    const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), ...(diagnosed === null ? [] : [seg(`${outcome.text === "" ? "" : " · "}${diagnosed}`, "yellow")]), ...sandboxMark(call), seg(suffix([duration]), "dim")]
-    if (adjacent) this.line("info", [...head, ...trimLeadingDot(tail, outcome.text)])
-    else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · ", "dim"), ...tail])
+    // What a server answered is shortened before the name of its tool is.
+    const said = call.name === "mcp_call" && !adjacent ? truncate(outcome.text, Math.max(16, this.width - displayWidth(`  ✓ ${call.name} ${call.arg} · ${suffix([duration])}`) - 1)) : outcome.text
+    const fields: Segment[] = [...(said === "" ? [] : [seg(said, outcome.tone === "green" ? undefined : outcome.tone)]), ...(diagnosed === null ? [] : [seg(`${said === "" ? "" : " · "}${diagnosed}`, "yellow")]), ...sandboxMark(call), seg(suffix([duration]), "dim")]
+    // With nothing to say before it, a field does not open with its separator (` · 22ms`, ` ⊡`).
+    const [first, ...rest] = fields
+    const tail = first === undefined || said !== "" || diagnosed !== null ? fields : [{ ...first, text: first.text.replace(/^ (· )?/, "") }, ...rest]
+    const opened = tail.length > 0 && tail[0]!.text !== ""
+    if (adjacent) this.line("info", [...head, ...tail])
+    else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, opened ? [seg(" · ", "dim"), ...tail] : tail)
     // A command started in the background: its line above says where its output is, as this machine names the file.
     const background = call.name === "shell" && typeof (data.display as { background?: unknown } | null)?.background === "string"
     if (!background) for (const detail of detailLines(call.name, stopped ? { ...data, outcome: "error" } : data)) this.line("info", [seg(`    ${detail}`, "dim")])
@@ -1855,11 +1861,6 @@ export function steersLabel(steers: readonly SteerInfo[]): string | null {
   return `your message "${truncate(flatten(steers[0]!.text), 40)}" (${when})`
 }
 
-/** In the compact form the summary follows the symbol directly; with no summary the duration does. */
-function trimLeadingDot(tail: readonly Segment[], text: string): Segment[] {
-  if (text !== "") return [...tail]
-  return tail.map((part) => (part.text.startsWith(" · ") ? { ...part, text: part.text.slice(3) } : part))
-}
 
 /** A session ID short enough to say on a line: its prefix and the first eight characters after it. */
 function shortId(id: string): string {

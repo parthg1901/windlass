@@ -100,7 +100,23 @@ export function successSummary(name: string, settled: Settled): string {
       return entries === null ? plural(countLines(settled.output), "line") : plural(entries, "entry", "entries")
     }
     case "shell":
+      // Started in the background: its own line says where its output goes, and its end is said when it comes.
+      if (display !== null && typeof display.background === "string") return "started in the background"
       return shellStatus(display) ?? ""
+    // How many tools the search found, not the sentence that heads the list.
+    case "mcp_search": {
+      const head = firstLine(settled.output)
+      const found = /^(\d+) MCP tools? /.exec(head)
+      if (found !== null) return plural(Number(found[1]), "tool")
+      return head.startsWith("No MCP tool") ? "no tools found" : head
+    }
+    // The first line of what the server answered, not the line the harness heads it with for the model.
+    case "mcp_call": {
+      const lines = settled.output.split("\n")
+      const body = /^(Result of MCP tool|MCP tool) \S+.*:$/.test(lines[0] ?? "") ? lines.slice(1).join("\n") : settled.output
+      const first = firstLine(body)
+      return first === "(no content)" ? "no content" : first
+    }
     case TASK_TOOL: {
       const tasks = tasksOf(settled.display)
       return tasks === null ? firstLine(settled.output) : `tasks: ${tasksProgress(tasks)}`

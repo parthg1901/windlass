@@ -87,6 +87,22 @@ describe("a background command", () => {
   const exit = (exitCode: number | null, outcome: "completed" | "stopped" | "lost" = "completed") => event("spawn.ended", { spawnId: "bg_7", outcome, detail: "Background command bg_7 ended.", exitCode, usage: null, tainted: false, merge: null })
   const told = event("inbox.enqueued", { messageId: m("s9"), origin: "background_command", delivery: "steer", content: text("Background command bg_7 exited with code 0 after 2.5 s.\nCommand: bun test\nOutput:\n3 pass") })
 
+  test("the shell call that starts it says so, with no empty field before its sandbox mark", () => {
+    const run = { mode: "auto" as const, origin: "builtin" as const, paths: [], sandbox: { network: false, writableRoots: [] } }
+    const out = render(
+      stored([
+        event("tool.called", { messageId: m("a1"), callId: c("call_1"), name: "shell", input: JSON.stringify({ command: "bun test --watch", background: true }), providerData: null }),
+        event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "exec", run }),
+        command(),
+        event("tool.settled", { messageId: m("a1"), callId: c("call_1"), outcome: "success", output: "Started bg_7.", truncation: null, attachments: [], display: { background: "bg_7" } }),
+      ]),
+    )
+    expect(out).toContain("  ✓ shell bun test --watch · started in the background ⊡ · 200ms\n")
+    // A call with nothing to say: the mark leads, with no separator before it.
+    const quiet = render(stored([event("tool.called", { messageId: m("a1"), callId: c("call_2"), name: "shell", input: JSON.stringify({ command: "true" }), providerData: null }), event("tool.started", { messageId: m("a1"), callId: c("call_2"), effect: "exec", run }), event("tool.settled", { messageId: m("a1"), callId: c("call_2"), outcome: "success", output: "", truncation: null, attachments: [], display: null })]))
+    expect(quiet).toBe("▸ shell true\n  ✓ ⊡ · 100ms\n")
+  })
+
   test("is a start line with the command, and a completion line that says how it ended and that the agent is told", () => {
     expect(render(stored([command(), exit(0), told]))).toBe(["  ▸ background bg_7 · bun test --watch", "    output:", "      /tmp/.spill/bg.log", "  ✓ background bg_7 exited with code 0 · 100ms", "  ↳ its result is sent to the agent, which carries on", ""].join("\n"))
     expect(render(stored([command(), exit(3)]))).toContain("  ✗ background bg_7 exited with code 3")
