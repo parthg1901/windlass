@@ -240,3 +240,32 @@ describe("with the flag on", () => {
     }
   })
 })
+
+describe("a subagent", () => {
+  test("is offered skills and MCP like any session, and neither wake-ups nor memory: nobody wakes it, and its task is not the user's words", async () => {
+    const h = new Harness({ ...ALL, memory: {}, spawn: {}, userConfig: ON })
+    try {
+      const responses = new Map<string, ReturnType<typeof answer>[]>([
+        ["Delegate", [[script.toolCall("call_1", "subagent", { task: "Child task" }), U], answer("Done.")]],
+        ["Child task", [answer("I did it.")]],
+      ])
+      h.provider.enqueue(
+        ...Array.from({ length: 3 }, () => (request: ModelRequest) => {
+          const first = request.input.find((item) => item.type === "message" && item.role === "user")
+          const said = first?.type === "message" ? first.content.map((part) => (part.type === "text" ? part.text : "")).join("") : ""
+          return [...responses.entries()].find(([key]) => said.includes(key))![1].shift()!
+        }),
+      )
+      h.create().send("Delegate this.")
+      await h.settled()
+      const child = h.store.listSessions({ includeArchived: true }).find((summary) => summary.session.lineage?.kind === "spawn")!
+      const mine = h.session.projection().baseline!.tools.map((tool) => tool.name)
+      const its = h.store.getProjection(child.session.id)!.baseline!.tools.map((tool) => tool.name)
+      expect(mine).toEqual(expect.arrayContaining(["skill", "mcp_call", "mcp_search", "wake_create", "memory_save"]))
+      expect(its).toEqual(expect.arrayContaining(["skill", "mcp_call", "mcp_search"]))
+      for (const name of ["wake_create", "wake_list", "wake_cancel", "memory_save", "memory_retract", "memory_search"]) expect(its).not.toContain(name)
+    } finally {
+      await h.dispose()
+    }
+  })
+})
