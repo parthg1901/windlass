@@ -18,6 +18,7 @@ import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { ApprovalSection } from "../approval/policy.ts"
 import { brand } from "../brand.ts"
+import { resolveMcpConfig } from "../mcp/config.ts"
 import { type Config, ConfigError, type ConfigFile, mergeConfigFiles, parseConfigFile, resolveConfig } from "./schema.ts"
 
 export interface ConfigLocations {
@@ -38,6 +39,14 @@ export interface LoadedConfig extends ConfigLocations {
    * only tighten the user's (`resolveApprovalConfig`), so they are not merged here.
    */
   readonly approval: { readonly user: ApprovalSection | null; readonly project: ApprovalSection | null }
+  /**
+   * Both files as written, apart, for the sections where it matters who
+   * wrote a value: an MCP server a project's file names is not started
+   * until the user approved it (`mcp`), a project's file can only tighten
+   * wake-ups (`wake`), and some keys are read from the user's own file only
+   * (`skills.paths`, `memory.inRepository`). `null`: the file does not exist.
+   */
+  readonly files: { readonly user: ConfigFile | null; readonly project: ConfigFile | null }
 }
 
 export interface LoadOptions {
@@ -53,11 +62,14 @@ export async function loadConfig(options: LoadOptions): Promise<LoadedConfig> {
   const locations = await findConfigFiles(options)
   const user = await readConfigFile(locations.userFile)
   const project = locations.projectFile === null ? null : await readConfigFile(locations.projectFile)
+  // A server that is neither started nor reached is an error of the file that completes it, said now and not at the first call.
+  resolveMcpConfig(mergeConfigFiles(user, project).mcp, project?.mcp === undefined ? locations.userFile : locations.projectFile!)
   return {
     ...locations,
     config: resolveConfig(mergeConfigFiles(user, project)),
     sources: [user === null ? null : locations.userFile, project === null ? null : locations.projectFile].filter((file) => file !== null),
     approval: { user: user?.approval ?? null, project: project?.approval ?? null },
+    files: { user, project },
   }
 }
 

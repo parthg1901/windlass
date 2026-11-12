@@ -210,3 +210,58 @@ describe("validation errors name the file and the path", () => {
     expect(loadConfig({ cwd: repo, home, env: {} })).rejects.toThrow(`${userFile}: not valid JSON`)
   })
 })
+
+describe("the sections of other modules", () => {
+  test("mcp, skills, wake and memory are accepted, each validated by its own module", () => {
+    const file = parseConfigFile(
+      JSON.stringify({
+        mcp: { servers: { docs: { command: "docs-server", args: ["stdio"] } } },
+        skills: { paths: ["~/team-skills"], disabled: ["old"] },
+        wake: { enabled: true, hourlyCeiling: 6 },
+        memory: { enabled: true },
+      }),
+      "f.json",
+    )
+    expect(file.mcp?.servers?.docs?.command).toBe("docs-server")
+    expect(file.skills).toEqual({ paths: ["~/team-skills"], disabled: ["old"] })
+    expect(file.wake).toEqual({ enabled: true, hourlyCeiling: 6 })
+    expect(file.memory).toEqual({ enabled: true })
+    // They are not part of the merged configuration: the engine reads them from the files, apart.
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+  })
+
+  const cases: [string, unknown, string][] = [
+    ["an unknown key in mcp", { mcp: { server: {} } }, 'f.json: mcp.server: unknown key "server" (did you mean "servers"?)'],
+    ["an unknown key in a server", { mcp: { servers: { a: { comand: "x" } } } }, 'f.json: mcp.servers.a.comand: unknown key "comand"'],
+    ["a relative skills path", { skills: { paths: ["team"] } }, "f.json: skills.paths[0]: expected an absolute path or one starting with ~/"],
+    ["an unknown key in skills", { skills: { path: [] } }, 'f.json: skills.path: unknown key "path"'],
+    ["a wake ceiling out of range", { wake: { hourlyCeiling: 600 } }, "f.json: wake.hourlyCeiling: expected a whole number from 1 to 60"],
+    ["memory.enabled that is not a flag", { memory: { enabled: "yes" } }, "f.json: memory.enabled: expected true or false"],
+    ["a section that is not an object", { memory: [] }, "f.json: memory: expected an object"],
+  ]
+  for (const [name, content, message] of cases)
+    test(name, () => {
+      const error = errorOf(() => parseConfigFile(JSON.stringify(content), "f.json"))
+      expect(error.message).toStartWith(message)
+      expect(error.file).toBe("f.json")
+    })
+
+  test("both files are handed on as written, apart", async () => {
+    const { home, repo, userFile } = layout()
+    write(userFile, { mcp: { servers: { mine: { command: "mine" } } }, wake: { hourlyCeiling: 6 } })
+    write(projectFile(repo), { mcp: { servers: { theirs: { command: "theirs" } } }, wake: { hourlyCeiling: 30 }, memory: { enabled: true } })
+    const loaded = await loadConfig({ cwd: repo, home, env: {} })
+    expect(Object.keys(loaded.files.user?.mcp?.servers ?? {})).toEqual(["mine"])
+    expect(Object.keys(loaded.files.project?.mcp?.servers ?? {})).toEqual(["theirs"])
+    expect(loaded.files.user?.wake?.hourlyCeiling).toBe(6)
+    expect(loaded.files.project?.memory?.enabled).toBe(true)
+    expect((await loadConfig({ cwd: home, home, env: {} })).files.project).toBeNull()
+  })
+
+  test("a server that is neither started nor reached is an error of the file that names it", async () => {
+    const { home, repo, userFile } = layout()
+    write(userFile, {})
+    write(projectFile(repo), { mcp: { servers: { broken: { timeoutSeconds: 5 } } } })
+    expect(loadConfig({ cwd: repo, home, env: {} })).rejects.toThrow(`${projectFile(repo)}: mcp.servers.broken: needs \`command\``)
+  })
+})

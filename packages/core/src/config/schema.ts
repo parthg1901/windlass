@@ -15,7 +15,11 @@
  * order and name uniqueness of checks depend on two files at once.
  */
 import { approvalSection } from "../approval/policy.ts"
+import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
+import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
+import { type SkillsConfigSection, parseSkillsSection } from "../skills/config.ts"
 import { DecodeError, type Infer, type Validator, integer, nonEmptyString, oneOf, string } from "../validate.ts"
+import { type WakeConfigSection, parseWakeSection } from "../wake/config.ts"
 
 /** A configuration error, always naming the file and the path of the bad value. */
 export class ConfigError extends Error {
@@ -105,8 +109,23 @@ const checks: Validator<readonly ReturnType<typeof check>[]> = (input, path) => 
   return parsed
 }
 
-/** One configuration file, as written. */
-export const configFile = section({
+/**
+ * The sections other modules define (`mcp/config.ts`, `skills/config.ts`,
+ * `wake/config.ts`, `memory/config.ts`). Each is validated by its own module,
+ * which names the file and the path of a bad value, in `parseConfigFile`;
+ * here they are only known keys. None of them is merged like the other keys
+ * where it matters who wrote it: `load.ts` hands on both files as written.
+ */
+const FEATURE_SECTIONS = {
+  mcp: parseMcpSection,
+  skills: parseSkillsSection,
+  wake: parseWakeSection,
+  memory: parseMemorySection,
+} as const
+const passed: Validator<unknown> = (input) => input
+
+/** One configuration file, as written, without the sections of `FEATURE_SECTIONS`. */
+const baseFile = section({
   /** Lets editors find a JSON schema. Ignored. */
   $schema: string,
   model: nonEmptyString,
@@ -119,8 +138,36 @@ export const configFile = section({
    * hands both to `resolveApprovalConfig` and `resolveConfig` leaves it out.
    */
   approval: approvalSection,
+  // Validated in `parseConfigFile`, by the modules that own them.
+  mcp: passed,
+  skills: passed,
+  wake: passed,
+  memory: passed,
 })
-export type ConfigFile = Infer<typeof configFile>
+
+/** One configuration file, as written. */
+export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTIONS> & {
+  /** MCP servers (`mcp/config.ts`). A server a project's file names is not started until the user approved it. */
+  readonly mcp?: McpConfigSection
+  /** Skills (`skills/config.ts`). */
+  readonly skills?: SkillsConfigSection
+  /** Wake-ups (`wake/config.ts`). A project's file can only tighten the user's. */
+  readonly wake?: WakeConfigSection
+  /** Memory (`memory/config.ts`). Off unless a file turns it on. */
+  readonly memory?: MemoryConfigSection
+}
+
+/** Validates one file's parsed JSON. Throws `DecodeError` (this file's keys) or `ConfigError` (a feature's section), without a file name in the former. */
+export function configFile(input: unknown, path: string, file = "configuration"): ConfigFile {
+  const { mcp, skills, wake, memory, ...rest } = baseFile(input, path)
+  return {
+    ...rest,
+    ...(mcp === undefined ? {} : { mcp: FEATURE_SECTIONS.mcp(mcp, file) }),
+    ...(skills === undefined ? {} : { skills: FEATURE_SECTIONS.skills(skills, file) }),
+    ...(wake === undefined ? {} : { wake: FEATURE_SECTIONS.wake(wake, file) }),
+    ...(memory === undefined ? {} : { memory: FEATURE_SECTIONS.memory(memory, file) }),
+  }
+}
 
 export interface CheckConfig {
   readonly name: string
@@ -142,7 +189,7 @@ export interface Config {
 export function parseConfigFile(text: string, file: string): ConfigFile {
   const parsed = parseJson(text, file)
   try {
-    return configFile(parsed, "")
+    return configFile(parsed, "", file)
   } catch (error) {
     if (error instanceof UnknownKeyError) throw new ConfigError(file, error.path, error.problem)
     if (error instanceof DecodeError) throw new ConfigError(file, error.path, error.message.slice((error.path === "" ? "value" : error.path).length + 2))
