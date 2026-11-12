@@ -216,7 +216,7 @@ export async function run(io: Io): Promise<number> {
   if (questions !== null) session.setApprover?.(approverAt({ ask: (question) => questions.urgent(question) }, session))
   // What the CLI says about MCP servers and wake-ups unasked. Not in `--json`: that stream is the engine's events only.
   let watching: FeatureWatch | null = null
-  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print), working: () => watching?.working === true, keep: (note) => watching?.keep(note), secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) }
+  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print, settle) => questions.patient(question, print, settle), working: () => watching?.working === true, keep: (note) => watching?.keep(note), secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) }
   const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
   watching = watch
   watch?.start()
@@ -767,7 +767,8 @@ async function stopCall(session: Session, renderer: PrettyRenderer, rest: string
  * that was showing (a project's MCP server, hook or language server) steps
  * aside and is put again, printed afresh, once no urgent one is left. Patient
  * questions wait for each other: the next is put when the one showing has
- * its answer, never in its place.
+ * its answer and what the answer asked for is done and said, never in its
+ * place and never above its confirmation.
  */
 export class Questions {
   private urgentCount = 0
@@ -790,10 +791,14 @@ export class Questions {
     }
   }
 
-  patient(question: string, print: () => void): Promise<string | null> {
-    const answer = this.patientLine.then(() => this.putPatient(question, print))
-    this.patientLine = answer.catch(() => {})
-    return answer
+  /**
+   * `settle` does what the answer asks for and says what came of it. The next patient question is put only when it
+   * is done, so what became of an answer is said under its own question, never under the next one.
+   */
+  patient<T>(question: string, print: () => void, settle: (answer: string | null) => T | Promise<T>): Promise<T> {
+    const settled = this.patientLine.then(async () => settle(await this.putPatient(question, print)))
+    this.patientLine = settled.catch(() => {})
+    return settled
   }
 
   private async putPatient(question: string, print: () => void): Promise<string | null> {

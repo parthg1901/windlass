@@ -381,7 +381,7 @@ describe("what the project's configuration asks for is settled before a message 
       approveLsp: async (name: string) => (approved.push(`lsp ${name}`), true),
       approveMcp: async (name: string) => (approved.push(`mcp ${name}`), true),
     } as unknown as Session
-    const io = { out: { lines: (lines: readonly { text: string }[]) => void said.push(...lines.map((line) => line.text)), notice: (text: string) => void said.push(text) }, ask: async (_question: string, print: () => void) => (print(), answers.shift() ?? null) }
+    const io = { out: { lines: (lines: readonly { text: string }[]) => void said.push(...lines.map((line) => line.text)), notice: (text: string) => void said.push(text) }, ask: async <T>(_question: string, print: () => void, settle: (answer: string | null) => T | Promise<T>) => (print(), settle(answers.shift() ?? null)) }
     const watch = new FeatureWatch(session, io, { attended: true, secrets: false })
     await watch.beforeMessage()
     // All three were put, in turn, and what was allowed was recorded before the message could go.

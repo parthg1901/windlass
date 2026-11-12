@@ -47,7 +47,12 @@ export interface FeatureOutput {
 /** What the commands need: where to print, and how to ask (`null` where nobody can answer). */
 export interface FeatureIo {
   readonly out: FeatureOutput
-  readonly ask: ((question: string, print: () => void) => Promise<string | null>) | null
+  /**
+   * Puts a question at the prompt (`print` writes it, the first argument is the line of answers). `settle` is given
+   * the answer (`null`: backed out of), does what it asks for and says what came of it; the next question waits for
+   * it, so each confirmation is under its own question.
+   */
+  readonly ask: (<T>(question: string, print: () => void, settle: (answer: string | null) => T | Promise<T>) => Promise<T>) | null
   /** Whether a turn is running now: what is approved then is there from the next message, and that is said. */
   readonly working?: () => boolean
   /** Whether a webhook's secret may be printed: the output is a terminal the user reads. Default: it may. */
@@ -188,59 +193,65 @@ async function addWake(rest: string, session: Session, io: FeatureIo): Promise<v
   if (rest.trim() === "") return out.lines(wakeAddUsageLines())
   const entry = wakeAddEntry(rest, Date.now())
   if ("problem" in entry) return out.notice(entry.problem, "warn")
-  let run: WakeRun | undefined
-  if (entry.check !== null) {
-    if (io.ask === null) return out.notice("nobody can answer here how the command may run; run this interactively", "warn")
-    const check = entry.check
-    const access = wakeCheckAccess(await io.ask(WAKE_CHECK_ANSWERS, () => out.lines(wakeCheckQuestionLines(check))))
-    if (access === null) return out.notice("not set up: the command is not run")
-    run = access
+  const create = async (run?: WakeRun): Promise<void> => {
+    const result = await session.createWake!({ ...entry.request, ...(run === undefined ? {} : { run }) })
+    if (!result.created || result.wake === null) return out.notice(result.message, "warn")
+    out.lines(wakeCreatedLines(result))
+    // A process that fires no wake-ups: said at once, with where this one will fire.
+    if (!result.running) out.notice(wakeNotFiringText({ id: result.wake.id, description: result.wake.description }, session.id), "warn")
+    if (result.secret === null) return
+    // The secret is for the user's eyes, once: on a terminal only.
+    if (io.secrets !== false) return out.lines(webhookSecretLines({ id: result.wake.id, url: result.url, secret: result.secret, message: null }, true))
+    out.notice(`webhook wake-up ${result.wake.id} is at POST ${result.url}; its secret is not printed because this output is not a terminal. /wakeups secret ${result.wake.id} shows it there.`)
   }
-  const result = await session.createWake({ ...entry.request, ...(run === undefined ? {} : { run }) })
-  if (!result.created || result.wake === null) return out.notice(result.message, "warn")
-  out.lines(wakeCreatedLines(result))
-  // A process that fires no wake-ups: said at once, with where this one will fire.
-  if (!result.running) out.notice(wakeNotFiringText({ id: result.wake.id, description: result.wake.description }, session.id), "warn")
-  if (result.secret === null) return
-  // The secret is for the user's eyes, once: on a terminal only.
-  if (io.secrets !== false) return out.lines(webhookSecretLines({ id: result.wake.id, url: result.url, secret: result.secret, message: null }, true))
-  out.notice(`webhook wake-up ${result.wake.id} is at POST ${result.url}; its secret is not printed because this output is not a terminal. /wakeups secret ${result.wake.id} shows it there.`)
+  if (entry.check === null) return create()
+  if (io.ask === null) return out.notice("nobody can answer here how the command may run; run this interactively", "warn")
+  const check = entry.check
+  return io.ask(WAKE_CHECK_ANSWERS, () => out.lines(wakeCheckQuestionLines(check)), (answer) => {
+    const access = wakeCheckAccess(answer)
+    return access === null ? out.notice("not set up: the command is not run") : create(access)
+  })
 }
 
+const yes = (answer: string | null) => /^y(es)?$/i.test(answer?.trim() ?? "")
+
 /** Puts the question about a project's server, and approves it on a yes. Resolves with whether it was approved. */
-async function askMcpServer(server: McpServerInfo, session: Session, io: FeatureIo): Promise<boolean> {
-  const answer = (await io.ask!(MCP_ANSWERS, () => io.out.lines(mcpQuestionLines(server))))?.trim().toLowerCase() ?? ""
-  if (answer !== "y" && answer !== "yes") {
-    io.out.notice(`not started; /mcp approve ${server.name} asks again`)
-    return false
-  }
-  const approved = await session.approveMcp!(server.name, server.question!.fingerprint)
-  io.out.notice(approved ? mcpApprovedText(server, io.working?.() === true) : `"${server.name}" no longer waits for an approval (its definition changed); /mcp shows it`, approved ? "info" : "warn")
-  return approved
+function askMcpServer(server: McpServerInfo, session: Session, io: FeatureIo): Promise<boolean> {
+  return io.ask!(MCP_ANSWERS, () => io.out.lines(mcpQuestionLines(server)), async (answer) => {
+    if (!yes(answer)) {
+      io.out.notice(`not started; /mcp approve ${server.name} asks again`)
+      return false
+    }
+    const approved = await session.approveMcp!(server.name, server.question!.fingerprint)
+    io.out.notice(approved ? mcpApprovedText(server, io.working?.() === true) : `"${server.name}" no longer waits for an approval (its definition changed); /mcp shows it`, approved ? "info" : "warn")
+    return approved
+  })
 }
 
 /** Puts the question about a project's hook, and approves it on a yes. Resolves with whether it was approved. */
-async function askHook(hook: HookInfo, session: Session, io: FeatureIo): Promise<boolean> {
-  const answer = (await io.ask!(HOOK_ANSWERS, () => io.out.lines(hookQuestionLines(hook))))?.trim().toLowerCase() ?? ""
-  if (answer !== "y" && answer !== "yes") {
-    io.out.notice(`not allowed: the hook "${hook.name}" is not run; /hooks approve ${hook.name} asks again`)
-    return false
-  }
-  const approved = await session.approveHook!(hook.fingerprint)
-  io.out.notice(approved ? `approved: the hook "${hook.name}" runs from the next call it applies to; /hooks shows it` : `the hook "${hook.name}" no longer waits for an approval (its definition changed); /hooks shows it`, approved ? "info" : "warn")
-  return approved
+function askHook(hook: HookInfo, session: Session, io: FeatureIo): Promise<boolean> {
+  return io.ask!(HOOK_ANSWERS, () => io.out.lines(hookQuestionLines(hook)), async (answer) => {
+    if (!yes(answer)) {
+      io.out.notice(`not allowed: the hook "${hook.name}" is not run; /hooks approve ${hook.name} asks again`)
+      return false
+    }
+    const approved = await session.approveHook!(hook.fingerprint)
+    io.out.notice(approved ? `approved: the hook "${hook.name}" runs from the next call it applies to; /hooks shows it` : `the hook "${hook.name}" no longer waits for an approval (its definition changed); /hooks shows it`, approved ? "info" : "warn")
+    return approved
+  })
 }
 
 /** Puts the question about a project's language server, and approves it on a yes. Resolves with whether it was approved. */
-async function askLspServer(server: LspServerInfo, session: Session, io: FeatureIo): Promise<boolean> {
-  const answer = (await io.ask!(LSP_ANSWERS, () => io.out.lines(lspQuestionLines(server))))?.trim().toLowerCase() ?? ""
-  if (answer !== "y" && answer !== "yes") {
-    io.out.notice(`not allowed: the language server "${server.name}" is not started; /lsp approve ${server.name} asks again`)
-    return false
-  }
-  const approved = await session.approveLsp!(server.name, server.question!.fingerprint)
-  io.out.notice(approved ? `approved: the language server "${server.name}" starts at the next file it serves; /lsp shows it` : `the language server "${server.name}" no longer waits for an approval (its definition changed); /lsp shows it`, approved ? "info" : "warn")
-  return approved
+function askLspServer(server: LspServerInfo, session: Session, io: FeatureIo): Promise<boolean> {
+  return io.ask!(LSP_ANSWERS, () => io.out.lines(lspQuestionLines(server)), async (answer) => {
+    if (!yes(answer)) {
+      io.out.notice(`not allowed: the language server "${server.name}" is not started; /lsp approve ${server.name} asks again`)
+      return false
+    }
+    const approved = await session.approveLsp!(server.name, server.question!.fingerprint)
+    io.out.notice(approved ? `approved: the language server "${server.name}" starts at the next file it serves; /lsp shows it` : `the language server "${server.name}" no longer waits for an approval (its definition changed); /lsp shows it`, approved ? "info" : "warn")
+    return approved
+  })
 }
 
 /** The wake-up a settled call created (`wake_create`'s `display.wake`), by its ID; `null` for any other event. */

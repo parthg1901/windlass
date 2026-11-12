@@ -280,6 +280,10 @@ describe("language servers", () => {
     expect(run.code).toBe(0)
     // Neither question was backed out of to make room for the other.
     expect(run.seen).not.toContain('not allowed: the hook "tidy"')
+    // What became of an answer is said under its own question, before the next question is put.
+    const at = (needle: string) => run.seen.indexOf(needle)
+    expect(at('approved: the hook "tidy" runs from the next call it applies to')).toBeGreaterThan(at(`? This project's configuration asks to run a hook "tidy"`))
+    expect(at('approved: the hook "tidy" runs from the next call it applies to')).toBeLessThan(at('? Start the language server "fixture"'))
   })
 
   test("in a one-shot run a project's server is not started: said once, with how to approve it; /lsp with none says how to add one", async () => {
