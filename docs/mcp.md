@@ -70,7 +70,7 @@ server does not start.
 A server can also be named in the project's file, `.windlass/config.json`. The two files are merged key by key,
 so a project can name its own servers or change a field of one of yours. But a server the project's file names, or
 changes, **is not started**: opening a repository must not run a command, or send your environment to an address,
-that the repository chose. You see, at the first step:
+that the repository chose. You see, when your first message is sent:
 
 ```text
 ⚠ mcp: This project's configuration names the MCP server "<name>" (<command and arguments>). It was not started: a server a project names runs only after you approve it.
@@ -94,6 +94,10 @@ that defines it, the engine's own explanation, and what each answer does:
 ```text
 ? Start the MCP server "tracker" that this project's configuration names?
     tracker-mcp serve
+  defined in:
+    /home/me/proj/.windlass/config.json
+  This project's configuration names the MCP server "tracker", which is started by running that command. It runs outside the sandbox, with your permissions.
+  Approving it is remembered for this project for 30 days, for exactly this definition of the server.
   y  start it for this project and remember that (30 days, this exact definition: an edited one is asked about again)
   n  not now: it stays stopped and the agent is told it waits for you; /mcp approve tracker asks again
 [y] start it · [N] not now ›
@@ -101,19 +105,28 @@ that defines it, the engine's own explanation, and what each answer does:
 
 `windlass tui` puts the same question in the approval dock above the input (`a` starts it, `n` leaves it stopped), and an
 editor through `windlass acp` can put it too (`_windlass/mcp`, `_windlass/mcp_approve`, [acp.md](acp.md)). A yes
-starts the server at once; its tools reach the model at its next step. A tool call's question always comes first: the
-server's question steps aside and is put again after it.
+starts the server at once (`approved: "tracker" starts now; the agent has its tools from your next message.`). A
+tool call's question always comes first: the server's question steps aside and is put again after it.
 
-In a one-shot run nobody can answer, so the server stays stopped and `windlass` says once how to approve it: run `windlass`
-interactively in that directory and answer the question (or type `/mcp approve <name>`). The approval is remembered,
-so later one-shot runs in the project start it. You can also copy the definition into your own file
+**Before the first message a project's server cannot be approved.** A session looks at its MCP servers when its
+first message is sent, not when it opens (a project's hook and language server are different: they are asked
+about as soon as the session opens, [hooks.md](hooks.md), [diagnostics.md](diagnostics.md)). Until then `/mcp`
+lists the server as `not looked at yet: a project's server is asked about once the first message is sent`, and
+`/mcp approve <name>` answers that it cannot be approved yet. With the first message `windlass` says that the
+project names the server, the question is put while that first turn runs, and the turn does not wait for your
+answer: the agent has the server's tools from the message after you approve.
+
+In a one-shot run nobody can answer, so the server stays stopped and `windlass` says once how to approve it
+(`MCP server "<name>" was not started: ...`): run `windlass` interactively in that directory and answer the question
+(or type `/mcp approve <name>`). The approval is remembered, so later one-shot runs in the project start it. You can also copy the definition into your own file
 (`~/.config/windlass/config.json`) after reading what it runs.
 
 ## Seeing the servers: /mcp
 
 `/mcp` (in `windlass` and `windlass tui`) lists each server with its state (running with its tool count, starting, failed to
-start with why and when it is retried, waiting for your approval, disabled, or not started yet: servers start with
-the first message of a session), what it runs or where it is reached, and the file that defines it.
+start with why and when it is retried, waiting for your approval, disabled, or, before a session's first message,
+not started yet for a server of yours and not looked at yet for a project's), what it runs or where it is reached,
+and the file that defines it.
 
 ## What the model sees
 
