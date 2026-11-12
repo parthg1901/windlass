@@ -2302,6 +2302,8 @@ async function retainSnapshots(
   if (core.openSnapshots === null) return
   const session = store.getSession(id)?.session
   if (session === undefined) return
+  // A session that never recorded a snapshot has none to drop, and no reason to set up storage for its directory.
+  if (opened === undefined && session.verification.verified === null && session.workspace.snapshot === null) return
   const snapshots = await (opened ?? core.openSnapshots(session.cwd))
   if ("reason" in snapshots || snapshots.prune === undefined) return
   const needed = (): SnapshotId[] => {
