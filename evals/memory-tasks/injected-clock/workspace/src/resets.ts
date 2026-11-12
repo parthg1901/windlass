@@ -5,9 +5,13 @@ export interface Reset {
 }
 
 const resets = new Map<string, Reset>()
+const lastRequest = new Map<string, number>()
 
-/** Starts a password reset; the token goes into the emailed link. */
+/** Starts a password reset; the token goes into the emailed link. At most one request a minute per user. */
 export function createReset(userId: string): Reset {
+  const last = lastRequest.get(userId)
+  if (last !== undefined && Date.now() - last < 60_000) throw new Error("please wait a minute before asking again")
+  lastRequest.set(userId, Date.now())
   const reset = { token: crypto.randomUUID(), userId, createdAt: Date.now() }
   resets.set(reset.token, reset)
   return reset

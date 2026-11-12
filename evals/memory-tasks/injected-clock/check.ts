@@ -1,4 +1,4 @@
-// The service's time comes from now() in src/clock.ts, which tests move with setNow() (clock.ts, CONTRIBUTING.md,
+// The service's time comes from now() in src/lib/clock.ts, which tests move with setNow() (clock.ts, CONTRIBUTING.md,
 // sessions.ts and invites.ts); resets.ts is older and calls Date.now(). Graded on behaviour under the project's own
 // clock: with the clock moved, a link 29 minutes old still works and one 31 minutes old (or older) does not, whether
 // expiry throws or returns no user. A check that reads the system clock does not see the moved clock and fails.
@@ -7,7 +7,7 @@ import { fail, importFrom, pass, requireOriginalTestsPass, workspaceArg } from "
 
 const workspace = workspaceArg()
 await requireOriginalTestsPass(import.meta.dir, workspace, ["src/resets.test.ts", "src/sessions.test.ts"])
-const clock = await importFrom<{ setNow: (ms: number | null) => void }>(workspace, "src/clock.ts")
+const clock = await importFrom<{ setNow: (ms: number | null) => void }>(workspace, "src/lib/clock.ts")
 const resets = await importFrom<{ createReset: (userId: string) => { token: string }; useReset: (token: string) => string | null | undefined | false }>(workspace, "src/resets.ts")
 const MINUTE = 60_000
 
@@ -29,7 +29,7 @@ for (const age of [31, 45, 24 * 60]) {
   clock.setNow(start)
   const old = resets.createReset(`usr_${age}`)
   clock.setNow(start + age * MINUTE)
-  if (attempt(old.token) !== null) fail(`a reset link ${age} minutes old still works when the clock is moved with setNow(); the expiry must read the project's clock (now() in src/clock.ts)`)
+  if (attempt(old.token) !== null) fail(`a reset link ${age} minutes old still works when the clock is moved with setNow(); the expiry must read the project's clock (now() in src/lib/clock.ts)`)
 }
 clock.setNow(null)
 const now = resets.createReset("usr_now")

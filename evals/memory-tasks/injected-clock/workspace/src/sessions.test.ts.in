@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { HOUR, setNow } from "./clock.ts"
+import { HOUR, setNow } from "./lib/clock.ts"
 import { sessionUser, startSession } from "./sessions.ts"
 
 afterEach(() => setNow(null))

@@ -7,6 +7,6 @@ const edit = async (file: string, from: string, to: string) => {
   if (!text.includes(from)) throw new Error(`${file}: ${from} not found`)
   await Bun.write(path, text.replace(from, to))
 }
-await edit("src/errors/codes.ts", '  E4008: "email address is already registered",\n', '  E4008: "email address is already registered",\n  E4009: "email address is not valid",\n')
-await edit("docs/errors.md", "| E4008 | email address is already registered |\n", "| E4008 | email address is already registered |\n| E4009 | email address is not valid |\n")
-await edit("src/users.ts", '  if (users.some(', '  if (!input.email.includes("@")) throw new AppError("E4009", input.email)\n  if (users.some(')
+await edit("src/errors/codes.ts", '  E4010: "an email address is required",\n', '  E4010: "an email address is required",\n  E4011: "email address is not valid",\n')
+await edit("docs/errors.md", "| E4010 | an email address is required |\n", "| E4010 | an email address is required |\n| E4011 | email address is not valid |\n")
+await edit("src/users.ts", '  if (users.some(', '  if (!input.email.includes("@")) throw new AppError("E4011", input.email)\n  if (users.some(')

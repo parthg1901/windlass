@@ -1,4 +1,4 @@
-import { HOUR, now } from "./clock.ts"
+import { HOUR, now } from "./lib/clock.ts"
 
 export interface Session {
   readonly token: string

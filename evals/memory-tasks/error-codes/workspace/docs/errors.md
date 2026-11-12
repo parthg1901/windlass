@@ -16,5 +16,7 @@ error takes the next free number in its range, in `src/errors/codes.ts` and in t
 | E4006 | amount must be positive |
 | E4007 | currency is not supported |
 | E4008 | email address is already registered |
+| E4009 | a name is required |
+| E4010 | an email address is required |
 | E5001 | payment provider unavailable |
 | E5002 | storage unavailable |
