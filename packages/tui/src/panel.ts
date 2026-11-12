@@ -50,7 +50,7 @@ export interface PanelInput {
   /** The approval mode, and whether commands can be sandboxed here; `null` when the server runs without the approval layer. */
   readonly approval?: { readonly mode: string | null; readonly sandbox: boolean } | null
   /** The session's subagents at work, in the foreground or the background. */
-  readonly subagents?: readonly { readonly title: string; readonly background: boolean; readonly asking: boolean }[]
+  readonly subagents?: readonly { readonly title: string; readonly background: boolean; readonly asking: boolean; readonly kind?: "subagent" | "command" }[]
 }
 
 export const PANEL_WIDTH = 36
@@ -70,21 +70,25 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   field("state", stateText(input))
   // Every subagent at work, one line each: what it was asked, and whether it waits for you or works in the background.
   for (const [index, agent] of (input.subagents ?? []).entries())
-    field(index === 0 ? "agents" : "", `${agent.asking ? "? " : agent.background ? "◌ " : "⋯ "}${shorten(agent.title, inner - 9)}`, agent.asking ? "warn" : undefined)
+    field(index === 0 || agent.kind !== input.subagents![index - 1]!.kind ? (agent.kind === "command" ? "bg" : "agents") : "", `${agent.asking ? "? " : agent.background ? "◌ " : "⋯ "}${shorten(agent.title, inner - 9)}`, agent.asking ? "warn" : undefined)
   // Cut at a word where it can, without a stray full stop before the ellipsis.
   if (session.title !== null && session.title !== "") field("title", shorten(session.title, inner - 7))
+  if ((session.forkedFrom ?? null) !== null) field("fork", `of ${middle(session.forkedFrom!, inner - 10)}`, "dim")
   const approval = input.approval ?? null
   if (approval !== null)
     lines.push([span("approval ", "dim"), span(approval.mode ?? "?", undefined, { bold: true }), span(approval.sandbox ? " · sandbox ⊡" : " · no sandbox", approval.sandbox ? "dim" : "warn")])
   if (session.taint !== null) field("trust", "untrusted · /clear-taint", "warn")
   lines.push([])
 
-  const summary = summarize(input.calls)
+  // A fork counts its own model calls; the ones before the fork point were its parent's, and are named apart.
+  const inherited = Math.min(session.inheritedCalls ?? 0, input.calls.length)
+  const own = input.calls.slice(inherited)
+  const summary = summarize(own)
   const last = summary.last?.usage ?? null
   const columnsWidth = Math.max(6, Math.floor((inner - 12) / 2))
   const row = (name: string, a: string, b: string) => lines.push([span(name.padEnd(12), "dim"), span(a.padStart(columnsWidth)), span(b.padStart(columnsWidth))])
   heading("Tokens".padEnd(12), [span("session".padStart(columnsWidth), "dim"), span("last".padStart(columnsWidth), "dim")])
-  if (summary.calls === 0) lines.push([span("no model call yet", "dim")])
+  if (summary.calls === 0) lines.push([span(inherited > 0 ? "no model call of its own yet" : "no model call yet", "dim")])
   else {
     row("input", thousands(summary.total.inputTokens), last === null ? "" : thousands(last.inputTokens))
     row(" cached", thousands(summary.total.cachedInputTokens), last === null ? "" : thousands(last.cachedInputTokens))
@@ -92,8 +96,17 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
     row("output", thousands(summary.total.outputTokens), last === null ? "" : thousands(last.outputTokens))
     if (summary.total.reasoningTokens > 0) row(" reasoning", thousands(summary.total.reasoningTokens), last === null ? "" : thousands(last.reasoningTokens))
     lines.push([span("calls".padEnd(12), "dim"), span(String(summary.calls).padStart(columnsWidth))])
-    if (last !== null) {
-      const used = last.inputTokens + last.outputTokens
+  }
+  if (inherited > 0) {
+    const before = summarize(input.calls.slice(0, inherited))
+    lines.push([span("inherited".padEnd(12), "dim"), span(truncate(`${plural(inherited, "call")} · ${compact(before.total.inputTokens)} in`, inner - 12), "dim")])
+    lines.push([span(truncate("  the parent's, not above", inner), "dim")])
+  }
+  {
+    // The context is the whole conversation, inherited part included: the latest call says how full it is.
+    const latest = input.calls.at(-1)?.usage ?? null
+    if (latest !== null) {
+      const used = latest.inputTokens + latest.outputTokens
       const window = input.contextWindow
       lines.push([span("context".padEnd(12), "dim"), span(window === null ? `${compact(used)} (window unknown)` : `${compact(used)} of ${compact(window)} (${Math.round((used / window) * 100)}%)`)])
     }

@@ -151,3 +151,79 @@ describe("/skills, /wakeups, /memory and what wake-ups deliver", () => {
     expect(frame).toContain("Check CI.")
   })
 })
+
+describe("forks", () => {
+  test("/sessions tells a fork from its parent: a mark, enough of the ID, what it was forked from, and where it works", async () => {
+    const { backend } = await open(130, 30)
+    const now = mounted!.clock.now
+    Object.assign(backend, {
+      listSessions: async () => [
+        { id: "ses_aaaa1111bbbb2222cccc3333", title: "fix the login test (fork)", cwd: "/data-work/workspaces/ses_aaaa1111bbbb2222cccc3333", updatedAt: now - 1000, model: "gpt-6-luna", effort: "low", archived: false, forkedFrom: "ses_aaaa9999bbbb2222cccc3333" },
+        { id: "ses_aaaa9999bbbb2222cccc3333", title: "fix the login test", cwd: "/work", updatedAt: now - 120_000, model: "gpt-6-luna", effort: "low", archived: false, forkedFrom: null },
+      ],
+    })
+    await mounted!.setup.mockInput.typeText("/sessions")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("⑂ fix the login test (fork)")
+    expect(frame).toContain("ses_aaaa1111bbbb · fork of ses_aaaa9999 · in /data-work/work…bb2222cccc3333")
+    expect(frame).toContain("ses_aaaa9999bbbb · 2 min ago")
+  })
+
+  test("/fork in a session without a turn is refused with a sentence", async () => {
+    const { session } = await open()
+    let forked = 0
+    session.fork = async () => {
+      forked += 1
+      return { sessionId: "ses_x", cwd: "/work", copiedFrom: null, title: null }
+    }
+    await mounted!.setup.mockInput.typeText("/fork")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    expect(forked).toBe(0)
+    expect(flat(await mounted!.frame())).toContain("/fork copies this conversation into a new session, and there is none")
+  })
+
+  test("a fork's panel counts its own model calls and names the inherited ones apart", async () => {
+    const { session } = await open(140, 40)
+    const usage = (input: number) => ({ inputTokens: input, cachedInputTokens: 0, outputTokens: 10, reasoningTokens: 0 })
+    session.emit(
+      event("session.created", { cwd: "/work", title: null, lineage: null, settings: { model: "gpt-6-luna", reasoningEffort: null } }),
+      event("step.started", { messageId: m("a1"), model: "gpt-6-luna" } as never),
+      event("step.ended", { messageId: m("a1"), usage: usage(1000), finish: "stop" } as never),
+      event("session.created", { cwd: "/work", title: null, lineage: { kind: "fork", parentSessionId: "ses_parent0000000000000000", throughSeq: 3 }, settings: { model: "gpt-6-luna", reasoningEffort: null } } as never),
+      event("step.started", { messageId: m("b1"), model: "gpt-6-luna" } as never),
+      event("step.ended", { messageId: m("b1"), usage: usage(1500), finish: "stop" } as never),
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("fork of ses_parent")
+    expect(frame).toContain("inherited 1 call · 1.0k in")
+    expect(frame).toContain("the parent's, not above")
+    expect(frame).toMatch(/input\s+1,500/)
+  })
+})
+
+describe("background commands", () => {
+  test("shown with this machine's path to their output, in the panel while they run, and at the end of the turn that leaves them running", async () => {
+    const { session } = await open(140, 40)
+    session.emit(
+      event("execution.started", { executionId: "exe_1" } as never),
+      event("tool.called", { messageId: m("m1"), callId: c("c1"), name: "shell", input: '{"command":"sleep 5; echo built","background":true}', providerData: null }),
+      event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 5; echo built", logPath: "/tmp/lh-1001/ses_x/.spill/shell-bg.log" } } as never),
+      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } } as never),
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("background bg_1 · sleep 5; echo built")
+    expect(frame).toContain("output: /tmp/lh-1001/ses_x/.spill/shell-bg.log")
+    expect(frame).toContain("1 background command still running (bg_1)")
+    expect(frame).toMatch(/bg +◌ bg_1: sleep 5/)
+    session.emit(event("spawn.ended", { spawnId: "bg_1", outcome: "completed", detail: "exited", exitCode: 0, usage: null, tainted: false, merge: null } as never))
+    await mounted!.settle()
+    const after = flat(await mounted!.frame())
+    expect(after).toContain("background bg_1 exited with code 0")
+    expect(after).not.toMatch(/bg +◌ bg_1/)
+  })
+})

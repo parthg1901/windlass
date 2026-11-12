@@ -107,7 +107,7 @@ export class AcpBackend implements Backend {
     const meta = { model: settings.model, effort: settings.effort }
     try {
       if (target.kind === "new") return new AcpSession(this, await link.newSession(cwd, meta), settings.maxSteps)
-      const named = await link.resolve(cwd, target.kind === "resume" ? target.id : undefined)
+      const named = target.kind === "resume" ? await link.resolveTyped(cwd, target.id) : await link.resolve(cwd)
       // Right after an earlier run was killed its engine may still be closing the session: that is waited for.
       const opened = await openWhenReleased(
         () => link.openSession(named.sessionId, named.cwd, { replay: true, meta: { ...meta, archived: true } }),
@@ -122,7 +122,11 @@ export class AcpBackend implements Backend {
   async listSessions(cwd: string): Promise<SessionChoice[]> {
     const link = await this.connect()
     try {
-      return await link.listSessions(cwd, { archived: true })
+      // This directory's sessions, and the forks of them that work in a copy of their own elsewhere.
+      const here = await link.listSessions(cwd, { archived: true })
+      const ids = new Set(here.map((row) => row.id))
+      const elsewhere = (await link.listSessions(null, { archived: true }).catch(() => [])).filter((row) => row.cwd !== cwd && row.forkedFrom !== null && ids.has(row.forkedFrom))
+      return [...here, ...elsewhere].sort((a, b) => b.updatedAt - a.updatedAt)
     } catch (error) {
       throw failure(error)
     }

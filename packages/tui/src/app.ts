@@ -21,11 +21,11 @@ import type { RevertPlan, RevertResult } from "@light-harness/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
-import { changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { McpServerInfo, McpStateResult } from "@light-harness/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
-import { PANEL_WIDTH, panelLines, shorten } from "./panel.ts"
+import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { type OutcomeRow, type Row, Transcript, expandable } from "./transcript.ts"
@@ -251,6 +251,12 @@ export class App {
         else {
           this.transcript.apply(item.event, item.replay)
           if (!item.replay) this.featureEvent(session, item.event)
+          // Background work outlives the turn: said where the turn ends.
+          const ended = item.event.type === "execution.succeeded" || item.event.type === "execution.failed" || item.event.type === "execution.interrupted"
+          if (ended && !item.replay && this.transcript.background.size > 0) {
+            const ids = [...this.transcript.background.keys()]
+            this.transcript.note([span(`◌ ${plural(ids.length, "background command")} still running (${ids.join(", ")}): the agent is told when ${ids.length === 1 ? "it ends" : "each ends"}; /quit stops ${ids.length === 1 ? "it" : "them"}`, "dim")], "dim", "·")
+          }
         }
         this.settleDock()
         if (!this.transcript.activity.executing) this.suggestIfIdle()
@@ -711,6 +717,8 @@ export class App {
     if (words.some((word) => word !== "copy" && !/^\d+$/.test(word)) || numbers.length > 1)
       return this.say("/fork takes a turn number (the one on its ending row), copy (the fork works in a copy of the workspace), both, or nothing", "warn")
     if (this.transcript.activity.executing) return this.say("/fork works while the agent is idle; stop it first (Ctrl-C) or wait for the turn to end", "warn")
+    // Nothing to carry over: a fork of a session without a turn would be an empty session with a borrowed title.
+    if (this.transcript.turns.turns.length === 0) return this.say("/fork copies this conversation into a new session, and there is none yet: send a message first (/new starts an empty session)", "warn")
     const turn = numbers.length === 0 ? null : Number(numbers[0])
     let throughSeq: number | undefined
     if (turn !== null) {
@@ -732,7 +740,7 @@ export class App {
         [span("forked", "accent"), span(` from ${from.title === null ? from.id : `"${shorten(from.title, 40)}"`} · this is a new session with ${upTo}, ${where}`, "dim")],
         "accent",
         "⑂",
-        [[span(`the original is unchanged: /sessions goes back to it (${from.id})`, "dim")]],
+        [[span(`the original is unchanged: /sessions goes back to it (${from.id})`, "dim")], ...(forked.copiedFrom === null ? [] : [[span(COPY_NOTE, "warn")]])],
       ),
     )
   }
@@ -754,14 +762,25 @@ export class App {
         { id: "\u0000new", label: "+ new session" },
         ...sessions.map((row) => ({
           id: row.id,
-          label: row.title === null ? "(untitled)" : shorten(row.title, 34),
-          detail: `${ago(this.now() - row.updatedAt)} · ${row.model}${row.effort === null ? "" : ` ${row.effort}`}${row.archived ? " · archived" : ""} · ${row.id.slice(0, 12)}`,
+          // The ID first and long enough to tell a fork from its parent, which shares its title; a fork says so, and where it works when that is elsewhere.
+          label: `${row.forkedFrom == null ? "" : "⑂ "}${row.title === null ? "(untitled)" : shorten(row.title, 34)}`,
+          detail: [
+            row.id.slice(0, 16),
+            row.forkedFrom == null ? null : `fork of ${row.forkedFrom.slice(0, 12)}`,
+            row.cwd === this.options.cwd ? null : `in ${middle(tilde(row.cwd, this.options.home), 30)}`,
+            ago(this.now() - row.updatedAt),
+            `${row.model}${row.effort === null ? "" : ` ${row.effort}`}`,
+            row.archived ? "archived" : null,
+          ]
+            .filter((part) => part !== null)
+            .join(" · "),
           current: row.id === current,
         })),
       ],
       filterable: true,
       footer: "type to filter · Enter open · Esc cancel",
       cancel: null,
+      maxWidth: 120,
     })
     if (answer === null || answer === current) return
     await this.switchTo(answer === "\u0000new" ? { kind: "new" } : { kind: "resume", id: answer })
@@ -1264,6 +1283,8 @@ export class App {
       const session = this.session
       this.session = null
       this.closeDock()
+      const running = [...this.transcript.background.keys()]
+      if (running.length > 0) this.farewell = `leaving stopped ${running.length === 1 ? "the background command" : `${running.length} background commands`} still running (${running.join(", ")}); the agent is told when the session is next opened`
       await within(CLOSE_TIMEOUT_MS, (async () => {
         await session?.close(true)
         await this.options.backend.stop()
@@ -1280,6 +1301,9 @@ export class App {
     if (this.options.exitNow !== undefined) return this.options.exitNow(code)
     this.finish?.(code)
   }
+
+  /** What the user should read after the screen is gone (background work that leaving stopped), or `null`. */
+  farewell: string | null = null
 
   /** The session the TUI shows, for the line printed after it exits. */
   get sessionId(): string | null {
@@ -1355,6 +1379,9 @@ export class App {
     const subagents = this.transcript.runningSubagents()
     if (this.connection === "connected" && subagents.length > 0 && (!activity.executing || subagents.some((view) => view.background)))
       parts.push(span(` · ${plural(subagents.length, "subagent")} at work${subagents.length === 1 ? `: ${truncate(subagents[0]!.title ?? "", 30)}` : ""}`, "accent"))
+    const commands = [...this.transcript.background.entries()]
+    if (this.connection === "connected" && commands.length > 0)
+      parts.push(span(` · ◌ ${commands.length === 1 ? `background ${commands[0]![0]}: ${truncate(commands[0]![1].command, 24)}` : plural(commands.length, "background command")}`, "accent"))
     if (this.conversation.scrolledAway) {
       const below = this.conversation.newBelow
       parts.push(span(`   ↑ scrolled${below > 0 ? ` · ${plural(below, "new line")} below` : ""} · Esc follows`, "warn"))
@@ -1436,7 +1463,10 @@ export class App {
         connection: this.connection === "connected" ? "connected" : this.connection,
         home: this.options.home,
         approval: this.approvalInfo === null || !this.approvalInfo.enabled ? null : { mode: this.approvalInfo.mode, sandbox: this.approvalInfo.sandboxUnavailable === null },
-        subagents: this.transcript.runningSubagents().map((view) => ({ title: view.title ?? view.sessionId, background: view.background, asking: view.asking })),
+        subagents: [
+          ...this.transcript.runningSubagents().map((view) => ({ title: view.title ?? view.sessionId, background: view.background, asking: view.asking })),
+          ...[...this.transcript.background.entries()].map(([id, command]) => ({ title: `${id}: ${command.command}`, background: true, asking: false, kind: "command" as const })),
+        ],
       },
       columns,
       rows,
@@ -1449,7 +1479,7 @@ function describePlan(plan: RevertPlan, undo: boolean): Span[][] {
   if (plan.changes.length === 0) return [[span("no file needs to change", "dim")]]
   const describe = (status: string) => changeLabel(status, undo)
   const lines = ["modified", "mode_changed", "type_changed", "added", "deleted"].flatMap((status) => {
-    const paths = plan.changes.filter((change) => change.status === status).map((change) => `${change.path}${change.handEdited ? " (edited by hand)" : ""}`)
+    const paths = plan.changes.filter((change) => change.status === status).map((change) => `${change.path}${change.handEdited ? " (changed outside this session)" : ""}`)
     return paths.length === 0 ? [] : [[span(`${describe(status)}: `, "dim"), span(fileList(paths, 6))]]
   })
   if (plan.kept.length > 0) lines.push([span(`left alone (ignored or never recorded): ${fileList(plan.kept.map((item) => item.path), 6)}`, "dim")])
@@ -1459,8 +1489,12 @@ function describePlan(plan: RevertPlan, undo: boolean): Span[][] {
 function refusal(command: string, result: RevertResult): string {
   if (result.kind === "refused" && result.reason === "busy") return `${command} works only while the agent is idle; stop it first (Ctrl-C)`
   if (result.kind === "refused" && result.reason === "nothing_to_revert") return command === "/undo" ? "there is no turn to undo" : "there is nothing to redo"
-  if (result.kind === "hand_edited") return "files were edited by hand in the meantime; nothing was changed"
+  if (result.kind === "hand_edited") return "files changed outside this session in the meantime; nothing was changed"
   return `${command}: ${"message" in result ? result.message : "nothing was changed"}`
+}
+
+function tilde(path: string, home: string | null): string {
+  return home !== null && home !== "" && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
 }
 
 function ago(ms: number): string {

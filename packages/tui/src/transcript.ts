@@ -202,6 +202,10 @@ export interface SessionInfo {
   effort: string | null
   /** Untrusted content is in the conversation: where it came from, in a sentence. */
   taint: string | null
+  /** A fork: the session it was forked from. */
+  forkedFrom?: string | null
+  /** A fork: how many of `calls` it inherited from its parent (the model calls before the fork point). */
+  inheritedCalls?: number
 }
 
 interface Turn {
@@ -238,7 +242,7 @@ export class Transcript {
   readonly rows: Row[] = []
   readonly pending: PendingItem[] = []
   readonly calls: CallUsage[] = []
-  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null, taint: null }
+  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null, taint: null, forkedFrom: null, inheritedCalls: 0 }
   readonly activity: Activity = blankActivity()
   /** Bumped on every change. */
   version = 0
@@ -251,6 +255,8 @@ export class Transcript {
   private readonly tools = new Map<string, ToolRow>()
   /** The rows of the `subagent` calls whose subagent started, by the subagent's session. */
   private readonly children = new Map<string, ToolRow>()
+  /** Background commands still running, by spawn ID: what they run and where their output is (this machine's path). */
+  readonly background = new Map<string, { readonly command: string; readonly logPath: string | null; readonly since: number }>()
   private readonly checks = new Map<number, { row: NoticeRow; startedAt: number }>()
   private readonly compactions = new Map<string, { row: NoticeRow; tokensBefore: number; model: string | null }>()
   private readonly inboxText = new Map<string, { text: string; delivery: "steer" | "queue"; midTurn: boolean }>()
@@ -293,9 +299,9 @@ export class Transcript {
     this.rows.length = 0
     this.pending.length = 0
     this.calls.length = 0
-    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, taint: null })
+    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, taint: null, forkedFrom: null, inheritedCalls: 0 })
     Object.assign(this.activity, blankActivity())
-    for (const map of [this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
+    for (const map of [this.background, this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
     this.diagnosticsForNext = []
     this.turn = null
     this.cutOff = null
@@ -407,6 +413,12 @@ export class Transcript {
       }
       case "spawn.started": {
         const work = event.data.work
+        if (work.kind === "command") {
+          this.background.set(event.data.spawnId, { command: work.command, logPath: work.logPath, since: "time" in event ? event.time : this.now() })
+          // Where its output is, as this machine names the file: the call's own output gives the sandbox's name for it.
+          this.notice("◌", "dim", [span(`background ${event.data.spawnId} · `, "dim"), span(oneLine(work.command))], work.logPath === null ? [] : [[span("output: ", "dim"), span(work.logPath)]], replay, "work")
+          return
+        }
         if (work.kind !== "subagent") return
         const row = this.tools.get(key(event.data.messageId, event.data.callId)) ?? this.toolRow(event.data.messageId, event.data.callId, "subagent", "", replay)
         const view: SubagentView = { sessionId: work.sessionId, spawnId: event.data.spawnId, background: event.data.background, title: null, transcript: new Transcript(this.now), state: "running", detail: null, asking: false, steps: 0 }
@@ -415,6 +427,15 @@ export class Transcript {
         return
       }
       case "spawn.ended": {
+        const command = this.background.get(event.data.spawnId)
+        if (command !== undefined) {
+          this.background.delete(event.data.spawnId)
+          const outcome = event.data.outcome
+          const how = outcome === "completed" ? `exited with code ${event.data.exitCode}` : outcome === "stopped" ? (/shut down|shutdown/.test(event.data.detail) ? "stopped: the session closed" : "stopped") : outcome
+          const ok = outcome === "completed" && event.data.exitCode === 0
+          this.notice(ok ? "✓" : "■", ok ? "ok" : "warn", [span(`background ${event.data.spawnId} ${how}`, ok ? undefined : "warn")], [], replay, "work")
+          return
+        }
         const row = [...this.children.values()].find((candidate) => candidate.subagent?.spawnId === event.data.spawnId)
         if (row === undefined || row.subagent === null) return
         const view = row.subagent
@@ -449,6 +470,9 @@ export class Transcript {
         this.session.title = event.data.title
         this.session.model = event.data.settings.model
         this.session.effort = event.data.settings.reasoningEffort
+        // A fork's log starts with its parent's: the model calls before this point were the parent's.
+        this.session.forkedFrom = event.data.lineage?.kind === "fork" ? event.data.lineage.parentSessionId : null
+        this.session.inheritedCalls = event.data.lineage?.kind === "fork" ? this.calls.length : 0
         return
       case "session.renamed":
         this.session.title = event.data.title
@@ -783,7 +807,7 @@ export class Transcript {
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
         const detail = [
-          ...(byHand.length > 0 ? [[span(`${undone ? "left as they are now, your edits and the agent's changes both" : "left as they are now, with your edits"}: ${fileList(byHand, 6)}`, "dim")]] : []),
+          ...(byHand.length > 0 ? [[span(`${undone ? "left as they are now, the outside changes and the agent's both" : "left as they are now, with the outside changes"}: ${fileList(byHand, 6)}`, "dim")]] : []),
           ...(other.length > 0 || (record?.keptOmitted ?? 0) > 0 ? [[span(`left alone (ignored or never recorded): ${fileList(other, 6)}${(record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : ""}`, "dim")]] : []),
         ]
         this.notice(undone ? SYMBOL.undo : SYMBOL.redo, "accent", [span(head), span(what, "dim")], detail, replay, "session")

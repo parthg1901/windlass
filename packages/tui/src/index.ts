@@ -125,6 +125,7 @@ export async function runTui(options: TuiOptions): Promise<number> {
   process.off("uncaughtException", crash)
   process.off("unhandledRejection", crash)
   const id = app.sessionId
+  if (app.farewell !== null) process.stdout.write(`${brand.binary}: ${app.farewell}\n`)
   if (id !== null && demo === null) process.stdout.write(`${brand.binary}: session ${id} · resume with: ${brand.binary} tui --session ${id}\n`)
   // Why it ended without a session, where it is seen after the screen is back.
   if (app.problem !== null && demo === null) process.stderr.write(`${brand.binary}: ${app.problem}\n`)

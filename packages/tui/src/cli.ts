@@ -11,6 +11,7 @@ export { callArgument, checkLines, checksSummary, detailLines, diffStat, errorSu
 export { formatDuration, formatBytes, nearest } from "../../cli/src/text.ts"
 export { changeLabel, handEditChoices } from "../../cli/src/commands.ts"
 export {
+  COPY_NOTE,
   type Line,
   mcpFailureText,
   mcpLines,

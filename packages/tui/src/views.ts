@@ -280,6 +280,8 @@ export interface DialogSpec {
   readonly footer: string
   /** Chosen with Esc or Ctrl-C; `null` to just close. */
   readonly cancel: string | null
+  /** The widest the dialog may be, in columns (default 76): a listing whose rows carry IDs and paths. */
+  readonly maxWidth?: number
 }
 
 /**
@@ -388,7 +390,7 @@ export class Dialog extends Renderable {
     const parent = this.parent
     const screenWidth = parent?.width ?? this.width
     const screenHeight = parent?.height ?? this.height
-    const w = Math.max(20, Math.min(screenWidth - 2, 76))
+    const w = Math.max(20, Math.min(screenWidth - 2, this.spec?.maxWidth ?? 76))
     const items = this.items()
     const inner = w - 4
     const wrapped = spec.detail.flatMap((line) => wrapSpans(line, inner))
