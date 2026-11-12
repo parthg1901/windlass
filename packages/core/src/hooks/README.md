@@ -114,7 +114,10 @@ By its exit code, with its **stdout** as the text:
 | exits 2 | the call is refused; stdout is the reason the agent reads | stdout is added as a note after the result | the agent is sent back with stdout as the message |
 | fails: other exit code, killed, timed out, could not start, or exit 2 with stdout that is not text (NUL bytes, invalid UTF-8, escape sequences) | the call is refused, and the agent is told the hook is failing (unless `onError: "allow"`) | nothing is added | the turn may end |
 
-stderr never reaches the agent; it is shown to you. stdout on exit 0 is shown to you too, never to the agent. A
+stderr never reaches the agent, and neither does stdout on exit 0. Both are kept for you in the hook's record (the
+`forUser` field of the `hook.ran` event, which `--json` prints).
+<!-- CLIENTS(hooks-shown): no client prints `forUser` yet; say here where it is shown once one does -->
+Neither the line interface nor the full-screen one prints them yet. A
 reason or note is cut at 2,000 characters, a stop message at 4,000. Exit 2 with nothing on stdout gives a default
 text ("refused it and gave no reason").
 
@@ -132,7 +135,7 @@ Pushing is not allowed here. Commit locally and tell the user.
 ```
 
 ```
-Edited src/a.ts (1 change).
+Edited src/a.ts: replaced 1 occurrence (line 1).
 
 [Note from the hook "prettier"]
 prettier could not format this file; run it to see why.

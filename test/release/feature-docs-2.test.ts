@@ -596,6 +596,24 @@ describe("what the pages say is not there yet", () => {
   })
 })
 
+describe("the module pages for integrators, where users read them too", () => {
+  const page = (path: string) => read(join(ROOT, path))
+  /** What the edit tool answers for one replacement on one line, as its source builds it. */
+  const edited = (path: string, line: number) => `Edited ${path}: replaced 1 occurrence (line ${line}).`
+
+  test("the hooks page: a hook's stderr is in its record, not on screen, and the edit result is the tool's", () => {
+    const hooks = page("packages/core/src/hooks/README.md")
+    expect(hooks).not.toContain("it is shown to you")
+    expect(hooks).toContain("<!-- CLIENTS(hooks-shown):")
+    expect(hooks).toContain("the\n`forUser` field of the `hook.ran` event")
+    // No client reads the field yet; when one does, the sentence under the marker changes.
+    for (const file of clientFiles()) expect(/forUser/.test(read(file)), `${file} shows a hook's stderr: update packages/core/src/hooks/README.md`).toBe(false)
+    expect(hooks).toContain(`${edited("src/a.ts", 1)}\n\n[Note from the hook "prettier"]`)
+    expect(hooks).not.toMatch(/Edited [^\n]*\(1 change\)/)
+    expect(read(join(ROOT, "packages/core/src/tools/edit.ts"))).toContain("return success(`Edited ${shown}: replaced ${count} (${linesLabel(newLines)}).`")
+  })
+})
+
 describe("names against the code", () => {
   test("directories and the binary are the brand's", () => {
     for (const [, name] of all.matchAll(/(?:~\/\.config|\$XDG_CONFIG_HOME)\/([a-z0-9][a-z0-9_-]*)\//g)) expect(name).toBe(DIR)
