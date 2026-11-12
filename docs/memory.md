@@ -127,7 +127,13 @@ In `windlass` and `windlass tui`, for a session that has memory:
 | `/forget <id>` (or `/memory forget <id>`) | retract a note: no later session is given it; the file is kept with `status: retracted` |
 
 When memory is off, `/memory` says so and how to turn it on; a session started while it was off has none, so it also
-says to start a new session. An editor does the same with `_windlass/memory` and `_windlass/memory_change`
+says to start a new session.
+
+A session reads its notes when its first turn starts. Before your first message `/memory` says so and asks you to
+send a message first. A `/remember` typed then is not lost: it is kept, saved as soon as your first message is
+sent, and reported after that turn (`your note from before the first message: Saved m_… (fact, for this project)
+...`). If you leave without sending a message it is not saved, and `windlass` prints the note's text so that you
+still have it. An editor does the same with `_windlass/memory` and `_windlass/memory_change`
 ([acp.md](acp.md)).
 
 ## Not yet

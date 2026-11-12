@@ -604,6 +604,7 @@ describe("quoted program messages", () => {
     { page: "docs/memory.md", quote: "preference, written by the user, 2026-11-12:", pieces: ["written by the user"] },
     { page: "docs/memory.md", quote: 'preference, saved by the assistant from the user\'s words "keep answers short", 2026-11-12:', pieces: ["saved by the assistant from the user's words"] },
     { page: "docs/memory.md", quote: "⚠ memory: A memory note is not valid and is not used: <file>", pieces: ["A memory note is not valid and is not used: "] },
+    { page: "docs/memory.md", quote: "your note from before the first message: Saved m_… (fact, for this project)", pieces: ["your note from before the first message: ", "Saved ", "for this project"] },
   ]
 
   test("each quote is on its page, and its pieces are the program's text", () => {
