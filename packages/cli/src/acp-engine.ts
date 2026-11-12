@@ -30,7 +30,7 @@
  *   listing is all the run does (no session is open), the server is let go of
  *   after it; a server in use is never stopped by a listing.
  */
-import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS } from "@light-harness/acp/client"
+import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@light-harness/acp/client"
 import { type DiffResult, EXT, type ForkResult, type ReplayResult } from "@light-harness/acp/extensions"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
 import { selfCommand } from "./self.ts"
@@ -103,7 +103,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
     open: async (request) => {
       opened += 1
       try {
-        return await openSession(await link(), request)
+        return await openSession(await link(), request, stderr)
       } catch (error) {
         opened -= 1
         throw error
@@ -167,14 +167,19 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
   }
 }
 
-async function openSession(connected: HarnessConnection, request: OpenRequest): Promise<Session> {
+async function openSession(connected: HarnessConnection, request: OpenRequest, stderr: (text: string) => void): Promise<Session> {
   // Who is there to answer, and the user's own mode and unattended behaviour, said when the session is opened.
   const meta = { model: request.model, effort: request.effort, approval: request.approval ?? null, unattended: request.unattended ?? null, attended: request.attended ?? false }
   const target = request.session
   try {
     if (target.kind === "new") return new AcpSession(await connected.newSession(request.cwd, meta), request.maxSteps)
     const named = await connected.resolve(request.cwd, target.kind === "resume" ? target.id : undefined)
-    return new AcpSession(await connected.openSession(named.sessionId, named.cwd, { replay: false, meta: { ...meta, archived: true } }), request.maxSteps)
+    // Right after an earlier run was killed its engine may still be closing the session: that is waited for, and said.
+    const opened = await openWhenReleased(
+      () => connected.openSession(named.sessionId, named.cwd, { replay: false, meta: { ...meta, archived: true } }),
+      (pid) => stderr(`${brand.binary}: the session is still held by the engine of an earlier run that was stopped (pid ${pid}); waiting for it to finish shutting down…\n`),
+    )
+    return new AcpSession(opened, request.maxSteps)
   } catch (error) {
     throw unavailable(error)
   }

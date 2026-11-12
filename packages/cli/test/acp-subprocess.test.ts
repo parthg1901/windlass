@@ -146,6 +146,24 @@ describe("signals reach the CLI, not the server", () => {
     expect(again.output.out).toBe("Here again.\n")
   })
 
+  test("a CLI killed outright: the next run waits for its engine to finish shutting down, says so, and resumes the session", async () => {
+    const at = place()
+    const command = sleeper()
+    // A command that ignores SIGTERM keeps the orphaned server's shutdown going for its whole grace period.
+    const cli = start(at, at.script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command: `trap '' TERM; ${command}` } }]]), ["wait for it"])
+    await cli.waitFor("▸ shell trap")
+    const server = await serverOf(cli.proc.pid)
+    await Bun.sleep(300)
+    cli.proc.kill("SIGKILL")
+    await cli.proc.exited
+    expect(alive(server)).toBe(true)
+    const again = start(at, at.script([[{ type: "text", text: "Here again." }]]), ["--continue", "--quiet", "hello"])
+    expect(await again.proc.exited).toBe(0)
+    await again.done
+    expect(again.output.err).toMatch(new RegExp(`^${brand.binary}: the session is still held by the engine of an earlier run that was stopped \\(pid ${server}\\); waiting for it to finish shutting down…\n$`))
+    expect(again.output.out).toBe("Here again.\n")
+  })
+
   test("SIGTERM stops the work as a shutdown (143) and the server leaves", async () => {
     const at = place()
     const command = sleeper()

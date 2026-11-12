@@ -31,7 +31,7 @@
  * - the title: `<prefix>/session`; rename and compaction: `<prefix>/rename`
  *   and `<prefix>/compact`, only when `initialize` advertises them
  */
-import { type ClientSession, ClientError, HarnessClient } from "@light-harness/acp/client"
+import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@light-harness/acp/client"
 import { EXT } from "@light-harness/acp/extensions"
 import { type RevertResult, brand } from "@light-harness/core"
 import {
@@ -98,7 +98,12 @@ export class AcpBackend implements Backend {
     try {
       if (target.kind === "new") return new AcpSession(this, await link.newSession(cwd, meta), settings.maxSteps)
       const named = await link.resolve(cwd, target.kind === "resume" ? target.id : undefined)
-      return new AcpSession(this, await link.openSession(named.sessionId, named.cwd, { replay: true, meta: { ...meta, archived: true } }), settings.maxSteps)
+      // Right after an earlier run was killed its engine may still be closing the session: that is waited for.
+      const opened = await openWhenReleased(
+        () => link.openSession(named.sessionId, named.cwd, { replay: true, meta: { ...meta, archived: true } }),
+        (pid) => this.onLog(`the session is still held by the engine of an earlier run that was stopped (pid ${pid}); waiting for it to finish shutting down`, "info"),
+      )
+      return new AcpSession(this, opened, settings.maxSteps)
     } catch (error) {
       throw failure(error)
     }

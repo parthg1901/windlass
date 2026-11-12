@@ -34,6 +34,7 @@ import {
   methods,
   ndJsonStream,
 } from "@agentclientprotocol/sdk"
+import { readFileSync } from "node:fs"
 import type { EphemeralEvent, HarnessOptions, Need, RevertPlan, RevertResult, RunDecision, StoredEvent } from "@light-harness/core"
 import { brand } from "@light-harness/core"
 import {
@@ -816,6 +817,56 @@ async function memoryTransport(transport: Extract<Transport, { kind: "memory" }>
       await harness.close()
     },
     kill: () => served.connection.close(),
+  }
+}
+
+/** How long a server whose client is gone may take to let go of its sessions: its shutdown limit, and a margin. */
+export const WINDING_DOWN_MS = 6000
+
+/**
+ * Whether `pid` is a server whose client went away, finishing its shutdown
+ * (it closes its sessions on its own, within its shutdown limit): an `acp`
+ * process whose parent is gone, so it was handed to init or a subreaper.
+ * Read from `/proc`; `false` where that cannot be told.
+ */
+export function windingDown(pid: number): boolean {
+  try {
+    const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter((arg) => arg !== "")
+    if (args.at(-1) !== "acp") return false
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+    const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
+    if (parent === 1) return true
+    const comm = readFileSync(`/proc/${parent}/comm`, "utf8").trim()
+    return comm === "systemd" || comm === "init"
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Runs `open` again while the session it opens is held by a server that is
+ * winding down (`windingDown`): what a client sees right after the one
+ * before it was killed. `waiting` is told once, with the holder. A session
+ * held by anything else is refused at once, as before, with a word on what
+ * to do when its holder is a server.
+ */
+export async function openWhenReleased<T>(open: () => Promise<T>, waiting: (holderPid: number) => void = () => {}, limitMs = WINDING_DOWN_MS): Promise<T> {
+  const deadline = Date.now() + limitMs
+  let told = false
+  for (;;) {
+    try {
+      return await open()
+    } catch (error) {
+      if (!(error instanceof ClientError) || error.reason !== "session_in_use" || error.holderPid === null) throw error
+      const pid = error.holderPid
+      if (!windingDown(pid) || Date.now() > deadline) {
+        if (!windingDown(pid)) throw error
+        throw new ClientError(`${error.message}. It is the engine of an earlier run that was stopped, still shutting down: try again in a moment`, error.reason, pid)
+      }
+      if (!told) waiting(pid)
+      told = true
+      await Bun.sleep(200)
+    }
   }
 }
 
