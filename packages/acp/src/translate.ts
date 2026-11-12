@@ -64,8 +64,8 @@ export interface TranslatorOptions {
   readonly contextWindow: (model: string) => number | null
   /** Whether a delivered user message is shown to the client: true for input the client did not send as a prompt. */
   readonly echo: (messageId: string) => boolean
-  /** On a replay: the files an ended turn changed, worked out from its snapshots, or `null` when they cannot be told. */
-  readonly replayedChanges?: (executionId: string) => readonly string[] | null
+  /** On a replay: the files the turn that ended at the event numbered `endSeq` changed, worked out from its snapshots, or `null` when they cannot be told. */
+  readonly replayedChanges?: (endSeq: number) => readonly string[] | null
 }
 
 interface ToolState {
@@ -92,6 +92,8 @@ export class Translator {
   private readonly inbox = new Map<string, { readonly text: string; readonly origin: string | null; command?: EventData<"command.expanded"> }>()
   private model: string | null = null
   private turn = freshTurn()
+  /** The number of the latest stored event translated: what a turn's ending is known by. */
+  private seq = 0
 
   constructor(private readonly options: TranslatorOptions) {}
 
@@ -106,6 +108,7 @@ export class Translator {
    */
   translate(item: EngineEvent, replay = false): Output[] {
     const out: Output[] = []
+    if ("seq" in item) this.seq = item.seq
     const update = (value: SessionUpdate) => out.push({ type: "update", update: value })
     switch (item.type) {
       // ---- streaming deltas ----
@@ -200,7 +203,7 @@ export class Translator {
           stopReason: this.successReason(),
           verification,
           ...(item.data.hooks === undefined ? {} : { hooks: hookEnding(item.data.hooks) }),
-          changedFiles: replay ? null : this.turn.changedFiles,
+          changedFiles: replay ? (this.options.replayedChanges?.(item.seq) ?? null) : this.turn.changedFiles,
           continues: true,
           ...(replay ? { replay: true } : {}),
         }
@@ -447,7 +450,7 @@ export class Translator {
       sessionId: this.options.sessionId,
       ...details,
       stopReason: end.kind === "stop" ? end.stopReason : "error",
-      changedFiles: replay ? (this.options.replayedChanges?.(details.executionId) ?? null) : this.turn.changedFiles,
+      changedFiles: replay ? (this.options.replayedChanges?.(this.seq) ?? null) : this.turn.changedFiles,
       ...(replay ? { replay: true } : {}),
     }
     // An execution that only compacted because the user asked is no turn: it has no ending to report.

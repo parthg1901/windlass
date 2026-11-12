@@ -406,11 +406,14 @@ latest by default), the files and the conversation, and undo that. Only while th
 **`_windlass/diff`** (request): the files a turn or a step changed, with bounded per-file patches, from the
 workspace snapshots the engine recorded around it (`snapshot.taken`). A turn runs from the workspace as it was when
 its first message was delivered to the last snapshot before it ended; a step from its `step_start` to its
-`step_end`. Read from the stored log, so it works for any session, also one this connection did not open.
+`step_end`. A queued message is a turn of its own, so an execution can hold several: `endSeq`, the number of the
+event that ended a turn (`turn.ended`, or its execution's terminal event), names one of them, and without it the
+diff is of the latest turn of the execution named, or of the session. Read from the stored log, so it works for
+any session, also one this connection did not open.
 
 ```ts
 // params
-{ sessionId: string, executionId?: string, messageId?: string, patch?: boolean }  // a turn (the latest by default) or a step (its assistant message); patch: false lists files only
+{ sessionId: string, executionId?: string, endSeq?: number, messageId?: string, patch?: boolean }  // a turn (the latest by default) or a step (its assistant message); patch: false lists files only
 // result
 { available: true, scope: "turn" | "step", executionId: string | null, messageId: string | null, from: string, to: string,
   files: { path, status: "added" | "deleted" | "modified" | "mode_changed" | "type_changed", binary: boolean,

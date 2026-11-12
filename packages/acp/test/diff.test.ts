@@ -13,7 +13,7 @@ import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { script } from "@windlass/core/testing"
 import { type DiffResult, EXT, META, TITLE_LENGTH, deriveTitle } from "../src/extensions.ts"
-import { type Harness, startHarness } from "./helpers.ts"
+import { type Harness, startHarness, until } from "./helpers.ts"
 
 const NS = META.capabilities
 const harnesses: Harness[] = []
@@ -97,6 +97,45 @@ describe("per-file diffs", () => {
     )
     expect(unknown).toBe(-32002)
   })
+
+  test("a turn and the queued message that followed it are two turns: each has its own diff, live and on session/load", async () => {
+    const h = await start({
+      responses: [
+        [script.toolCall("c1", "write", { path: "first.md", content: "one\n" }), script.toolCall("c2", "shell", { command: "sleep 0.5" })],
+        [script.text("Written.")],
+        [script.toolCall("c3", "write", { path: "second.md", content: "two\n" })],
+        [script.text("And the second.")],
+      ],
+    })
+    const sessionId = await h.newSession()
+    const running = prompt(h, sessionId, "write the first")
+    // Queued while the first turn's command runs: delivered at the handover, under the same execution.
+    await until(() => h.backend.engine.readEvents(sessionId as never).some((item) => item.type === "tool.started"), 10_000, "the first turn's tools")
+    await h.connection.agent.request(EXT.queue, { sessionId, prompt: [{ type: "text", text: "then the second" }] })
+    await running
+    await until(() => h.backend.engine.readEvents(sessionId as never).some((item) => item.type === "execution.succeeded"), 10_000, "the end of the queued turn")
+    const events = h.backend.engine.readEvents(sessionId as never)
+    const handover = events.find((item) => item.type === "turn.ended")!.seq
+    const [executionId] = executions(h, sessionId)
+    expect(executions(h, sessionId)).toHaveLength(1)
+    const paths = (result: DiffResult) => (result.available ? result.files.map((file) => file.path) : result.message)
+    // The latest turn is the queued message's: its file alone, with or without the execution named.
+    expect(paths(await diff(h, { sessionId }))).toEqual(["second.md"])
+    expect(paths(await diff(h, { sessionId, executionId }))).toEqual(["second.md"])
+    // The turn before it, by the event that ended it.
+    expect(paths(await diff(h, { sessionId, endSeq: handover }))).toEqual(["first.md"])
+    expect(paths(await diff(h, { sessionId, executionId, endSeq: events.at(-1)!.seq }))).toEqual(["second.md"])
+    expect(await diff(h, { sessionId, endSeq: handover + 1 })).toMatchObject({ available: false, reason: "not_found" })
+    const live = h.ext.filter((note) => note.method === EXT.turn).map((note) => note.params.changedFiles)
+    expect(live).toEqual([["first.md"], ["second.md"]])
+    await h.disconnect()
+    await h.backend.close()
+
+    const loader = await start({ dataDir: h.dataDir })
+    await loader.connection.agent.request(methods.agent.session.load, { sessionId, cwd: h.workspace, mcpServers: [] })
+    const replayed = loader.ext.filter((note) => note.method === EXT.turn && note.params.replay === true).map((note) => note.params.changedFiles)
+    expect(replayed).toEqual(live)
+  }, 60_000)
 
   test("session/load replays each earlier turn's ending with the files it changed", async () => {
     const first = await start({ responses: TWO_TURNS })

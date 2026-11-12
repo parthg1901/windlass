@@ -418,7 +418,10 @@ export interface StateNotification {
 /** Params of `<prefix>/diff`: a turn (`executionId`, the latest by default) or one step (`messageId` of its assistant message). */
 export interface DiffParams {
   readonly sessionId: string
+  /** The turn: the latest of this execution; without it, the session's latest. A queued message is a turn of its own. */
   readonly executionId?: string
+  /** The turn that ended at this event (`turn.ended`, or its execution's terminal event): one a queued message followed. */
+  readonly endSeq?: number
   readonly messageId?: string
   /** `false`: the list of files without patches. Default `true`. */
   readonly patch?: boolean

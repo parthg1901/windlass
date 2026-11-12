@@ -81,6 +81,7 @@ import {
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
 import { describeWatch } from "../../core/src/engine/spawn.ts"
+import { turnRanges } from "../../core/src/engine/workspace.ts"
 import type { CommandExpansion } from "../../core/src/engine/commands.ts"
 import type { Expansion } from "../../core/src/commands/expand.ts"
 import type { CommandListing, ListedCommand } from "../../core/src/commands/lookup.ts"
@@ -236,7 +237,8 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.clearTaint, parseObject, ({ params }) => state.clearTaint(requireString(params, "sessionId")))
     .onRequest(EXT.diff, parseObject, ({ params }) => {
       if (params.patch !== undefined && typeof params.patch !== "boolean") throw RequestError.invalidParams(undefined, "patch must be a boolean")
-      return state.diff(requireString(params, "sessionId"), { executionId: optionalString(params, "executionId"), messageId: optionalString(params, "messageId"), patch: params.patch !== false })
+      if (params.endSeq !== undefined && (typeof params.endSeq !== "number" || !Number.isInteger(params.endSeq) || params.endSeq < 1)) throw RequestError.invalidParams(undefined, "endSeq must be an event number")
+      return state.diff(requireString(params, "sessionId"), { executionId: optionalString(params, "executionId"), endSeq: params.endSeq as number | undefined, messageId: optionalString(params, "messageId"), patch: params.patch !== false })
     })
     .onRequest(EXT.fork, parseForkParams, ({ params }) => state.fork(params))
     .onRequest(EXT.replay, parseReplayParams, ({ params, signal }) => state.replay(params, signal))
@@ -416,7 +418,7 @@ class ConnectionState {
     await models
     // The files each earlier turn changed, from its snapshots, for the replayed turn endings. Read before the open: the
     // turns that have ended are history and do not change.
-    const changes = replay ? await this.replayChanges(sessionId as SessionId, cwd) : new Map<string, readonly string[]>()
+    const changes = replay ? await this.replayChanges(sessionId as SessionId) : new Map<number, readonly string[]>()
     // What the log held before this open: events after it (a crashed claim's recovery) are news to a client.
     const openedAt = summary.lastSeq
     // A claim left by a process that died is repaired here; a suspended one (a clean shutdown in the middle of a
@@ -975,14 +977,18 @@ class ConnectionState {
    * `_<ns>/diff`: what a turn or a step changed, from the snapshots the engine
    * recorded around it (`snapshot.taken`). A turn runs from the workspace as
    * it was when its first message was delivered to the last snapshot before
-   * it ended; a step from its `step_start` to its `step_end`. Read from the
-   * stored log, so it works for any session, open here or not.
+   * it ended; a step from its `step_start` to its `step_end`. A queued
+   * message is a turn of its own: without `endSeq` the diff is of the latest
+   * turn (of the session, or of the execution named), and `endSeq`, the
+   * number of the event that ended a turn (`turn.ended`, or its execution's
+   * terminal event), names one that a queued message followed. Read from
+   * the stored log, so it works for any session, open here or not.
    */
-  async diff(sessionId: string, options: { readonly executionId: string | undefined; readonly messageId: string | undefined; readonly patch: boolean }): Promise<DiffResult> {
+  async diff(sessionId: string, options: { readonly executionId: string | undefined; readonly endSeq?: number | undefined; readonly messageId: string | undefined; readonly patch: boolean }): Promise<DiffResult> {
     const summary = this.engineErrors(() => this.harness.engine.getSession(sessionId as SessionId), sessionId)
     if (summary === null) throw RequestError.sessionNotFound(sessionId)
     const events = this.engineErrors(() => this.harness.engine.readEvents(sessionId as SessionId), sessionId)
-    const range = options.messageId !== undefined ? stepRange(events, options.messageId) : turnRange(events, options.executionId ?? null)
+    const range = options.messageId !== undefined ? stepRange(events, options.messageId) : turnRange(events, options.executionId ?? null, options.endSeq ?? null)
     if ("reason" in range) return { available: false, ...range }
     const store = await this.snapshotsOf(summary.session.cwd)
     if ("message" in store) return { available: false, reason: "unavailable", message: store.message }
@@ -991,26 +997,15 @@ class ConnectionState {
     return { available: true, scope: options.messageId === undefined ? "turn" : "step", executionId: range.executionId, messageId: options.messageId ?? null, from: range.from, to: range.to, files: changes.map(diffFile) }
   }
 
-  /** The files each ended turn of a stored session changed, by execution, for a replay. The latest turns only: each costs a tree comparison. */
-  private async replayChanges(sessionId: SessionId, cwd: string): Promise<Map<string, readonly string[]>> {
-    const changes = new Map<string, readonly string[]>()
-    const events = (() => {
-      try {
-        return this.harness.engine.readEvents(sessionId)
-      } catch {
-        return []
-      }
-    })()
-    const ended = events.flatMap((item) => (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted" ? [item.data.executionId] : []))
-    if (ended.length === 0) return changes
-    const store = await this.snapshotsOf(cwd)
-    if ("message" in store) return changes
-    for (const executionId of [...new Set(ended)].slice(-REPLAYED_TURN_CHANGES)) {
-      const range = turnRange(events, executionId)
-      if ("reason" in range) continue
-      const files = range.from === range.to ? [] : await store.changedFiles(range.from as SnapshotId, range.to as SnapshotId).catch(() => null)
-      if (files !== null) changes.set(executionId, files)
-    }
+  /**
+   * The files each ended turn of a stored session changed, by the number of the event that ended it, for a replay:
+   * a turn a queued message followed has its own, apart from that message's turn. The latest turns only: each costs
+   * a tree comparison.
+   */
+  private async replayChanges(sessionId: SessionId): Promise<Map<number, readonly string[]>> {
+    const changes = new Map<number, readonly string[]>()
+    const turns = await this.harness.engine.turnChanges(sessionId, { last: REPLAYED_TURN_CHANGES }).catch(() => [])
+    for (const turn of turns) if (turn.files !== null) changes.set(turn.endSeq, turn.files)
     return changes
   }
 
@@ -1212,7 +1207,7 @@ class ConnectionState {
     session: EngineSession,
     cwd: string,
     fromSeq: number,
-    changes: ReadonlyMap<string, readonly string[]>,
+    changes: ReadonlyMap<number, readonly string[]>,
     prime?: (view: SessionView) => void,
   ): SessionView {
     const view = new SessionView(this, session, cwd, fromSeq, changes)
@@ -1332,7 +1327,7 @@ class SessionView {
     readonly session: EngineSession,
     cwd: string,
     private fromSeq: number,
-    changes: ReadonlyMap<string, readonly string[]>,
+    changes: ReadonlyMap<number, readonly string[]>,
   ) {
     const catalog = connection.catalog
     const capabilities = connection.clientCapabilities
@@ -1344,7 +1339,7 @@ class SessionView {
       compaction: capabilities.session?.compaction != null,
       contextWindow: (model) => catalog.cached().find((entry) => entry.id === model)?.contextWindow ?? null,
       echo: (messageId) => this.echo.has(messageId),
-      replayedChanges: (executionId) => changes.get(executionId) ?? null,
+      replayedChanges: (endSeq) => changes.get(endSeq) ?? null,
     })
     this.titled = connection.titleOf(session.id, session.projection().session.title) !== null
   }
@@ -2055,22 +2050,26 @@ function lastUsage(history: readonly StoredEvent[]): { used: number; model: stri
   return last
 }
 
-/** The snapshots around a turn: from the workspace when its first message was delivered to the last snapshot before it ended. */
-function turnRange(events: readonly StoredEvent[], executionId: string | null): { from: string; to: string; executionId: string } | { reason: "not_found" | "no_snapshots"; message: string } {
-  const starts = events.filter((item) => item.type === "execution.started")
-  const start = executionId === null ? starts.at(-1) : starts.find((item) => item.type === "execution.started" && item.data.executionId === executionId)
-  if (start === undefined || start.type !== "execution.started")
+/**
+ * The snapshots around a turn: from the workspace when its first message was delivered to the last snapshot before
+ * it ended, as the engine bounds its turns (`turnRanges`: a queued message begins a turn of its own at the
+ * handover). The turn is the one that ended at `endSeq`; without it the latest of the execution named, or of the
+ * session. A turn still at work is read as far as it has come.
+ */
+function turnRange(events: readonly StoredEvent[], executionId: string | null, endSeq: number | null): { from: string; to: string; executionId: string } | { reason: "not_found" | "no_snapshots"; message: string } {
+  const starts = events.filter((item): item is StoredEvent<"execution.started"> => item.type === "execution.started")
+  if (executionId === null ? starts.length === 0 : !starts.some((item) => item.data.executionId === executionId))
     return { reason: "not_found", message: executionId === null ? "this session has no turn yet" : `there is no turn ${executionId} in this session` }
-  const id = start.data.executionId
-  const end = events.find((item) => item.seq > start.seq && (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted") && item.data.executionId === id)
-  const until = end?.seq ?? Number.POSITIVE_INFINITY
-  // The delivery snapshot is recorded just before the message enters history, which may be before the execution's own start.
-  const previousEnd = events.findLast((item) => item.seq < start.seq && (item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted"))?.seq ?? 0
-  const marks = events.filter((item): item is StoredEvent<"snapshot.taken"> => item.type === "snapshot.taken" && item.seq > previousEnd && item.seq < until)
-  const from = marks.find((item) => item.data.point === "delivery")
-  if (from === undefined) return { reason: "no_snapshots", message: "no snapshot was recorded for this turn (snapshots were off or unavailable)" }
-  const to = marks.findLast((item) => item.seq >= from.seq)!
-  return { from: from.data.id, to: to.data.id, executionId: id }
+  // The execution at work, if any, has no ending in the log yet: its turn in progress is closed here, for the reading only.
+  const latest = events.findLast((item) => item.type === "execution.started" || item.type === "execution.resumed" || item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted")
+  const working = latest !== undefined && (latest.type === "execution.started" || latest.type === "execution.resumed") ? latest.data.executionId : null
+  const now = (events.at(-1)?.seq ?? 0) + 1
+  const closed = working === null ? events : [...events, { ...latest!, type: "execution.interrupted", seq: now, data: { executionId: working, reason: "user" } } as unknown as StoredEvent]
+  const turns = turnRanges(closed).filter((turn) => executionId === null || turn.executionId === executionId)
+  const turn = endSeq === null ? turns.at(-1) : turns.find((candidate) => candidate.endSeq === endSeq)
+  if (turn === undefined) return { reason: "not_found", message: endSeq === null ? "this session has no turn yet" : `no turn of this session ended at event ${endSeq}` }
+  if (turn.from === null || turn.to === null) return { reason: "no_snapshots", message: "no snapshot was recorded for this turn (snapshots were off or unavailable)" }
+  return { from: turn.from, to: turn.to, executionId: turn.executionId }
 }
 
 /** The snapshots around one step: its `step_start` and its `step_end` (or whatever was recorded next, for a step cut short). */
