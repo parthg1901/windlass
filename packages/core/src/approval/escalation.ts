@@ -92,7 +92,7 @@ export interface SandboxHint {
 
 const WRITE_MARKERS = /Read-only file system|EROFS|Permission denied|EACCES|Operation not permitted|EPERM/
 const NETWORK_MARKERS =
-  /Could not resolve|Temporary failure in name resolution|Name or service not known|nodename nor servname|getaddrinfo|EAI_AGAIN|ENOTFOUND|Network is unreachable|ENETUNREACH|Connection refused|ECONNREFUSED|No route to host|EHOSTUNREACH|Failed to establish a new connection|network is unreachable/i
+  /Could not resolve|Temporary failure in name resolution|Name or service not known|nodename nor servname|getaddrinfo|EAI_AGAIN|ENOTFOUND|Network is unreachable|ENETUNREACH|Connection refused|ECONNREFUSED|No route to host|EHOSTUNREACH|Failed to establish a new connection|network is unreachable|Failed to connect to|Couldn't connect to server|ConnectionRefused|DNSResolveFailed/i
 
 /** A note for a failed sandboxed command whose output shows an error the sandbox causes; null otherwise. */
 export function sandboxHint(run: SandboxRun): SandboxHint | null {

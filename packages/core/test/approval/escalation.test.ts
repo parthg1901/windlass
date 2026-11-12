@@ -32,6 +32,17 @@ describe("sandboxHint", () => {
   const run = (output: string, overrides: Partial<Parameters<typeof sandboxHint>[0]> = {}) =>
     sandboxHint({ sandboxed: true, network: false, exitCode: 1, output, ...overrides })
 
+  test("what curl and bun print when the sandbox has no network, a server on this machine included, is recognised", () => {
+    // Seen with real processes under bubblewrap with the network off: loopback is down, so a local server is unreachable too.
+    for (const output of [
+      "curl: (7) Failed to connect to 127.0.0.1 port 37749 after 0 ms: Couldn't connect to server",
+      "curl: (6) Could not resolve host: example.com",
+      "error: DNSResolveFailed downloading package manifest typescript",
+      "error: ConnectionRefused downloading tarball left-pad@1.3.0",
+    ])
+      expect(run(output)?.suspects, output).toEqual(["network"])
+  })
+
   test("suspects writes on EROFS and EACCES, the network on DNS and connection errors", () => {
     expect(run("touch: cannot touch '/opt/x': Read-only file system")?.suspects).toEqual(["write"])
     expect(run("curl: (6) Could not resolve host: example.org")?.suspects).toEqual(["network"])
