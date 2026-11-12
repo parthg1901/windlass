@@ -316,7 +316,7 @@ export class Transcript {
   /** The stop hooks that objected when the turn last tried to end: said when the agent is sent back. */
   private stopRuns: HookRecord[] = []
   private stopAsked = false
-  /** The stop line that tells how to exit at once; the hint goes once the turn has ended. */
+  /** The stop line of the turn in progress: it says "stopping…" (and how to exit at once) only until the turn has ended. */
   private stopRow: NoticeRow | null = null
   /** How the latest spawned work ended, for the line about its message to the model. */
   private lastSpawnEnd: { readonly outcome: string; readonly detail: string } | null = null
@@ -809,7 +809,7 @@ export class Transcript {
         this.activity.retry = null
         const hint = this.stopAsked && !replay ? " · press Ctrl-C again to exit now" : ""
         const row = this.notice(SYMBOL.stop, "warn", [span(event.data.reason === "user" ? "stopping…" : "shutting down…", "warn"), span(hint, "dim")], [], replay, "work")
-        if (hint !== "") this.stopRow = row
+        this.stopRow = row
         return
       }
       case "inbox.enqueued":
@@ -1176,7 +1176,8 @@ export class Transcript {
     this.stopAsked = false
     const stop = this.stopRow
     this.stopRow = null
-    if (stop !== null) this.touch(stop, () => (stop.text = stop.text.slice(0, 1)))
+    // Once the turn has ended nothing is stopping any more: the row says what was asked, without the exit hint.
+    if (stop !== null) this.touch(stop, () => (stop.text = [span(stop.text[0]?.text.startsWith("stopping") ? "stop requested" : "shutdown requested", "dim")]))
     // Anything still open belongs to the turn that ended.
     for (const row of this.openText.values()) this.touch(row, () => (row.streaming = false))
     for (const row of this.openReasoning.values()) this.touch(row, () => (row.streaming = false))

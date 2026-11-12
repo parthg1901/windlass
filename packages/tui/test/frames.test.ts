@@ -47,7 +47,9 @@ describe("the showcase turn", () => {
 describe("scenarios a user must be able to read", () => {
   test("an interrupted command: the stop, the call's outcome, the ending", async () => {
     const frame = await played("cancel-while-one-tool-is-running", 100, 30)
-    expect(frame).toContain("■ stopping…")
+    // The turn has ended: the stop line says what was asked, not that something is still stopping.
+    expect(frame).toContain("■ stop requested")
+    expect(frame).not.toContain("stopping…")
     expect(frame).toMatch(/■ interrupted/)
   })
 
