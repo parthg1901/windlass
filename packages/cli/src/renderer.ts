@@ -209,7 +209,8 @@ export class PrettyRenderer implements Sink {
       const indent = " ".repeat(item.indent ?? 0)
       const tone = LINE_TONES[item.tone]
       // A path or a command is one word that may be longer than the line: it is broken, never cut.
-      for (const text of wrap(flatten(item.text), Math.max(10, this.width - indent.length)).flatMap((part) => hardWrap(part, Math.max(10, this.width - indent.length))))
+      const room = Math.max(10, this.width - indent.length - 1)
+      for (const text of wrap(flatten(item.text), room).flatMap((part) => hardWrap(part, room)))
         this.line("info", [seg(`${indent}${text}`, tone)])
     }
     this.drawStatus()

@@ -92,8 +92,16 @@ export class Screen {
     this.schedule()
   }
 
-  /** Shows the input with a prompt and, while it is empty, a dim hint. */
+  /** Shows the input with a prompt and, while it is empty, a dim hint. A question being asked keeps its place: this is the prompt it gives back. */
   show(prompt: string, hint = ""): void {
+    if (this.asking !== null) {
+      this.asking = { ...this.asking, prompt, hint }
+      return
+    }
+    this.display(prompt, hint)
+  }
+
+  private display(prompt: string, hint = ""): void {
     this.prompt = prompt
     this.hint = hint
     this.visible = true
@@ -158,7 +166,7 @@ export class Screen {
     if (asking !== null) {
       // Ctrl-C and Ctrl-D back out of the question; they do not reach the turn or leave the program.
       this.asking = null
-      this.show(asking.prompt, asking.hint)
+      this.display(asking.prompt, asking.hint)
       return asking.answer(action.kind === "submit" ? action.text : null)
     }
     const command = action.kind === "submit" ? sessionCommand(action.text) : null
@@ -169,7 +177,7 @@ export class Screen {
       ask: (question) =>
         new Promise((answer) => {
           this.asking = { answer, prompt: this.prompt, hint: this.hint }
-          this.show(question)
+          this.display(question)
         }),
     }
     this.command = this.command.then(() => runSessionCommand(command, this.session, io))
@@ -183,9 +191,11 @@ export class Screen {
   ask(question: string): Promise<string | null> {
     return new Promise((answer) => {
       // A question that was waiting is backed out of: one question at a time.
-      this.asking?.answer(null)
-      this.asking = { answer, prompt: this.asking?.prompt ?? this.prompt, hint: this.asking?.hint ?? this.hint }
-      this.show(question)
+      const before = this.asking
+      this.asking = null
+      before?.answer(null)
+      this.asking = { answer, prompt: before?.prompt ?? this.prompt, hint: before?.hint ?? this.hint }
+      this.display(question)
     })
   }
 

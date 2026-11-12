@@ -414,7 +414,9 @@ export class Transcript {
       case "spawn.started": {
         const work = event.data.work
         if (work.kind === "command") {
-          this.background.set(event.data.spawnId, { command: work.command, logPath: work.logPath, since: "time" in event ? event.time : this.now() })
+          // Only work started while this client watches runs here: one in the stored history (a parent's, for a fork, or
+          // an earlier process's) ended with that process, and the log says so when the session is opened there.
+          if (!replay) this.background.set(event.data.spawnId, { command: work.command, logPath: work.logPath, since: "time" in event ? event.time : this.now() })
           // Where its output is, as this machine names the file: the call's own output gives the sandbox's name for it.
           this.notice("◌", "dim", [span(`background ${event.data.spawnId} · `, "dim"), span(oneLine(work.command))], work.logPath === null ? [] : [[span("output: ", "dim"), span(work.logPath)]], replay, "work")
           return
