@@ -62,7 +62,25 @@ export interface LoginDeps {
 
 const USAGE = `usage: ${brand.binary} login [start [--no-browser] | finish | status | logout]`
 
+/** `login --help`: each form with what it does. */
+export const LOGIN_HELP = (() => {
+  const forms: [string, string[]][] = [
+    [`${brand.binary} login [start]`, ["sign in with ChatGPT: opens a browser when", "there is one, otherwise prints the address", "and asks for the page you ended on (pasted,", "not shown)"]],
+    [`  --no-browser`, ["print the address, open no browser"]],
+    [`${brand.binary} login finish`, ["finish a sign-in started elsewhere from the", "pasted address"]],
+    [`${brand.binary} login status`, ["who is signed in and until when (never the", "tokens); exit code 1 when nobody is"]],
+    [`${brand.binary} login logout`, ["forget the saved sign-in on this machine"]],
+  ]
+  const width = Math.max(...forms.map(([form]) => form.length)) + 3
+  const rows = forms.flatMap(([form, [first = "", ...rest]]) => [`  ${form.padEnd(width)}${first}`, ...rest.map((line) => `  ${" ".repeat(width)}${line}`)])
+  return `${USAGE}\n\n${rows.join("\n")}\n`
+})()
+
 export async function runLogin(argv: readonly string[], io: LoginIo, deps: LoginDeps = {}): Promise<number> {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    io.stdout.write(LOGIN_HELP)
+    return 0
+  }
   const config = deps.config ?? CHATGPT_AUTH
   const [command = "start", ...rest] = argv
   const flags = new Set(rest)
