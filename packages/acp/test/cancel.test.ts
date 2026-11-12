@@ -14,23 +14,28 @@ afterEach(async () => {
   expect(violations).toEqual([])
 })
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
+/**
+ * The command sleeps for a duration nothing else on the machine sleeps for,
+ * so the host can tell whether it still runs. The command runs in the
+ * sandbox, in a process namespace of its own: the PID it sees for itself is
+ * not one the host knows, so the file it writes only says that it started.
+ */
+const SLEEP = "30.4172"
+
+function alive(_started: number): boolean {
+  // The whole command line, so only the command itself matches, not a shell or a wrapper that names it.
+  return Bun.spawnSync(["pgrep", "-f", `^sleep ${SLEEP.replace(".", "\\.")}$`]).exitCode === 0
 }
 
 async function pidIn(path: string): Promise<number> {
   await until(() => Bun.file(path).size > 0, 5000, "the command to write its pid")
+  await until(() => alive(0), 5000, "the command to be running")
   return Number((await Bun.file(path).text()).trim())
 }
 
 test("cancel mid-command: the prompt answers cancelled after the last update, and the command is stopped", async () => {
   h = await startHarness({
-    responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30" })], [script.text("never reached")]],
+    responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30.4172" })], [script.text("never reached")]],
   })
   await h.initialize()
   const harness = h
@@ -57,7 +62,7 @@ test("cancel mid-command: the prompt answers cancelled after the last update, an
 
 test("a prompt sent right after a cancel is not withdrawn: it starts the next execution", async () => {
   h = await startHarness({
-    responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30" })], [script.text("Fresh answer.")]],
+    responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30.4172" })], [script.text("Fresh answer.")]],
   })
   await h.initialize()
   const harness = h
@@ -72,7 +77,7 @@ test("a prompt sent right after a cancel is not withdrawn: it starts the next ex
 })
 
 test("a client that disconnects mid-turn: the session is shut down resumably and no command is left running", async () => {
-  h = await startHarness({ responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30" })]] })
+  h = await startHarness({ responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30.4172" })]] })
   await h.initialize()
   const harness = h
   const sessionId = await harness.newSession()

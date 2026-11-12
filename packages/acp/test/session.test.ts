@@ -36,7 +36,7 @@ test("session/load replays the stored history as updates, then reports the curre
 
   const second = await start({ dataDir: first.dataDir })
   const response = await second.connection.agent.request(methods.agent.session.load, { sessionId, cwd: first.workspace, mcpServers: [] })
-  expect(response.configOptions?.map((option) => option.currentValue)).toEqual(["test-model", "default"])
+  expect(response.configOptions?.map((option) => option.currentValue)).toEqual(["test-model", "default", "auto"])
   const replayed = second.of(sessionId)
   expect(replayed.map((update) => update.sessionUpdate)).toEqual([
     "user_message_chunk",

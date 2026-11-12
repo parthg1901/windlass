@@ -7,7 +7,7 @@
  * - `JsonSink`: every event as one JSON line, nothing else on stdout.
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
-import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand } from "@light-harness/core"
+import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
 import { callArgument, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatDuration, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
@@ -118,6 +118,8 @@ export class PrettyRenderer implements Sink {
   private instructionFiles = ""
   /** The stop of the running execution: asked for by this CLI (with the exit hint pending), shown, or neither. */
   private stop: "hint" | "shown" | null = null
+  /** The call whose approval question waits for the user's answer. */
+  private asking: string | null = null
   /** The next text block continues a response that a provider error cut off. */
   private continuing = false
   private status: string | null = null
@@ -194,6 +196,51 @@ export class PrettyRenderer implements Sink {
         for (const line of wrap(flatten(event.message), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
         return
       }
+      case "notice": {
+        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "project setting not followed" : "checks not run"
+        this.line("info", [seg(`${SYMBOL.unknown} ${what}: `, "yellow")])
+        for (const part of event.message.split("\n")) for (const line of wrap(flatten(part), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+        return
+      }
+      case "approval.requested": {
+        // The question, in full: what would run and what each answer means. The choices are asked for at the prompt.
+        const question = event.data.question
+        this.asking = key(event.data.messageId, event.data.callId)
+        this.line("info", [seg("? ", ["yellow", "bold"]), seg(flatten(question.title), "bold")])
+        for (const part of question.subject.split("\n")) for (const line of wrap(sanitize(part), this.width - 4)) this.line("info", [seg(`    ${line}`)])
+        for (const detail of question.details) for (const line of wrap(flatten(detail), this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        for (const choice of question.choices)
+          if (choice.remembers !== null) for (const line of wrap(`${choice.label} remembers ${flatten(choice.remembers)}`, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        this.drawStatus()
+        return
+      }
+      case "approval.answered": {
+        this.asking = null
+        const note = event.data.note === null ? "" : ` · your note: ${flatten(event.data.note)}`
+        const kept = event.data.grants.length === 0 ? "" : event.data.choice === "project" ? ", remembered for this project" : ", remembered for this session"
+        if (event.data.approve) this.line("info", [seg(`${SYMBOL.ok} `, "green"), seg(`allowed${event.data.choice === "once" ? " once" : kept}${note}`, "dim")])
+        else this.line("info", [seg(`${SYMBOL.notRun} `, "yellow"), seg(`not allowed${note}`, "dim")])
+        this.drawStatus()
+        return
+      }
+      case "approval.denied": {
+        // Refused without a question. An unattended run says so: nothing waited, and this is what became of the call.
+        const needs = event.data.needs.map(describeNeed)
+        const why =
+          event.data.reason === "unattended"
+            ? `needs approval for ${needs.join(", ")}; nobody is here to give it, so it was refused${event.data.stop ? " and the run ends (--unattended stop)" : " (--unattended deny)"}`
+            : "refused by the approval policy"
+        for (const line of wrap(`not run: ${why}`, this.width - 2)) this.line("info", [seg(`${SYMBOL.notRun} `, "yellow"), seg(line, "yellow")])
+        return
+      }
+      case "taint.noticed":
+        this.line("info", [seg(`${SYMBOL.unknown} untrusted content: `, "yellow")])
+        for (const line of wrap(`${flatten(event.data.text)} From here on, anything that can send data out asks again, and earlier approvals for it no longer apply. /clear-taint says you trust what is there.`, this.width - 2))
+          this.line("info", [seg(`  ${line}`, "yellow")])
+        return
+      case "taint.cleared":
+        this.line("info", [seg(`${SYMBOL.note} the conversation is trusted again (/clear-taint)`, "dim")])
+        return
       case "text.ended":
         return this.textEnded(event.data.messageId, event.data.text)
       case "reasoning.ended":
@@ -794,6 +841,8 @@ export class PrettyRenderer implements Sink {
 
   private computeStatus(): string | null {
     if (!this.executing) return null
+    // Not hung: the turn waits for the user.
+    if (this.asking !== null && this.stop !== "shown") return "? waiting for your answer · Ctrl-C stops the turn"
     if (this.running.size > 0) {
       const [first] = this.running
       const call = first === undefined ? undefined : this.calls.get(first)

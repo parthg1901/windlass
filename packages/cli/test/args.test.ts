@@ -21,6 +21,8 @@ describe("parseArgs", () => {
       model: null,
       effort: null,
       maxSteps: null,
+      approval: null,
+      unattended: null,
       cwd: null,
       output: "pretty",
       showReasoning: false,

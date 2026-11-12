@@ -53,6 +53,7 @@ import {
   EngineError,
   type EngineEvent,
   type EngineSession,
+  type EventData,
   type Harness,
   type HandEditPolicy,
   type MessageId,
@@ -65,9 +66,13 @@ import {
   type SessionSettings,
   type StoredEvent,
   StoreError,
+  approvalModes,
   brand,
 } from "@light-harness/core"
 import {
+  APPROVAL_META,
+  type ApprovalRequestMeta,
+  type ApprovalStateResult,
   type ClientMeta,
   type ErrorData,
   EXT,
@@ -89,7 +94,8 @@ export const SIGN_IN_HINT = `run \`bun scripts/login.ts start\` in the ${brand.n
 /** The one auth method: the ChatGPT-plan sign-in, which the user completes outside the client. */
 export const AUTH_METHOD_ID = "chatgpt"
 
-export const CONFIG = { model: "model", effort: "effort" } as const
+export const CONFIG = { model: "model", effort: "effort", approval: "approval" } as const
+const UNATTENDED = ["deny", "stop"] as const
 const DEFAULT_EFFORT_VALUE = "default"
 const LIST_PAGE = 100
 
@@ -120,13 +126,15 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve],
-  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint],
+  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice],
   promptMeta: [META.delivery, META.maxSteps],
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort"],
+  openMeta: ["model", "effort", "approval", "unattended", "attended"],
+  /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call. */
+  permissionRequests: ["revert", APPROVAL_META],
 } as const
 
 function buildAgent(state: ConnectionState): AgentApp {
@@ -162,6 +170,14 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.resolve, parseObject, ({ params }) =>
       state.resolve(requireString(params, "cwd"), optionalString(params, "session")),
     )
+    .onRequest(EXT.approval, parseObject, ({ params }) =>
+      state.approval(requireString(params, "sessionId"), {
+        mode: oneOfOrNull(params.mode, approvalModes, "mode"),
+        unattended: oneOfOrNull(params.unattended, UNATTENDED, "unattended"),
+        attended: typeof params.attended === "boolean" ? params.attended : null,
+      }),
+    )
+    .onRequest(EXT.clearTaint, parseObject, ({ params }) => state.clearTaint(requireString(params, "sessionId")))
 }
 
 interface Pending {
@@ -244,11 +260,12 @@ class ConnectionState {
     if (asked.model !== null) await this.validate(cwd, asked)
     const settings = await this.harness.settingsFor(cwd, asked)
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings }))
+    applyApproval(session, meta)
     const view = this.attach(session, cwd, session.projection().lastSeq)
     // A full-fidelity client gets the session from its first event, as the engine's own stream has it.
     if (this.fidelity.events) for (const item of session.readEvents()) view.queueEvent(item, false)
     await view.flushed()
-    return { sessionId: session.id, configOptions: await this.configOptions(view.settings) }
+    return { sessionId: session.id, configOptions: await this.configOptions(view.settings, view.session) }
   }
 
   async loadSession(sessionId: string, cwd: string, replay: boolean, meta: OpenMeta | null) {
@@ -271,6 +288,7 @@ class ConnectionState {
     // turn) stays suspended until the user says something, so their words are in front of the model in the first
     // step after the restart. A session another process holds is refused, with that process named.
     const session = this.engineErrors(() => this.harness.engine.openSession(sessionId as SessionId, { resume: "wait" }), sessionId)
+    applyApproval(session, meta)
     // Read, translate and queue the stored log before listening, all in this synchronous block, so that a live
     // event either is in the log read here or arrives after it, never both and never neither.
     const history = session.readEvents()
@@ -291,7 +309,7 @@ class ConnectionState {
       session.setSettings({ model: asked.model ?? current.model, reasoningEffort: asked.effort ?? current.reasoningEffort })
     }
     await view.flushed()
-    return { configOptions: await this.configOptions(view.settings) }
+    return { configOptions: await this.configOptions(view.settings, view.session) }
   }
 
   async listSessions(cwd: string | null, cursor: string | null, archived = false): Promise<ListSessionsResponse> {
@@ -344,6 +362,11 @@ class ConnectionState {
   async setConfigOption(sessionId: string, configId: string, value: string) {
     const view = this.requireView(sessionId)
     const current = view.settings
+    if (configId === CONFIG.approval) {
+      // The user's own choice for this session; the project's file can still only tighten it.
+      view.session.setApproval({ mode: oneOfOrNull(value, approvalModes, "value") ?? "auto" })
+      return { configOptions: await this.configOptions(current, view.session) }
+    }
     const models = await this.catalog.list()
     let next: SessionSettings
     if (configId === CONFIG.model) {
@@ -361,7 +384,7 @@ class ConnectionState {
     } else throw RequestError.invalidParams({ configId }, `unknown config option ${configId}`)
     view.session.setSettings(next)
     view.requested = next
-    return { configOptions: await this.configOptions(next) }
+    return { configOptions: await this.configOptions(next, view.session) }
   }
 
   // ---- the prompt turn ----
@@ -459,6 +482,85 @@ class ConnectionState {
     return null
   }
 
+  /**
+   * The approval question about one tool call, as a permission request. The
+   * call is the one the client already shows (`<message>/<call>`); the options
+   * are the question's choices under their own IDs (`once`, `session`,
+   * `project`, `deny`), each named with what it remembers. Whatever is not a
+   * selection (a cancelled request, a client that cannot answer) declines.
+   */
+  async askApproval(view: SessionView, data: EventData<"approval.requested">): Promise<void> {
+    const client = this.client
+    const target = { messageId: data.messageId, callId: data.callId }
+    const decline = () => void this.guard(() => view.session.answer(target, { choice: "deny" }))
+    if (client === null) return decline()
+    const question = data.question
+    const meta: ApprovalRequestMeta = { messageId: data.messageId, callId: data.callId, question, needs: data.needs, then: data.then }
+    const request: RequestPermissionRequest = {
+      sessionId: view.session.id,
+      toolCall: {
+        toolCallId: `${data.messageId}/${data.callId}`,
+        title: question.title,
+        status: "pending",
+        content: [{ type: "content", content: { type: "text", text: [question.subject, ...question.details].join("\n") } }],
+      },
+      options: question.choices.map((choice) => ({
+        optionId: choice.id,
+        name: choice.remembers === null ? choice.label : `${choice.label} (remembers ${choice.remembers})`,
+        kind: choice.id === "once" ? ("allow_once" as const) : choice.id === "deny" ? ("reject_once" as const) : ("allow_always" as const),
+      })),
+      _meta: { [META.capabilities]: { [APPROVAL_META]: meta } },
+    }
+    const response = await client.request(methods.client.session.requestPermission, request).catch((error: unknown) => {
+      if (!this.connectionClosed) this.log.warn(`the client could not be asked about a tool call in ${view.session.id}: ${describeError(error)}`)
+      return null
+    })
+    const outcome = response?.outcome
+    if (outcome?.outcome !== "selected") return decline()
+    const chosen = question.choices.find((choice) => choice.id === outcome.optionId)
+    if (chosen === undefined) return decline()
+    const note = (namespaced(response?._meta) as { note?: unknown } | null)?.note
+    this.guard(() => view.session.answer(target, { choice: chosen.id, ...(typeof note === "string" ? { note } : {}) }))
+  }
+
+  /** `_<ns>/approval`: how the session's calls are approved, after setting what the request names. */
+  approval(sessionId: string, change: { readonly mode: string | null; readonly unattended: string | null; readonly attended: boolean | null }): ApprovalStateResult {
+    const view = this.requireView(sessionId)
+    const session = view.session
+    if (change.attended !== null) session.setAttended(change.attended)
+    if (change.mode !== null || change.unattended !== null)
+      session.setApproval({
+        ...(change.mode === null ? {} : { mode: change.mode as (typeof approvalModes)[number] }),
+        ...(change.unattended === null ? {} : { unattended: change.unattended as (typeof UNATTENDED)[number] }),
+      })
+    const state = session.approval()
+    if (state === null) return { sessionId, enabled: false, mode: null, unattended: null, attended: false, sandboxUnavailable: null, tainted: false, taint: null, ignored: [] }
+    return {
+      sessionId,
+      enabled: true,
+      mode: state.policy.mode,
+      unattended: state.policy.unattended,
+      attended: state.attended,
+      sandboxUnavailable: state.sandbox.available ? null : { reason: state.sandbox.reason, remedy: state.sandbox.remedy },
+      tainted: state.taint.tainted,
+      taint: session.projection().session.approval?.taint?.text ?? null,
+      ignored: state.ignored,
+    }
+  }
+
+  clearTaint(sessionId: string) {
+    return { cleared: this.requireView(sessionId).session.clearTaint() }
+  }
+
+  /** Runs something that may find the session closed in the meantime; that is no error worth a log line. */
+  private guard(work: () => unknown): void {
+    try {
+      work()
+    } catch (error) {
+      if (!(error instanceof EngineError)) this.log.warn(`could not record an answer: ${describeError(error)}`)
+    }
+  }
+
   withdraw(sessionId: string, messageId: string) {
     const view = this.requireView(sessionId)
     return { withdrawn: view.session.withdraw(messageId as MessageId) }
@@ -528,8 +630,8 @@ class ConnectionState {
 
   // ---- shared ----
 
-  async configOptions(settings: SessionSettings): Promise<SessionConfigOption[]> {
-    return configOptionsFor(settings, await this.catalog.list())
+  async configOptions(settings: SessionSettings, session?: EngineSession): Promise<SessionConfigOption[]> {
+    return configOptionsFor(settings, await this.catalog.list(), session?.approval()?.policy.mode ?? null)
   }
 
   sendUpdate(sessionId: string, update: SessionUpdate): Promise<void> {
@@ -774,6 +876,11 @@ class SessionView {
     if (item.type === "settings.changed") this.requested = null
     if (this.connection.fidelity.events) this.queueEvent(item, false)
     for (const output of this.translator.translate(item)) this.handleOutput(output, false, seq)
+    // The question goes out after the events and updates that lead up to it, so the client can show the call it is about.
+    if (item.type === "approval.requested") {
+      const data = item.data
+      this.enqueue(async () => void this.connection.askApproval(this, data))
+    }
   }
 
   private handleOutput(output: Output, replay: boolean, seq: number | null): void {
@@ -791,7 +898,7 @@ class SessionView {
       case "settings": {
         const settings = output.settings
         this.enqueue(async () =>
-          this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(settings) }),
+          this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(settings, this.session) }),
         )
         return
       }
@@ -841,6 +948,7 @@ class SessionView {
 function failure(end: Extract<TurnEnd, { kind: "failed" }>): RequestError {
   if (end.providerError?.kind === "auth")
     return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message }) }, `${end.message} To sign in, ${SIGN_IN_HINT}.`)
+  if (end.approvalRequired === true) return new RequestError(-32603, end.message, errorData({ reason: "approval_required", message: end.message }))
   const data: Record<string, unknown> = { [META.capabilities]: { reason: "execution_failed" } }
   if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind }
   return new RequestError(-32603, end.message, data)
@@ -873,7 +981,38 @@ function openMeta(meta: unknown): OpenMeta | null {
     if (typeof field !== "string" || field === "") throw RequestError.invalidParams({ [key]: field }, `_meta.${META.capabilities}.${key} must be a non-empty string`)
     return field
   }
-  return { model: text("model"), effort: text("effort"), archived: value.archived === true }
+  return {
+    model: text("model"),
+    effort: text("effort"),
+    archived: value.archived === true,
+    approval: oneOfOrNull(value.approval, approvalModes, `_meta.${META.capabilities}.approval`),
+    unattended: oneOfOrNull(value.unattended, UNATTENDED, `_meta.${META.capabilities}.unattended`),
+    ...(typeof value.attended === "boolean" ? { attended: value.attended } : {}),
+  }
+}
+
+/** A value that is one of `allowed`, or `null` when it is absent. Anything else is a bad request. */
+function oneOfOrNull<const T extends readonly string[]>(value: unknown, allowed: T, name: string): T[number] | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== "string" || !allowed.includes(value)) throw RequestError.invalidParams({ [name]: value }, `${name} must be one of: ${allowed.join(", ")}`)
+  return value
+}
+
+/**
+ * What a client says about approval when it opens a session: whether a
+ * person is there to answer (yes, unless it says otherwise: an ACP client
+ * can answer `session/request_permission`), and the user's own mode and
+ * unattended behaviour for this session.
+ */
+function applyApproval(session: EngineSession, meta: OpenMeta | null): void {
+  session.setAttended(meta?.attended ?? true)
+  const mode = meta?.approval ?? null
+  const unattended = meta?.unattended ?? null
+  if (mode !== null || unattended !== null)
+    session.setApproval({
+      ...(mode === null ? {} : { mode: mode as (typeof approvalModes)[number] }),
+      ...(unattended === null ? {} : { unattended: unattended as (typeof UNATTENDED)[number] }),
+    })
 }
 
 function stepLimit(value: unknown): number | undefined {
@@ -920,7 +1059,7 @@ function parseRevertParams(raw: unknown): RevertParams {
   }
 }
 
-export function configOptionsFor(settings: SessionSettings, models: readonly ModelEntry[]): SessionConfigOption[] {
+export function configOptionsFor(settings: SessionSettings, models: readonly ModelEntry[], approval: string | null = null): SessionConfigOption[] {
   const entry = models.find((model) => model.id === settings.model)
   const modelOptions = models.map((model) => ({ value: model.id, name: model.name }))
   if (entry === undefined) modelOptions.unshift({ value: settings.model, name: settings.model })
@@ -934,6 +1073,24 @@ export function configOptionsFor(settings: SessionSettings, models: readonly Mod
   return [
     { id: CONFIG.model, name: "Model", category: "model", type: "select", currentValue: settings.model, options: modelOptions },
     { id: CONFIG.effort, name: "Reasoning effort", category: "thought_level", type: "select", currentValue: effort, options: effortOptions },
+    // Offered when the approval layer is on. The value is the mode in force, which a project file may have tightened.
+    ...(approval === null
+      ? []
+      : [
+          {
+            id: CONFIG.approval,
+            name: "Approvals",
+            description: "When a tool call asks before it runs",
+            category: "mode" as const,
+            type: "select" as const,
+            currentValue: approval,
+            options: [
+              { value: "ask", name: "Ask", description: "Reads run; every edit, command and network call asks" },
+              { value: "auto", name: "Auto", description: "Edits in the workspace and sandboxed commands run; leaving the sandbox asks" },
+              { value: "full", name: "Full access", description: "Everything runs without the sandbox and without asking" },
+            ],
+          },
+        ]),
   ]
 }
 

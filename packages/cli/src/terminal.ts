@@ -171,6 +171,20 @@ export class Screen {
     this.command = this.command.then(() => runSessionCommand(command, this.session, io))
   }
 
+  /**
+   * Puts a question in place of the prompt and resolves with what is
+   * submitted next, or `null` when the user backs out (Ctrl-C, Ctrl-D). The
+   * way `/undo` asks, for anything else that must ask while the input is open.
+   */
+  ask(question: string): Promise<string | null> {
+    return new Promise((answer) => {
+      // A question that was waiting is backed out of: one question at a time.
+      this.asking?.answer(null)
+      this.asking = { answer, prompt: this.asking?.prompt ?? this.prompt, hint: this.asking?.hint ?? this.hint }
+      this.show(question)
+    })
+  }
+
   /** Resolves when no `/undo` or `/redo` is running. */
   commandsSettled(): Promise<void> {
     return this.command

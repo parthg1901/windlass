@@ -37,9 +37,10 @@
  * - `listSessions`: `session/list`; `listModels`: `<prefix>/models`.
  */
 import { type ClientConnection, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type Stream, client, methods, ndJsonStream } from "@agentclientprotocol/sdk"
-import { EXT, META } from "@light-harness/acp/extensions"
-import { type HarnessOptions, type MessageId, type RevertPlan, type RevertResult, type SessionId, brand } from "@light-harness/core"
+import { APPROVAL_META, type ApprovalRequestMeta, EXT, META } from "@light-harness/acp/extensions"
+import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertPlan, type RevertResult, type SessionId, brand } from "@light-harness/core"
 import {
+  type Approver,
   type Engine,
   type EngineEvent,
   EngineUnavailable,
@@ -186,7 +187,8 @@ class Link {
   }
 
   async open(request: OpenRequest): Promise<Session> {
-    const meta = { [NS]: { model: request.model, effort: request.effort } }
+    // Who is there to answer, and the user's own mode and unattended behaviour, said when the session is opened.
+    const meta = { [NS]: { model: request.model, effort: request.effort, approval: request.approval ?? null, unattended: request.unattended ?? null, attended: request.attended ?? false } }
     const target = request.session
     try {
       if (target.kind === "new") {
@@ -294,7 +296,14 @@ class Link {
 
   private async answer(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const session = this.sessions.get(params.sessionId)
-    const meta = params._meta?.[NS] as { plan?: RevertPlan } | undefined
+    const meta = params._meta?.[NS] as { plan?: RevertPlan; [APPROVAL_META]?: ApprovalRequestMeta } | undefined
+    const approval = meta?.[APPROVAL_META]
+    if (approval !== undefined) {
+      // The approval of a tool call: the same request, answered by whoever answers this session's questions.
+      const reply = session === undefined ? null : await session.approve(approval)
+      if (reply === null) return { outcome: { outcome: "cancelled" } }
+      return { outcome: { outcome: "selected", optionId: reply.choice }, ...(reply.note === undefined ? {} : { _meta: { [NS]: { note: reply.note } } }) }
+    }
     const answer = session === undefined || meta?.plan === undefined ? null : await session.ask(meta.plan)
     return { outcome: answer === null ? { outcome: "cancelled" } : { outcome: "selected", optionId: answer } }
   }
@@ -309,6 +318,7 @@ class Link {
 class AcpSession implements Session {
   private readonly queue = new EventQueue<EngineEvent>()
   private question: HandEditQuestion | null = null
+  private approver: Approver | null = null
   private closing: Promise<void> | null = null
 
   constructor(
@@ -363,6 +373,26 @@ class AcpSession implements Session {
     if (question === null) return null
     const answer = await question(plan)
     return answer === "overwrite" || answer === "keep" ? answer : null
+  }
+
+  setApprover(approver: Approver | null): void {
+    this.approver = approver
+  }
+
+  /** The approval question the server put, answered by the session's approver. `null`: nobody answered, which declines. */
+  async approve(asked: ApprovalRequestMeta): Promise<{ readonly choice: string; readonly note?: string } | null> {
+    const approver = this.approver
+    if (approver === null) return null
+    return approver({ messageId: asked.messageId as MessageId, callId: asked.callId as CallId, question: asked.question as Question })
+  }
+
+  async clearTaint(): Promise<boolean> {
+    if (this.link.gone) return false
+    try {
+      return (await this.link.agent.request<{ cleared: boolean }>(EXT.clearTaint, { sessionId: this.id })).cleared
+    } catch (error) {
+      throw new Error(this.link.unavailable(error).message)
+    }
   }
 
   close(): Promise<void> {

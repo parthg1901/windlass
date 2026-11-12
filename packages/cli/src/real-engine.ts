@@ -14,6 +14,7 @@
  * session closes the harness; other processes carry on in theirs.
  */
 import {
+  type ChoiceId,
   EngineError,
   type EngineSession,
   type Harness,
@@ -24,7 +25,7 @@ import {
   createHarness,
 } from "@light-harness/core"
 import { askLocally } from "./commands.ts"
-import { type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type Session, type SessionSummary } from "./engine.ts"
+import { type Approver, type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type Session, type SessionSummary } from "./engine.ts"
 
 export { DEFAULT_EFFORT, DEFAULT_MODEL } from "@light-harness/core"
 
@@ -42,6 +43,27 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
       const signIn = await harness.signIn()
       if (!signIn.signedIn) throw new EngineUnavailable(`${signIn.message} (${SIGN_IN})`)
       const session = await unavailable(() => sessionFor(harness, request))
+      // The user's own choices for this run, and whether anyone is at the terminal to answer.
+      session.setAttended(request.attended ?? false)
+      if (request.approval != null || request.unattended != null)
+        session.setApproval({ ...(request.approval == null ? {} : { mode: request.approval }), ...(request.unattended == null ? {} : { unattended: request.unattended }) })
+      let approver: Approver | null = null
+      // A question is durable before it is put: it is answered by the approver, and declined when there is none.
+      session.subscribe((item) => {
+        if (item.type !== "approval.requested") return
+        const target = { messageId: item.data.messageId, callId: item.data.callId }
+        const answer = (reply: { readonly choice: ChoiceId; readonly note?: string } | null) => {
+          try {
+            // Backing out of the question stops the turn, which withdraws it.
+            if (reply === null) session.interrupt()
+            else session.answer(target, reply)
+          } catch {
+            // The session was closed in the meantime.
+          }
+        }
+        if (approver === null) return answer({ choice: "deny" })
+        void approver({ ...target, question: item.data.question }).then(answer, () => answer({ choice: "deny" }))
+      })
       return {
         id: session.id,
         events: session.events,
@@ -53,6 +75,10 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
         interrupt: () => session.interrupt(),
         revert: (revert = {}) => askLocally(session.revert, revert),
         undoRevert: (undo = {}) => askLocally(session.undoRevert, undo),
+        setApprover: (next) => {
+          approver = next
+        },
+        clearTaint: async () => session.clearTaint(),
         close: () => harness.close(),
       }
     },

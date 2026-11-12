@@ -36,7 +36,7 @@ import { outcomeSuffix, parseInput, progressContent, rawInput, settledContent, t
 /** How an execution ended, for the prompt requests waiting on it. */
 export type TurnEnd = (
   | { readonly kind: "stop"; readonly stopReason: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled" }
-  | { readonly kind: "failed"; readonly message: string; readonly providerError: ProviderError | null }
+  | { readonly kind: "failed"; readonly message: string; readonly providerError: ProviderError | null; readonly approvalRequired?: true }
 ) & {
   /** What `<prefix>/turn` says about it, for the `_meta` of the prompt response. */
   readonly turn?: TurnNotification
@@ -194,7 +194,7 @@ export class Translator {
           ? { kind: "stop", stopReason: "refusal" }
           : this.turn.stepLimit
             ? { kind: "stop", stopReason: "max_turn_requests" }
-            : { kind: "failed", message: item.data.message, providerError: this.turn.providerError }
+            : { kind: "failed", message: item.data.message, providerError: this.turn.providerError, ...(item.data.cause === "approval" ? { approvalRequired: true as const } : {}) }
         out.push(...this.finishTools(update), ...this.end(end, replay, { executionId: item.data.executionId, outcome: "failed", message: item.data.message }))
         break
       }
@@ -296,6 +296,34 @@ export class Translator {
       case "diagnostic":
         out.push({ type: "ext", method: EXT.diagnostic, params: { sessionId: this.options.sessionId, kind: item.kind, message: item.message } })
         if (this.options.notices) update({ sessionUpdate: "notice", severity: "error", title: `Internal problem (${item.kind.replace(/_/g, " ")})`, description: item.message })
+        break
+      // ---- approval ----
+      // The question itself is put by the server as `session/request_permission` (live only). What is shown here is
+      // the call's state: waiting, and for a full replay the answer it got.
+      case "approval.requested": {
+        const tool = this.tools.get(toolKey(item.data.messageId, item.data.callId))
+        if (tool !== undefined && !replay) update({ sessionUpdate: "tool_call_update", toolCallId: tool.id, status: "pending", title: `${toolTitle(tool.name, tool.args)} (waiting for approval)` })
+        break
+      }
+      case "approval.answered": {
+        const tool = this.tools.get(toolKey(item.data.messageId, item.data.callId))
+        if (tool !== undefined && !replay) update({ sessionUpdate: "tool_call_update", toolCallId: tool.id, status: "pending", title: toolTitle(tool.name, tool.args) })
+        break
+      }
+      // A denial is the call's own result (`tool.settled` follows in the same append).
+      case "approval.denied":
+        break
+      case "taint.noticed":
+        out.push({ type: "ext", method: EXT.taint, params: { sessionId: this.options.sessionId, tainted: true, text: item.data.text, source: item.data.source, ...(replay ? { replay: true } : {}) } })
+        if (!replay && this.options.notices)
+          update({ sessionUpdate: "notice", severity: "warning", title: "Untrusted content is in this conversation", description: `${item.data.text} Anything that can send data out asks again from here on.` })
+        break
+      case "taint.cleared":
+        out.push({ type: "ext", method: EXT.taint, params: { sessionId: this.options.sessionId, tainted: false, ...(replay ? { replay: true } : {}) } })
+        break
+      case "notice":
+        out.push({ type: "ext", method: EXT.notice, params: { sessionId: this.options.sessionId, kind: item.kind, message: item.message } })
+        if (this.options.notices) update({ sessionUpdate: "notice", severity: "warning", title: noticeTitle(item.kind), description: item.message })
         break
       // Facts with nothing to show: the frozen prompt, instruction updates, the claim's bookkeeping, history ranges.
       case "baseline.set":
@@ -485,4 +513,10 @@ function stepErrorText(error: EventData<"step.failed">["error"]): string {
     case "internal":
       return error.message
   }
+}
+
+function noticeTitle(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run"): string {
+  if (kind === "sandbox_unavailable") return "Commands cannot be sandboxed on this machine"
+  if (kind === "approval_ignored") return "A project setting was not followed"
+  return "The project's checks were not run"
 }

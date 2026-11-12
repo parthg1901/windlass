@@ -203,13 +203,14 @@ test("model and effort are config options; a change is applied at the next bound
   expect(model.configOptions.map((option) => [option.id, option.currentValue])).toEqual([
     ["model", "other-model"],
     ["effort", "default"],
+    ["approval", "auto"],
   ])
   await expect(harness.connection.agent.request(methods.agent.session.setConfigOption, { sessionId, configId: "model", value: "nope" })).rejects.toMatchObject({ code: -32602 })
   await expect(harness.connection.agent.request(methods.agent.session.setConfigOption, { sessionId, configId: "colour", value: "red" })).rejects.toMatchObject({ code: -32602 })
   expect((await prompt(harness, sessionId, "hi")).stopReason).toBe("end_turn")
   expect(JSON.stringify(harness.provider.requests[0])).toContain("other-model")
   const updates = harness.of(sessionId, "config_option_update") as { configOptions: { id: string; currentValue: string }[] }[]
-  expect(updates.at(-1)!.configOptions.map((option) => option.currentValue)).toEqual(["other-model", "default"])
+  expect(updates.at(-1)!.configOptions.map((option) => option.currentValue)).toEqual(["other-model", "default", "auto"])
 })
 
 test("reaching the step limit ends the turn with max_turn_requests", async () => {

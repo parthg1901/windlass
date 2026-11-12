@@ -15,3 +15,24 @@ export * from "./tools/index.ts"
 export * from "./instructions/index.ts"
 export * from "./engine/index.ts"
 export * from "./assembly.ts"
+export {
+  type ApprovalMode,
+  type ApprovalPolicy,
+  type ApprovalSection,
+  type CallRun,
+  type Choice,
+  type ChoiceId,
+  type Grant,
+  type Need,
+  type PathFact,
+  type Question,
+  type RunDecision,
+  type TaintSource,
+  type TaintState,
+  type UnattendedAction,
+  DEFAULT_APPROVAL,
+  approvalModes,
+  describeNeed,
+  redact,
+} from "./approval/index.ts"
+export { type CommandSandbox, type CommandSandboxOptions, createCommandSandbox, workspacePolicy } from "./sandbox/command.ts"

@@ -32,7 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { EphemeralEvent, HandEditPolicy, MessageId, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
+import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
 export type EngineEvent = StoredEvent | EphemeralEvent
@@ -49,6 +49,20 @@ export interface SessionRevertOptions extends Omit<RevertOptions, "handEdits"> {
   /** With `handEdits: "ask"`: asked once the engine finds files edited by hand that the restore would overwrite. */
   readonly confirm?: HandEditQuestion
 }
+
+/** The question about one tool call that waits for the user's answer (`approval.requested`). */
+export interface ApprovalRequest {
+  readonly messageId: MessageId
+  readonly callId: CallId
+  readonly question: Question
+}
+
+/**
+ * Answers an approval question: one of its choices, with a note if the user
+ * wrote one, or `null` when the user backed out of it. Backing out stops the
+ * turn: the question is withdrawn and the call does not run.
+ */
+export type Approver = (request: ApprovalRequest) => Promise<{ readonly choice: ChoiceId; readonly note?: string } | null>
 
 /** What the CLI suggests when the saved sign-in is missing or rejected. */
 export const SIGN_IN_ADVICE = "sign in with ChatGPT, then try again"
@@ -76,6 +90,12 @@ export interface OpenRequest {
    * number of at least 1; `null` keeps the engine's default.
    */
   readonly maxSteps: number | null
+  /** `--approval <mode>`: `ask`, `auto` or `full`; `null` keeps the configuration's (default `auto`). */
+  readonly approval?: "ask" | "auto" | "full" | null
+  /** `--unattended <deny|stop>`: what a call that would ask becomes when nobody can answer; `null` keeps the configuration's (default `deny`). */
+  readonly unattended?: "deny" | "stop" | null
+  /** Whether a person is at this terminal to answer questions: the interactive mode. A one-shot run, `--json` and a pipe are unattended, which is the default. */
+  readonly attended?: boolean
 }
 
 /** How a message sent with `Session.send` reaches the model; the `delivery` of its `inbox.enqueued`. */
@@ -149,6 +169,14 @@ export interface Session {
   revert?(options?: SessionRevertOptions): Promise<RevertResult>
   /** `/redo`: undoes the latest revert. Only while idle. */
   undoRevert?(options?: Omit<SessionRevertOptions, "messageId">): Promise<RevertResult>
+  /**
+   * Who answers the session's approval questions. Without one (and always in
+   * an unattended run) a question is declined. Optional: an engine without
+   * the approval layer never asks.
+   */
+  setApprover?(approver: Approver | null): void
+  /** `/clear-taint`: the user says the conversation is trustworthy again. Resolves with whether it was tainted. */
+  clearTaint?(): Promise<boolean>
   /** Stops anything still running (as a shutdown) and ends `events`. */
   close(): Promise<void>
   /**
@@ -173,6 +201,18 @@ export type TurnOutcome = "succeeded" | "unresolved" | "failed" | "interrupted"
 
 /** The exit code of a turn that ended with failing checks left unresolved. Distinct from done (0) and failed (1). */
 export const EXIT_UNRESOLVED = 3
+
+/**
+ * The exit code of a run that was ended because a tool call needed approval
+ * and nobody was there to give it (`--unattended stop`). Distinct from a
+ * failure (1): nothing went wrong, the run was not allowed to go on.
+ */
+export const EXIT_APPROVAL_REQUIRED = 4
+
+/** Whether an event ends a turn because a call needed approval that nobody could give. */
+export function endedForApproval(event: EngineEvent): boolean {
+  return event.type === "execution.failed" && event.data.cause === "approval"
+}
 
 /** The process exit code for a turn's outcome. */
 export function exitCodeOf(outcome: TurnOutcome): number {

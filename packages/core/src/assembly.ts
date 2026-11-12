@@ -23,6 +23,7 @@ import { type Engine, type EngineOptions, createEngine } from "./engine/engine.t
 import type { SessionSettings } from "./event/durable.ts"
 import { OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
 import type { Provider } from "./provider/provider.ts"
+import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
 import type { AnyTool } from "./tool/tool.ts"
 import { createStandardTools } from "./tools/index.ts"
@@ -114,6 +115,20 @@ export interface Harness {
   readonly closed: boolean
 }
 
+/** The command sandbox, made (and the machine probed) the first time something asks about it. */
+function lazySandbox(): CommandSandbox {
+  let made: CommandSandbox | null = null
+  const get = () => (made ??= createCommandSandbox())
+  return {
+    get state() {
+      return get().state
+    },
+    temp: (sessionId) => get().temp(sessionId),
+    plan: (input) => get().plan(input),
+    policy: (input) => get().policy(input),
+  }
+}
+
 export function createHarness(options: HarnessOptions = {}): Harness {
   const dataDir = options.dataDir ?? defaultDataDir()
   const log = options.log ?? ((line: string) => void process.stderr.write(`${brand.binary}: ${line}\n`))
@@ -130,6 +145,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     mkdirSync(dataDir, { recursive: true })
     const sessions = openSessionDirectory({ dataDir, notice: log })
     const spillDir = join(dataDir, SPILL_DIRECTORY)
+    // One sandbox for the decisions and for the shell tool that carries them out. Probed when a command first needs it.
+    const sandbox = options.engine?.approval?.sandbox ?? lazySandbox()
     // The context window the compaction policy measures against: the provider's, per model, asked for once.
     let catalogue: Promise<readonly { readonly slug: string; readonly contextWindow: number | null }[]> | null = null
     const providerWindow = async (model: string) => {
@@ -171,9 +188,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...(options.provider === undefined || options.engine?.contextWindow !== undefined || lowered !== null ? { contextWindow } : {}),
       store: sessions,
       provider,
-      tools: options.tools ?? createStandardTools({ spillDir }),
+      tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),
       dataDir,
       spillDir,
+      // Safe by default: mode `auto` in the sandbox, nobody present until a client says so. `null` (tests) switches it off.
+      ...(options.engine?.approval === null ? { approval: null } : { approval: { ...options.engine?.approval, sandbox } }),
     })
     running = { sessions, engine }
     return running

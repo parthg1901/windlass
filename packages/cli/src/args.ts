@@ -11,6 +11,10 @@ export interface Options {
   readonly effort: string | null
   /** `--max-steps <n>`: model calls per turn before the final answer without tools; `null` is the engine's default. */
   readonly maxSteps: number | null
+  /** `--approval <ask|auto|full>`: when a tool call asks before it runs; `null` is the configuration's (default `auto`). */
+  readonly approval: "ask" | "auto" | "full" | null
+  /** `--unattended <deny|stop>`: what a call that would ask becomes when nobody can answer; `null` is the configuration's (default `deny`). */
+  readonly unattended: "deny" | "stop" | null
   readonly cwd: string | null
   readonly output: "pretty" | "json" | "quiet"
   readonly showReasoning: boolean
@@ -34,7 +38,9 @@ export type Parsed =
   | { readonly kind: "tui"; readonly options: Options }
   | { readonly kind: "error"; readonly message: string }
 
-const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
+const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--approval", "--unattended", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
+const APPROVAL_MODES = ["ask", "auto", "full"] as const
+const UNATTENDED_ACTIONS = ["deny", "stop"] as const
 type ValueFlag = (typeof VALUE_FLAGS)[number]
 
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
@@ -88,6 +94,11 @@ export function parseArgs(argv: readonly string[]): Parsed {
   if ((values["--demo-speed"] !== undefined || grace !== null) && values["--demo"] === undefined) return error("--demo-speed and --demo-grace only apply with --demo")
   const maxSteps = values["--max-steps"] === undefined ? null : Number(values["--max-steps"])
   if (maxSteps !== null && (!Number.isInteger(maxSteps) || maxSteps < 1)) return error("--max-steps must be a whole number of at least 1")
+  const approval = values["--approval"] ?? null
+  if (approval !== null && !(APPROVAL_MODES as readonly string[]).includes(approval)) return error(`--approval must be one of: ${APPROVAL_MODES.join(", ")}`)
+  const unattended = values["--unattended"] ?? null
+  if (unattended !== null && !(UNATTENDED_ACTIONS as readonly string[]).includes(unattended)) return error(`--unattended must be one of: ${UNATTENDED_ACTIONS.join(", ")}`)
+  if ((approval !== null || unattended !== null) && values["--demo"] !== undefined) return error("--approval and --unattended do not apply to --demo, which runs no tools")
   const engine = values["--engine"] ?? "acp"
   if (!(ENGINE_KINDS as readonly string[]).includes(engine)) return error(`--engine must be one of: ${ENGINE_KINDS.join(", ")}`)
   if (values["--engine"] !== undefined && values["--demo"] !== undefined) return error("--engine does not apply to --demo, which plays a script without an engine")
@@ -105,6 +116,8 @@ export function parseArgs(argv: readonly string[]): Parsed {
     model: values["--model"] ?? null,
     effort: values["--effort"] ?? null,
     maxSteps,
+    approval: approval as Options["approval"],
+    unattended: unattended as Options["unattended"],
     cwd: values["--cwd"] ?? null,
     output,
     showReasoning: flags.has("--show-reasoning"),
@@ -143,6 +156,17 @@ Options:
   -m, --model <name>     model to use
   --effort <level>       reasoning effort, e.g. low, medium or high
   --max-steps <n>        model calls per turn before a final answer without tools
+  --approval <mode>      when a tool call asks before it runs (default: auto)
+                           ask   reads run; every edit, command and network call asks
+                           auto  edits in the working directory run, and commands run in
+                                 a sandbox (no network, writes only there and in a temp
+                                 directory); anything that needs more asks
+                           full  everything runs with your full permissions and nothing
+                                 asks. For a container or a machine with nothing to lose
+  --unattended <what>    what a call that would ask becomes when nobody can answer: a
+                         one-shot run, --json, a pipe (default: deny)
+                           deny  the call is refused, the agent is told and goes on
+                           stop  the call is refused and the run ends, exit code 4
   --cwd <dir>            working directory (default: the current one)
   --json                 write every event as one JSON line, nothing else on stdout
   -q, --quiet            print only the final answer
@@ -174,6 +198,16 @@ While the agent works:
   /queue <message>        held until the turn is done (its checks have run), then delivered
   /exit                   leave (the running work is stopped as a shutdown)
 
+When a tool call needs your approval (interactive mode):
+  the question shows the command or path and what each answer remembers. Answer with
+  a (allow once), s (allow for this session), p (allow in this project), or n (no);
+  words after the letter go to the agent as your note. Ctrl-C stops the turn instead.
+  Nothing is ever remembered for a command line, only for a capability, such as
+  network access for sandboxed commands in this session.
+  /clear-taint            after a web page, an MCP result or a file from outside the
+                          working directory entered the conversation, anything that can
+                          send data out asks again; this says you trust what is there
+
 At the prompt, while the agent is idle:
   /undo                   go back to before your last message: the files and the
                           conversation. Shows what will change first, and asks before
@@ -188,6 +222,8 @@ Exit codes:
   0    done
   1    failed
   2    usage error
+  4    stopped: a tool call needed your approval and nobody was there to give it
+       (--unattended stop)
   3    done, but the project's checks still fail and were left unresolved (the model
        reported that it cannot fix them, ran out of rounds, or checks only report).
        With --json the last event is execution.succeeded, and its

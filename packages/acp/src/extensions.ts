@@ -41,6 +41,17 @@ export const EXT = {
   events: `${prefix}/events`,
   /** Request `{ cwd, session? }` → `{ sessionId, cwd }`: the session an ID or a unique start of one names, or the latest in `cwd`. */
   resolve: `${prefix}/resolve`,
+  /**
+   * Request `{ sessionId, mode?, unattended?, attended? }` → `ApprovalStateResult`: reads, and with a field sets, how
+   * the session's tool calls are approved. `mode` is also the `approval` config option.
+   */
+  approval: `${prefix}/approval`,
+  /** Request `{ sessionId }` → `{ cleared }`: the user says the conversation is trustworthy again (`taint.cleared`). */
+  clearTaint: `${prefix}/clear_taint`,
+  /** Notification `{ sessionId, tainted, text?, source?, replay? }`: the session became tainted (said once), or was cleared. */
+  taint: `${prefix}/taint`,
+  /** Notification `{ sessionId, kind, message }`: something about how the session's tools run that the user should read once. */
+  notice: `${prefix}/notice`,
 } as const
 
 export const META = {
@@ -76,11 +87,61 @@ export interface OpenMeta {
   readonly effort?: string | null
   /** Load and resume: open the session even if it is archived (deleted), as `lh --session <id>` does. */
   readonly archived?: boolean
+  /** The approval mode the user chose for this session: `ask`, `auto` or `full`. The project's file can still only tighten it. */
+  readonly approval?: string | null
+  /** What a call that would ask becomes when nobody is present: `deny` (refused, the run goes on) or `stop` (refused, the run ends). */
+  readonly unattended?: string | null
+  /**
+   * Whether a person is there to answer `session/request_permission`. Default
+   * `true`: an ACP client can answer. A client that runs unattended (a
+   * script, an eval) says `false`, and nothing ever waits for it.
+   */
+  readonly attended?: boolean
+}
+
+/** The `_meta[<ns>]` of the permission request that asks about a tool call (`APPROVAL_META`). */
+export interface ApprovalRequestMeta {
+  readonly messageId: string
+  readonly callId: string
+  /** The harness's question: `title`, `subject` (the command, path or tool, verbatim), `details`, and `choices` with what each remembers. */
+  readonly question: unknown
+  /** What the question is about. */
+  readonly needs: unknown
+  /** How the call runs if the answer approves. */
+  readonly then: unknown
+}
+
+/** Result of `<prefix>/approval`. */
+export interface ApprovalStateResult {
+  readonly sessionId: string
+  /** `false`: this build runs without the approval layer. */
+  readonly enabled: boolean
+  readonly mode: string | null
+  readonly unattended: string | null
+  readonly attended: boolean
+  /** `null` when commands can be sandboxed; otherwise why not, and what would fix it. */
+  readonly sandboxUnavailable: { readonly reason: string; readonly remedy: string | null } | null
+  readonly tainted: boolean
+  /** One line naming where the untrusted content came from; `null` when the session is not tainted. */
+  readonly taint: string | null
+  /** Project settings that would have loosened the user's policy and were not followed. */
+  readonly ignored: readonly string[]
 }
 
 /** `data[<ns>]` of an error the server answers with. */
 export interface ErrorData {
-  readonly reason: "session_in_use" | "session_not_found" | "ambiguous_session" | "unknown_model" | "auth_required" | "schema_mismatch" | "execution_failed" | "model_list_failed" | "closed"
+  readonly reason:
+    | "session_in_use"
+    | "session_not_found"
+    | "ambiguous_session"
+    | "unknown_model"
+    | "auth_required"
+    | "schema_mismatch"
+    | "execution_failed"
+    /** A failed turn that was ended because a call needed approval and nobody was present (`unattended: "stop"`). */
+    | "approval_required"
+    | "model_list_failed"
+    | "closed"
   /** `session_in_use`: the process that holds the session, when it could be told. */
   readonly holderPid?: number | null
   /** The harness's own sentence, without the protocol's prefix. */
@@ -126,6 +187,9 @@ export interface RevertParams {
    */
   readonly handEdits?: "ask" | "abort" | "overwrite" | "keep"
 }
+
+/** The key under `_meta[<ns>]` of a permission request that asks about a tool call, holding `ApprovalRequestMeta`. */
+export const APPROVAL_META = "approval"
 
 /** The options of the hand-edit question (`session/request_permission`). */
 export const HAND_EDIT_OPTIONS = { overwrite: "overwrite", keep: "keep", cancel: "cancel" } as const

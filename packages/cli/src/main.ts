@@ -19,12 +19,16 @@ import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
 import {
+  type ApprovalRequest,
+  type Approver,
   CLOSE_TIMEOUT_MS,
+  EXIT_APPROVAL_REQUIRED,
   type Engine,
   type EngineEvent,
   EngineUnavailable,
   type Session,
   type TurnOutcome,
+  endedForApproval,
   exitCodeOf,
   turnOutcomeOf,
 } from "./engine.ts"
@@ -132,6 +136,10 @@ export async function run(io: Io): Promise<number> {
       model: options.model,
       effort: options.effort,
       maxSteps: options.maxSteps,
+      approval: options.approval,
+      unattended: options.unattended,
+      // Someone can answer a question only where there is a prompt to answer it at.
+      attended: interactive,
     })
   } catch (error) {
     if (!(error instanceof EngineUnavailable)) throw error
@@ -141,6 +149,8 @@ export async function run(io: Io): Promise<number> {
 
   // `/undo` and `/redo` act on this session, when its engine can revert.
   screen?.attach(revertable(session))
+  // A tool call that needs approval asks at the prompt, the way `/undo` asks about hand edits.
+  if (screen !== null) session.setApprover?.(approverAt(screen, session))
   const terminal = screen === null ? null : new TerminalMode(io, screen)
   const leaving = new Deferred<number>()
   const control = { running: false, lastInterrupt: 0, leaving: false }
@@ -186,7 +196,9 @@ export async function run(io: Io): Promise<number> {
     if (autoplay) return playDemo(session as FakeSession, turn, options.demoSpeed)
     if (terminal === null) {
       const outcome = await turn(prompt!)
-      return outcome === "closed" ? 1 : exitCodeOf(outcome)
+      if (outcome === "closed") return 1
+      // Not a failure of the work: the run was not allowed to go on (`--unattended stop`).
+      return turns.stoppedForApproval ? EXIT_APPROVAL_REQUIRED : exitCodeOf(outcome)
     }
     return interactiveLoop({ terminal, renderer: sink as PrettyRenderer, session, turn, control, onCtrlC, leave, first: prompt })
   }
@@ -307,6 +319,7 @@ async function interactiveLoop(context: Interactive): Promise<number> {
           if (control.running) return context.leave(0)
           return waiting?.(null)
         }
+        if (trimmed === "/clear-taint") return void clearTaint(session, renderer)
         if (control.running) return trimmed === "" ? undefined : steer(action.text)
         return waiting?.(action.text)
       }
@@ -335,6 +348,44 @@ async function interactiveLoop(context: Interactive): Promise<number> {
     if ((await context.turn(text)) === "closed") return 1
   }
   return 0
+}
+
+/**
+ * Answers a tool call's approval question at the prompt. The question itself
+ * is already on the screen (the renderer shows `approval.requested`); this
+ * puts the choices in place of the prompt and reads one line. The first word
+ * picks the choice; anything after it is the user's note to the agent. Words
+ * that pick nothing decline, and are the note: saying something else instead
+ * of answering is a "no, and here is why". Backing out (Ctrl-C) stops the turn.
+ */
+export function approverAt(screen: Pick<Screen, "ask">, session: Pick<Session, "interrupt">): Approver {
+  return async (request: ApprovalRequest) => {
+    const choices = request.question.choices
+    const has = (id: string) => choices.some((choice) => choice.id === id)
+    const keys = [has("once") ? "[a]llow once" : null, has("session") ? "this [s]ession" : null, has("project") ? "this [p]roject" : null, "[N]o"].filter((item) => item !== null)
+    const entry = await screen.ask(`${keys.join(" · ")} › `)
+    if (entry === null) {
+      session.interrupt()
+      return null
+    }
+    const [word = "", ...rest] = entry.trim().split(/\s+/)
+    const note = rest.join(" ")
+    const picked = ({ a: "once", y: "once", yes: "once", allow: "once", once: "once", s: "session", session: "session", p: "project", project: "project", n: "deny", no: "deny", deny: "deny", "": "deny" } as const)[word.toLowerCase()]
+    if (picked === undefined) return { choice: "deny", note: entry.trim() }
+    // A choice this question does not offer (nothing can be remembered for it) is answered with the nearest one that asks for less.
+    const choice = has(picked) ? picked : picked === "deny" ? "deny" : "once"
+    return { choice, ...(note === "" ? {} : { note }) }
+  }
+}
+
+/** `/clear-taint`: tells the engine the conversation is trustworthy again; the event that follows is what is shown. */
+async function clearTaint(session: Session, renderer: PrettyRenderer): Promise<void> {
+  if (session.clearTaint === undefined) return renderer.notice("/clear-taint is not available with this engine", "warn")
+  try {
+    if (!(await session.clearTaint())) renderer.notice("there is nothing to clear: no untrusted content is in this conversation")
+  } catch (error) {
+    renderer.notice(`/clear-taint failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+  }
 }
 
 /** The terminal while the interactive input is open: raw mode, bracketed paste, and the footer. */
@@ -369,6 +420,8 @@ class TurnWatcher {
   readonly ended: Promise<void>
   private waiter: ((outcome: TurnOutcome | "closed") => void) | null = null
   private done = false
+  /** Whether the latest turn was ended because a call needed approval that nobody could give. */
+  stoppedForApproval = false
 
   constructor(session: Session, sink: Sink) {
     this.ended = (async () => {
@@ -388,7 +441,10 @@ class TurnWatcher {
   private observe(item: EngineEvent, sink: Sink): void {
     sink.event(item)
     const outcome = turnOutcomeOf(item)
-    if (outcome !== null) this.resolve(outcome)
+    if (outcome !== null) {
+      this.stoppedForApproval = endedForApproval(item)
+      this.resolve(outcome)
+    }
   }
 
   private resolve(outcome: TurnOutcome | "closed"): void {

@@ -38,7 +38,7 @@ describe("engine selection", () => {
     const result = await runCli(["--model", "gpt-test", "--max-steps", "7", "what", "is", "this"], { realEngineModule: STUB })
     expect(result.code).toBe(0)
     expect(result.out).toContain("It is a coding-agent harness.\n")
-    expect(opened).toEqual([{ session: { kind: "new" }, cwd: process.cwd(), model: "gpt-test", effort: null, maxSteps: 7 }])
+    expect(opened).toEqual([{ session: { kind: "new" }, cwd: process.cwd(), model: "gpt-test", effort: null, maxSteps: 7, approval: null, unattended: null, attended: false }])
   })
 })
 
