@@ -16,6 +16,7 @@ The kit uses prefixlens (`/home/ubuntu/projects/prefixlens`), a real TypeScript/
 | `mcp-server.ts` | a small stdio MCP server written as a user would (handshake protocol, two tools whose answers the model cannot guess: `shelf_code`, `inventory`); `--log <file>` records every request it receives |
 | `mcp-config.ts` | adds (or `--remove`s) that server in a user's config home (`--user <dir>`, used with `XDG_CONFIG_HOME=<dir>`) or a workspace's project config (`--project <dir>`); `--trusted` sets `"untrusted": false` |
 | `make-image.ts` | writes a synthetic PNG (`--pattern halves`, `digit` or `shapes`) with an answer a person can check |
+| `webhook.ts` | sends one signed request to a webhook wake-up (the secret from `WAKE_SECRET` or standard input, never printed); `--bad` signs wrongly, `--repeat` sends it twice, `--github` signs as GitHub does |
 | `tsconfig.json` | so `bunx tsc --noEmit -p evals/dogfood/tsconfig.json` checks the scripts |
 
 ```sh
@@ -36,10 +37,12 @@ agents' sessions on a shared machine: prefer `--cwd`.
 ## Budget and rules
 
 - About 60 live requests for tasks 1 to 10 (the first 2026-11-12 pass spent 59); about 160 for tasks 11 to 21 (the
-  second pass spent 160, replays and subagents included). Always `--model gpt-6-luna --effort low`,
-  short prompts, one live run at a time.
-- An unknown slash command in the line interface (`/help`, `/foo`) is sent to the model and costs a request.
-- An effort the model does not accept (`--effort ultra` on `gpt-6-luna`) is sent anyway and costs a request.
+  second pass spent 160, replays and subagents included); about 170 for tasks 22 to 33 (the third pass spent 172).
+  Always `--model gpt-6-luna --effort low`, short prompts, one live run at a time.
+- An unknown slash command (`/foo`) and an effort the model does not accept (`--effort ultra` on `gpt-6-luna`)
+  cost nothing any more: both are refused before anything is sent.
+- The source repository moves. When `setup.ts --seed` says the file "no longer has the expected text", read the
+  file in a clean clone and update `SEEDS` (the third pass had to).
 - Never print or copy the sign-in. For a "not signed in" test, use a throwaway `XDG_DATA_HOME`.
 - Drive the line interface and the full-screen interface through a private tmux server (`tmux -L <name>`), kill by
   PID, remove the socket afterwards. See `.claude/skills/tui-tmux-testing/SKILL.md`.
@@ -61,8 +64,11 @@ is it clear what the agent did, what changed, whether checks ran, what it cost, 
 
 3. **Fix a seeded bug** (`--seed usage-bug`, one-shot with `--json`).
    `"Some normalizeUsage tests for OpenAI fail. Find the bug in src/ and fix it; do not change the tests."`
-   Good: the diff is exactly `input_tokens: total` back to `input_tokens: total - cached` in `src/usage.ts`; no test
-   file touched; the last JSON line is `execution.succeeded` with `verification.status` `"passed"`. About 7 requests.
+   Good: the diff is exactly `input_tokens: total - (writes ?? 0)` back to `input_tokens: total - cached - (writes
+   ?? 0)` in `src/usage.ts`; no test file touched; the last JSON line is `execution.succeeded` with
+   `verification.status` `"passed"`. About 7 requests when the first fix is right; 23 when the gate sends the agent
+   back once (`✗ checks: 1 failed`, `↻ the agent is shown the failing checks and carries on`, then `✓ done · checks
+   passed`), which is the "failing check" case of task 22.
 
 4. **A change whose check fails first** (clean, interactive line mode).
    `"Change the default --tolerance of prefixlens report from 128 to 64 tokens, in the code and the help text. Keep it small."`
@@ -168,6 +174,82 @@ prompt and looks sent (task 21).
     repository, and repeat a one-shot, `tui` with `/fork`, `fork --json`, and `--models` with an empty
     `XDG_DATA_HOME` (a crash: does it name source lines?). Time `--version` and the TUI's `● ready` against the
     source, and say the machine's load (`uptime`) with the numbers. About 10 requests.
+
+## The third pass: the fixes as a user sees them, and the newer features (tasks 22 to 33)
+
+Set up as for the second pass (`$W/c1/repo` clean, `$W/b1/repo` with `--seed usage-bug`, a throwaway config home `$C`
+used as `XDG_CONFIG_HOME=$C`). Each entry says what a good run shows; the words in quotes are the program's.
+
+22. **The basics again** (line interface, then the full-screen one). One prompt with a failing check (task 3 in
+    `$W/b1/repo`). Interactive: `/help` (a list), `/hlep` and `/foo bar` (`is not a command, so nothing was sent`),
+    the comment of task 14, a follow-up (`"Now reword that comment to say 'in tokens (not bytes)'."`), `/diff`,
+    `/undo` (`↶ undone: turn 2 "…" · out of the conversation`), `/redo`, `/undo` again, then a hand edit
+    (`echo "// hand edit" >> src/pricing.ts`) and `"What is the package name in package.json? One line, change
+    nothing."`: no check may run and the ending must say the files were not checked. Ctrl-D, then `-c`: `resumed
+    session … · 3 turns (1 undone)` and the last two turns. No request: `--modle`, `--models` and a prompt with an
+    empty `XDG_DATA_HOME`, `--effort ultra`, `--model gpt-9-nope`, `--agent nope`. About 35 requests.
+23. **Agents**. `.claude/agents/reviewer.md` in the workspace and `$C/<brand.directory>/agents/auditor.md` (both
+    `effects: read`; the auditor's instructions: start every answer with `AUDIT:`), and one with its front matter not
+    closed. `--agent reviewer "Add the comment '// reviewed' as the first line of src/pricing.ts. If the write tool
+    is refused, try the shell: echo '// reviewed' > note.txt. Then say in one line what happened."` (both `○ not run:
+    the reviewer agent may not …`, nothing changed); `--agent auditor` with a question (`AUDIT:`); `"Use a subagent
+    run as the agent auditor (agent: \"auditor\") with the task: create the file audit.txt containing the word done,
+    then report whether you could. …"` from a session without an agent; `/agent`, `/agent reviewer`, `/agent none`,
+    `/agent reviwer` at the prompt and the picker in the full-screen interface. Also ask the reviewer for a
+    `wake_create` check and a background `shell`: both must be refused. About 20 requests.
+24. **The task list** (the test context window at 20000). `"Keep a task list with these four items and work through
+    them one at a time, updating the list as you go: 1) read src/usage.ts and note its exported functions, 2) read
+    src/pricing.ts …, 3) read src/diff.ts …, 4) write EXPORTS.md listing all three files' exports."` Good: `≡ tasks`
+    after each step, two compactions in the turn with the list right after each, an ending such as `14 steps + 2
+    summary calls`, and after Ctrl-D and `-c` (and `tui -c`) `Its task list (all 4 done):`. Then `/undo` of a
+    task-list turn in the full-screen interface: the panel's `Tasks` section goes with it. About 25 requests.
+25. **`/rename`, `/compact`**. `/rename Tolerance comment` then `--list-sessions`; `/compact` in a short session
+    (`Not compacted: only about …` or `There is nothing to compact: …`) and in the session of task 24 with the test
+    window; Ctrl-D while `⋯ compacting the conversation` shows, then `-c`: what does the next start say and do?
+26. **MCP again** (`mcp-config.ts --user $C`, then `--remove` and `--project <workspace>`). One prompt with
+    `--approval full` against the server at its default trust (answers `WH-F0239`, then the untrusted-content
+    notice); interactively `s` at the question and a second item (it asks again: the first result tainted the
+    session; the second `s` holds); the project's server: the question, `y` during the turn, `"Try again now."`,
+    `/mcp`. Then give the project's server one argument longer than the terminal is wide, ending in a marker
+    (`…mcp-server.ts${IFS}--log${IFS}<log>;echo${IFS}TAIL-MARKER>/dev/null` under `bash -c`), and read the
+    question in both interfaces: is the marker on screen? Answer `n`. About 15 requests.
+27. **Wake-ups** (interactive). Task 19's reminder and two minutes' wait (`⏰ wake-up wk_…: it fired`); `"Create a
+    webhook wake-up with the message 'a deploy finished', and another wake-up that fires every 10 minutes with the
+    message 'check the build'. Then end your turn."`; `WAKE_SECRET=… bun evals/dogfood/webhook.ts <URL> --bad` (401),
+    `--repeat` (202 then 401) and the turn it starts (tainted); `/wakeups`, `/wakeups secret <id>`, `/wakeups
+    cancel <id>` for each. Then the reminder as one prompt: nothing may fire, also 75 seconds later; cancel it with
+    `--session <id> "Cancel every wake-up of this session with wake_cancel. One line."` About 12 requests.
+28. **Hooks** (in `$C/<brand.directory>/config.json`; the format is in `packages/core/src/hooks/README.md`): a
+    `beforeTool` hook on `shell` that refuses `git push`, an `afterTool` hook on `edit` and `write` that exits 2
+    with a house rule, a `stop` hook that refuses while `SCRATCH.md` exists, `maxStopRounds` 2. `"Run 'git push
+    origin main' with the shell tool exactly once and tell me in one line what happened."` and `"Do exactly this and
+    nothing more: 1) write SCRATCH.md containing the word tmp. 2) write greet.py with: def greet(name: str) -> str
+    returning a greeting, and a last line that calls gret(42) (yes, misspelled, on purpose). Then give a one-line
+    answer."` Read the screen for what the user is told (the refusal, the note, why the turn went on) and
+    `events.ts <id> --full` for what the model was told. Then one hook in the project's file: the notice, and
+    whether anything can approve it. About 8 requests.
+29. **Diagnostics** (a language server already on the machine; install nothing): pyright from the uv cache as
+    `node <…>/pyright/dist/langserver.index.js --stdio` under `lsp.servers.python` in `$C`. Interactively, two
+    edits of `greet.py` made with the edit tool (say so: the model appends with the shell otherwise, and a shell
+    edit gets no diagnostics): the first misses (`⚠ lsp: … did not give diagnostics within 1500 ms`), the second
+    adds the note. `events.ts <id> --type tool.settled --full` shows `diagnostics` and `waitedMs`. About 8 requests.
+30. **Skills and memory**. Task 18's `release-note` skill as one prompt (`RN-7731` … `Signed: the release bot`).
+    `{ "memory": { "enabled": true } }` in `$C`: `"Remember for later sessions: this repository uses bun only,
+    never npm. Save it as a memory note, then answer in one line."` as one prompt; then interactively `/remember
+    <text>` and `/memory` before the first message and after it; `/forget <id>` for every note the pass made (they
+    are kept in the real data directory). About 5 requests.
+31. **Forks and replay**. `fork <id> --turn 1`, `--turn 2` on an undone turn (refused, with the turns listed),
+    `--turn 9`, and with a data directory that holds only a copy of the session's files and no sign-in (it must
+    still fork). One question to the fork. `replay <id>` of a two-step session under `stop`. About 6 requests.
+32. **A subagent with a background command, and an image**. `"Use a subagent with this task: start 'sleep 13 &&
+    echo bg-finished' in the background (shell with background: true), then run 'echo fg' in the foreground, then
+    wait for the background command to end, read its output and report it. Tell me what it reported, in one line."`
+    (`pgrep -a -x sleep` afterwards: nothing), and task 20's image. About 12 requests.
+33. **The built executable**. `bun scripts/build.ts`, copy `dist/<brand.binary>-linux-arm64` to a directory outside
+    the repository under the binary's name and link its short name to it; from there: `--version` under both names,
+    `--models` with an empty `XDG_DATA_HOME`, a mistyped option, `fork --turn 3 --json`, `--demo list`, a one-prompt
+    edit with the checks (`--cwd`), `tui` with the hooks of task 28, and the network question of task 9 with a URL
+    150 characters long ending in a marker, in both interfaces: the whole command must be on screen. About 20 requests.
 
 ## Reading the results
 

@@ -35,10 +35,10 @@ interface Seed {
 /** Bugs planted on purpose, each a one-line change a developer could plausibly have made. */
 const SEEDS: Record<string, Seed> = {
   "usage-bug": {
-    description: "OpenAI usage counts cached tokens twice: input_tokens is no longer reduced by the cached part (5 tests fail: two in test/trace.test.ts, others in record, cli and params tests)",
+    description: "OpenAI usage counts cached tokens twice: input_tokens is no longer reduced by the cached part (9 tests fail, in the trace, billing, cache-writes, record, cli and params tests)",
     file: "src/usage.ts",
-    from: "    input_tokens: total - cached,\n    cache_read_tokens: cached,\n    cache_write_tokens: null,\n    output_tokens: count(chat",
-    to: "    input_tokens: total,\n    cache_read_tokens: cached,\n    cache_write_tokens: null,\n    output_tokens: count(chat",
+    from: "    input_tokens: total - cached - (writes ?? 0),\n    cache_read_tokens: cached,",
+    to: "    input_tokens: total - (writes ?? 0),\n    cache_read_tokens: cached,",
   },
 }
 
