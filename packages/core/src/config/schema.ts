@@ -16,6 +16,8 @@
  */
 import { type AgentsConfigSection, parseAgentsSection } from "../agents/config.ts"
 import { approvalSection } from "../approval/policy.ts"
+import { type HookOrigin, type HooksConfigSection, parseHooksSection } from "../hooks/config.ts"
+import { type LspConfigSection, parseLspSection } from "../lsp/config.ts"
 import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
 import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
 import { type SkillsConfigSection, parseSkillsSection } from "../skills/config.ts"
@@ -112,10 +114,12 @@ const checks: Validator<readonly ReturnType<typeof check>[]> = (input, path) => 
 
 /**
  * The sections other modules define (`mcp/config.ts`, `skills/config.ts`,
- * `wake/config.ts`, `memory/config.ts`, `agents/config.ts`). Each is validated by its own module,
+ * `wake/config.ts`, `memory/config.ts`, `agents/config.ts`, `lsp/config.ts`). Each is validated by its own module,
  * which names the file and the path of a bad value, in `parseConfigFile`;
  * here they are only known keys. None of them is merged like the other keys
  * where it matters who wrote it: `load.ts` hands on both files as written.
+ * `hooks` (`hooks/config.ts`) is one more, validated with whose file it is:
+ * only the user's own may run a hook outside the sandbox.
  */
 const FEATURE_SECTIONS = {
   mcp: parseMcpSection,
@@ -123,6 +127,7 @@ const FEATURE_SECTIONS = {
   wake: parseWakeSection,
   memory: parseMemorySection,
   agents: parseAgentsSection,
+  lsp: parseLspSection,
 } as const
 const passed: Validator<unknown> = (input) => input
 
@@ -146,10 +151,12 @@ const baseFile = section({
   wake: passed,
   memory: passed,
   agents: passed,
+  hooks: passed,
+  lsp: passed,
 })
 
 /** One configuration file, as written. */
-export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTIONS> & {
+export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTIONS | "hooks"> & {
   /** MCP servers (`mcp/config.ts`). A server a project's file names is not started until the user approved it. */
   readonly mcp?: McpConfigSection
   /** Skills (`skills/config.ts`). */
@@ -160,11 +167,22 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
   readonly memory?: MemoryConfigSection
   /** Agents (`agents/config.ts`). The default agent is read from the user's own file only. */
   readonly agents?: AgentsConfigSection
+  /**
+   * Hooks (`hooks/config.ts`): commands run before a tool call, after it and when a turn is about to end. Never
+   * merged: a project's file adds hooks to the user's and replaces none, and each of its hooks runs only once the
+   * user approved it (`resolveHooksConfig` is handed both files' sections).
+   */
+  readonly hooks?: HooksConfigSection
+  /** Language servers (`lsp/config.ts`). One a project's file names or changes is not started until the user approved it. */
+  readonly lsp?: LspConfigSection
 }
 
-/** Validates one file's parsed JSON. Throws `DecodeError` (this file's keys) or `ConfigError` (a feature's section), without a file name in the former. */
-export function configFile(input: unknown, path: string, file = "configuration"): ConfigFile {
-  const { mcp, skills, wake, memory, agents, ...rest } = baseFile(input, path)
+/**
+ * Validates one file's parsed JSON. Throws `DecodeError` (this file's keys) or `ConfigError` (a feature's section), without a file name in the former.
+ * `origin` says whose file it is, for the one section that is validated differently for a project's (`hooks`).
+ */
+export function configFile(input: unknown, path: string, file = "configuration", origin: HookOrigin = "user"): ConfigFile {
+  const { mcp, skills, wake, memory, agents, hooks, lsp, ...rest } = baseFile(input, path)
   return {
     ...rest,
     ...(mcp === undefined ? {} : { mcp: FEATURE_SECTIONS.mcp(mcp, file) }),
@@ -172,6 +190,8 @@ export function configFile(input: unknown, path: string, file = "configuration")
     ...(wake === undefined ? {} : { wake: FEATURE_SECTIONS.wake(wake, file) }),
     ...(memory === undefined ? {} : { memory: FEATURE_SECTIONS.memory(memory, file) }),
     ...(agents === undefined ? {} : { agents: FEATURE_SECTIONS.agents(agents, file) }),
+    ...(hooks === undefined ? {} : { hooks: parseHooksSection(hooks, file, origin) }),
+    ...(lsp === undefined ? {} : { lsp: FEATURE_SECTIONS.lsp(lsp, file) }),
   }
 }
 
@@ -191,11 +211,11 @@ export interface Config {
   readonly verify: { readonly mode: VerifyMode; readonly maxRounds: number }
 }
 
-/** Parses and validates one file's text. `file` is used only in error messages. */
-export function parseConfigFile(text: string, file: string): ConfigFile {
+/** Parses and validates one file's text. `file` is used only in error messages; `origin` is whose file it is (a project's may not say everything the user's may). */
+export function parseConfigFile(text: string, file: string, origin: HookOrigin = "user"): ConfigFile {
   const parsed = parseJson(text, file)
   try {
-    return configFile(parsed, "", file)
+    return configFile(parsed, "", file, origin)
   } catch (error) {
     if (error instanceof UnknownKeyError) throw new ConfigError(file, error.path, error.problem)
     if (error instanceof DecodeError) throw new ConfigError(file, error.path, error.message.slice((error.path === "" ? "value" : error.path).length + 2))

@@ -19,6 +19,8 @@ import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { ApprovalSection } from "../approval/policy.ts"
 import { brand } from "../brand.ts"
+import type { HookOrigin } from "../hooks/config.ts"
+import { resolveLspConfig } from "../lsp/config.ts"
 import { resolveMcpConfig } from "../mcp/config.ts"
 import { type Config, ConfigError, type ConfigFile, mergeConfigFiles, parseConfigFile, resolveConfig } from "./schema.ts"
 
@@ -44,8 +46,11 @@ export interface LoadedConfig extends ConfigLocations {
    * Both files as written, apart, for the sections where it matters who
    * wrote a value: an MCP server a project's file names is not started
    * until the user approved it (`mcp`), a project's file can only tighten
-   * wake-ups (`wake`), and some keys are read from the user's own file only
-   * (`skills.paths`, `memory.inRepository`). `null`: the file does not exist.
+   * wake-ups (`wake`), a project's hooks are added to the user's and each
+   * waits for the user's approval (`hooks`), a language server a project's
+   * file names waits for it too (`lsp`), and some keys are read from the
+   * user's own file only (`skills.paths`, `memory.inRepository`). `null`:
+   * the file does not exist.
    */
   readonly files: { readonly user: ConfigFile | null; readonly project: ConfigFile | null }
 }
@@ -62,9 +67,11 @@ export interface LoadOptions {
 export async function loadConfig(options: LoadOptions): Promise<LoadedConfig> {
   const locations = await findConfigFiles(options)
   const user = await readConfigFile(locations.userFile)
-  const project = locations.projectFile === null ? null : await readConfigFile(locations.projectFile)
+  const project = locations.projectFile === null ? null : await readConfigFile(locations.projectFile, "project")
   // A server that is neither started nor reached is an error of the file that completes it, said now and not at the first call.
   resolveMcpConfig(mergeConfigFiles(user, project).mcp, project?.mcp === undefined ? locations.userFile : locations.projectFile!)
+  // So is a language server without a command or the languages it serves.
+  resolveLspConfig(mergeConfigFiles(user, project).lsp, project?.lsp === undefined ? locations.userFile : locations.projectFile!)
   return {
     ...locations,
     config: resolveConfig(mergeConfigFiles(user, project)),
@@ -105,7 +112,7 @@ export function loadConfigSync(options: LoadOptions): LoadedConfig {
     }
     if (repoRoot === null || dir === repoRoot || dirname(dir) === dir) break
   }
-  const read = (path: string): ConfigFile | null => {
+  const read = (path: string, origin: HookOrigin = "user"): ConfigFile | null => {
     if (!existsSync(path) || statSync(path, { throwIfNoEntry: false })?.isFile() !== true) return null
     let text: string
     try {
@@ -113,12 +120,13 @@ export function loadConfigSync(options: LoadOptions): LoadedConfig {
     } catch (error) {
       throw new ConfigError(path, "", `could not be read (${error instanceof Error ? error.message : String(error)})`)
     }
-    return parseConfigFile(text, path)
+    return parseConfigFile(text, path, origin)
   }
   const locations: ConfigLocations = { userFile: join(configHome, brand.directory, "config.json"), projectFile, projectDir: projectFile !== null ? dirname(dirname(projectFile)) : (repoRoot ?? cwd) }
   const user = read(locations.userFile)
-  const project = locations.projectFile === null ? null : read(locations.projectFile)
+  const project = locations.projectFile === null ? null : read(locations.projectFile, "project")
   resolveMcpConfig(mergeConfigFiles(user, project).mcp, project?.mcp === undefined ? locations.userFile : locations.projectFile!)
+  resolveLspConfig(mergeConfigFiles(user, project).lsp, project?.lsp === undefined ? locations.userFile : locations.projectFile!)
   return {
     ...locations,
     config: resolveConfig(mergeConfigFiles(user, project)),
@@ -143,14 +151,14 @@ export async function findConfigFiles(options: LoadOptions): Promise<ConfigLocat
   }
 }
 
-/** Reads one file; `null` when it does not exist. */
-export async function readConfigFile(path: string): Promise<ConfigFile | null> {
+/** Reads one file; `null` when it does not exist. `origin`: whose file it is (the project's is validated as one). */
+export async function readConfigFile(path: string, origin: HookOrigin = "user"): Promise<ConfigFile | null> {
   const file = Bun.file(path)
   if (!(await file.exists())) return null
   const text = await file.text().catch((error: unknown) => {
     throw new ConfigError(path, "", `could not be read (${error instanceof Error ? error.message : String(error)})`)
   })
-  return parseConfigFile(text, path)
+  return parseConfigFile(text, path, origin)
 }
 
 async function findRepositoryRoot(cwd: string): Promise<string | null> {

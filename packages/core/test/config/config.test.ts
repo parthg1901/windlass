@@ -290,3 +290,46 @@ describe("the agents section, and loading without waiting", () => {
     expect(errorOf(() => loadConfigSync({ cwd: repo, home, env: {} })).message).toBe((asynchronous as ConfigError).message)
   })
 })
+
+describe("the hooks and lsp sections", () => {
+  test("both are accepted, each validated by its own module, and neither is part of the merged configuration", () => {
+    const file = parseConfigFile(
+      JSON.stringify({
+        hooks: { beforeTool: [{ name: "no-push", tools: ["shell"], command: "exit 0" }], maxStopRounds: 2 },
+        lsp: { waitMs: 800, servers: { python: { command: "pyright-langserver", args: ["--stdio"], languages: { python: ["**/*.py"] } } } },
+      }),
+      "f.json",
+    )
+    expect(file.hooks).toEqual({ beforeTool: [{ name: "no-push", tools: ["shell"], command: "exit 0" }], maxStopRounds: 2 })
+    expect(file.lsp?.servers?.python?.command).toBe("pyright-langserver")
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ hooks: { beforeTol: [] } }), "f.json")).message).toStartWith('f.json: hooks.beforeTol: unknown key "beforeTol"')
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ lsp: { waitMs: 9000 } }), "f.json")).message).toStartWith("f.json: lsp.waitMs: ")
+  })
+
+  test("only the user's own file may run a hook outside the sandbox: the project's file is validated as the project's", async () => {
+    const { home, repo, userFile } = layout()
+    const outside = { hooks: { afterTool: [{ command: "true", sandbox: false }] } }
+    expect(parseConfigFile(JSON.stringify(outside), "f.json").hooks?.afterTool?.[0]?.sandbox).toBe(false)
+    expect(errorOf(() => parseConfigFile(JSON.stringify(outside), "f.json", "project")).message).toContain("only the user's own configuration file can run a hook outside the sandbox")
+    write(userFile, outside)
+    expect((await loadConfig({ cwd: repo, home, env: {} })).files.user?.hooks).toEqual(outside.hooks)
+    write(projectFile(repo), outside)
+    const refused = `${projectFile(repo)}: hooks.afterTool[0].sandbox: only the user's own configuration file can run a hook outside the sandbox`
+    expect(loadConfig({ cwd: repo, home, env: {} })).rejects.toThrow(refused)
+    expect(errorOf(() => loadConfigSync({ cwd: repo, home, env: {} })).message).toBe(refused)
+  })
+
+  test("both files' hooks are handed on apart, and a language server without a command is an error of the file that names it", async () => {
+    const { home, repo, userFile } = layout()
+    write(userFile, { hooks: { stop: [{ command: "exit 0" }] } })
+    write(projectFile(repo), { hooks: { stop: [{ command: "exit 2" }] } })
+    const loaded = await loadConfig({ cwd: repo, home, env: {} })
+    expect(loaded.files.user?.hooks?.stop).toEqual([{ command: "exit 0" }])
+    expect(loaded.files.project?.hooks?.stop).toEqual([{ command: "exit 2" }])
+    write(projectFile(repo), { lsp: { servers: { go: { languages: { go: ["**/*.go"] } } } } })
+    const missing = `${projectFile(repo)}: lsp.servers.go: needs \`command\`, the language server to start`
+    expect(loadConfig({ cwd: repo, home, env: {} })).rejects.toThrow(missing)
+    expect(errorOf(() => loadConfigSync({ cwd: repo, home, env: {} })).message).toBe(missing)
+  })
+})
