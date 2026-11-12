@@ -91,6 +91,7 @@ describe("the real engine", () => {
       await settle()
       expect(vt.text.split("\n").at(-1)).toBe("overwrite them? [y]es · [k]eep mine · [N]o ›")
       expect(vt.text).toContain("you edited 1 file by hand since then: notes.md")
+      expect(vt.text).toContain("overwriting them cannot be taken back")
       type("n\r")
       await settle()
       expect(readFileSync(join(workspace, "notes.md"), "utf8")).toBe("# Notes\n\nmine\n")

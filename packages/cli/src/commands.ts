@@ -7,7 +7,8 @@
  * overwrites a file the user edited by hand since that turn without asking:
  * the engine reports those files, and the command asks whether to overwrite
  * them (nothing is lost: `/redo` brings them back), keep them, or leave
- * everything as it is. What happened is not printed here; it arrives as the
+ * everything as it is. `/redo` asks the same about files edited after the
+ * `/undo`, and says that overwriting those has no way back. What happened is not printed here; it arrives as the
  * session's own events (`history.reverted`, `history.restored`,
  * `revert.failed`) and the renderer shows it, as it would in a replay.
  *
@@ -67,7 +68,8 @@ export async function runSessionCommand(command: Command, io: CommandIo): Promis
     let handEdits: RevertOptions["handEdits"] = "abort"
     if (byHand.length > 0) {
       io.print([seg(`  you edited ${plural(byHand.length, "file")} by hand since then: `, "yellow"), seg(fileList(byHand, 6))])
-      io.print([seg(`  overwriting them is safe: ${undo ? "/redo" : "/undo"} brings them back`, "dim")])
+      // Only an undo keeps a way back: /redo restores the workspace as it was right before it, hand edits included.
+      io.print([seg(undo ? "  overwriting them is safe: /redo brings them back" : "  overwriting them cannot be taken back: /undo returns to before the turn, not to your edits", undo ? "dim" : "yellow")])
       const answer = (await io.ask("overwrite them? [y]es · [k]eep mine · [N]o › "))?.trim().toLowerCase() ?? ""
       if (answer === "y" || answer === "yes") handEdits = "overwrite"
       else if (answer === "k" || answer === "keep") handEdits = "keep"
