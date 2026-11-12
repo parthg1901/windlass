@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { statSync } from "node:fs"
-import { createInterrupt } from "../../src/interrupt.ts"
+import { createCallStop, createInterrupt } from "../../src/interrupt.ts"
 import type { ToolProgress } from "../../src/tool/tool.ts"
 import { context, isRunning, outputOf, workspace, removeTempDirs } from "./helpers.ts"
 
@@ -114,6 +114,31 @@ describe("shell", () => {
     expect(outcome.settlement).toMatchObject({ outcome: "error", display: { interrupted: "user", timedOut: false } })
     expect(outcome.kind).toBe("completed")
     await expectAllGone(pidsIn(output))
+  })
+
+  test("the user stopping this one call is reported as that, with what was printed so far", async () => {
+    const ws = workspace()
+    const stop = createCallStop(createInterrupt().signal)
+    const progress: ToolProgress[] = []
+    const running = ws.call("shell", { command: "echo pid=$$; i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.05; done" }, { signal: stop.signal, progress })
+    while (!progress.some((update) => update.text.includes("tick 3"))) await Bun.sleep(10)
+    stop.cancel()
+    const outcome = await running
+    const output = outputOf(outcome)
+    expect(output).toContain("tick 1\ntick 2\ntick 3\n")
+    expect(output).toEndWith(`\n[Stopped by the user. ${STOPPED}]`)
+    // Not an interrupt of the turn: `interrupted` stays empty, and the display says the call was cancelled.
+    expect(outcome.settlement).toMatchObject({ outcome: "error", display: { interrupted: null, cancelled: true, timedOut: false } })
+    expect(outcome.kind).toBe("completed")
+    await expectAllGone(pidsIn(output))
+  })
+
+  test("a call the user stopped before it began runs nothing", async () => {
+    const ws = workspace()
+    const stop = createCallStop(createInterrupt().signal)
+    stop.cancel()
+    const outcome = await ws.call("shell", { command: "echo never" }, { signal: stop.signal })
+    expect(outcome).toMatchObject({ kind: "not_started", settlement: { outcome: "not_started", output: "Not run: the user stopped this call before it started." } })
   })
 
   test("shutdown is reported as its own reason", async () => {

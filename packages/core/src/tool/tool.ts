@@ -110,10 +110,15 @@ export interface ToolContext {
   /** Absolute working directory of the session. Relative paths in the input resolve against it. */
   readonly cwd: string
   /**
-   * Aborted when the execution is interrupted. Created by `createInterrupt`, so
-   * `interruptReasonOf(signal)` gives the reason. A tool must stop promptly and
-   * return what it observed so far rather than throw (a shell kills its process
-   * group, waits a bounded grace period, then returns the output so far).
+   * Aborted when the execution is interrupted, or when the user stops this
+   * call and nothing else. It is the call's own (`createCallStop`), so
+   * `callStopReasonOf(signal)` gives the reason: `user` or `shutdown` for an
+   * interrupt, `call` for a stop of this call, after which the step carries
+   * on and the model reads the result. A tool must stop promptly and return
+   * what it observed so far rather than throw (a shell kills its process
+   * group, waits a bounded grace period, then returns the output so far, with
+   * a line that says who stopped it). A tool that cannot stop midway (a file
+   * read, a write that is one rename) finishes and returns its result as ever.
    */
   readonly signal: AbortSignal
   /** Reports ephemeral progress. Safe to call often; may be dropped. */

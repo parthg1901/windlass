@@ -5,7 +5,8 @@
  * and `tool.settled` from `outcome.settlement`.
  *
  * Order for one call:
- *   1. aborted already          -> `not_started`        (onStart is not called)
+ *   1. aborted already          -> `not_started`        (onStart is not called; the signal is the call's own,
+ *                                                        aborted by an interrupt or because the user stopped this call)
  *   2. unknown tool             -> `refused`, error     (onStart is not called)
  *   3. arguments not JSON       -> `refused`, error     (onStart is not called)
  *   4. arguments fail schema    -> `refused`, error     (onStart is not called)
@@ -19,7 +20,7 @@
  */
 import type { BlobRef } from "../content.ts"
 import type { Json } from "../json.ts"
-import { interruptReasonOf } from "../interrupt.ts"
+import { type CallStopReason, callStopReasonOf } from "../interrupt.ts"
 import { excerpt, parseArguments } from "./args.ts"
 import { OUTPUT_LIMITS, type OutputLimits, capOutput } from "./cap.ts"
 import { type SchemaCheck, compileSchema } from "./schema.ts"
@@ -136,7 +137,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
   if (registry.size !== options.tools.length) throw new Error("tool names must be unique")
 
   const run = async (call: ToolCall, hooks: RunHooks = {}): Promise<ToolCallOutcome> => {
-    const reason = interruptReasonOf(call.context.signal)
+    const reason = callStopReasonOf(call.context.signal)
     if (reason !== null) return notStarted(reason)
     const entry = registry.get(call.name)
     if (entry === undefined)
@@ -147,7 +148,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     const input = acceptInput(entry.tool.name, entry.check, call.argumentsText)
     if (!input.ok) return input.outcome
     const decided = hooks.authorize === undefined ? null : await hooks.authorize(entry.tool, input.value)
-    const stopped = interruptReasonOf(call.context.signal)
+    const stopped = callStopReasonOf(call.context.signal)
     if (stopped !== null) return notStarted(stopped)
     if (decided?.kind === "refuse") return { kind: "denied", settlement: { outcome: "error", output: decided.output, truncation: null, attachments: [], display: null } }
     hooks.onStart?.()
@@ -234,12 +235,12 @@ function crashed(tool: AnyTool, error: unknown): ToolCallOutcome {
   }
 }
 
-function notStarted(reason: "user" | "shutdown"): ToolCallOutcome {
+function notStarted(reason: CallStopReason): ToolCallOutcome {
   return {
     kind: "not_started",
     settlement: {
       outcome: "not_started",
-      output: `Not run: the ${reason === "user" ? "user interrupted" : "harness shut down"} before this call started.`,
+      output: reason === "call" ? "Not run: the user stopped this call before it started." : `Not run: the ${reason === "user" ? "user interrupted" : "harness shut down"} before this call started.`,
       truncation: null,
       attachments: [],
       display: null,

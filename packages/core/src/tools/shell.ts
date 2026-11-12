@@ -5,7 +5,8 @@
  * cannot exhaust memory. The tool caps its own output and sets `truncation`,
  * so the runtime never caps it again.
  *
- * Stopping (abort, timeout, or leftovers after the command exits): SIGTERM to
+ * Stopping (an interrupt, the user stopping this one call, a timeout, or
+ * leftovers after the command exits): SIGTERM to
  * the whole group, wait up to the grace period for the group to empty, then
  * SIGKILL the group. Background processes the command started are stopped the
  * same way when it finishes. If this process dies while a command runs, a
@@ -14,7 +15,7 @@
 import { mkdir, unlink } from "node:fs/promises"
 import { join } from "node:path"
 import { escalationSchema } from "../approval/escalation.ts"
-import { interruptReasonOf } from "../interrupt.ts"
+import { callStopReasonOf } from "../interrupt.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { OUTPUT_LIMITS, type OutputLimits, fitsLimits, renderCapped } from "../tool/cap.ts"
 import { redactingStream } from "../tool/redact-stream.ts"
@@ -64,7 +65,7 @@ const DRAIN_MS = 1000
 /** The output keeps room for the status line, so the whole result stays within the runtime's limits. */
 const BODY_LIMITS: OutputLimits = { maxBytes: OUTPUT_LIMITS.maxBytes - 1024, maxLines: OUTPUT_LIMITS.maxLines - 6 }
 
-type StopReason = "timeout" | "user" | "shutdown"
+type StopReason = "timeout" | "user" | "shutdown" | "call"
 
 export function shellTool(options: ShellOptions): Tool<ShellInput> {
   const shell = options.shell ?? Bun.which("bash") ?? "/bin/sh"
@@ -98,7 +99,7 @@ async function runShell(
 ): Promise<ToolResult> {
   const startedAt = performance.now()
   const timeoutSeconds = input.timeout ?? DEFAULT_TIMEOUT_SECONDS
-  const early = interruptReasonOf(context.signal)
+  const early = callStopReasonOf(context.signal)
   if (early !== null) return finish({ buffer: null, stopReason: early, exitCode: null, signalCode: null, timeoutSeconds, startedAt, spill: null })
 
   // Decided before anything is created: a command that must run sandboxed runs sandboxed or not at all.
@@ -132,7 +133,7 @@ async function runShell(
     stopReason ??= reason
     void group.terminate()
   }
-  const onAbort = () => stop(interruptReasonOf(context.signal) ?? "user")
+  const onAbort = () => stop(callStopReasonOf(context.signal) ?? "user")
   context.signal.addEventListener("abort", onAbort, { once: true })
   const timer = setTimeout(() => stop("timeout"), timeoutSeconds * 1000)
 
@@ -183,7 +184,8 @@ async function startBackground(
   const refused = (output: string): ToolResult => ({ status: "error", output, truncation: null, attachments: [], display: { exitCode: null, signal: null, timedOut: false, interrupted: null } })
   const host = context.background
   if (host === undefined) return refused("Background commands are not available here. Run the command without `background`.")
-  if (interruptReasonOf(context.signal) !== null) return refused("The command was not started: the session was interrupted.")
+  const early = callStopReasonOf(context.signal)
+  if (early !== null) return refused(early === "call" ? "The command was not started: the user stopped this call." : "The command was not started: the session was interrupted.")
   const wrapped = context.sandbox === undefined || context.sandbox === null ? null : sandboxed(input.command, context, options)
   if (wrapped !== null && "refused" in wrapped) return refused(`Could not start the command: ${wrapped.refused}`)
 
@@ -470,6 +472,8 @@ async function finish(run: {
       signal: run.signalCode,
       timedOut: run.stopReason === "timeout",
       interrupted: run.stopReason === "user" || run.stopReason === "shutdown" ? run.stopReason : null,
+      // Only when the user stopped this one call: what `interrupted` is for the whole turn.
+      ...(run.stopReason === "call" ? { cancelled: true } : {}),
       durationMs: Math.round(performance.now() - run.startedAt),
     },
   }
@@ -497,6 +501,9 @@ function statusLine(run: { stopReason: StopReason | null; exitCode: number | nul
       return `[Interrupted by the user. ${stopped}]`
     case "shutdown":
       return `[Interrupted because the harness is shutting down. ${stopped}]`
+    case "call":
+      // The user stopped this command and nothing else: the turn goes on, and this is its result.
+      return `[Stopped by the user. ${stopped}]`
     case null:
       if (run.signalCode !== null) return `[Killed by signal ${run.signalCode}]`
       if (run.exitCode !== 0) return `[Exit code ${run.exitCode}]`

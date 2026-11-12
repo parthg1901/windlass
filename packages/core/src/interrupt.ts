@@ -61,3 +61,60 @@ export function interruptReasonOf(signal: AbortSignal): InterruptReason | null {
     cause: signal.reason,
   })
 }
+
+/**
+ * The value of `signal.reason` on the signal of one tool call that the user
+ * stopped by itself (`createCallStop`). The execution is not interrupted:
+ * the step carries on with its other calls, and the model reads this call's
+ * result like any other.
+ */
+export class CallCancelled extends Error {
+  constructor() {
+    super("the user stopped this tool call")
+    this.name = "CallCancelled"
+  }
+}
+
+/**
+ * Why a tool call is being stopped: the execution was interrupted (`user`,
+ * `shutdown`), or the user stopped this one call and nothing else (`call`).
+ * Never stored: an execution's interruption is an `InterruptReason`, and a
+ * stopped call is recorded as `tool.cancel_requested`.
+ */
+export type CallStopReason = InterruptReason | "call"
+
+export interface CallStop {
+  /** What the tool is given: aborted when the execution is interrupted, or when this call alone is stopped. */
+  readonly signal: AbortSignal
+  /** Stops this call and nothing else. A no-op once the signal is aborted, for whatever reason. */
+  readonly cancel: () => void
+  /** Stops listening to the execution's signal, once the call is over. */
+  readonly release: () => void
+}
+
+/**
+ * The abort token of one tool call: it follows the execution's signal, with
+ * the execution's reason, and can also be aborted by itself. The first
+ * abort wins.
+ */
+export function createCallStop(execution: AbortSignal): CallStop {
+  const controller = new AbortController()
+  const follow = () => controller.abort(execution.reason)
+  if (execution.aborted) follow()
+  else execution.addEventListener("abort", follow, { once: true })
+  return {
+    signal: controller.signal,
+    cancel: () => controller.abort(new CallCancelled()),
+    release: () => execution.removeEventListener("abort", follow),
+  }
+}
+
+/**
+ * Reads the reason from the signal a tool call was given (`ToolContext.signal`).
+ * Returns `null` when it is not aborted. Throws, like `interruptReasonOf`,
+ * when it was aborted without a reason.
+ */
+export function callStopReasonOf(signal: AbortSignal): CallStopReason | null {
+  if (signal.aborted && signal.reason instanceof CallCancelled) return "call"
+  return interruptReasonOf(signal)
+}
