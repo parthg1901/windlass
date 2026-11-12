@@ -71,9 +71,14 @@ describe("the real engine", () => {
       // The files the turn changed are listed right before its outcome.
       expect(vt.text).toContain("· changed 1 file: notes.md\n\n✓ done · no checks configured")
 
-      // A command is over, or has asked its question and waits for the answer.
-      const settle = async () => {
-        await Promise.race([screen.commandsSettled(), new Promise((resolve) => setTimeout(resolve, 400))])
+      // A command is over, or has asked its question and waits for the answer. Waits for one of the two, not for a
+      // fixed time: on a loaded machine a restore takes longer than any short pause.
+      const asking = () => vt.text.split("\n").at(-1)?.startsWith("[y] overwrite") === true
+      const settle = async (asks = false) => {
+        let over = false
+        void screen.commandsSettled().then(() => (over = true))
+        const deadline = Date.now() + 30_000
+        while (!(asks ? asking() : over) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
         await new Promise((resolve) => setTimeout(resolve, 20))
       }
       const submitted: string[] = []
@@ -89,7 +94,7 @@ describe("the real engine", () => {
       // The user edits the file by hand; /redo would overwrite that, so it asks first.
       writeFileSync(join(workspace, "notes.md"), "# Notes\n\nmine\n")
       type("/redo\r")
-      await settle()
+      await settle(true)
       expect(vt.text.split("\n").at(-1)).toBe("[y] overwrite · [k] keep as they are now · [N] change nothing ›")
       expect(vt.text).toContain("you edited 1 file by hand since the /undo: notes.md")
       expect(vt.text.replace(/\n\s+/g, " ")).toContain("y  overwrite: it goes back to how the turn left it, and your edits since the /undo are lost for good")
@@ -97,7 +102,7 @@ describe("the real engine", () => {
       await settle()
       expect(readFileSync(join(workspace, "notes.md"), "utf8")).toBe("# Notes\n\nmine\n")
       type("/redo\r")
-      await settle()
+      await settle(true)
       type("y\r")
       await settle()
       expect(readFileSync(join(workspace, "notes.md"), "utf8")).toContain("reviewed")
@@ -110,7 +115,7 @@ describe("the real engine", () => {
     } finally {
       await session.close()
     }
-  })
+  }, 120_000)
 
   test("a model named on the command line is checked when the session is opened, and the error names the valid ones", async () => {
     const { root, workspace } = place()
