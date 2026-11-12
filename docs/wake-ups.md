@@ -38,12 +38,17 @@ a webhook's URL and secret (below). The name is the feature's: `/wake` (an alias
 something up, which it is not.
 
 A message a wake-up delivers is shown as one, never as something you typed: `⏰ wake-up <id>: it fired (<trigger>) ·
-not typed by you`, then the message it was set up with (`a webhook request arrived` for a webhook).
+not typed by you`, then the message it was set up with (`a webhook request arrived` in place of `it fired` for a
+webhook).
 
 `wake_create` is decided like the shell command it may run: a check's command runs in the sandbox, without network
 unless the model asked for it and it was approved, and what was approved when it was created is the most it ever
 runs with. A timer or a webhook runs no command. `wake_list` shows the session's wake-ups and their limits;
-`wake_cancel` stops one.
+`wake_cancel` stops one. Cancelling changes only the program's own records, so it runs without a question in the
+`auto` and `full` modes, also in a one-shot run (`windlass -c "cancel that wake-up"`); only `ask` asks about it.
+
+The one-shot run above creates the wake-up and exits; it does not wait for it. The wake-up fires in a process
+that runs them, as the section above says.
 
 ## The triggers
 
@@ -86,6 +91,12 @@ not control: they are delivered fenced as data, and the session is tainted befor
 Creating a webhook wake-up gives a URL, `http://127.0.0.1:47863/w/<id>`, and a secret (`whsec_...`) that the model
 never sees. The listener is on loopback only. A request must be signed with the secret, one of two ways.
 
+**When it listens.** The listener is part of the process that fires wake-ups: an interactive `windlass`, `windlass tui`
+or an editor's `windlass acp` (see "Where wake-ups fire today"), and it is up only while some session has a
+webhook wake-up pending. With no such process open, or with no webhook wake-up pending, nothing listens and a
+request to the URL is refused by the operating system (connection refused). A one-shot run that creates a
+webhook wake-up does not listen for it.
+
 The program's own scheme: a timestamp, and an HMAC-SHA256 of `<timestamp>.<body>`, valid for five minutes and once:
 
 ```sh
@@ -107,7 +118,11 @@ about which wake-ups exist:
 {"error":"The signature is missing, invalid, stale or was already used."}
 ```
 
-(status `401`). A body over the limit gets `413`, too many requests `429` with `Retry-After`.
+(status `401`). So the same signed request sent twice gets `202`, then `401`. A body over the limit gets `413`,
+too many requests `429` with `Retry-After`. A correctly signed request that arrives sooner after the wake-up's last
+firing than its minimum interval (60 seconds by default) is not a firing either: it gets `429`,
+`{"error":"Too many requests for this webhook; retry later."}`, with `Retry-After`. Anything but a `POST` to
+`/w/<id>` gets `404`.
 
 ### The secret
 
@@ -120,8 +135,6 @@ the wake-up store, `~/.local/share/windlass/wake/wake.db`.
 
 ### Not yet
 
-- **Nothing listens.** See "Where wake-ups fire today": no entry point starts the listener, so a request to the URL
-  is refused by the operating system.
 - **Creating a wake-up yourself.** The engine can (`author: "user"`), but no command does it yet: ask the agent.
 
 ## Limits

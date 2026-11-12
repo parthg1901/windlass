@@ -34,7 +34,8 @@ import { DELIVERY_LIMITS } from "../../packages/core/src/memory/hygiene.ts"
 import { memoryPaths } from "../../packages/core/src/memory/store.ts"
 import { MAX_DEPTH, MAX_NAME_LENGTH, MAX_SKILL_BYTES, skillRoots } from "../../packages/core/src/skills/discover.ts"
 import { WAKE_LIMITS } from "../../packages/core/src/wake/record.ts"
-import { DEFAULT_WEBHOOK_PORT, GITHUB_SIGNATURE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, signGithubStyle, signWebhook } from "../../packages/core/src/wake/webhook.ts"
+import { openWakeStore } from "../../packages/core/src/wake/store.ts"
+import { DEFAULT_WEBHOOK_PORT, GITHUB_SIGNATURE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, createWebhookListener, signGithubStyle, signWebhook } from "../../packages/core/src/wake/webhook.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { forkUsage, parseSubcommand, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
@@ -339,6 +340,46 @@ describe("wake-ups against the code", () => {
     }
     // A run nobody sits in front of switches it off for its server.
     expect(readFileSync(join(ROOT, "packages/cli/src/main.ts"), "utf8")).toContain('[WAKE_ENV]: "off"')
+  })
+
+  test("the listener answers as the page says: 202, then 401 for the same or a bad signature, 429 too soon (When it listens)", async () => {
+    expect(page).toContain("**When it listens.**")
+    expect(page).not.toContain("Nothing listens")
+    expect(page).toContain("So the same signed request sent twice gets `202`, then `401`.")
+    expect(page).toContain('`{"error":"Too many requests for this webhook; retry later."}`')
+    // It is started where the scheduler runs, by the engine's wake-up runtime.
+    expect(readFileSync(join(ROOT, "packages/core/src/engine/wake.ts"), "utf8")).toContain("this.listener?.start()")
+
+    const dir = mkdtempSync(join(tmpdir(), "feature-docs-wake-"))
+    const store = openWakeStore({ dir })
+    const listener = createWebhookListener({ store, port: 0 })
+    try {
+      // With no webhook wake-up pending nothing listens.
+      expect(listener.refresh()).toBe(false)
+      expect(listener.url()).toBe(null)
+      const created = store.create({ sessionId: "ses_1", message: "A deploy finished.", author: "model", trigger: { kind: "webhook" } })
+      if (!created.ok) throw new Error(created.error)
+      expect(listener.refresh()).toBe(true)
+      const send = async (headers: Record<string, string>, body: string, method = "POST") => {
+        const response = await fetch(`${listener.url()}/w/${created.wake.id}`, { method, ...(method === "POST" ? { body } : {}), headers })
+        return { status: response.status, body: await response.text(), retryAfter: response.headers.get("retry-after") }
+      }
+      const body = '{"service":"api","status":"deployed"}'
+      const now = Math.floor(Date.now() / 1000)
+      const signed = signWebhook(created.secret!, body, now)
+      expect(await send(signWebhook("whsec_wrong", body, now), body)).toMatchObject({ status: 401, body: '{"error":"The signature is missing, invalid, stale or was already used."}' })
+      expect(await send(signed, body)).toEqual({ status: 202, body: '{"accepted":true}', retryAfter: null })
+      expect((await send(signed, body)).status).toBe(401)
+      // Another correctly signed request, sooner than the minimum interval after that firing.
+      const soon = await send(signWebhook(created.secret!, '{"again":true}', now), '{"again":true}')
+      expect(soon).toMatchObject({ status: 429, body: '{"error":"Too many requests for this webhook; retry later."}' })
+      expect(Number(soon.retryAfter)).toBeGreaterThan(0)
+      expect((await send({}, "", "GET")).status).toBe(404)
+    } finally {
+      await listener.stop()
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("the secret is shown by the clients and never sent as an event (docs/wake-ups.md, The secret)", () => {
