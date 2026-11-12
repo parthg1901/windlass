@@ -248,7 +248,10 @@ export async function run(io: Io): Promise<number> {
     sink.interruptRequested()
   }
 
-  const turns = new TurnWatcher(session, sink, watch ?? notices)
+  const turns = new TurnWatcher(session, sink, watch ?? notices, (item) => {
+    // What became of an approval's answer is on the screen: a question that stepped aside for it may come back.
+    if (item.type === "approval.answered" || turnOutcomeOf(item) !== null) questions?.confirmed()
+  })
   const turn = async (entry: Entry): Promise<TurnOutcome | "closed" | "not_sent"> => {
     control.running = true
     // What the project's configuration asks for and the user has not answered yet is asked before the message goes.
@@ -761,6 +764,9 @@ async function stopCall(session: Session, renderer: PrettyRenderer, rest: string
   }
 }
 
+/** How long a question waits for what became of the answer before it to be said, before it is put anyway. */
+export const CONFIRMATION_WAIT_MS = 1500
+
 /**
  * The questions put at the prompt, one at a time. A tool call's approval is
  * urgent: the turn waits for it, so it is put at once, and a patient question
@@ -768,7 +774,10 @@ async function stopCall(session: Session, renderer: PrettyRenderer, rest: string
  * aside and is put again, printed afresh, once no urgent one is left. Patient
  * questions wait for each other: the next is put when the one showing has
  * its answer and what the answer asked for is done and said, never in its
- * place and never above its confirmation.
+ * place and never above its confirmation. The same holds between the two
+ * kinds: an urgent question waits (briefly) for what a patient answer asked
+ * for to be said, and a patient question is put again only once the engine's
+ * word on the urgent answer (`✓ allowed once`) has been drawn (`confirmed`).
  */
 export class Questions {
   private urgentCount = 0
@@ -778,17 +787,42 @@ export class Questions {
   private release: (() => void) | null = null
   /** The patient question showing or waiting last: the next one is put after it. */
   private patientLine: Promise<unknown> = Promise.resolve()
+  /** What a patient answer asked for, while it is being done and said. */
+  private settling: Promise<unknown> | null = null
+  /** Urgent answers the engine has not confirmed on the screen yet: each ends its question's hold on the prompt. */
+  private readonly unconfirmed = new Set<() => void>()
 
   constructor(private readonly screen: Pick<Screen, "ask">) {}
 
   async urgent(question: string): Promise<string | null> {
     if (this.patientUp) this.displaced = true
     if (this.urgentCount++ === 0) this.idle = new Promise((resolve) => (this.release = resolve))
-    try {
-      return await this.screen.ask(question)
-    } finally {
+    let held = true
+    const done = () => {
+      if (!held) return
+      held = false
+      this.unconfirmed.delete(done)
       if (--this.urgentCount === 0) this.release?.()
     }
+    let answer: string | null = null
+    try {
+      if (this.settling !== null) await within(CONFIRMATION_WAIT_MS, this.settling)
+      answer = await this.screen.ask(question)
+      return answer
+    } finally {
+      // Backed out of: nothing will be said about it. Answered: until its confirmation is drawn, and never for long.
+      if (answer === null) done()
+      else {
+        this.unconfirmed.add(done)
+        const timer = setTimeout(done, CONFIRMATION_WAIT_MS) as { unref?: () => void }
+        timer.unref?.()
+      }
+    }
+  }
+
+  /** The engine's word on the urgent answers given so far was drawn (`approval.answered`), or their turn ended. */
+  confirmed(): void {
+    for (const done of [...this.unconfirmed]) done()
   }
 
   /**
@@ -796,7 +830,16 @@ export class Questions {
    * is done, so what became of an answer is said under its own question, never under the next one.
    */
   patient<T>(question: string, print: () => void, settle: (answer: string | null) => T | Promise<T>): Promise<T> {
-    const settled = this.patientLine.then(async () => settle(await this.putPatient(question, print)))
+    const settled = this.patientLine.then(async () => {
+      const answer = await this.putPatient(question, print)
+      const work = Promise.resolve().then(() => settle(answer))
+      this.settling = work.catch(() => {})
+      try {
+        return await work
+      } finally {
+        this.settling = null
+      }
+    })
     this.patientLine = settled.catch(() => {})
     return settled
   }
@@ -876,6 +919,8 @@ class TurnWatcher {
     private readonly session: Session,
     private readonly sink: Sink,
     private readonly watch: Pick<FeatureWatch, "event"> | null = null,
+    /** Called with each event once the sink has drawn it. */
+    private readonly drawn: ((item: EngineEvent) => void) | null = null,
   ) {}
 
   /** Begins reading the events (they wait until then). Idempotent. */
@@ -904,6 +949,7 @@ class TurnWatcher {
 
   private observe(item: EngineEvent, sink: Sink): void {
     sink.event(item)
+    this.drawn?.(item)
     this.watch?.event(item)
     const outcome = turnOutcomeOf(item)
     if (outcome !== null) {
