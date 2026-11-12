@@ -114,7 +114,8 @@ changes nothing.
 process group, so Ctrl-C reaches the CLI, which sends `session/cancel`) and is a client like any editor. Whatever
 the CLI can do, a client can do. `--engine direct` runs the engine in the CLI's own process instead (for debugging,
 and as the reference the protocol path is tested against); `--engine acp-memory` runs the same server in-process
-over in-memory streams.
+over in-memory streams. Starting the child costs about 0.2 s before the first event (measured on a two-core
+aarch64 machine: a median of 190–250 ms to the first event directly against 365–510 ms through the child).
 
 | CLI feature | Protocol |
 | --- | --- |
