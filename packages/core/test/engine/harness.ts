@@ -589,6 +589,9 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  *   so "the same state as before" and "a new state" are compared.
  * - check evidence: `afterSeq`, and per check `durationMs`, `fingerprint`
  *   and `outputPath` (see `evidence` in the scenario vocabulary).
+ * - when an approval was given: `grantedAt` of the grants an answer created
+ *   (the loop records its clock). The rule, the scope and the position
+ *   (`at`) are compared.
  * - a compaction's sizes: `tokensBefore` and `tokensAfter` (the loop records
  *   its own estimates of the request before and after). The cut, the mode,
  *   the prompt, the repair and the checkpoint text are compared.
@@ -616,6 +619,8 @@ export function comparable(events: readonly NewEvent[]): Plain[] {
     if (item.type === "checks.finished") data.evidence = plainEvidence(item.data.evidence)
     if ((item.type === "execution.succeeded" || item.type === "turn.ended") && "evidence" in item.data.verification)
       data.verification = { ...item.data.verification, evidence: plainEvidence(item.data.verification.evidence) }
+    // When an approval was given is the loop's clock; a scenario writes a stand-in.
+    if (item.type === "approval.answered") data.grants = item.data.grants.map((grant) => ({ ...grant, grantedAt: 0 }))
     if (item.type === "compaction.started") data.tokensBefore = 0
     if (item.type === "compaction.ended") data.tokensAfter = 0
     if (item.type === "baseline.set") return { type: item.type, data: { sources: data.sources } }

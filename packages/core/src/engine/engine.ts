@@ -109,7 +109,7 @@ import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
-import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, callFacts, effectivePolicy, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
+import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, effectivePolicy, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
 import { type Clock, systemClock } from "./clock.ts"
 import {
@@ -822,6 +822,9 @@ interface PendingQuestion {
 }
 
 const callKey = (messageId: MessageId, callId: CallId) => `${messageId}/${callId}`
+
+/** The directory, inside a session's temp directory, of tool output kept in full. */
+const SPILL_IN_TEMP = ".spill"
 
 /** What `authorize` resolves with when an interrupt ended its wait: the runtime sees the abort and reports the call as not started. */
 const WITHDRAWN: Authorization = { kind: "refuse", output: "" }
@@ -1824,7 +1827,9 @@ class LiveSession implements EngineSession {
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output, truncation: null, attachments: [], display: null }),
       ])
     this.decided.clear()
-    const extras = approvals === null ? {} : { ...this.tempContext(), redact: redactor(approvals.secrets) }
+    const place = this.tempContext()
+    // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it too.
+    const extras = approvals === null ? {} : { ...place, ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }), redact: redactor(approvals.secrets) }
 
     /** One call, from its decision to its recorded result. */
     const launch = (call: ToolCallPart): Promise<void> => {
@@ -1870,7 +1875,7 @@ class LiveSession implements EngineSession {
           this.decided.delete(key)
           const settlement = this.settlement(result, effect, signal)
           // The note for a failure the sandbox causes, then the redaction: what is stored is what is replayed.
-          const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets) }
+          const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets, place.temp) }
           this.write([...(decided?.before ?? []), event("tool.settled", { messageId, callId: call.callId, ...shown })])
           this.probe("tool.settled")
           if (decided?.stop != null) this.stopping ??= decided.stop
@@ -2674,7 +2679,7 @@ class LiveSession implements EngineSession {
       .runChecks(checks, {
         cwd: loaded.projectDir,
         // Per session: a check's output is written under a working name first, and two sessions may run the same check at once.
-        spillDir: join(this.core.spillDir, "checks", this.id),
+        spillDir: confined === undefined ? join(this.core.spillDir, "checks", this.id) : join(this.tempContext().temp?.dir ?? this.core.spillDir, SPILL_IN_TEMP, "checks"),
         signal,
         ...(confined === undefined ? {} : { sandbox: confined }),
         progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
@@ -2712,7 +2717,7 @@ class LiveSession implements EngineSession {
     }
     // A check's output is tool output: what the model is shown of it is redacted like any other.
     const secrets = this.core.approvals?.secrets
-    const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, secrets === undefined ? renderReport(results) : redact(renderReport(results), secrets).text)
+    const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, secrets === undefined ? renderReport(results) : redact(aliased(renderReport(results), this.tempContext().temp), secrets).text)
     switch (decision.kind) {
       case "finish":
         return this.finish(run, { status: "passed", evidence }, [finished])

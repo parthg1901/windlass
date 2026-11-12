@@ -21,6 +21,7 @@ import { type ProbePoint, createEngine } from "../../src/engine/engine.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import { buildRequest } from "../../src/request/build.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
+import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
@@ -303,6 +304,84 @@ describe("no tool subprocess outlives the engine's process", () => {
       const result = await recoverAndContinue(where)
       expect(outcomes(result.recovered)).toEqual(["call_1 effect_unknown"])
       expect(types(result.recovered)).toEqual(["tool.settled", ...CRASHED])
+    },
+    30_000,
+  )
+})
+
+describe.skipIf(!createCommandSandbox().state.available)("the approval layer and a process that dies", () => {
+  /** The engine that recovers: the approval layer on, the real sandbox, a person present. */
+  async function recoverGuarded(where: Place, answers: readonly string[] = ["Recovered and finished."]) {
+    const store = openSqliteStore({ path: where.database })
+    try {
+      const id = store.listSessions()[0]!.session.id
+      const died = store.readEvents(id)
+      const sandbox = createCommandSandbox({ tempBase: join(where.directory, "session-temp") })
+      const provider = new FakeProvider(answers.map((text) => [script.text(text)]))
+      const engine = createEngine({
+        approval: { sandbox, secrets: [], home: join(where.directory, "home"), grantsDir: join(where.directory, "approvals") },
+        store,
+        provider,
+        tools: createStandardTools({ spillDir: join(where.workspace, ".spill"), shell: { sandbox } }),
+        discover: () => [],
+        dataDir: where.workspace,
+        snapshots: null,
+        loadConfig: null,
+        log: () => {},
+        strict: true,
+      })
+      const session = engine.openSession(id)
+      session.setAttended(true)
+      await session.settled()
+      await engine.close()
+      const projection = expectRebuildEqualsLive(store, id)
+      const log = store.readEvents(id)
+      expect(projection.session.execution).toBeNull()
+      expect(unsettled(log)).toEqual([])
+      expect(danglingCalls(buildRequest(projection, { toolChoice: "auto" }).input)).toEqual([])
+      return { died, log, recovered: log.slice(died.length), projection }
+    } finally {
+      store.close()
+    }
+  }
+
+  test("killed while a question is pending: the call never ran, it is settled as not started, and nothing was remembered", async () => {
+    const where = await crashAt("approval", "approval.requested", 1)
+    const result = await recoverGuarded(where)
+    // What the dead process left: the question, durable, and no answer.
+    expect(types(result.died).slice(-2)).toEqual(["tool.called", "approval.requested"])
+    expect(types(result.recovered).slice(0, 4)).toEqual(["tool.settled", ...CRASHED])
+    expect(outcomes(result.recovered)).toEqual(["call_1 not_started"])
+    const first = result.recovered[0]
+    expect(first?.type === "tool.settled" && first.data.output).toBe(TOOL_TEXT.notStarted)
+    expect(types(result.log).filter((type) => type === "approval.answered" || type === "tool.started")).toEqual([])
+    expect(existsSync(join(where.workspace, "fetched.txt"))).toBe(false)
+    expect(result.projection.session.approval).toBeUndefined()
+    expect(types(result.log).at(-1)).toBe("execution.succeeded")
+  })
+
+  test(
+    "killed while a sandboxed command runs: the command and its sandbox end too, and the call is recovered as effect unknown, with how it ran on record",
+    async () => {
+      const where = place()
+      const child = Bun.spawn([process.execPath, FIXTURE, where.database, where.workspace, "sandboxed"], { stdout: "ignore", stderr: "pipe", detached: true })
+      children.push(child)
+      const running = () => Bun.spawnSync(["pgrep", "-f", "^sleep 300\\.7731$"]).exitCode === 0
+      const until = async (condition: () => boolean, ms: number) => {
+        const deadline = Date.now() + ms
+        while (!condition() && Date.now() < deadline) await Bun.sleep(20)
+        return condition()
+      }
+      if (!(await until(() => existsSync(join(where.workspace, "started.txt")) && running(), 10_000))) throw new Error("the sandboxed command never started")
+      // Only the engine's own process: the command is in a group of its own and has to be ended by the guard.
+      process.kill(child.pid, "SIGKILL")
+      await child.exited
+      expect(await until(() => !running(), 5000)).toBe(true)
+
+      const result = await recoverGuarded(where)
+      expect(outcomes(result.recovered)).toEqual(["call_1 effect_unknown"])
+      const started = result.log.find((item) => item.type === "tool.started")
+      expect(started?.type === "tool.started" && started.data.run).toEqual({ mode: "auto", origin: "builtin", paths: [], sandbox: { network: false, writableRoots: [] } })
     },
     30_000,
   )

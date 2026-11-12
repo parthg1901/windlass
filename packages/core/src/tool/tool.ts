@@ -112,6 +112,13 @@ export interface ToolContext {
   /** The session's temp directory, when it has one. */
   readonly temp?: TempDirectory
   /**
+   * Where this call's output is written in full when it is too long for the
+   * model, instead of the directory the tool or the runtime was made with:
+   * a directory of the session's own that its sandboxed commands can read,
+   * so that the path the model is given works in a command too.
+   */
+  readonly spillDir?: string
+  /**
    * The harness's redaction of tool output, for a tool that changes a file
    * the model was shown redacted: it finds what a placeholder in the model's
    * arguments stands for instead of writing the placeholder into the file.

@@ -15,9 +15,11 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { type NewEvent, event } from "../../src/event/durable.ts"
 import { ENGINE_LIMITS, FAILURE_TEXT, NOTE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
+import type { StoredEvent } from "../../src/event/durable.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
 import type { Json } from "../../src/json.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
 import { families } from "../scenarios/index.ts"
@@ -26,6 +28,8 @@ import {
   CRASH_EFFECT_UNKNOWN,
   CRASH_READ,
   EFFECT_UNKNOWN,
+  HOME,
+  NO_SANDBOX,
   INTERRUPTED_READ,
   NOT_STARTED,
   NOT_A_SUMMARY,
@@ -898,6 +902,116 @@ const PLAYS: Record<string, Play> = {
   },
 }
 
+// ---------------------------------------------------------------- approval and the sandbox
+
+/** The sandbox of the approval scenarios: it says whether one exists; the scripted tools spawn nothing. */
+const scenarioSandbox = (available: boolean): CommandSandbox => ({
+  state: available ? { available: true } : { available: false, reason: NO_SANDBOX, remedy: null },
+  temp: (sessionId) => ({ dir: `/sandbox-tmp/${sessionId}`, alias: "/tmp" }),
+  plan: () => {
+    throw new Error("a scripted tool spawns nothing")
+  },
+  policy: () => {
+    throw new Error("a scripted tool spawns nothing")
+  },
+})
+
+const CURL = "curl -s https://example.com/notes"
+const fetches = (command = CURL) => [call("call_1", "shell", { command, sandbox: { network: true } }), U]
+/** Answers the next question the session asks after `after` events were seen. */
+async function answerNext(h: Harness, choice: "once" | "session" | "deny", from = 0) {
+  const asked = (await h.seen((item) => item.type === "approval.requested", from)) as StoredEvent<"approval.requested">
+  expect(h.session.answer({ messageId: asked.data.messageId, callId: asked.data.callId }, { choice })).toBe(true)
+}
+
+Object.assign(PLAYS, {
+  "Auto mode: an edit runs and a command runs in the sandbox": async (h, say) => {
+    h.provider.enqueue([call("call_1", "write", { path: "a.test.ts", content: "expect(add(1, 1)).toBe(2)" }), call("call_2", "shell", { command: "bun test" }), U], answer("Fixed: the test passes."))
+    h.tools.on("write", "written").on("shell", "1 pass")
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "A command needs the network: the hint, the request, one approval, taint, and the next request asks again": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: CURL }), U], fetches(), fetches("curl -s https://example.com/next"), answer("The notes say installs are faster."))
+    h.tools.on("shell", () => ({ ...failed("curl: (6) Could not resolve host: example.com\n[Exit code 6]"), display: { exitCode: 6 } }), "v2.1: faster installs")
+    h.create().send(say[0]!)
+    await answerNext(h, "once")
+    await answerNext(h, "deny", h.seenEvents.findIndex((item) => item.type === "approval.answered") + 1)
+    await h.settled()
+  },
+
+  "Ask mode: a read runs, an edit and a command each ask": async (h, say) => {
+    h.provider.enqueue(
+      [call("call_1", "read", { path: "a.test.ts" }), U],
+      [call("call_1", "write", { path: "a.test.ts", content: "expect(add(1, 1)).toBe(2)" }), U],
+      [call("call_1", "shell", { command: "bun test" }), U],
+      answer("Fixed: the test passes."),
+    )
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)").on("write", "written").on("shell", "1 pass")
+    h.create().send(say[0]!)
+    await answerNext(h, "once")
+    await answerNext(h, "once", h.seenEvents.findIndex((item) => item.type === "approval.answered") + 1)
+    await h.settled()
+  },
+
+  "A call the policy refuses": async (h, say) => {
+    h.provider.enqueue([call("call_1", "write", { path: "~/.ssh/authorized_keys", content: "ssh-ed25519 AAAA" }), U], answer("I cannot change that file."))
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "Nobody present: a call that would ask is refused and the run goes on": async (h, say) => {
+    h.provider.enqueue(fetches(), answer("I could not reach example.com: this run has no network."))
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "Nobody present, and the run ends with the refusal": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: CURL, sandbox: { network: true } }), call("call_2", "write", { path: "notes.md", content: "notes" }), U])
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "An approval remembered for the session, then used": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: "bun test" }), U], [call("call_1", "shell", { command: "bun run lint" }), U], answer("The tests pass and the linter is clean."))
+    h.tools.on("shell", "1 pass", "clean")
+    h.create().send(say[0]!)
+    await answerNext(h, "session")
+    await h.settled()
+  },
+
+  "A pending question is interrupted": async (h, say) => {
+    h.provider.enqueue(fetches())
+    const session = h.create()
+    session.send(say[0]!)
+    const asked = (await h.seen((item) => item.type === "approval.requested")) as StoredEvent<"approval.requested">
+    session.interrupt()
+    await h.settled()
+    // The answer comes too late: the question was withdrawn.
+    expect(session.answer({ messageId: asked.data.messageId, callId: asked.data.callId }, { choice: "once" })).toBe(false)
+  },
+
+  "A crash with a pending question": async (h, say) => {
+    h.provider.enqueue(fetches(), fetches(), answer("The notes say installs are faster."))
+    h.tools.on("shell", "v2.1: faster installs")
+    h.dieAt("approval.requested")
+    h.create().send(say[0]!)
+    await h.settled().catch(() => {})
+    h.restart()
+    await answerNext(h, "once", h.seenEvents.findIndex((item) => item.type === "execution.resumed"))
+    await h.settled()
+  },
+
+  "No sandbox on this machine: auto asks for every command": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: "bun test" }), U], answer("The test passes."))
+    h.tools.on("shell", "1 pass")
+    h.create().send(say[0]!)
+    await answerNext(h, "once")
+    await h.settled()
+  },
+} satisfies Record<string, Play>)
+
 /**
  * Scenarios the loop does not reproduce event for event, with the reason and
  * the exact difference. Everything else must match its scenario as written.
@@ -936,6 +1050,18 @@ describe("the loop writes each scenario's events", () => {
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
         ...(setup?.config === undefined ? {} : { config: setup.config }),
         ...(scenario.contextWindow === undefined ? {} : { contextWindow: scenario.contextWindow }),
+        // The approval layer is off unless the scenario is about it; then it runs under exactly what the scenario says.
+        ...(scenario.approval === undefined
+          ? {}
+          : {
+              approval: {
+                sandbox: scenarioSandbox(scenario.approval.sandbox !== "unavailable"),
+                secrets: [],
+                home: HOME,
+                user: { mode: scenario.approval.mode ?? "auto", unattended: scenario.approval.unattended ?? "deny" },
+              },
+              attended: scenario.approval.attended === true,
+            }),
       })
       try {
         await play(h, prompts(scenario))
@@ -956,7 +1082,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(65)
+    expect(scenarios).toHaveLength(75)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

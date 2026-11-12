@@ -3,6 +3,7 @@
  * lists them, together with the vocabulary they are written in. Other
  * packages import this module as `@light-harness/core/testing/scenarios`.
  */
+import { approvalScenarios } from "./approval.ts"
 import { cancelScenarios } from "./cancel.ts"
 import { compactionScenarios } from "./compaction.ts"
 import { crashScenarios } from "./crash.ts"
@@ -28,4 +29,5 @@ export const families: Record<string, readonly Scenario[]> = {
   Verification: verificationScenarios,
   Revert: revertScenarios,
   Compaction: compactionScenarios,
+  "Approval and the sandbox": approvalScenarios,
 }

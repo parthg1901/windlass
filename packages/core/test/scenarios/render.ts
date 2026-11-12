@@ -51,6 +51,7 @@ function renderScenario(scenario: Scenario, number: number): string {
     `*Provider:* ${scenario.provider}.`,
     ...(scenario.setup === undefined ? [] : [describeSetup(scenario.setup)]),
     ...(scenario.contextWindow === undefined ? [] : [`*Context window:* ${scenario.contextWindow.toLocaleString("en-US")} tokens.`]),
+    ...(scenario.approval === undefined ? [] : [describeApproval(scenario.approval)]),
     ["```", ...lines, "```"].join("\n"),
     `*UI:* ${view(end).map(describeMessage).join(" · ")}. *Claim:* ${describeClaim(end)}.${end.inbox.length > 0 ? ` *Inbox:* ${end.inbox.map((item) => `${item.messageId} (${item.delivery})`).join(", ")}.` : ""}`,
     `*Model sees next:* ${historyIds(end).join(", ") || "nothing"}.`,
@@ -61,6 +62,12 @@ function renderScenario(scenario: Scenario, number: number): string {
 function describeSetup(setup: NonNullable<Scenario["setup"]>): string {
   const config = setup.config === undefined ? "no configuration file" : `configuration \`${JSON.stringify(setup.config)}\``
   return `*Setup:* snapshots on; the workspace holds ${Object.keys(setup.files).join(", ")}; ${config}.`
+}
+
+function describeApproval(approval: NonNullable<Scenario["approval"]>): string {
+  const sandbox = approval.sandbox === "unavailable" ? "no sandbox on the machine" : "the sandbox is available"
+  const who = approval.attended === true ? "a person is present" : `nobody is present (unattended: ${approval.unattended ?? "deny"})`
+  return `*Approval:* mode ${approval.mode ?? "auto"}; ${sandbox}; ${who}.`
 }
 
 function describeMessage(message: MessageView): string {

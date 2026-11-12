@@ -8,6 +8,13 @@
  *
  * Nothing here runs a loop. These are the target the loop is built against.
  */
+import { type CallFacts, type Decision, type SandboxState, decide } from "../../src/approval/decide.ts"
+import type { Escalation } from "../../src/approval/escalation.ts"
+import { type Grant, type Need, stampGrants } from "../../src/approval/grants.ts"
+import { type PathFact, pathFact } from "../../src/approval/paths.ts"
+import type { ApprovalMode, UnattendedAction } from "../../src/approval/policy.ts"
+import type { CallRun, ChoiceId } from "../../src/approval/record.ts"
+import { CLEAN, type TaintSource, type TaintState, describeTaint } from "../../src/approval/taint.ts"
 import type { ConfigFile } from "../../src/config/schema.ts"
 import { text } from "../../src/content.ts"
 import { buildCheckpoint } from "../../src/context/checkpoint.ts"
@@ -57,7 +64,24 @@ export interface Scenario {
    * history is compacted only after the provider rejects a request.
    */
   readonly contextWindow?: number
+  /**
+   * The approval layer the session runs under, for the scenarios about it.
+   * Without it the layer is off, as in every other scenario: each call runs
+   * as it is and the log holds nothing about approval.
+   */
+  readonly approval?: ApprovalSetting
   readonly phases: readonly Phase[]
+}
+
+export interface ApprovalSetting {
+  /** The user's mode. Default `auto`. */
+  readonly mode?: ApprovalMode
+  /** What a call that would ask becomes when nobody is present. Default `deny`. */
+  readonly unattended?: UnattendedAction
+  /** Whether a person is there to answer. Default: nobody. */
+  readonly attended?: boolean
+  /** Whether commands can be sandboxed on the machine. Default: they can. */
+  readonly sandbox?: "available" | "unavailable"
 }
 
 export interface Setup {
@@ -264,6 +288,9 @@ export const called = (id: string, callId: string, name: ToolName | (string & {}
 /** The tool begins. `name` picks the effect class the loop records with the start (see `TOOLS`). */
 export const toolStarted = (id: string, callId: string, name: ToolName) =>
   event("tool.started", { messageId: m(id), callId: c(callId), effect: TOOLS[name] })
+/** The start of a call under the approval layer: `run` is what the decision let it run under. */
+export const startedAs = (id: string, callId: string, name: ToolName, run: CallRun) =>
+  event("tool.started", { messageId: m(id), callId: c(callId), effect: TOOLS[name], run })
 /** The start of a call to a tool outside `TOOLS`, with the effect class its registry entry had when it ran. */
 export const toolStartedAs = (id: string, callId: string, effect: ToolEffect) =>
   event("tool.started", { messageId: m(id), callId: c(callId), effect })
@@ -277,6 +304,10 @@ export const settled = (id: string, callId: string, outcome: ToolOutcome, output
     attachments: [],
     display: null,
   })
+
+/** A result with the structured data its tool reported for a client to show (a command's exit code). */
+export const settledWith = (id: string, callId: string, outcome: ToolOutcome, output: string, display: { readonly [key: string]: number | string | null }) =>
+  event("tool.settled", { messageId: m(id), callId: c(callId), outcome, output, truncation: null, attachments: [], display })
 
 /** A call that runs and succeeds: called, started, settled. */
 export const ran = (id: string, callId: string, name: ToolName, input: string, output: string) => [
@@ -293,6 +324,140 @@ export const EFFECT_UNKNOWN =
 export const CRASH_READ = "Cut short by a restart before it finished. Nothing was changed; it is safe to call it again."
 export const CRASH_EFFECT_UNKNOWN =
   "Started, but the harness restarted before its result was recorded. It may or may not have taken effect: check the current state before repeating it."
+
+// ---------------------------------------------------------------- approval
+
+/** The home directory of the scenarios' user. */
+export const HOME = "/home/user"
+/** Why the scenarios' machine has no sandbox, where it has none. */
+export const NO_SANDBOX = "bubblewrap (bwrap) is not installed."
+/** What a sandboxed command without extra access runs with. */
+export const SANDBOXED = { network: false, writableRoots: [] } as const
+/** The same with the network granted. */
+export const WITH_NETWORK = { network: true, writableRoots: [] } as const
+
+/** A path argument of a call, classified as the loop classifies it in the scenarios' workspace (`/repo`). */
+export const fact = (given: string): PathFact =>
+  pathFact(given, { cwd: "/repo", workspace: "/repo", home: HOME, hiddenPaths: [`${HOME}/.ssh`], readlink: () => null })
+
+/** What `tool.started` records for a call that ran: the mode, its path facts, and how a command was sandboxed (`null`: it was not). */
+export const ranUnder = (mode: ApprovalMode, paths: readonly string[] = [], sandbox: CallRun["sandbox"] = null): CallRun => ({ mode, origin: "builtin", paths: paths.map(fact), sandbox })
+
+/** The escalation a shell call asks for with its `sandbox` argument. */
+export const escalate = (network: boolean, write: readonly string[] = []): Escalation => ({ network, write: write.map(fact) })
+
+/** The session's taint after these sources, as the fold over the log gives it. */
+export const taintedBy = (...sources: TaintSource[]): TaintState => (sources.length === 0 ? CLEAN : { tainted: true, since: sources[0]!.at, sources })
+
+export interface Asked {
+  readonly mode?: ApprovalMode
+  readonly name: ToolName
+  /** The call's path arguments. */
+  readonly paths?: readonly string[]
+  /** A shell call's command. */
+  readonly command?: string
+  readonly escalation?: Escalation
+  readonly sandbox?: SandboxState
+  readonly taint?: TaintState
+  readonly grants?: readonly Grant[]
+}
+
+/** What the decision layer says about a call when someone is present: exactly what the loop asks it. */
+export function decision(asked: Asked): Decision {
+  const call: CallFacts = {
+    tool: asked.name,
+    effect: TOOLS[asked.name],
+    origin: "builtin",
+    paths: (asked.paths ?? []).map(fact),
+    command: asked.command ?? null,
+    escalation: asked.escalation ?? null,
+  }
+  return decide({
+    policy: { mode: asked.mode ?? "auto", unattended: "deny", taint: "enforce" },
+    call,
+    sandbox: asked.sandbox ?? { available: true },
+    taint: asked.taint ?? CLEAN,
+    grants: asked.grants ?? [],
+    present: true,
+    now: 0,
+    workspace: "/repo",
+    home: HOME,
+  })
+}
+
+/** The user is asked about a call: the question, what it is about and how the call runs when approved are the decision layer's. */
+export function approvalRequested(id: string, callId: string, asked: Asked) {
+  const made = decision(asked)
+  if (made.kind !== "ask") throw new Error(`the decision for ${id}/${callId} is ${made.kind}, not a question`)
+  return event("approval.requested", {
+    messageId: m(id),
+    callId: c(callId),
+    mode: asked.mode ?? "auto",
+    paths: (asked.paths ?? []).map(fact),
+    escalation: asked.escalation ?? null,
+    question: made.question,
+    needs: [...made.needs],
+    then: made.then,
+  })
+}
+
+/**
+ * The user's answer. `seq` is the position of this very event, which a
+ * session approval is stamped with; `grantedAt` is a stand-in (the loop
+ * records its clock).
+ */
+export function approvalAnswered(id: string, callId: string, asked: Asked, choice: ChoiceId, seq: number, note: string | null = null) {
+  const made = decision(asked)
+  if (made.kind !== "ask") throw new Error(`the decision for ${id}/${callId} is ${made.kind}, not a question`)
+  const chosen = made.question.choices.find((item) => item.id === choice)
+  if (chosen === undefined) throw new Error(`the question about ${id}/${callId} offers no choice ${choice}`)
+  return event("approval.answered", { messageId: m(id), callId: c(callId), choice, approve: chosen.approve, note, grants: stampGrants(chosen.grants, seq, 0) })
+}
+
+/** The call is refused without a question: by the policy, or because nobody is present to answer (`needs` is what it needed). */
+export const approvalDenied = (id: string, callId: string, asked: Asked, reason: "policy" | "unattended", stop = false) => {
+  const made = decision(asked)
+  const needs: readonly Need[] = made.kind === "ask" ? made.needs : []
+  return event("approval.denied", {
+    messageId: m(id),
+    callId: c(callId),
+    mode: asked.mode ?? "auto",
+    paths: (asked.paths ?? []).map(fact),
+    escalation: asked.escalation ?? null,
+    reason,
+    needs: [...needs],
+    stop,
+  })
+}
+
+/** The text the model reads for a call the policy refused, or that nobody was there to approve. */
+export function refusal(asked: Asked): string {
+  const made = decide({
+    policy: { mode: asked.mode ?? "auto", unattended: "deny", taint: "enforce" },
+    call: { tool: asked.name, effect: TOOLS[asked.name], origin: "builtin", paths: (asked.paths ?? []).map(fact), command: asked.command ?? null, escalation: asked.escalation ?? null },
+    sandbox: asked.sandbox ?? { available: true },
+    taint: asked.taint ?? CLEAN,
+    grants: asked.grants ?? [],
+    present: false,
+    now: 0,
+    workspace: "/repo",
+    home: HOME,
+  })
+  if (made.kind !== "deny") throw new Error(`the decision is ${made.kind}, not a refusal`)
+  return made.message
+}
+
+/** The user is told, once, that untrusted content is in the conversation: `source` is the first result that brought some in. */
+export const taintNoticed = (source: TaintSource) => event("taint.noticed", { source, text: describeTaint(taintedBy(source)) })
+export const taintCleared = () => event("taint.cleared", {})
+/** The run ends because a call needed approval and nobody was there (`unattended: "stop"`); `refused` is what the model was told. */
+export const executionStopped = (refused: string, id = "exe_1") =>
+  event("execution.failed", { executionId: x(id), message: `Stopped: a tool call needed your approval and nobody was there to give it. ${refused}`, cause: "approval" })
+/** What the user declined reads as. */
+export const DECLINED = "Not run: the user declined this call."
+/** The note a sandboxed command's output ends with when it failed the way a missing network makes commands fail. */
+export const NETWORK_HINT =
+  '[sandbox] This command ran in the sandbox (no network, and writes only inside the workspace and the temp directory), and its output shows an error the sandbox can cause. If it needs that access, run it again with `sandbox: { "network": true }`; the user will be asked.'
 
 // ---------------------------------------------------------------- compaction
 
@@ -499,12 +664,25 @@ export function describeEvent(item: NewEvent): string {
       return `${item.type} ${d.messageId} ${quote(d.text)}`
     case "tool.called":
       return `tool.called ${d.messageId}/${d.callId} ${d.name} ${d.input}`
-    case "tool.started":
-      return `tool.started ${d.messageId}/${d.callId} effect=${d.effect}`
+    case "tool.started": {
+      const run = item.data.run
+      if (run === undefined) return `tool.started ${d.messageId}/${d.callId} effect=${d.effect}`
+      const how = run.sandbox === null ? "" : ` sandboxed${run.sandbox.network ? "+network" : ""}${run.sandbox.writableRoots.length > 0 ? `+write:${run.sandbox.writableRoots.join(",")}` : ""}`
+      const where = run.paths.length === 0 ? "" : ` ${run.paths.map((path) => `${path.given}:${path.place}`).join(",")}`
+      return `tool.started ${d.messageId}/${d.callId} effect=${d.effect} mode=${run.mode}${how}${where}`
+    }
+    case "approval.requested":
+      return `approval.requested ${d.messageId}/${d.callId} ${quote(item.data.question.title)} choices=${item.data.question.choices.map((choice) => choice.id).join(",")}`
+    case "approval.answered":
+      return `approval.answered ${d.messageId}/${d.callId} ${d.choice}${item.data.grants.length === 0 ? "" : ` remembers=${item.data.grants.map((grant) => `${grant.scope}:${grant.rule.kind}`).join(",")}`}${d.note === null ? "" : ` note=${quote(d.note)}`}`
+    case "approval.denied":
+      return `approval.denied ${d.messageId}/${d.callId} ${d.reason}${item.data.needs.length === 0 ? "" : ` needs=${item.data.needs.map((need) => need.kind).join(",")}`}${d.stop ? " stop" : ""}`
+    case "taint.noticed":
+      return `taint.noticed ${item.data.source.kind} from ${item.data.source.tool} at seq ${item.data.source.at}`
     case "tool.settled":
       return `tool.settled ${d.messageId}/${d.callId} ${d.outcome} ${quote(d.output)}`
     case "execution.failed":
-      return `execution.failed ${d.executionId} ${quote(d.message)}`
+      return `execution.failed ${d.executionId}${d.cause === undefined ? "" : ` cause=${d.cause}`} ${quote(d.message)}`
     case "execution.succeeded": {
       const outcome = item.data.verification
       // Nothing verified is the plain case and is not spelled out with every scenario.

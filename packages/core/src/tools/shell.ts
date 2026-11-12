@@ -67,7 +67,7 @@ export function shellTool(options: ShellOptions): Tool<ShellInput> {
   return {
     name: "shell",
     description:
-      "Run a shell command in the working directory and return its combined stdout and stderr. stdin is empty. The command is stopped after `timeout` seconds (default 120). Background processes it starts are stopped when it finishes. Long output keeps its beginning and end, and the full output is saved to a file whose path is given (read it with the read or grep tool). Commands normally run in a sandbox: no network, and writes only inside the working directory and the temp directory ($TMPDIR, which is /tmp on Linux; it is private to this session and the file tools see the same files there). When a command needs more, pass `sandbox`.",
+      "Run a shell command in the working directory and return its combined stdout and stderr. stdin is empty. The command is stopped after `timeout` seconds (default 120). Background processes it starts are stopped when it finishes. Long output keeps its beginning and end, and the full output is saved to a file whose path is given. Commands normally run in a sandbox: no network, and writes only inside the working directory and the temp directory ($TMPDIR, which is /tmp on Linux; it is private to this session and the file tools see the same files there). When a command needs more, pass `sandbox`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -98,8 +98,9 @@ async function runShell(
   if (wrapped !== null && "refused" in wrapped)
     return { status: "error", output: `Could not start the command: ${wrapped.refused}`, truncation: null, attachments: [], display: { exitCode: null, signal: null, timedOut: false, interrupted: null } }
 
-  await mkdir(options.spillDir, { recursive: true })
-  const spillPath = join(options.spillDir, `shell-${safeName(context.messageId)}-${safeName(context.callId)}.log`)
+  const spillDir = context.spillDir ?? options.spillDir
+  await mkdir(spillDir, { recursive: true })
+  const spillPath = join(spillDir, `shell-${safeName(context.messageId)}-${safeName(context.callId)}.log`)
   const buffer = createOutputBuffer(Bun.file(spillPath).writer(), options.spillLimit, context)
 
   const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })

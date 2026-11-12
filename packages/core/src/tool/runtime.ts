@@ -144,7 +144,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     const result = decided?.note === undefined ? ran : { ok: true as const, value: { ...ran.value, output: `${decided.note}\n\n${ran.value.output}` } }
     if (result.value.truncation !== null)
       return { kind: "completed", settlement: { ...settlementOf(result.value), outcome: result.value.status } }
-    const capped = await capOutput(result.value.output, options.spillDir, limits)
+    const capped = await capOutput(result.value.output, call.context.spillDir ?? options.spillDir, limits)
     return {
       kind: "completed",
       settlement: { ...settlementOf(result.value), outcome: result.value.status, output: capped.output, truncation: capped.truncation },

@@ -239,3 +239,45 @@ describe.skipIf(skipReason !== null)("what the sandbox stops, and what the harde
     expect(existsSync(join(workspace, "should-not-exist.txt"))).toBe(false)
   })
 })
+
+describe.skipIf(skipReason !== null)("output kept in full, with the whole harness and real processes", () => {
+  test("a sandboxed command and the file tools read it under the same path the model was given", async () => {
+    const { createHarness } = await import("../../src/assembly.ts")
+    const { FakeProvider, script } = await import("../../src/testing/fake-provider.ts")
+    const root = tempDir("harness")
+    const workspace = join(root, "workspace")
+    mkdirSync(workspace)
+    /** The path of the full output, as the model reads it in the result of the call before. */
+    const pathIn = (request: { readonly input: readonly { readonly type: string; readonly output?: string }[] }) =>
+      request.input.flatMap((item) => (item.type === "tool_result" ? [/Full output: (\S+?)[ \]]/.exec(item.output ?? "")?.[1]] : [])).find((path) => path !== undefined) ?? "/no/such/path"
+    const provider = new FakeProvider([
+      [script.toolCall("call_1", "shell", { command: "seq 1 30000" })],
+      (request) => [script.toolCall("call_1", "shell", { command: `tail -n 1 ${pathIn(request)}` })],
+      (request) => [script.toolCall("call_1", "read", { path: pathIn(request as never), offset: 29999, limit: 1 })],
+      [script.text("Done.")],
+    ])
+    const harness = createHarness({
+      dataDir: join(root, "data"),
+      provider,
+      log: () => {},
+      engine: { loadConfig: null, discover: () => [], snapshots: null, approval: { sandbox: createCommandSandbox({ tempBase: join(root, "session-temp") }), secrets: [] } },
+    })
+    try {
+      const session = harness.engine.createSession({ cwd: workspace, settings: { model: "gpt-test", reasoningEffort: null } })
+      session.send("Count.")
+      await session.settled()
+      const results = session.readEvents().flatMap((item) => (item.type === "tool.settled" ? [item.data] : []))
+      const shown = /Full output: (\S+?)[ \]]/.exec(results[0]!.output)?.[1] ?? ""
+      // The model is given the path as its commands see it; the file is in the session's temp directory on the host.
+      expect(shown).toMatch(/^\/tmp\/\.spill\/shell-.*\.log$/)
+      expect(results[0]!.truncation?.spillPath).toBe(join(root, "session-temp", session.id, ".spill", shown.slice("/tmp/.spill/".length)))
+      expect(results.map((result) => result.outcome)).toEqual(["success", "success", "success"])
+      expect(results[1]!.output).toBe("30000\n")
+      expect(results[2]!.output).toContain("29999\t29999")
+      // Its own output is not outside content: nothing asked and nothing tainted.
+      expect(session.readEvents().filter((item) => item.type.startsWith("approval.") || item.type.startsWith("taint."))).toEqual([])
+    } finally {
+      await harness.close()
+    }
+  }, 60_000)
+})

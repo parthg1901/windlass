@@ -215,18 +215,28 @@ export interface Output {
  * client shows. Deterministic: the same output and the same secrets give
  * the same bytes, and what is stored is what is replayed.
  */
-export function finishOutput(result: Output, run: CallRun | undefined, effect: string | undefined, secrets: readonly string[]): Output {
+export function finishOutput(result: Output, run: CallRun | undefined, effect: string | undefined, secrets: readonly string[], temp?: TempDirectory): Output {
   const code = fields(result.display)?.exitCode
   const exitCode = typeof code === "number" ? code : null
   const hint =
     effect === "exec" && run !== undefined && run.sandbox !== null ? sandboxHint({ sandboxed: true, network: run.sandbox.network, exitCode, output: result.output }) : null
   const output = hint === null ? result.output : `${result.output}${result.output.endsWith("\n") ? "" : "\n"}${hint.note}`
-  return { output: redact(output, secrets).text, display: redactJson(result.display, secrets) }
+  return { output: redact(aliased(output, temp), secrets).text, display: redactJson(result.display, secrets) }
 }
 
 /** A JSON value as an object's fields, or `null` when it is not an object. */
 function fields(value: Json | null): { readonly [key: string]: Json } | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as { readonly [key: string]: Json }) : null
+}
+
+/**
+ * A text with every path inside the session's temp directory written under
+ * the directory's alias: the name sandboxed commands know it by, and the one
+ * the file tools take. The path of an output kept in full is the usual case.
+ */
+export function aliased(text: string, temp: TempDirectory | undefined): string {
+  if (temp === undefined || temp.alias === null) return text
+  return text.split(`${temp.dir}/`).join(`${temp.alias}/`)
 }
 
 /** Every string in a JSON value, redacted. Keys are left alone. */
