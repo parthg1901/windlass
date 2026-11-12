@@ -1,7 +1,9 @@
 # Step-loop scenarios
 
 The step loop (`packages/core/src/engine/`) takes a prompt, calls the model, runs tools, and handles cancel, retries
-and crash recovery. This page is its specification: for each situation, the exact durable events the loop must write, in
+and crash recovery. It records the workspace as snapshots around everything that can change it, runs the project's
+configured checks before a turn may end as done, and reverts a turn (files and conversation) on request. This page
+is its specification: for each situation, the exact durable events the loop must write, in
 order, what a UI and the model should see afterwards, and the wrong moves the reducer rejects at that point. The rules
 come from the blueprint *Agent session core — storage, cancel, retries, context* (vault `Blueprints/`), cited below
 as e.g. "cancel rule 4".
@@ -24,11 +26,16 @@ the two differ.
 
 ## Conventions
 
-- IDs: `u` user, `a` assistant (one per step attempt that produced output), `s` synthetic, `i` instruction,
-  `c` compaction, `q` a queued prompt, `exe_` execution. `seq` is the number at the start of each event line.
+- IDs: `u` user, `a` assistant (one per step attempt that produced output), `s` synthetic, `r` a check report,
+  `i` instruction, `c` compaction, `q` a queued prompt, `exe_` execution, `w` a state of the workspace (a snapshot
+  ID; the same state always has the same one). `seq` is the number at the start of each event line.
 - Most scenarios start with the same five events, shown as `1-5 opening`: the session is created (with its model
   settings), the prompt `u1` is admitted, the claim `exe_1` is taken, the baseline is frozen and `u1` is delivered
   (at seq 5).
+- The scenarios of the last two families run with snapshots on, and say so in a *Setup* line with the files of the
+  workspace and the project's configuration. Their opening has six events: the workspace is recorded (`w0`) before
+  the prompt is delivered (at seq 6). Every other scenario runs without snapshots and without a configuration, so
+  its log holds none of their events and its `execution.succeeded` says that nothing was verified (not shown).
 - *Model sees next* is `selectModelHistory` after the last event: what the next request is built from.
 - *The reducer rejects* lists events the loop must not write at the end of the named phase, with the error code.
 - Scenario constants: an attempt budget of 5 per logical step (1 + the spec's 4 retries), a crash-resume cap of 3,
@@ -47,6 +54,14 @@ Choices these scenarios make where the blueprint leaves room (see also "Ambiguou
   the release. Merging it into the next user message on the wire is the request builder's job.
 - When the loop, not the tool, decides an outcome (not started, effect unknown, refused by the guard, malformed
   arguments), it freezes an explanatory text into `tool.settled.output`. The exact wording is in `script.ts`.
+- A snapshot is taken where the workspace can have changed, and nowhere else: before input is delivered, around
+  the tools of a step that has a call with a side effect, around a run of checks, around a restore. A step whose
+  calls all read takes none.
+- The verification gate runs when the execution would otherwise succeed (the model has answered and nothing waits),
+  not between a turn and a queued follow-up. The results of a run and what the gate decides from them (the report
+  that sends the model back, or the terminal event) are one append.
+- The check report is a `synthetic.appended` with origin `check_report`, appended at the end of history like any
+  other message. The acknowledgement is a call to the `report_check_failure` tool; nothing is read from prose.
 
 ## Scenarios
 
@@ -1842,6 +1857,17 @@ Where the fix is not the one proposed:
   that ended `interrupted` or `crashed` must be followed at once by `synthetic.appended` with origin `interrupt`.
   It is derived from the last message, so it adds no state. A fork taken between the two owes nothing.
 
+What the reducer enforces for snapshots, checks and reverts, each with a scenario:
+
+| Rule | Scenario |
+| --- | --- |
+| `checks.started` needs a running claim at a boundary, a model that has answered and an empty inbox. A run has one terminal event, `checks.finished` or `checks.failed`, and nothing else is accepted while it is open: no step, no delivery, no `execution.succeeded`. | 46, 51 |
+| After `execution.interrupt_requested` an open run can only be closed as interrupted for that reason (`checks.failed`), before the execution is. | 51 |
+| `execution.succeeded` carries what the gate found. A check report may be left unanswered only by an execution that ends as `unresolved`. | 47, 48 |
+| A `step_start` or `step_end` snapshot names the open step; any other snapshot names none. | 46 |
+| `revert.started`, `history.reverted`, `revert.undo_started` and `history.restored` are accepted only while idle. A restore that changes files is announced first, and its record must name the announced target and undo point. Nothing starts while one is open. | 53 |
+| Only the latest revert can be undone, by the `seq` of its `history.reverted`, restoring the snapshot taken before it; `execution.started` empties the list. Undoing puts back exactly the messages that revert excluded. | 54 |
+
 Two notes stay open on purpose:
 
 ### G13 (note). Recovering from context overflow leaves a failed row
@@ -1878,6 +1904,20 @@ else.
    crash, or `execution.failed` when `crashResumes` has reached the cap. With no step open there is nothing to close
    and no marker.
 3. **The claim is `suspended`.** The last process shut down cleanly. Write `execution.resumed`; it is not counted.
+
+An open run of checks is closed with `checks.failed` in cases 1 and 2 (interrupted for the reason, or crashed). It
+produced no result, so the gate runs the checks again when the execution is taken up; a check that kills the process
+every time is stopped by the resume cap.
+
+Recovery never writes `execution.succeeded`. A claim that is `running` with the model's answer durable and nothing
+waiting looks finished, but whether it may end as done is the gate's decision, which needs the configuration and
+may have to run checks. It is resumed like any other (scenario 40), and the loop ends it through the gate.
+
+4. **No claim, and a revert is open** (`revert.started` or `revert.undo_started` without its closing event). The
+   process died between announcing a restore and recording it, so the workspace is as it was, restored, or in
+   between. Opening the session restores the announced target again (from the fields the event recorded: the target,
+   the undo point, the paths to keep) and writes the closing event with the undo point of the first attempt. This
+   happens whatever the resume mode is, and nothing starts until it is done.
 
 An unsettled call settles from its recorded state alone: `pending` as `not_started`; `running` with effect `read`
 as `error`; `running` with any other effect as `effect_unknown`. A step that was already closed as `interrupted` or
@@ -1945,3 +1985,19 @@ a durable write and a side effect, which no log can show; they are the loop's al
     instruction message without a running claim *(reducer)*.
 16. Call a model other than the one the session's settings name, or change the settings while a step is open
     *(reducer)*.
+17. End an execution as done without going through the gate: `execution.succeeded` always says what it rests on
+    (passing checks, nothing to check, no checks configured, or failing checks left unresolved and why). Recovery
+    in particular never writes it.
+18. Run a check before `checks.started` is durable, run checks for an execution that was interrupted or failed, or
+    write a run's results apart from what the gate decides from them. Parse the model's prose for an
+    acknowledgement.
+19. Rewrite or reorder history to tell the model about a failing check: the report is appended, and the next request
+    extends the previous one.
+20. Let the tool list depend on the configuration after the baseline is set. The acknowledgement tool is in the list
+    when verification was not off at the session's first baseline, and stays as it was.
+21. Stop the work because a snapshot could not be taken. The session carries on without undo and says so once
+    (`snapshot.unavailable`); what snapshots leave out is recorded when it changes, not with every snapshot.
+22. Restore the workspace before the restore is announced (`revert.started`) with its undo point, revert while an
+    execution holds the claim *(reducer)*, or overwrite a file that was edited by hand since the target without the
+    user having decided. A change that falls between two snapshots that do not bracket the harness's own work (a
+    step's tools, a run of checks, a restore) was made by hand; so was one made while no snapshot could be taken.

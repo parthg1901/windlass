@@ -8,8 +8,9 @@
  *
  * The tool's name, description and schema are fixed: they do not list the
  * configured check names, so the frozen tool list (and the cached prefix) does
- * not change when the configuration does. Register it for the whole session
- * whenever verification mode is `gate`.
+ * not change when the configuration does. The step loop puts it in a session's
+ * frozen tool list when verification is not off as the first baseline is set
+ * (whether or not a check is configured yet), and the list keeps it from then on.
  *
  * The step loop passes the gate the input of the latest call to this tool made
  * after the latest check report was delivered, or `null`. A call made before

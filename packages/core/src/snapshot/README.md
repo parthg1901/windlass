@@ -111,6 +111,9 @@ concurrently is never cut.
 
 ## What the step loop needs to record per step
 
+(It does, as `snapshot.taken`, `snapshot.coverage`, `revert.started` and the restore record of `history.reverted`:
+see `docs/architecture.md`.)
+
 - the snapshot ids at step start and end (and the workspace path they belong to);
 - `skipped` from each snapshot, to warn that those files cannot be undone;
 - `nestedRepositories`, if it wants to say that changes inside them are not tracked;
