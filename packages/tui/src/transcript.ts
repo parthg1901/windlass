@@ -11,8 +11,8 @@
 import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
-import { type DiagnosticsRecord, type HookRecord, hookPrinted, objectionTexts, stopHookSentBack, unsatisfiedText } from "./cli.ts"
-import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack } from "./cli.ts"
+import { type EngineEvent, TASK_TOOL, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText, checkLines, checksSummary, fileList } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -179,6 +179,8 @@ export interface OutcomeRow extends RowBase {
   expanded: boolean
   /** The turn this ended, numbered as the user counts turns (what `/fork <turn>` takes). */
   readonly turn: number | null
+  /** A queued message waited for this turn's answer (`turn.ended`): the same execution carried on with it. */
+  readonly continues: boolean
   /** The stop hooks that still objected when the turn ended anyway (`hooks.unsatisfied`); `null` when none did. */
   readonly unsatisfied: readonly string[] | null
   /** What each of them said that last time (`hooks.objections`): the ending's to show, since nobody was sent back with it. */
@@ -837,15 +839,21 @@ export class Transcript {
         return
       }
       case "turn.ended": {
+        // The turn is over although its execution goes on with a queued message: it gets the ending row it would
+        // have had alone (its own steps, time, tokens and files), and the turn the queued message starts its own.
+        const turn = this.turn
+        if (turn !== null) this.turn = newTurn(event.time)
+        Object.assign(this.activity, { turnStartedAt: this.now(), steps: 0, summaryCalls: 0 })
+        this.continuing = false
+        this.sentBack = 0
         const verification = event.data.verification
-        const next = span(" · on to the queued message", "dim")
-        if (event.data.hooks !== undefined) this.notice(SYMBOL.unknown, "warn", [span(unsatisfiedText(event.data.hooks.unsatisfied), "warn"), next], objectionTexts(event.data.hooks.objections).map((text) => [span(sanitize(text))]), replay, "work")
-        this.stopRuns = []
-        if (verification.status === "passed") this.notice(SYMBOL.ok, "ok", [span("checks passed", "ok"), next], [], replay, "work")
-        else if (verification.status === "unresolved")
-          this.notice(SYMBOL.fail, "error", [span("failing checks left unresolved", "error", { bold: true }), span(`: ${verification.failing.join(", ")}`, "error"), next], [[span(unresolvedReason(verification), "warn")]], replay, "work")
-        else if (verification.status === "not_needed" && verification.unverified === true) this.notice(SYMBOL.ok, "dim", [span("nothing to check", "dim"), next], [[span(UNVERIFIED_HINT, "warn")]], replay, "work")
-        else this.notice(SYMBOL.ok, "dim", [span(verification.status === "not_needed" ? "nothing to check" : verification.status === "left_to_parent" ? LEFT_TO_PARENT : "no checks configured", "dim"), next], [], replay, "work")
+        this.outcome(
+          verification.status === "unresolved" ? "unresolved" : "succeeded",
+          turn,
+          event.time,
+          { verification, unsatisfied: event.data.hooks?.unsatisfied ?? null, objections: (event.data.hooks?.objections ?? []).map((objection) => ({ hook: objection.hook, text: sanitize(objection.text) })), continues: true },
+          replay,
+        )
         return
       }
       case "execution.started":
@@ -1130,7 +1138,7 @@ export class Transcript {
   // ---------------------------------------------------------------- turns
 
   private beginTurn(time: number): void {
-    this.turn = { start: time, steps: 0, summaryCalls: 0, compactionAsked: false, usage: null, lastError: null, requestId: null, changedFiles: null, diffs: new Map(), written: new Set() }
+    this.turn = newTurn(time)
     Object.assign(this.activity, blankActivity(), { executing: true, turnStartedAt: this.now() })
   }
 
@@ -1152,7 +1160,7 @@ export class Transcript {
     return turn
   }
 
-  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string; unsatisfied?: readonly string[] | null; objections?: readonly { readonly hook: string; readonly text: string }[] }, replay: boolean): void {
+  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string; unsatisfied?: readonly string[] | null; objections?: readonly { readonly hook: string; readonly text: string }[]; continues?: boolean }, replay: boolean): void {
     const waiting = outcome === "interrupted" ? this.pending.length : 0
     this.stopRuns = []
     this.add<OutcomeRow>(
@@ -1175,6 +1183,7 @@ export class Transcript {
         waiting,
         expanded: false,
         turn: this.turns.turns.findLast((candidate) => candidate.endSeq === this.lastSeq)?.number ?? null,
+        continues: extra.continues === true,
         unsatisfied: extra.unsatisfied ?? null,
         objections: extra.objections ?? [],
       },
@@ -1319,6 +1328,10 @@ export function expandable(row: Row): boolean {
 /** Whether an execution was only a compaction the user asked for: no step, so no turn to draw an ending for. */
 function compactionOnly(turn: Turn | null): boolean {
   return turn !== null && turn.compactionAsked && turn.steps === 0
+}
+
+function newTurn(start: number): Turn {
+  return { start, steps: 0, summaryCalls: 0, compactionAsked: false, usage: null, lastError: null, requestId: null, changedFiles: null, diffs: new Map(), written: new Set() }
 }
 
 function blankActivity(): Activity {

@@ -1669,6 +1669,8 @@ export class App {
     const session = this.session
     if (session?.diff === undefined) return this.say("per-file diffs are not available with this engine", "warn")
     const selected = this.conversation.selectedRow()
+    // The server's diffs are of a whole run of work: a turn a queued message followed has only what its tool calls reported.
+    if (selected?.kind === "outcome" && selected.continues) return this.say("the per-file diffs of a turn that a queued message followed are not kept apart from that message's turn: Ctrl-O on this row shows the diffs its tool calls reported", "warn")
     const outcome = selected?.kind === "outcome" ? selected : this.transcript.rows.findLast((row): row is OutcomeRow => row.kind === "outcome" && row.executionId !== null)
     const params = selected?.kind === "tool" ? { messageId: selected.messageId } : outcome?.executionId == null ? {} : { executionId: outcome.executionId }
     let result: DiffResult

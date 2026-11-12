@@ -451,6 +451,8 @@ function noticeLines(row: NoticeRow, columns: number): Span[][] {
 
 function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][] {
   const parts = [row.steps + row.summaryCalls > 0 ? requestsText(row.steps, row.summaryCalls) : null, row.durationMs === null ? null : formatDuration(row.durationMs), nested || row.turn === null ? null : `turn ${row.turn}`].filter((part) => part !== null)
+  // A queued message waited for this turn's answer: the next rows are that message and its own turn.
+  if (row.continues) parts.push("on to the queued message")
   const after = parts.length === 0 ? "" : ` · ${parts.join(" · ")}`
   const lines: Span[][] = []
   const wrapped = (spans: Span[], indent = "  ") => lines.push(...wrapLine(spans, columns, [span(indent)]))

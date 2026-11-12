@@ -95,6 +95,64 @@ describe("rows from a scripted turn", () => {
   })
 })
 
+describe("a turn that a queued message follows", () => {
+  const shown = (transcript: Transcript) =>
+    transcript.rows.flatMap((row) => layoutRow(row, 140, { now: CLOCK_START, debug: false, color: false })).map((line) => line.map((part) => part.text).join("").trimEnd())
+  const message = (id: string, text: string, delivery: "steer" | "queue") => event("inbox.enqueued", { messageId: m(id), origin: null, delivery, content: [{ type: "text", text }] })
+
+  test("each turn has its own ending row, with its own steps, time, tokens and files; the queued message stands between them", () => {
+    const transcript = play([
+      event("session.created", { cwd: "/w", title: null, lineage: null, settings: { model: "m", reasoningEffort: null } }),
+      message("u1", "Write the notes.", "steer"),
+      event("execution.started", { executionId: "exe_1" as never }),
+      event("inbox.delivered", { messageId: m("u1") }),
+      stepStarted("a1"),
+      event("tool.called", { messageId: m("a1"), callId: c("w1"), name: "write", input: JSON.stringify({ path: "notes.md", content: "one\n" }), providerData: null }),
+      event("tool.settled", { messageId: m("a1"), callId: c("w1"), outcome: "success", output: "Wrote notes.md", truncation: null, attachments: [], display: null }),
+      event("step.ended", { messageId: m("a1"), finish: "tool_calls", usage: usage(1000, 0, 20) }),
+      stepStarted("a2"),
+      say("a2", "Wrote them."),
+      event("step.ended", { messageId: m("a2"), finish: "stop", usage: usage(1100, 1000, 5) }),
+      message("u2", "Now the tests.", "queue"),
+      event("turn.ended", { verification: { status: "not_configured" } }),
+      event("inbox.delivered", { messageId: m("u2") }),
+      stepStarted("a3"),
+      say("a3", "They pass."),
+      event("step.ended", { messageId: m("a3"), finish: "stop", usage: usage(1200, 1100, 7) }),
+      event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_configured" } }),
+    ])
+    const lines = shown(transcript)
+    const first = lines.findIndex((line) => line.includes("turn 1"))
+    expect(lines[first]).toBe("○ done · no checks configured · 2 steps · 1.0s · turn 1 · on to the queued message")
+    expect(lines[first + 1]).toBe("  edited 1 file: notes.md (from its tool calls) · Ctrl-O for diffs")
+    expect(lines[first + 2]).toContain("tokens · 2,100 in · 1,000 cached")
+    expect(lines[first + 3]).toBe("› Now the tests.  ↳ delivered from the queue")
+    expect(lines.at(-2)).toBe("○ done · no checks configured · 1 step · 500ms · turn 2")
+    expect(lines.at(-1)).toContain("tokens · 1,200 in · 1,100 cached")
+    // Two ending rows and no other line about the first turn's end.
+    expect(lines.filter((line) => line.includes("done ·"))).toHaveLength(2)
+    expect(transcript.activity.executing).toBe(false)
+  })
+
+  test("what the first turn rests on is on its own row: checks that passed, failing ones left unresolved, a stop hook that still objected", () => {
+    const until = (ended: NewEvent) => [
+      message("u1", "Fix it.", "steer"),
+      event("execution.started", { executionId: "exe_1" as never }),
+      event("inbox.delivered", { messageId: m("u1") }),
+      stepStarted("a1"),
+      say("a1", "Fixed."),
+      event("step.ended", { messageId: m("a1"), finish: "stop", usage: null }),
+      message("u2", "And the docs.", "queue"),
+      ended,
+      event("inbox.delivered", { messageId: m("u2") }),
+    ]
+    expect(shown(play(until(event("turn.ended", { verification: { status: "passed", checks: ["test"] } as never }))))).toContain("✓ done · checks passed · 1 step · 600ms · turn 1 · on to the queued message")
+    const hooked = shown(play(until(event("turn.ended", { verification: { status: "not_configured" }, hooks: { unsatisfied: ["tidy"], objections: [{ hook: "tidy", text: "The tree is not clean." }] } }))))
+    expect(hooked.some((line) => line.startsWith("⚠ ") && line.includes('"tidy"') && line.endsWith("turn 1 · on to the queued message"))).toBe(true)
+    expect(hooked.some((line) => line.includes("The tree is not clean."))).toBe(true)
+  })
+})
+
 describe("undo and redo", () => {
   const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
   const turn = (id: string, exe: string, prompt: string, answer: string) => [
