@@ -85,7 +85,9 @@ the same session again gives the same trace and span IDs.
 ## Content is off by default
 
 Without `content` the attributes are names, numbers, classes and outcomes: tool names, token counts, durations,
-how a call ended. With `"content": true` in your own file these are added:
+how a call ended. A turn or a model call that failed says how as a class (its error type: `approval`,
+`rate_limit`, `failed`, ...) and has no message: the sentence you are shown about a failure can name a file or
+quote a command, so it is content. With `"content": true` in your own file these are added:
 
 | Attribute | On | What |
 |---|---|---|
@@ -93,6 +95,7 @@ how a call ended. With `"content": true` in your own file these are added:
 | `gen_ai.output.messages` | each model call | the model's text and the tool calls it asked for |
 | `gen_ai.tool.call.arguments` | each tool call | the arguments: paths, commands, the text of an edit |
 | `gen_ai.tool.call.result` | each tool call | the tool's output: file contents, command output |
+| the span's status message | a turn or a model call that failed | the sentence about the failure: why the turn ended, what the provider said |
 
 Text goes through the same redaction as tool results (well-known token formats, private keys, passwords in
 addresses) and each text is cut at 4,096 characters. Redaction misses things: turn `content` on only for a

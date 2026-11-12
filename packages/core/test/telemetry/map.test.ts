@@ -12,6 +12,7 @@ import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import type { RequestRecord } from "../../src/store/store.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { boundedText } from "../../src/telemetry/content.ts"
 import { type LogEvent, type MapOptions, type SessionInput, mapSession } from "../../src/telemetry/map.ts"
 import { NAMESPACE, type Span, attr } from "../../src/telemetry/span.ts"
 import { mapSessionTree } from "../../src/telemetry/tree.ts"
@@ -247,7 +248,11 @@ describe("a retry", () => {
           [attr("provider.http_status")]: 500,
           [attr("provider.retryable")]: true,
         })
-        expect(failed!.status).toEqual({ code: "error", message: "upstream broke" })
+        // What the provider said is text: the span says how the call failed as a class, and the words only with content.
+        expect(failed!.status).toEqual({ code: "error" })
+        expect(JSON.stringify(result.spans)).not.toContain("upstream broke")
+        const withContent = named(mapSession(inputOf(h), { content: true }).spans, "chat")[0]!
+        expect(withContent.status).toEqual({ code: "error", message: "upstream broke" })
         expect(retried!.attributes).toMatchObject({ [attr("request.attempt")]: 2, [attr("request.outcome")]: "ok", [attr("request.retried")]: false, "gen_ai.response.finish_reasons": ["stop"] })
         expect(retried!.attributes["error.type"]).toBeUndefined()
         const execution = named(result.spans, "invoke_agent")[0]!
@@ -461,6 +466,66 @@ describe("hand-written logs", () => {
     expect(result.stepsWithoutLedger).toBe(0)
   })
 
+  test("without content, nothing a failure says in words is exported: a configuration error, a harness failure, a tool's error text, what the user was told", () => {
+    seq = 0
+    const PATH = "/srv/example-project/settings/config.json"
+    const events = [
+      at("session.created", 900, { cwd: "/w", title: null, lineage: null, settings: { model: "gpt-x", reasoningEffort: null } }),
+      // A configuration error: the sentence names the file and the key.
+      at("execution.started", 1000, { executionId: "exe_1" }),
+      at("execution.failed", 1010, { executionId: "exe_1", message: `${PATH}: hooks.beforeTool[0].comand: unknown key "comand"` }),
+      // A call that was refused and a tool that failed: the reason and the output name the path; then the harness itself fails.
+      at("execution.started", 2000, { executionId: "exe_2" }),
+      at("step.started", 2010, { messageId: "msg_1", attempt: 1, model: "gpt-x" }),
+      at("tool.called", 2100, { messageId: "msg_1", callId: "c1", name: "write", input: JSON.stringify({ path: PATH, content: "EXAMPLE_VALUE_123" }), providerData: null }),
+      at("approval.denied", 2110, { messageId: "msg_1", callId: "c1", reason: "unattended", mode: "auto", stop: true, sentence: `Nobody is here to approve writing ${PATH}.` }),
+      at("hook.ran", 2120, { point: "beforeTool", messageId: "msg_1", callId: "c1", name: "guard", detail: `it could not read ${PATH}`, forUser: `cat: ${PATH}: No such file`, toModel: null }),
+      at("tool.settled", 2130, { messageId: "msg_1", callId: "c1", outcome: "error", output: `Not run: writing ${PATH} needs approval.`, truncation: null, attachments: [], display: null }),
+      at("taint.noticed", 2140, { source: { kind: "file", path: PATH }, text: `The session read ${PATH}.` }),
+      at("snapshot.unavailable", 2150, { reason: "error", message: `git could not write ${PATH}` }),
+      at("step.failed", 2200, { messageId: "msg_1", error: { kind: "internal", message: `EACCES: permission denied, open '${PATH}'` }, usage: null }),
+      at("execution.failed", 2300, { executionId: "exe_2", message: `This run ended: it needs the user's approval for writing ${PATH}.`, cause: "approval" }),
+      // A provider error: what the provider said may quote the request.
+      at("execution.started", 3000, { executionId: "exe_3" }),
+      at("step.started", 3010, { messageId: "msg_2", attempt: 1, model: "gpt-x" }),
+      at("step.failed", 3100, { messageId: "msg_2", error: { kind: "provider", error: { kind: "invalid_request", retryable: false, message: `Invalid input: ${PATH}`, status: 400, code: "invalid_value", retryAfterMs: null, requestId: "req_p" } }, usage: null }),
+      at("execution.failed", 3200, { executionId: "exe_3", message: `The provider refused the request: Invalid input: ${PATH}` }),
+    ]
+    const requests = [
+      row({ id: "req_1", messageId: "msg_1", ordinal: 1, startedAt: 2010, finishedAt: 2200, outcome: "error", errorKind: "internal" }),
+      row({ id: "req_2", messageId: "msg_2", ordinal: 2, startedAt: 3010, finishedAt: 3100, outcome: "error", errorKind: "invalid_request" }),
+    ]
+    const without = mapSession({ sessionId: S, events, requests })
+    const sent = JSON.stringify(without.spans)
+    for (const piece of [PATH, "example-project", "config.json", "comand", "EXAMPLE_VALUE_123", "EACCES", "Nobody is here", "Invalid input", "approval for writing"]) expect(sent).not.toContain(piece)
+    // No span has a status message, and every failed one still says how it failed, as a class.
+    expect(without.spans.filter((span) => span.status.message !== undefined)).toEqual([])
+    const kinds = without.spans.filter((span) => span.status.code === "error").map((span) => [span.name.split(" ")[0], span.attributes["error.type"]])
+    expect(kinds).toEqual([
+      ["invoke_agent", "failed"],
+      ["invoke_agent", "approval"],
+      ["chat", "internal"],
+      ["execute_tool", "error"],
+      ["invoke_agent", "failed"],
+      ["chat", "invalid_request"],
+    ])
+    expect(named(without.spans, "chat")[1]!.attributes).toMatchObject({ [attr("provider.http_status")]: 400, [attr("provider.error_code")]: "invalid_value", [attr("provider.request_id")]: "req_p" })
+    // With content the sentences are there, redacted and bounded like every other text.
+    const withContent = mapSession({ sessionId: S, events, requests }, { content: true, secrets: ["example-project"], maxContentChars: 60 })
+    const shown = (message: string) => boundedText(message, ["example-project"], 60)
+    expect(withContent.spans.filter((span) => span.status.code === "error").map((span) => span.status.message)).toEqual([
+      shown(`${PATH}: hooks.beforeTool[0].comand: unknown key "comand"`),
+      shown(`This run ended: it needs the user's approval for writing ${PATH}.`),
+      shown(`EACCES: permission denied, open '${PATH}'`),
+      // A tool's error text is its result, under its own attribute.
+      undefined,
+      shown(`The provider refused the request: Invalid input: ${PATH}`),
+      "Invalid input: /srv/[REDACTED:env]/settings/config.json",
+    ])
+    expect(shown(`${PATH}: hooks.beforeTool[0].comand: unknown key "comand"`)).toBe("/srv/[REDACTED:env]/settings/config.json: hooks.beforeTool[0…[truncated 30 chars]")
+    expect(named(withContent.spans, "execute_tool")[0]!.attributes["gen_ai.tool.call.result"]).toBe(shown(`Not run: writing ${PATH} needs approval.`))
+  })
+
   test("event types the mapping does not know are counted, never an error, and the rest is mapped as usual", () => {
     seq = 0
     const events = [
@@ -475,7 +540,9 @@ describe("hand-written logs", () => {
     const result = mapSession({ sessionId: S, events, requests: [] }, { secrets: [SECRET] })
     expect(result.unknownEvents).toEqual({ "future.event": 2, "another.new_one": 1 })
     expect(result.spans).toHaveLength(1)
-    expect(result.spans[0]!.status).toEqual({ code: "error", message: "failed with [REDACTED:env]" })
+    // The failure's sentence is content: without it the span has the class and the code.
+    expect(result.spans[0]!.status).toEqual({ code: "error" })
     expect(result.spans[0]!.attributes["error.type"]).toBe("failed")
+    expect(mapSession({ sessionId: S, events, requests: [] }, { secrets: [SECRET], content: true }).spans[0]!.status).toEqual({ code: "error", message: "failed with [REDACTED:env]" })
   })
 })

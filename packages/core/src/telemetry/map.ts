@@ -21,6 +21,11 @@
  *
  * Message text, tool arguments and tool output are left out unless
  * `content` is set; then they are redacted (`content.ts`) and bounded.
+ * So is every sentence about a failure (a span's status message): it is
+ * written from the session (the path a refused write named, a
+ * configuration file's path and key, an error's own text, what the
+ * provider said). Without `content` a failed span says how it failed as a
+ * class (`error.type`, the status code) and nothing in words.
  */
 import type { RequestRecord } from "../store/store.ts"
 import { type ConventionMessage, DEFAULT_MAX_CONTENT_CHARS, type MessagePart, boundedText, messagesJson } from "./content.ts"
@@ -159,6 +164,8 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
   const maxChars = options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS
   const provider = options.providerName ?? "openai"
   const text = (value: string) => boundedText(value, secrets, maxChars)
+  /** The status of a span that failed. Its sentence is content: sent only when content is, redacted and bounded. */
+  const failed = (message: unknown): SpanStatus => (content && typeof message === "string" && message !== "" ? { code: "error", message: text(message) } : { code: "error" })
 
   const builders: Builder[] = []
   const unknownEvents: Record<string, number> = {}
@@ -255,7 +262,7 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
           span.status = { code: "ok" }
         } else if (event.type === "execution.failed") {
           span.attributes["error.type"] = str("cause") ?? "failed"
-          span.status = { code: "error", message: text(str("message") ?? "") }
+          span.status = failed(data.message)
         } else {
           span.attributes[attr("interrupt.reason")] = str("reason") ?? ""
         }
@@ -555,7 +562,7 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
     const spanId = spanIdOf(sessionId, "call", row.ordinal)
     const span = parent === null ? orphan(`call-${row.ordinal}`, name, "client", row.startedAt, attributes) : child(parent, spanId, name, "client", row.startedAt, attributes)
     span.endMs = row.finishedAt ?? facts?.endMs ?? lastOutput.get(row.messageId) ?? null
-    span.status = row.outcome === "error" ? { code: "error", ...(typeof error?.message === "string" ? { message: text(error.message) } : {}) } : row.outcome === "ok" ? { code: "ok" } : { code: "unset" }
+    span.status = row.outcome === "error" ? failed(error?.message) : row.outcome === "ok" ? { code: "ok" } : { code: "unset" }
     if (content && row.purpose === "step" && row.outcome === "ok") {
       const parts = assistant.get(row.messageId)
       if (parts !== undefined) span.attributes["gen_ai.output.messages"] = messagesJson([{ role: "assistant", parts, ...(facts?.finish ? { finish_reason: facts.finish } : {}) }], secrets, maxChars)
@@ -616,7 +623,7 @@ function usageAttributes(value: unknown): Attributes {
   }
 }
 
-/** A provider error's facts; never its message, which goes in the status (bounded and redacted). */
+/** A provider error's facts; never its message, which goes in the status with `content` (bounded and redacted) and nowhere without. */
 function errorAttributes(error: Record<string, unknown> | null, kind: string | null): Attributes {
   if (error === null && kind === null) return {}
   const out: Attributes = { "error.type": (typeof error?.kind === "string" ? error.kind : null) ?? kind ?? "error" }

@@ -48,11 +48,14 @@ backend treats a span sent twice differs (most keep the last); export a session 
 matters.
 
 **What is not exported by default:** message text (prompts, answers, reasoning), tool arguments, tool output, the
-system prompt, file paths, commands. The attributes are names, numbers, classes and outcomes.
+system prompt, file paths, commands, and the sentence about a failure (a span's status message), which can name
+a path or quote a command. The attributes are names, numbers, classes and outcomes; a failed span has `error.type`
+and the status code.
 
 **`--content`** (or `"content": true`) adds, per the conventions' opt-in attributes:
 `gen_ai.input.messages` (the prompts an execution took in), `gen_ai.output.messages` (a model call's text and tool
-calls), `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`, and a background command's command line. Every
+calls), `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`, a background command's command line, and the
+status message of a turn or a model call that failed. Every
 text goes through the same redaction the harness applies to tool results (`approval/redact.ts`: well-known token
 formats, private keys, URL passwords, `Bearer` values, and the values of the exporting process's credential-looking
 environment variables), and is then cut to 4,096 characters per text (a message keeps at most 32 parts). The system

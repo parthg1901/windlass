@@ -1,32 +1,11 @@
 /**
- * Review finding: with `content` off, the span of a turn that failed still carries the failure's sentence,
- * and that sentence can name a file path.
+ * With `content` off, the span of a turn that failed says how it failed as a class and nothing in words,
+ * through the engine and its live export.
  *
- * What is promised.
- * - docs/telemetry.md, opening: "by default it sends no text of yours: no prompt, no answer, no file path, no
- *   command."
- * - docs/telemetry.md, "Content is off by default": "Without `content` the attributes are names, numbers,
- *   classes and outcomes: tool names, token counts, durations, how a call ended."
- *
- * What happens. `mapSession` puts the message of `execution.failed` into the turn span's status
- * (`span.status = { code: "error", message: ... }`) whether or not content is exported, and the live window
- * (`kept` in packages/core/src/engine/telemetry.ts) strips arguments, output and prompts but passes
- * `execution.failed` through whole. Those messages are sentences built from the session: with
- * `unattended: "stop"` the message quotes the refusal ("... needs the user's approval for writing <path>", or
- * "this command writing to <directory>", or the name of an MCP server's tool); a configuration error names the
- * configuration file's path and the offending key; a harness failure carries an error's text. All of it is
- * sent to the collector with content off. (It is redacted and cut at 4,096 characters, which does not make a
- * path a class or an outcome.) The same holds for the export after the fact, which uses the same mapping.
- *
- * Code path. packages/core/src/telemetry/map.ts, `mapSession`, case `execution.failed`; the model call's span
- * does the same with a provider error's message further down (`span.status = ... text(error.message)`).
- *
- * Smallest fix. In `mapSession`, set the status message only when `content` is true; without it the span keeps
- * `error.type` (the cause, already a class) and `status.code`.
- *
- * What that fix could affect. A trace of a failed turn no longer says why in words unless content is on;
- * `error.type` is `failed` for most causes, so it may be worth giving `execution.failed` more causes.
- * `test/engine/telemetry.test.ts` compares live spans with the export after the fact; both change together.
+ * docs/telemetry.md promises that by default no text of the user's is sent: "no prompt, no answer, no file
+ * path, no command". The sentence of a failed turn is written from the session: with `unattended: "stop"` it
+ * quotes the refusal ("... needs the user's approval for writing <path>"). `mapSession` used to put it in the
+ * turn span's status whatever `content` said. Now a status message is set only with content on.
  */
 import { afterAll, expect, test } from "bun:test"
 import type { ConfigFile } from "../../src/config/schema.ts"
@@ -59,7 +38,7 @@ const sandbox: CommandSandbox = {
 // An unattended run that ends at the first call that would ask (`--unattended stop`).
 const approval: ApprovalSetup = { sandbox, secrets: [], home: "/home/user", user: { mode: "auto", unattended: "stop" } }
 
-test.failing("with content off, no file path should reach the collector, also when the turn fails", async () => {
+test("with content off, no file path reaches the collector, also when the turn fails", async () => {
   const batches: Span[][] = []
   // A function in place of the collector: nothing leaves the process.
   const send = async (spans: readonly Span[], _config: TelemetryConfig): Promise<ExportReport> => {
@@ -77,7 +56,7 @@ test.failing("with content off, no file path should reach the collector, also wh
     const turn = spans.find((span) => span.parentSpanId === null)
     // The turn's span was sent, and says how it ended as a class.
     expect(turn?.attributes["error.type"]).toBe("approval")
-    expect(turn?.status.code).toBe("error")
+    expect(turn?.status).toEqual({ code: "error" })
     // Nothing of the path, in any span, attribute, event or status.
     const sent = JSON.stringify(spans)
     expect(sent).not.toContain("payroll-2026")
