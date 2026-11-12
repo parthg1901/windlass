@@ -67,7 +67,6 @@ import {
   type SessionFeature,
   type SessionId,
   type SessionSettings,
-  type SessionSummary,
   type StoredEvent,
   StoreError,
   approvalModes,
@@ -136,8 +135,6 @@ const LIST_PAGE = 100
 const REPLAYED_TURN_CHANGES = 50
 /** How long the answer to a compaction asked for while idle waits for the execution that made it to end. */
 const COMPACT_SETTLE_MS = 2000
-/** How many listings a connection keeps for the pages after their first. */
-const KEPT_LISTINGS = 4
 
 export interface ServeOptions {
   readonly log: Logger
@@ -306,10 +303,6 @@ class ConnectionState {
   private readonly views = new Map<string, SessionView>()
   private closing: Promise<void> | null = null
   private readonly snapshotStores = new Map<string, Promise<Snapshots | { readonly message: string }>>()
-  /** Listings whose later pages a client may still ask for, by the token in their cursors: one listing serves all its pages. */
-  private readonly listings = new Map<string, readonly SessionSummary[]>()
-  private nextListing = 1
-
   readonly catalog: ModelCatalog
 
   constructor(
@@ -456,21 +449,13 @@ class ConnectionState {
 
   async listSessions(cwd: string | null, cursor: string | null, archived = false): Promise<ListSessionsResponse> {
     if (cwd !== null && !isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
-    // A cursor is `<listing>:<offset>`: the listing made for the first page serves the pages after it.
-    const [token = "", position = ""] = cursor === null ? ["", "0"] : cursor.split(":")
-    const offset = Number(position)
-    if (!Number.isInteger(offset) || offset < 0 || (cursor !== null && (token === "" || position === ""))) throw RequestError.invalidParams({ cursor }, "unknown cursor")
-    const list = () => this.engineErrors(() => this.harness.engine.listSessions({ ...(cwd === null ? {} : { cwd }), ...(archived ? { includeArchived: true } : {}) }))
-    // A listing that is no longer kept (many were started meanwhile) is made again for the same request.
-    const all = (cursor === null ? undefined : this.listings.get(token)) ?? list()
-    const key = cursor === null ? String(this.nextListing++) : token
-    const page = all.slice(offset, offset + LIST_PAGE)
-    const more = offset + LIST_PAGE < all.length
-    if (more) {
-      this.listings.set(key, all)
-      for (const old of [...this.listings.keys()].slice(0, -KEPT_LISTINGS)) this.listings.delete(old)
-    } else this.listings.delete(key)
-    const sessions: SessionInfo[] = page.map((summary) => ({
+    // A page at a time, from the engine: its cursor is a place in the order (when a session was last updated, then
+    // its ID), so nothing is kept here between two pages, and sessions that arrive meanwhile change no later page.
+    // A cursor the engine did not give is refused as a bad request.
+    const listed = this.engineErrors(() =>
+      this.harness.engine.listSessionsPage({ ...(cwd === null ? {} : { cwd }), ...(archived ? { includeArchived: true } : {}), limit: LIST_PAGE, cursor }),
+    )
+    const sessions: SessionInfo[] = listed.sessions.map((summary) => ({
       sessionId: summary.session.id,
       cwd: summary.session.cwd,
       title: sessionTitle(summary.session.title, summary.firstPrompt),
@@ -485,7 +470,7 @@ class ConnectionState {
         },
       },
     }))
-    return more ? { sessions, nextCursor: `${key}:${offset + LIST_PAGE}` } : { sessions }
+    return listed.nextCursor === null ? { sessions } : { sessions, nextCursor: listed.nextCursor }
   }
 
   async closeSession(sessionId: string, shutdown = false): Promise<Record<string, never>> {

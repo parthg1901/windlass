@@ -1,5 +1,5 @@
 /**
- * The listing (one listing for all its pages, titles without reading a log)
+ * The listing (a page at a time from the engine, titles without reading a log)
  * and a setting the engine refuses, over the wire.
  */
 import { afterEach, expect, test } from "bun:test"
@@ -30,29 +30,40 @@ const prompt = (harness: Harness, sessionId: string, text: string) => harness.co
 const at = (tokens: number) => script.usage({ inputTokens: tokens, cachedInputTokens: 0, outputTokens: 50, reasoningTokens: 0 })
 const list = (harness: Harness, cursor?: string) => harness.connection.agent.request(methods.agent.session.list, { cwd: harness.workspace, ...(cursor === undefined ? {} : { cursor }) })
 
-test("session/list makes one listing for all its pages, and names an untitled session by its first prompt without reading its log", async () => {
+test("session/list serves each page from the engine and keeps nothing between two: a session that arrives meanwhile changes no later page, and titles need no log", async () => {
   const harness = await start()
   const engine = harness.backend.engine
   for (let index = 0; index < 101; index += 1) await engine.createSession({ cwd: harness.workspace, settings: { model: "test-model", reasoningEffort: null }, title: `s${index}` }).close()
-  let listings = 0
+  const pages: (string | null | undefined)[] = []
+  let whole = 0
   let reads = 0
+  const listSessionsPage = engine.listSessionsPage
   const listSessions = engine.listSessions
   const readEvents = engine.readEvents
   Object.assign(engine, {
-    listSessions: (query: Parameters<typeof listSessions>[0]) => ((listings += 1), listSessions(query)),
+    listSessionsPage: (query: Parameters<typeof listSessionsPage>[0]) => (pages.push(query?.cursor), listSessionsPage(query)),
+    listSessions: (query: Parameters<typeof listSessions>[0]) => ((whole += 1), listSessions(query)),
     readEvents: (...args: Parameters<typeof readEvents>) => ((reads += 1), readEvents(...args)),
   })
   const first = await list(harness)
   expect(first.sessions).toHaveLength(100)
+  // A session started between the two pages is newer than every listed one: it is in no later page, and nothing is listed twice.
+  const late = engine.createSession({ cwd: harness.workspace, settings: { model: "test-model", reasoningEffort: null }, title: "late" })
+  await late.close()
   const second = await list(harness, first.nextCursor!)
   expect(second.sessions).toHaveLength(1)
   expect(second.nextCursor ?? null).toBeNull()
-  expect(new Set([...first.sessions, ...second.sessions].map((row) => row.sessionId)).size).toBe(101)
-  expect(listings).toBe(1)
+  const listed = [...first.sessions, ...second.sessions].map((row) => row.sessionId)
+  expect(new Set(listed).size).toBe(101)
+  expect(listed).not.toContain(late.id)
+  // One page asked of the engine per request, with the cursor the client was given; no whole listing, and no log read.
+  expect(pages).toEqual([null, first.nextCursor])
+  expect(whole).toBe(0)
   expect(reads).toBe(0)
-  // A cursor whose listing is no longer kept is served by a listing made again; a cursor that is none is refused.
-  expect((await list(harness, "gone:100")).sessions).toHaveLength(1)
-  expect(listings).toBe(2)
+  // The cursor is a place in the order, not a name of something kept: asked again, it gives the same page.
+  expect((await list(harness, first.nextCursor!)).sessions.map((row) => row.sessionId)).toEqual(second.sessions.map((row) => row.sessionId))
+  // A new listing has the late session at the front.
+  expect((await list(harness)).sessions[0]!.sessionId).toBe(late.id)
   await expect(list(harness, "nonsense")).rejects.toMatchObject({ code: -32602 })
 })
 
