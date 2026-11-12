@@ -16,11 +16,13 @@
  */
 import { type AgentsConfigSection, parseAgentsSection } from "../agents/config.ts"
 import { approvalSection } from "../approval/policy.ts"
+import { type CommandsConfigSection, parseCommandsSection } from "../commands/config.ts"
 import { type HookOrigin, type HooksConfigSection, parseHooksSection } from "../hooks/config.ts"
 import { type LspConfigSection, parseLspSection } from "../lsp/config.ts"
 import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
 import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
 import { type SkillsConfigSection, parseSkillsSection } from "../skills/config.ts"
+import { type TelemetryConfigSection, parseTelemetrySection } from "../telemetry/config.ts"
 import { DecodeError, type Infer, type Validator, integer, nonEmptyString, oneOf, string } from "../validate.ts"
 import { type WakeConfigSection, parseWakeSection } from "../wake/config.ts"
 
@@ -114,7 +116,8 @@ const checks: Validator<readonly ReturnType<typeof check>[]> = (input, path) => 
 
 /**
  * The sections other modules define (`mcp/config.ts`, `skills/config.ts`,
- * `wake/config.ts`, `memory/config.ts`, `agents/config.ts`, `lsp/config.ts`). Each is validated by its own module,
+ * `wake/config.ts`, `memory/config.ts`, `agents/config.ts`, `lsp/config.ts`, `commands/config.ts`,
+ * `telemetry/config.ts`). Each is validated by its own module,
  * which names the file and the path of a bad value, in `parseConfigFile`;
  * here they are only known keys. None of them is merged like the other keys
  * where it matters who wrote it: `load.ts` hands on both files as written.
@@ -128,6 +131,8 @@ const FEATURE_SECTIONS = {
   memory: parseMemorySection,
   agents: parseAgentsSection,
   lsp: parseLspSection,
+  commands: parseCommandsSection,
+  telemetry: parseTelemetrySection,
 } as const
 const passed: Validator<unknown> = (input) => input
 
@@ -153,6 +158,8 @@ const baseFile = section({
   agents: passed,
   hooks: passed,
   lsp: passed,
+  commands: passed,
+  telemetry: passed,
 })
 
 /** One configuration file, as written. */
@@ -175,6 +182,14 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
   readonly hooks?: HooksConfigSection
   /** Language servers (`lsp/config.ts`). One a project's file names or changes is not started until the user approved it. */
   readonly lsp?: LspConfigSection
+  /** Slash commands (`commands/config.ts`): extra directories and names to leave out. */
+  readonly commands?: CommandsConfigSection
+  /**
+   * Live OpenTelemetry export (`telemetry/config.ts`). Never merged: only the user's own file can turn it on and say
+   * where the spans go and whether they carry content; a project's file can only turn it off
+   * (`resolveTelemetryConfig` is handed both files' sections).
+   */
+  readonly telemetry?: TelemetryConfigSection
 }
 
 /**
@@ -182,7 +197,7 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
  * `origin` says whose file it is, for the one section that is validated differently for a project's (`hooks`).
  */
 export function configFile(input: unknown, path: string, file = "configuration", origin: HookOrigin = "user"): ConfigFile {
-  const { mcp, skills, wake, memory, agents, hooks, lsp, ...rest } = baseFile(input, path)
+  const { mcp, skills, wake, memory, agents, hooks, lsp, commands, telemetry, ...rest } = baseFile(input, path)
   return {
     ...rest,
     ...(mcp === undefined ? {} : { mcp: FEATURE_SECTIONS.mcp(mcp, file) }),
@@ -192,6 +207,8 @@ export function configFile(input: unknown, path: string, file = "configuration",
     ...(agents === undefined ? {} : { agents: FEATURE_SECTIONS.agents(agents, file) }),
     ...(hooks === undefined ? {} : { hooks: parseHooksSection(hooks, file, origin) }),
     ...(lsp === undefined ? {} : { lsp: FEATURE_SECTIONS.lsp(lsp, file) }),
+    ...(commands === undefined ? {} : { commands: FEATURE_SECTIONS.commands(commands, file) }),
+    ...(telemetry === undefined ? {} : { telemetry: FEATURE_SECTIONS.telemetry(telemetry, file) }),
   }
 }
 

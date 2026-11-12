@@ -291,6 +291,38 @@ describe("the agents section, and loading without waiting", () => {
   })
 })
 
+describe("the commands and telemetry sections", () => {
+  test("both are accepted, each validated by its own module, and neither is part of the merged configuration", () => {
+    const file = parseConfigFile(
+      JSON.stringify({
+        commands: { paths: ["~/team-commands"], disabled: ["old-deploy"] },
+        telemetry: { enabled: true, endpoint: "http://localhost:4318", headers: { authorization: "Bearer ${COLLECTOR_TOKEN}" }, content: false, timeoutMs: 2000 },
+      }),
+      "f.json",
+    )
+    expect(file.commands).toEqual({ paths: ["~/team-commands"], disabled: ["old-deploy"] })
+    expect(file.telemetry).toEqual({ enabled: true, endpoint: "http://localhost:4318", headers: { authorization: "Bearer ${COLLECTOR_TOKEN}" }, content: false, timeoutMs: 2000 })
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+  })
+
+  test("a bad value names the file and the path", () => {
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ commands: { paths: ["team"] } }), "f.json")).message).toBe("f.json: commands.paths[0]: expected an absolute path or one starting with ~/")
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ telemetry: { endpoint: "localhost:4318" } }), "f.json")).message).toBe("f.json: telemetry.endpoint: expected an http:// or https:// URL")
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ telemetry: { file: "spans.jsonl" } }), "f.json")).message).toStartWith('f.json: telemetry.file: unknown key "file"')
+  })
+
+  test("both files are handed on apart: the project's telemetry section is the project's to be read as such", async () => {
+    const { home, repo, userFile } = layout()
+    write(userFile, { telemetry: { enabled: true, endpoint: "http://localhost:4318" }, commands: { disabled: ["a"] } })
+    write(projectFile(repo), { telemetry: { enabled: false }, commands: { disabled: ["b"] } })
+    const loaded = await loadConfig({ cwd: repo, home, env: {} })
+    expect(loaded.files.user?.telemetry).toEqual({ enabled: true, endpoint: "http://localhost:4318" })
+    expect(loaded.files.project?.telemetry).toEqual({ enabled: false })
+    expect(loaded.files.user?.commands).toEqual({ disabled: ["a"] })
+    expect(loaded.files.project?.commands).toEqual({ disabled: ["b"] })
+  })
+})
+
 describe("the hooks and lsp sections", () => {
   test("both are accepted, each validated by its own module, and neither is part of the merged configuration", () => {
     const file = parseConfigFile(

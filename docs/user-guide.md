@@ -160,6 +160,8 @@ Every key:
 | `agents` | agents: `paths` (extra directories), `disabled` (names to leave out) and `default` (the agent a new session runs as; from your own file only) |
 | `hooks` | hooks: commands run before a tool call (`beforeTool`: can refuse it), after one (`afterTool`: can add a note to its result) and when a turn is about to end (`stop`: can send the agent back, at most `maxStopRounds` times); a project's hooks are added to yours and none runs until you approve it |
 | `lsp` | language servers: `servers`, by name, each with a `command` and the `languages` it serves; `waitMs`, `warnings`, `maxDiagnostics`, `enabled`. After an edit, what the edit made worse is added to its result as a short note; one a project's file names is not started until you approve it |
+| `commands` | slash commands (prompt templates kept as Markdown files): `paths` (extra directories) and `disabled` (names to leave out) |
+| `telemetry` | live OpenTelemetry export of a session's spans: `enabled` (default off), `endpoint` (an OTLP/HTTP collector), `headers`, `content` (default off: no message text, tool arguments or output), `timeoutMs`. Only your own file can turn it on or say where it goes; a project's file can only turn it off |
 
 | Key in `checks[]` | Value |
 |---|---|
