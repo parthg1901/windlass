@@ -5262,7 +5262,9 @@ class LiveSession implements EngineSession {
 
   private tellHookFailures(records: readonly HookRecord[]): void {
     for (const record of records) {
-      const notice = failedHookNotice(record)
+      // What became of the call is the hook's own choice (`onError`): the notice says which.
+      const hook = record.point === "beforeTool" ? this.hookConfig.beforeTool.find((candidate) => candidate.id === record.hookId) : undefined
+      const notice = failedHookNotice(record, hook?.onError)
       if (notice !== null) this.say("hooks", notice)
     }
   }

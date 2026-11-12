@@ -1012,7 +1012,9 @@ next turn. Hooks of a point run one after another, the user's first, then the pr
 - *Before a call is decided.* After the calls the loop itself refuses and the agent's restrictions, in the
   runtime's `authorize`, before the approval layer: the before hooks that apply to the call are run with its
   validated arguments. The first that objects settles the call from `pending` as an error with its reason (no
-  question is asked, nothing starts); one that cannot answer refuses too, unless it says `onError: "allow"`. A
+  question is asked, nothing starts); one that cannot answer refuses too, unless it says `onError: "allow"`. The
+  user is told of a hook that could not answer by a `diagnostic` of kind `hooks` that says what became of the call:
+  that it is refused while the hook fails, or, under `onError: "allow"`, that it went on without the answer. A
   hook that does not object approves nothing: the approval layer decides next, unchanged. The order rules of a
   step hold: a read's hooks run when the read is decided, a side-effecting call's when its turn in the line comes.
 - *After a tool ran.* In the runtime's `afterExecute`, before the cap: each after hook that applies is shown the

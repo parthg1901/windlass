@@ -130,8 +130,11 @@ describe("a before hook", () => {
     expect(refused.data).toMatchObject({ outcome: "error" })
     expect(refused.data.output).toBe('This call was not run: the hook "slow" (from the user\'s configuration) must allow it and could not answer: it did not answer within 10 seconds. Do not try to work around the hook; tell the user it is failing.')
     expect(of(h, "hook.ran").map((item) => [item.data.name, item.data.answer, item.data.failure])).toEqual(expect.arrayContaining([["slow", "failed", "timed_out"], ["watch", "failed", "timed_out"]]))
-    expect(said(h, "hooks")).toHaveLength(2)
-    expect(said(h, "hooks").join("\n")).toContain('The hook "slow" (before a tool call) could not answer: it did not answer within 10 seconds.')
+    // Each notice says what became of its call: the one refused, the one that ran.
+    expect([...said(h, "hooks")].sort()).toEqual([
+      'The hook "slow" (before a tool call) could not answer: it did not answer within 10 seconds. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.',
+      'The hook "watch" (before a tool call) could not answer: it did not answer within 10 seconds. The call went on without its answer, since the hook says `onError: "allow"`.',
+    ])
     await h.dispose()
   })
 

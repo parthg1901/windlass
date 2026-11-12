@@ -141,9 +141,19 @@ export function skippedHookNotice(question: HookQuestion): string {
   return `This project's configuration asks to run the hook "${question.name}" ${POINT_WORDS[question.point]} (${shown}). It is not run: a hook a project names runs only after you approve it.`
 }
 
-/** What the user is told about a hook that could not answer, or `null` for one that did. */
-export function failedHookNotice(record: HookRecord): string | null {
+/**
+ * What the user is told about a hook that could not answer, or `null` for one that did. `onError` is what the
+ * hook's definition says becomes of a call when a before hook fails: the sentence says what happened to this call.
+ */
+export function failedHookNotice(record: HookRecord, onError: Hook["onError"] = "refuse"): string | null {
   if (record.answer !== "failed") return null
-  const consequence = record.point === "beforeTool" ? "A call it must allow is refused while it fails, unless the hook says `onError: \"allow\"`." : record.point === "afterTool" ? "Nothing was added to the result." : "The turn ended as it would have without it."
+  const consequence =
+    record.point === "beforeTool"
+      ? onError === "allow"
+        ? "The call went on without its answer, since the hook says `onError: \"allow\"`."
+        : "A call it must allow is refused while it fails, unless the hook says `onError: \"allow\"`."
+      : record.point === "afterTool"
+        ? "Nothing was added to the result."
+        : "The turn ended as it would have without it."
   return `The hook "${record.name}" (${POINT_WORDS[record.point]}) could not answer: ${record.detail ?? record.failure ?? "it failed"}. ${consequence}`
 }
