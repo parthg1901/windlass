@@ -230,6 +230,10 @@ export class App {
 
   private async openSession(target: OpenTarget): Promise<boolean> {
     this.connection = "starting"
+    // What was asked about and told belongs to the session it was said in: another session asks again.
+    this.asked.clear()
+    this.printedCommands.clear()
+    this.toldFailures.clear()
     this.conversation.empty = target.kind === "new" ? "starting the engine…" : "opening the session…"
     this.redraw()
     try {
@@ -244,6 +248,7 @@ export class App {
       const unwatch = [session.onMcp?.((state) => this.mcpChanged(session, state)), session.onHooks?.((state) => this.hooksChanged(session, state)), session.onLsp?.((state) => this.lspChanged(session, state))]
       this.unwatchMcp = () => unwatch.forEach((off) => off?.())
       this.commandFiles = null
+      void this.lookAtFeatures(session)
       void this.listCommandFiles()
       void this.loadModels()
       void this.refreshApproval()
@@ -278,6 +283,20 @@ export class App {
       this.redraw()
       return false
     }
+  }
+
+  /**
+   * As soon as a session is open: a project's hook or language server that
+   * waits for an approval is put in the dock, one question after the other,
+   * before any message. The server says so too, a moment after the open; this
+   * does not depend on that word arriving after the listeners are in place.
+   * (The MCP servers are looked at by the engine with the first message.)
+   */
+  private async lookAtFeatures(session: BackendSession): Promise<void> {
+    const hooks = await session.hooks?.().catch(() => undefined)
+    if (hooks !== undefined) this.hooksChanged(session, hooks)
+    const lsp = await session.lsp?.().catch(() => undefined)
+    if (lsp !== undefined) this.lspChanged(session, lsp)
   }
 
   private async consume(session: BackendSession): Promise<void> {

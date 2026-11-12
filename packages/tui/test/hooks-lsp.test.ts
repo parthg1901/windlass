@@ -143,6 +143,40 @@ describe("a project's hook", () => {
   })
 })
 
+describe("when a session opens", () => {
+  test("a project's hook and language server that wait are asked about at once, one after the other, and again in the next session", async () => {
+    const backend = new ScriptBackend()
+    const waiting = hook("exit 0", "d".repeat(64))
+    // The server's own word that they changed never arrives here: the question does not depend on it.
+    backend.prepare = (session) => {
+      session.hooks = async () => hooks(session.id, [waiting])
+      session.lsp = async () => servers(session.id, [SERVER])
+    }
+    mounted = await mount({ width: 190, height: 44, backend })
+    const opened = flat(await mounted.frame())
+    expect(opened).toContain("● ready")
+    expect(opened).toContain('asks to run a hook "no-push" before a tool call runs')
+    expect(opened).not.toContain('Start the language server "typescript"')
+    expect(backend.sent).toEqual([])
+    mounted.clock.now += ARMING_MS + 10
+    await mounted.setup.mockInput.typeText("n")
+    await mounted.settle()
+    const second = flat(await mounted.frame())
+    expect(second).toContain('the hook "no-push" is not run; /hooks approve no-push asks again')
+    expect(second).toContain('Start the language server "typescript" that this project\'s configuration names?')
+    mounted.clock.now += ARMING_MS + 10
+    await mounted.setup.mockInput.typeText("n")
+    await mounted.settle()
+    expect(flat(await mounted.frame())).not.toContain("[a] Allow it for this project")
+
+    // Another session in the same run: what was answered "not now" is asked about again there.
+    await command("/new")
+    mounted.clock.now += QUIET_MS + 10
+    await mounted.settle()
+    expect(flat(await mounted.frame())).toContain('asks to run a hook "no-push" before a tool call runs')
+  })
+})
+
 describe("a project's language server", () => {
   test("waits in the dock with what it runs and serves; `a` allows it; /lsp lists the servers with the files they serve", async () => {
     const { session } = await open()

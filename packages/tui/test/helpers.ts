@@ -127,10 +127,13 @@ export class ScriptBackend implements Backend {
   interrupts = 0
   session: ScriptSession | null = null
   failOpen: Error | null = null
+  /** Gives each session what it offers before the app has it (what a session has from the moment it opens). */
+  prepare: ((session: ScriptSession) => void) | null = null
 
   async open(_target: OpenTarget, cwd: string, _settings: OpenSettings): Promise<BackendSession> {
     if (this.failOpen !== null) throw this.failOpen
     this.session = new ScriptSession(this, cwd)
+    this.prepare?.(this.session)
     return this.session
   }
 
