@@ -146,6 +146,16 @@ export function changeLabel(status: string, undo: boolean): string {
   return status === "added" ? "brought back (the turn created it)" : status === "deleted" ? "removed again (the turn deleted it)" : "the turn's changes put back"
 }
 
+/**
+ * What a restore did to the files, from its count alone: an undo leaves each
+ * as it was before the turn (written back, or removed when the turn created
+ * it: "restored" would be wrong for those), a redo as the turn left it.
+ */
+export function restoredFiles(changed: number, undone: boolean): string {
+  const one = changed === 1
+  return `${plural(changed, "file")} ${undone ? (one ? "as it was before the turn" : "as they were before the turn") : one ? "as the turn left it" : "as the turn left them"}`
+}
+
 /** What the command is about to do, in a few lines. */
 function describePlan(plan: RevertPlan, undo: boolean): Segment[][] {
   const lines: Segment[][] = []

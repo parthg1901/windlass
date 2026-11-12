@@ -134,9 +134,17 @@ export function requestsText(steps: number, summaryCalls: number): string {
 
 /** What `/compact` came to when it did not compact, in the engine's sentence; `null` when it did (its own line, from its events, has the sizes). */
 export function compactText(result: CompactResult): { readonly text: string; readonly tone: "info" | "warn" } | null {
-  if (result.kind === "nothing") return { text: result.message, tone: "info" }
+  // Nothing to compact is no event and no problem: one short sentence, the engine's first without its asides.
+  if (result.kind === "nothing") return { text: firstSentence(result.message), tone: "info" }
   if (result.kind === "failed") return { text: result.message, tone: "warn" }
   return null
+}
+
+/** The first sentence of `text`, without what it says in parentheses. */
+export function firstSentence(text: string): string {
+  const plain = text.replace(/\s*\([^)]*\)/g, "").trim()
+  const end = plain.search(/[.!?](\s|$)/)
+  return end === -1 ? plain : plain.slice(0, end + 1)
 }
 
 /** The hint under "nothing to check" when files the checks cover changed outside the turn. */

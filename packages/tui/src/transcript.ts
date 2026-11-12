@@ -12,7 +12,7 @@ import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } fr
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type AgentRecord, type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack, unsatisfiedText } from "./cli.ts"
-import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -926,7 +926,7 @@ export class Transcript {
             ? undone
               ? " · no file was restored · /redo brings it back"
               : " · no file was restored"
-            : ` · ${plural(record.changed, "file")} ${undone ? "restored · /redo brings it back" : "as the turn left them"}`
+            : ` · ${restoredFiles(record.changed, undone)}${undone ? " · /redo brings it back" : ""}`
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)

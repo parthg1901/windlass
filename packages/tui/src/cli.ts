@@ -9,7 +9,7 @@ export type { Engine, EngineEvent, ModelInfo, OpenRequest, SendOptions, Session,
 export { turnOutcomeOf, EXIT_UNRESOLVED, exitCodeOf, signInReason } from "../../cli/src/engine.ts"
 export { callArgument, checkLines, checksSummary, detailLines, diffStat, errorSummary, fileList, firstLine, successSummary, unresolvedReason } from "../../cli/src/tools.ts"
 export { formatDuration, formatBytes, nearest } from "../../cli/src/text.ts"
-export { changeLabel, handEditChoices } from "../../cli/src/commands.ts"
+export { changeLabel, handEditChoices, restoredFiles } from "../../cli/src/commands.ts"
 export {
   COPY_NOTE,
   type Line,

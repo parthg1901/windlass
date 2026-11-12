@@ -12,6 +12,7 @@ import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefused, ag
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
 import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
+import { restoredFiles } from "./commands.ts"
 import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
@@ -760,7 +761,7 @@ export class PrettyRenderer implements Sink {
         const head = [seg(`${undone ? SYMBOL.undo : SYMBOL.redo} `, "cyan"), seg(which === null ? (undone ? "went back" : "brought back") : undone ? `undone: ${which}` : `redone: ${which}`)]
         const what = which === null ? "" : undone ? " · out of the conversation" : " · back in the conversation"
         if (record === null) this.lineWrapped([...head, seg(what), seg(undone ? " · no file was restored · /redo brings it back" : " · no file was restored", "dim")])
-        else this.lineWrapped([...head, seg(what), seg(` · ${plural(record.changed, "file")} ${undone ? "restored" : "as the turn left them"}`, "dim"), seg(undone ? " · /redo brings it back" : "", "dim")])
+        else this.lineWrapped([...head, seg(what), seg(` · ${restoredFiles(record.changed, undone)}`, "dim"), seg(undone ? " · /redo brings it back" : "", "dim")])
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)

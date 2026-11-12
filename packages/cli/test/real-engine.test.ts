@@ -89,7 +89,7 @@ describe("the real engine", () => {
       expect(readFileSync(join(workspace, "notes.md"), "utf8")).toBe("# Notes\n")
       expect(durable().slice(-4)).toEqual(["snapshot.taken", "revert.started", "snapshot.taken", "history.reverted"])
       expect(vt.text).toContain("↶ going back to before your last message · 3 messages\n  changed back to before the turn: notes.md")
-      expect(vt.text.replace(/\n\s+/g, " ")).toContain('↶ undone: turn 1 "Add a line to the notes." · out of the conversation · 1 file restored · /redo brings it back')
+      expect(vt.text.replace(/\n\s+/g, " ")).toContain('↶ undone: turn 1 "Add a line to the notes." · out of the conversation · 1 file as it was before the turn · /redo brings it back')
 
       // The user edits the file by hand; /redo would overwrite that, so it asks first.
       writeFileSync(join(workspace, "notes.md"), "# Notes\n\nmine\n")
@@ -106,7 +106,7 @@ describe("the real engine", () => {
       type("y\r")
       await settle()
       expect(readFileSync(join(workspace, "notes.md"), "utf8")).toContain("reviewed")
-      expect(vt.text.replace(/\n\s+/g, " ")).toContain('↷ redone: turn 1 "Add a line to the notes." · back in the conversation · 1 file as the turn left them')
+      expect(vt.text.replace(/\n\s+/g, " ")).toContain('↷ redone: turn 1 "Add a line to the notes." · back in the conversation · 1 file as the turn left it')
       expect(durable().at(-1)).toBe("history.restored")
       // None of it reached the turn loop as input.
       expect(submitted).toEqual([])

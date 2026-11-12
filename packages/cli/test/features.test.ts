@@ -21,7 +21,7 @@ import { createAcpEngine } from "../src/acp-engine.ts"
 import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { Session } from "../src/engine.ts"
 import { FeatureWatch } from "../src/feature-commands.ts"
-import { mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
+import { localTime, mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
 import { successSummary } from "../src/tools.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -273,7 +273,7 @@ describe("what the renderer says", () => {
 
   test("a message a wake-up delivered says which wake-up and is not shown as typed", () => {
     const text = "[Wake-up wk_7a3c12139dd8 · after 1m (at 2026-11-12T08:39:20Z)]\nThis message was not typed by the user just now. It was delivered by a wake-up.\n\nThe message set up with the wake-up:\nLook at the canary."
-    expect(wakeMessageSummary(text, "wake")).toEqual({ head: "wake-up wk_7a3c12139dd8: it fired (after 1m (at 2026-11-12T08:39:20Z)) · not typed by you", message: "Look at the canary." })
+    expect(wakeMessageSummary(text, "wake")).toEqual({ head: `wake-up wk_7a3c12139dd8: it fired (after 1m (at ${localTime(new Date("2026-11-12T08:39:20Z"))})) · not typed by you`, message: "Look at the canary." })
     const out = render(stored([event("inbox.enqueued", { messageId: m("w1"), delivery: "queue", content: [{ type: "text", text }], origin: "wake" } as never)]))
     expect(out).toContain("⏰ wake-up wk_7a3c12139dd8: it fired")
     expect(out).toContain("Look at the canary.")

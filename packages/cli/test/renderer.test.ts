@@ -477,7 +477,7 @@ describe("verification, the workspace and reverts", () => {
   test("a revert says what was restored and what was kept, and a failed one that nothing changed", () => {
     const restore = { target: "w0", before: "w1", after: "w0", changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
     expect(lines([event("history.reverted", { fromSeq: 6, restore })])).toEqual([
-      "↶ went back · 3 files restored · /redo brings it back",
+      "↶ went back · 3 files as they were before the turn · /redo brings it back",
       "  left as they are now, the outside changes and the agent's both: notes.md",
       "  left alone (ignored or never recorded): dist/app.js",
     ])
@@ -493,8 +493,8 @@ describe("verification, the workspace and reverts", () => {
     const history = [...turn("u1", "exe_1", "Write the notes."), ...turn("u2", "exe_2", "Now add a test.")]
     const shown = lines([...history, event("history.reverted", { fromSeq: 7, restore }), event("history.restored", { revertSeq: 9, restore })], 140)
     expect(shown.filter((line) => /^[↶↷]/.test(line))).toEqual([
-      '↶ undone: turn 2 "Now add a test." · out of the conversation · 1 file restored · /redo brings it back',
-      '↷ redone: turn 2 "Now add a test." · back in the conversation · 1 file as the turn left them',
+      '↶ undone: turn 2 "Now add a test." · out of the conversation · 1 file as it was before the turn · /redo brings it back',
+      '↷ redone: turn 2 "Now add a test." · back in the conversation · 1 file as the turn left it',
     ])
   })
 

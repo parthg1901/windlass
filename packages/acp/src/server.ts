@@ -164,6 +164,15 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
   return { connection, done }
 }
 
+/**
+ * The replay comparison as the engine renders it, with its counts in words
+ * that fit them: a replay and a recording that both changed nothing made no
+ * acts (not "the same 0 acts"), and one read is "1 read".
+ */
+export function comparisonWords(rendered: string): string {
+  return rendered.replace("the same 0 acts as the recording", "none on either side: the recording changed nothing, and neither did the replay").replace(/\b1 reads answerable\b/, "1 read answerable")
+}
+
 /** The snapshot of a replay's copy of the workspace as it ended, for comparing the files it ended with. */
 async function snapshotOfCopy(copy: string, dataDir: string, session: string): Promise<string | null> {
   const snapshots = await openSnapshots(copy, { dataDir: join(dataDir, "snapshots") }).catch(() => null)
@@ -853,7 +862,7 @@ class ConnectionState {
       })()
       return {
         compared: compared as unknown as ReplayResult["compared"],
-        comparison: compared === null ? null : renderComparison(compared),
+        comparison: compared === null ? null : comparisonWords(renderComparison(compared)),
         sourceSessionId: params.sessionId,
         sessionId: outcome.sessionId,
         policy: params.policy ?? "stop",

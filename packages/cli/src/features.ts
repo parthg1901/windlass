@@ -193,8 +193,27 @@ export function skillsLines(result: SkillsResult): Line[] {
 
 // ---------------------------------------------------------------- wake-ups
 
+/**
+ * A moment as the user's clock has it, with the zone: `2026-11-12 15:00
+ * GMT+5:30` (seconds only when it has any). `timeZone` is the machine's
+ * unless given.
+ */
+export function localTime(at: Date, timeZone?: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", { ...(timeZone === undefined ? {} : { timeZone }), year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short" }).formatToParts(at)
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}${part("second") === "00" ? "" : `:${part("second")}`} ${part("timeZoneName")}`
+}
+
+/** `text` with every UTC timestamp the engine wrote (`2026-11-12T09:30:00Z`) as the user's local time with the zone. */
+export function localTimes(text: string, timeZone?: string): string {
+  return text.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, (stamp) => {
+    const at = new Date(stamp)
+    return Number.isNaN(at.getTime()) ? stamp : localTime(at, timeZone)
+  })
+}
+
 /** `/wakeups`: the session's wake-ups, pending first, in the engine's words; a webhook's URL, never its secret. */
-export function wakeLines(result: WakeListResult): Line[] {
+export function wakeLines(result: WakeListResult, timeZone?: string): Line[] {
   if (!result.available) return [line("This engine has no wake-ups.", "dim")]
   if (result.wakeups.length === 0)
     return [line("This session has no wake-up. Ask the agent for one (\"tell me when CI is green\", \"remind me in an hour\").", "dim")]
@@ -204,8 +223,9 @@ export function wakeLines(result: WakeListResult): Line[] {
   if (!result.running && pending.length > 0)
     lines.push(line("Nothing in this process fires them (see docs/wake-ups.md, \"Where wake-ups fire today\"): one that comes due fires, late, in the first process that runs the scheduler.", "warn", 2))
   for (const wake of [...pending, ...ended]) {
-    lines.push(line(`${wake.id} · ${wake.description}`, wake.state === "pending" ? "plain" : "dim", 2))
-    for (const text of wake.lines) lines.push(line(text, "dim", 4))
+    // The engine writes its times in UTC: here they are the user's clock, with the zone.
+    lines.push(line(`${wake.id} · ${localTimes(wake.description, timeZone)}`, wake.state === "pending" ? "plain" : "dim", 2))
+    for (const text of wake.lines) lines.push(line(localTimes(text, timeZone), "dim", 4))
   }
   if (pending.length > 0) lines.push(line(`/wakeups cancel <id> stops one${pending.some((wake) => wake.trigger === "webhook") ? "; /wakeups secret <id> shows a webhook's secret" : ""}.`, "dim", 2))
   return lines
@@ -217,7 +237,7 @@ export function wakeLines(result: WakeListResult): Line[] {
  * will remind you in a minute" is not taken for something this run does.
  */
 export function wakeNotFiringText(wake: { readonly id: string; readonly description: string | null }, sessionId: string): string {
-  const what = wake.description === null ? `Wake-up ${wake.id}` : `Wake-up ${wake.id} (${wake.description})`
+  const what = wake.description === null ? `Wake-up ${wake.id}` : `Wake-up ${wake.id} (${localTimes(wake.description)})`
   return `${what} was created, but this run does not fire wake-ups: it ends with its turn. It fires, late if its time has passed by then, the next time ${brand.name} runs interactively on this machine (\`${brand.binary}\` with no prompt, \`${brand.binary} tui\`, or an editor). \`${brand.binary} --session ${sessionId}\` opens this session: /wakeups lists it there, and /wakeups cancel ${wake.id} removes it.`
 }
 
@@ -243,7 +263,7 @@ export function wakeMessageSummary(text: string, origin: string): { readonly hea
   const body = marker >= 0 ? text.slice(marker + "The message set up with the wake-up:\n".length) : notice >= 0 ? text.slice(notice + "Its message was:\n".length) : null
   const message = body === null ? null : (body.split("\n\n", 1)[0] ?? "").trim() || null
   const why = origin === "wake_webhook" ? "a webhook request arrived" : stopped ? "it stopped" : "it fired"
-  return { head: `wake-up${id === null ? "" : ` ${id}`}: ${why}${match?.[3] === undefined ? "" : ` (${match[3]})`} · not typed by you`, message }
+  return { head: `wake-up${id === null ? "" : ` ${id}`}: ${why}${match?.[3] === undefined ? "" : ` (${localTimes(match[3])})`} · not typed by you`, message }
 }
 
 // ---------------------------------------------------------------- memory

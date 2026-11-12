@@ -162,31 +162,36 @@ function error(message: string): Parsed {
   return { kind: "error", message }
 }
 
+/**
+ * The ways to run the program, one row each: what is typed, then what it
+ * does, in a column that starts after the longest row whatever the binary
+ * is called, with the lines that continue a description under its first.
+ */
+function usageRows(b: string): string {
+  const rows: readonly (readonly [string, readonly string[]])[] = [
+    [`${b} [options] <prompt...>`, ["run one prompt and exit"]],
+    [`echo "<prompt>" | ${b} [options]`, ["read the prompt from stdin"]],
+    [`${b} [options]`, ["interactive: a prompt line, then the agent's work"]],
+    [`${b} acp`, ["serve the Agent Client Protocol on stdio (for editors)"]],
+    [`${b} login [start]`, ["sign in with ChatGPT: opens a browser when there is one,", "otherwise prints the address and asks for the page you", "ended on (pasted, not shown)"]],
+    [`${b} login finish`, ["finish a sign-in started elsewhere from the pasted address"]],
+    [`${b} login status`, ["who is signed in and until when (never the tokens)"]],
+    [`${b} login logout`, ["forget the saved sign-in on this machine"]],
+    [`${b} tui [options]`, [`the full-screen terminal interface (preview; ${brand.envPrefix}TUI=1 makes`, `it what \`${b}\` with no prompt starts)`]],
+    [`${b} fork [<session>]`, ["a new session with the conversation so far, to try another", "way without changing the original; --turn <n> forks after", `turn n (\`${b} fork --help\`)`]],
+    [`${b} replay [<session>]`, ["the model again on a recorded session, every tool call", "answered from the recording: where does a changed prompt,", "tool description or model change what it does", `(\`${b} replay --help\`)`]],
+  ]
+  const width = Math.max(...rows.map(([typed]) => typed.length))
+  return rows.flatMap(([typed, lines]) => lines.map((line, index) => `  ${(index === 0 ? typed : "").padEnd(width)}  ${line}`)).join("\n")
+}
+
 export function helpText(): string {
   const b = brand.binary
   const short = brand.aliases.map((alias) => `; \`${alias}\` is short for \`${b}\``).join("")
   return `${brand.name}: a terminal coding agent${short}
 
 Usage:
-  ${b} [options] <prompt...>     run one prompt and exit
-  echo "<prompt>" | ${b} [options]  read the prompt from stdin
-  ${b} [options]                 interactive: a prompt line, then the agent's work
-  ${b} acp                       serve the Agent Client Protocol on stdio (for editors)
-  ${b} login [start]             sign in with ChatGPT: opens a browser when there is one,
-                                 otherwise prints the address and asks for the page you
-                                 ended on (pasted, not shown)
-  ${b} login finish              finish a sign-in started elsewhere from the pasted address
-  ${b} login status              who is signed in and until when (never the tokens)
-  ${b} login logout              forget the saved sign-in on this machine
-  ${b} tui [options]             the full-screen terminal interface (preview; ${brand.envPrefix}TUI=1 makes
-                                 it what \`${b}\` with no prompt starts)
-  ${b} fork [<session>]          a new session with the conversation so far, to try another
-                                 way without changing the original; --turn <n> forks after
-                                 turn n (\`${b} fork --help\`)
-  ${b} replay [<session>]        the model again on a recorded session, every tool call
-                                 answered from the recording: where does a changed prompt,
-                                 tool description or model change what it does
-                                 (\`${b} replay --help\`)
+${usageRows(b)}
 
 Options:
   --session <id>         resume a session by ID, or by the start of one if it is unique
