@@ -148,7 +148,8 @@ export function detailLines(name: string, settled: Settled): string[] {
     return [`… ${plural(body.length - keep, "earlier line")}`, ...body.slice(-keep)]
   }
   if (settled.outcome !== "error") return []
-  return lines.slice(0, 2)
+  // A subagent's reference line for the model (`[subagent ses_…: stopped after …]`) repeats the row about its end.
+  return (name === "subagent" ? lines.filter((line) => !/^\[subagent \S+: [^\]]*\]$/.test(line.trim())) : lines).slice(0, 2)
 }
 
 function shellStatus(display: Record<string, Json> | null): string | null {

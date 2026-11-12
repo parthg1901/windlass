@@ -22,7 +22,7 @@ import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } 
 import type { Session } from "../src/engine.ts"
 import { FeatureWatch } from "../src/feature-commands.ts"
 import { localTime, mcpApprovedText, mcpNotWaitingText, mcpStateWords, wakeAddEntry, wakeAddFormLines, wakeCheckAccess, wakeCheckQuestionLines, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
-import { successSummary } from "../src/tools.ts"
+import { detailLines, successSummary } from "../src/tools.ts"
 import { PrettyRenderer } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -367,6 +367,11 @@ describe("what the renderer says", () => {
     expect(row).toStartWith("  ✓ mcp_call warehouse/stock_level · SKU-4471: 12 units")
     expect(row).toEndWith("… · 100ms")
     expect(row.length).toBeLessThanOrEqual(70)
+  })
+
+  test("a stopped subagent's row says why under it, without the reference line the model is given", () => {
+    const settled = { messageId: m("m1"), callId: c("c1"), outcome: "error", output: "The subagent did not finish its task. It was stopped before it finished: the user stopped this call.\n[subagent ses_6a439b782bcc0a11effe52d8: stopped after 0 steps, 1 tool call]", truncation: null, attachments: [], display: null } as never
+    expect(detailLines("subagent", settled)).toEqual(["The subagent did not finish its task. It was stopped before it finished: the user stopped this call."])
   })
 
   test("an image read is an image with its type and size, not a line count", () => {

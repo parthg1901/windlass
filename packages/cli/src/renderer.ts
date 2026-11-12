@@ -506,7 +506,7 @@ export class PrettyRenderer implements Sink {
         return
       }
       case "taint.noticed":
-        this.line("info", [seg(`${SYMBOL.unknown} untrusted content: `, "yellow")])
+        this.line("info", [seg(`${SYMBOL.unknown} untrusted content:`, "yellow")])
         for (const line of wrap(`${flatten(event.data.text)} From here on, anything that can send data out asks again, and earlier approvals for it no longer apply. /clear-taint says you trust what is there.`, this.width - 2))
           this.line("info", [seg(`  ${line}`, "yellow")])
         return
