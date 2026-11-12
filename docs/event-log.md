@@ -1558,6 +1558,7 @@ Declared in `packages/core/src/verify/evidence.ts`.
 
 What the verification gate found when an execution ended as done.
 - `not_configured`: verification is off, or no check is configured. Nothing was verified.
+- `left_to_parent`: the session is a subagent, and a subagent's turn is not verified by itself: the turn of the session that started it is, once the subagent's work is in, with whatever checks that session's project has. It says nothing about whether checks exist; the parent's ending does.
 - `not_needed`: checks are configured and none ran. Either nothing they cover changed since the last verification that passed, or this turn changed no file: the gate verifies a turn's own work, and a turn that only answered has none. In the second case `unverified` is set when files the checks cover did change since the last verification, outside this turn (the user edited by hand, a turn was undone, an earlier turn ended with its checks failing): they are still to be checked, and are, with everything else, at the end of the next turn that changes a file.
 - `passed`: every check that applied passed; `evidence` is that run.
 - `unresolved`: checks still fail and the execution ended anyway. `reason` says why it was allowed to: the model reported with the acknowledgement tool that it cannot fix them (`acknowledgement` is what it said), the model had been sent back `maxRounds` times, or the mode is `report`, which never sends the model back.
@@ -1569,6 +1570,12 @@ One of these, told apart by `status`:
 | Field | Type | Required |
 | --- | --- | --- |
 | `status` | `"not_configured"` | yes |
+
+`status: "left_to_parent"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `status` | `"left_to_parent"` | yes |
 
 `status: "not_needed"`
 

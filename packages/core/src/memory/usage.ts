@@ -14,7 +14,8 @@ import { type Infer, array, integer, literal, nonEmptyString, nullable, object, 
 /**
  * How a turn ended, as the caller observed it.
  * - `passed`: the turn ended with the project's checks passing (`execution.succeeded`, verification `passed`).
- * - `unchecked`: it ended with nothing to check (`not_needed`, `not_configured`).
+ * - `unchecked`: it ended with nothing to check (`not_needed`, `not_configured`), or with its checks left to
+ *   another session's turn (`left_to_parent`).
  * - `unresolved`: it ended with checks failing (`unresolved`).
  * - `interrupted`: the user stopped it.
  * - `reverted`: the user reverted it.
@@ -72,7 +73,7 @@ export type ReadRecord = Infer<typeof readRecord>
 export type OutcomeRecord = Infer<typeof outcomeRecord>
 
 /** The outcome of a turn the step loop ended, from what `execution.succeeded` / `turn.ended` say the gate found. */
-export function outcomeOfVerification(verification: "passed" | "not_needed" | "not_configured" | "unresolved"): Outcome {
+export function outcomeOfVerification(verification: "passed" | "not_needed" | "not_configured" | "left_to_parent" | "unresolved"): Outcome {
   if (verification === "passed") return "passed"
   if (verification === "unresolved") return "unresolved"
   return "unchecked"

@@ -248,6 +248,10 @@ export const KEPT_LIMIT = 200
 /**
  * What the verification gate found when an execution ended as done.
  * - `not_configured`: verification is off, or no check is configured. Nothing was verified.
+ * - `left_to_parent`: the session is a subagent, and a subagent's turn is not
+ *   verified by itself: the turn of the session that started it is, once the
+ *   subagent's work is in, with whatever checks that session's project has.
+ *   It says nothing about whether checks exist; the parent's ending does.
  * - `not_needed`: checks are configured and none ran. Either nothing they
  *   cover changed since the last verification that passed, or this turn
  *   changed no file: the gate verifies a turn's own work, and a turn that
@@ -265,6 +269,7 @@ export const KEPT_LIMIT = 200
  */
 export const verificationOutcome = variant("status", {
   not_configured: object({ status: literal("not_configured") }),
+  left_to_parent: object({ status: literal("left_to_parent") }),
   not_needed: object({ status: literal("not_needed"), unverified: optional(literal(true)) }),
   passed: object({ status: literal("passed"), evidence: verificationEvidence }),
   unresolved: object({

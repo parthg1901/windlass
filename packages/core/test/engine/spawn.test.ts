@@ -108,7 +108,7 @@ describe("a subagent", () => {
       expect(new Set(forwarded.map((item) => `${item.child}:${item.title}`))).toEqual(new Set([`${child(2)}:Fix module a`, `${child(3)}:Fix module b`]))
       expect(forwarded.filter((item) => item.child === child(2)).map((item) => item.event.type)).toEqual(types(logOf(h, child(2))).slice(1))
       // The children are not verified and end like any turn.
-      expect(of(logOf(h, child(2)), "execution.succeeded")[0]!.data.verification).toEqual({ status: "not_configured" })
+      expect(of(logOf(h, child(2)), "execution.succeeded")[0]!.data.verification).toEqual({ status: "left_to_parent" })
     }))
 
   test("cannot start subagents of its own by default; a deeper limit lets it", async () => {

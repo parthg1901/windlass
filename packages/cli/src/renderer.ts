@@ -839,6 +839,8 @@ export class PrettyRenderer implements Sink {
         return done("nothing to check")
       case "not_configured":
         return done("no checks configured")
+      case "left_to_parent":
+        return done("checks left to the session that started it")
       case "unresolved": {
         const head = [seg(`${SYMBOL.fail} `, "red"), seg("stopped with failing checks", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), seg(suffix(parts), "dim")]
         // The reason is never cut: it is why "done" is not what this turn ended as.

@@ -2879,6 +2879,7 @@ The model hands a task to a subagent. The call starts like any tool (its effect 
  13  step.started a2 attempt=1
  14  text.ended a2 "Module a is fixed."
  15  step.ended a2 finish=stop
+-- the parent's turn ends through the gate
  16  execution.succeeded exe_1
 ```
 
@@ -2891,10 +2892,11 @@ The model hands a task to a subagent. The call starts like any tool (its effect 
 - after "the child is started and runs": `spawn.started bg_1 by a1/call_1 subagent ses_other` (duplicate_id). A piece of spawned work starts once.
 - after "the child is started and runs": `spawn.ended bg_2 completed usage=1000in/50out` (not_found). Only work that is running ends.
 - after "the child ends; its answer is the call's result": `spawn.ended bg_1 completed usage=1000in/50out` (not_found). Spawned work ends once.
+- after "the child ends; its answer is the call's result": `execution.succeeded exe_1 verification=left_to_parent` (invalid_transition). Only a subagent leaves the verification of its turn to the session that started it.
 
 #### 84. The subagent's own log
 
-The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, without the verification gate. At the depth limit (one level by default) its tool list has no `subagent`.
+The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, but without running the verification gate: its `execution.succeeded` says `left_to_parent`, because the turn of the session that started it is what gets verified, once the child's work is in. That says nothing about whether the project has checks; the parent's ending does. At the depth limit (one level by default) its tool list has no `subagent`.
 
 *Provider:* the child answers in one step.
 
@@ -2908,7 +2910,8 @@ The same situation from the child's side. A subagent is a real session, typed as
   6  step.started a1 attempt=1
   7  text.ended a1 "a.ts is fixed."
   8  step.ended a1 finish=stop
-  9  execution.succeeded exe_1
+-- its turn ends, and the ending says who verifies it
+  9  execution.succeeded exe_1 verification=left_to_parent
 ```
 
 *UI:* u1 user · a1 completed. *Claim:* released.
@@ -2916,7 +2919,8 @@ The same situation from the child's side. A subagent is a real session, typed as
 *Model sees next:* u1, a1.
 
 *The reducer rejects:*
-- after "the child is created with its task and works": `spawn.ended bg_1 completed` (not_found). The end of the child's work is recorded in its parent's log, not its own.
+- after "the child is created with its task and works": `execution.succeeded exe_1` (invalid_transition). A subagent's turn is not verified by itself: its ending cannot say that no check is configured, or anything else about checks.
+- after "its turn ends, and the ending says who verifies it": `spawn.ended bg_1 completed` (not_found). The end of the child's work is recorded in its parent's log, not its own.
 
 #### 85. A background subagent's answer arrives as a message
 
@@ -3397,7 +3401,7 @@ The same situation from the child's side. The child is created as the agent: `ag
  12  step.started a2 attempt=1
  13  text.ended a2 "Module a is fine."
  14  step.ended a2 finish=stop
- 15  execution.succeeded exe_1
+ 15  execution.succeeded exe_1 verification=left_to_parent
 ```
 
 *UI:* u1 user · a1 completed [write error] · a2 completed. *Claim:* released.

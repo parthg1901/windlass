@@ -387,6 +387,7 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
       const status = row.verification?.status
       if (status === "passed") wrapped([span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok"), span(after, "dim")])
       else if (status === "not_needed") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks not needed: nothing they cover changed", "dim"), span(after, "dim")])
+      else if (status === "left_to_parent") wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks left to the session that started it", "dim"), span(after, "dim")])
       else wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · no checks configured", "dim"), span(after, "dim")])
       break
     }

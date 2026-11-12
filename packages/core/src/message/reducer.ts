@@ -272,6 +272,12 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     if (current === null || current.status !== "running") return fail("invalid_transition", "no execution is running")
     return current
   }
+  /** Who verifies a turn is a fact about the session: a subagent's is left to its parent's turn, and nobody else's is. */
+  const verifiedBy = (outcome: { readonly status: string }) => {
+    const subagent = state.session.lineage?.kind === "spawn"
+    if (subagent && outcome.status !== "left_to_parent") fail("invalid_transition", "a subagent's turn is not verified by itself: its ending says left_to_parent")
+    if (!subagent && outcome.status === "left_to_parent") fail("invalid_transition", "only a subagent leaves the verification of its turn to the session that started it")
+  }
   /** The baseline every request of a step or compaction is built from. */
   const based = () => {
     if (state.baseline === null) fail("invalid_transition", "no baseline has been set (baseline.set comes before the first step)")
@@ -514,6 +520,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (queued === undefined) return fail("invalid_transition", "no queued item waits: an execution with nothing left to do ends (execution.succeeded)")
       if (spokenSince(current.startedSeq).length === 0) fail("invalid_transition", "there is no turn to end under this execution")
       const outcome = event.data.verification
+      verifiedBy(outcome)
       if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
         fail("invalid_transition", "the model has not answered everything it was given in this turn")
       return session({
@@ -561,6 +568,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (waiting !== undefined)
         fail("invalid_transition", `inbox item ${waiting.messageId} is waiting: deliver it instead of going idle`)
       const outcome = event.data.verification
+      verifiedBy(outcome)
       if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
         fail("invalid_transition", "the model has not answered everything it was given under this execution")
       // With nothing to check, what is there now is what later checks are selected against. A turn that changed

@@ -699,7 +699,7 @@ export class Transcript {
         if (verification.status === "passed") this.notice(SYMBOL.ok, "ok", [span("checks passed", "ok"), next], [], replay, "work")
         else if (verification.status === "unresolved")
           this.notice(SYMBOL.fail, "error", [span("failing checks left unresolved", "error", { bold: true }), span(`: ${verification.failing.join(", ")}`, "error"), next], [[span(unresolvedReason(verification), "warn")]], replay, "work")
-        else this.notice(SYMBOL.ok, "dim", [span(verification.status === "not_needed" ? "nothing to check" : "no checks configured", "dim"), next], [], replay, "work")
+        else this.notice(SYMBOL.ok, "dim", [span(verification.status === "not_needed" ? "nothing to check" : verification.status === "left_to_parent" ? "checks left to the session that started it" : "no checks configured", "dim"), next], [], replay, "work")
         return
       }
       case "execution.started":

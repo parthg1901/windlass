@@ -4617,7 +4617,8 @@ class LiveSession implements EngineSession {
     const signal = run.interrupt.signal
     // A subagent's turn is not verified: its parent's turn is, once the subagent's work is in. (Several subagents
     // each running the project's whole check suite in one workspace would mostly report each other's half-done work.)
-    const loaded = this.projection().session.lineage?.kind === "spawn" ? null : this.config
+    const child = this.projection().session.lineage?.kind === "spawn"
+    const loaded = child ? null : this.config
     const interrupted = (): StepResult => {
       this.finishInterrupt(run)
       return "done"
@@ -4630,7 +4631,8 @@ class LiveSession implements EngineSession {
       )
     if (loaded === null || runner === null || "blocked" in runner) {
       await this.announceChanges()
-      return signal.aborted ? interrupted() : this.finish(run, { status: "not_configured" })
+      // A subagent's ending says who verifies its work; any other session's, that nothing was there to verify it with.
+      return signal.aborted ? interrupted() : this.finish(run, child ? { status: "left_to_parent" } : { status: "not_configured" })
     }
 
     // The workspace as it is now: what the checks run against.

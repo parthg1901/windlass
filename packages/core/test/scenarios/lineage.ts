@@ -20,6 +20,7 @@ import {
   deliver,
   enqueue,
   executionStarted,
+  executionLeftToParent,
   executionSucceeded,
   forked,
   opening,
@@ -206,9 +207,17 @@ export const subagentReturns: Scenario = {
     },
     {
       label: "the child ends; its answer is the call's result",
-      events: [spawnEnded("bg_1", "completed", "It finished.", { steps: 1 }), settled("a1", "call_1", "success", childAnswer(1, 0)), stepEnded("a1", "tool_calls"), stepStarted("a2"), say("a2", "Module a is fixed."), stepEnded("a2"), executionSucceeded()],
-      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 subagent success"] }, { id: "a2", status: "completed" }], execution: null },
-      rejects: [{ event: spawnEnded("bg_1", "completed", "It finished.", { steps: 1 }), code: "not_found", why: "spawned work ends once" }],
+      events: [spawnEnded("bg_1", "completed", "It finished.", { steps: 1 }), settled("a1", "call_1", "success", childAnswer(1, 0)), stepEnded("a1", "tool_calls"), stepStarted("a2"), say("a2", "Module a is fixed."), stepEnded("a2")],
+      expect: { ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 subagent success"] }, { id: "a2", status: "completed" }] },
+      rejects: [
+        { event: spawnEnded("bg_1", "completed", "It finished.", { steps: 1 }), code: "not_found", why: "spawned work ends once" },
+        { event: executionLeftToParent(), code: "invalid_transition", why: "only a subagent leaves the verification of its turn to the session that started it" },
+      ],
+    },
+    {
+      label: "the parent's turn ends through the gate",
+      events: [executionSucceeded()],
+      expect: { execution: null },
     },
   ],
 }
@@ -216,13 +225,19 @@ export const subagentReturns: Scenario = {
 export const subagentLog: Scenario = {
   title: "The subagent's own log",
   description:
-    "The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, without the verification gate. At the depth limit (one level by default) its tool list has no `subagent`.",
+    "The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, but without running the verification gate: its `execution.succeeded` says `left_to_parent`, because the turn of the session that started it is what gets verified, once the child's work is in. That says nothing about whether the project has checks; the parent's ending does. At the depth limit (one level by default) its tool list has no `subagent`.",
   provider: "the child answers in one step",
   spawn: {},
   phases: [
     {
       label: "the child is created with its task and works",
-      events: [spawnedBy(TASK), enqueue("u1", taskMessage(TASK)), executionStarted(), baseline(), deliver("u1"), stepStarted("a1"), say("a1", "a.ts is fixed."), stepEnded("a1"), executionSucceeded()],
+      events: [spawnedBy(TASK), enqueue("u1", taskMessage(TASK)), executionStarted(), baseline(), deliver("u1"), stepStarted("a1"), say("a1", "a.ts is fixed."), stepEnded("a1")],
+      expect: { history: ["u1", "a1"] },
+      rejects: [{ event: executionSucceeded(), code: "invalid_transition", why: "a subagent's turn is not verified by itself: its ending cannot say that no check is configured, or anything else about checks" }],
+    },
+    {
+      label: "its turn ends, and the ending says who verifies it",
+      events: [executionLeftToParent()],
       expect: { ui: [{ id: "u1", kind: "user" }, { id: "a1", status: "completed" }], history: ["u1", "a1"], execution: null },
       rejects: [{ event: spawnEnded("bg_1", "completed", "It finished."), code: "not_found", why: "the end of the child's work is recorded in its parent's log, not its own" }],
     },

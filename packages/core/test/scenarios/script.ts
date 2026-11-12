@@ -320,6 +320,8 @@ export const continuationNote = (id: string) =>
 export const executionStarted = (id = "exe_1") => event("execution.started", { executionId: x(id) })
 export const executionResumed = (id = "exe_1") => event("execution.resumed", { executionId: x(id) })
 export const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" } })
+/** A subagent's execution ends: its turn is not verified by itself, and the ending says who verifies it. */
+export const executionLeftToParent = (id = "exe_1") => event("execution.succeeded", { executionId: x(id), verification: { status: "left_to_parent" } })
 export const executionFailed = (message: string, id = "exe_1") =>
   event("execution.failed", { executionId: x(id), message })
 /** The cancel or the shutdown signal arrives: durable before anything is stopped. */
