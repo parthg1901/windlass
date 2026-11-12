@@ -24,7 +24,12 @@ import type { Tool, ToolContext } from "../tool/tool.ts"
 
 /** How an engine is told to offer skills. */
 export interface SkillsSetup {
-  /** The harness config directory, whose `skills` directory holds the user's own. Default: the engine's (`$XDG_CONFIG_HOME/<brand.directory>`). */
+  /**
+   * The harness config directory, whose `skills` directory holds the user's
+   * own. Default: the engine's (`$XDG_CONFIG_HOME/<brand.directory>`); with
+   * `EngineOptions.discover` injected, none, so that an engine whose
+   * instruction sources a test supplies reads nothing of this machine's.
+   */
   readonly configDir?: string
   /** The home directory `~/` in `skills.paths` stands for. Default: the user's. */
   readonly home?: string

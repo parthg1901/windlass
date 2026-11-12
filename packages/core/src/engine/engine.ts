@@ -885,7 +885,10 @@ export function createEngine(options: EngineOptions): Engine {
   // The tools of the features an engine may offer are carried out for the session that calls them. As above, a
   // build that brings its own tool of one of those names keeps it.
   const mine = (tools: readonly AnyTool[]) => tools.filter((tool) => !options.tools.some((other) => other.name === tool.name))
-  const skillsDir = options.skills?.configDir ?? configDirectory()
+  // Where the user's own skills are kept. A caller that supplies the instruction sources itself (`discover`: a
+  // test, a fixture) and names no directory gets none from this machine's configuration either: a directory under
+  // the data directory, which holds no skills, stands in.
+  const skillsDir = options.skills?.configDir ?? (options.discover === undefined ? configDirectory() : join(options.dataDir, "no-user-config"))
   const skill = engineSkillTool((context) => core.sessions.get(context.sessionId)?.skillPlaces() ?? { configDir: skillsDir, extraPaths: [], disabled: [] }) as unknown as AnyTool
   const bridge = engineMcpTools((context) => core.sessions.get(context.sessionId)?.mcpServers() ?? null)
   // Wake-ups: one store per process, opened when something first needs it; the user's own file configures it.
