@@ -545,6 +545,9 @@ describe("quoted program messages", () => {
       pieces: ["inside a step", ": a session is forked at a step boundary (the nearest one before it is seq "],
     },
     { page: "docs/forks.md", quote: "`the history inherited from session <id> cannot be read: <file> is missing`", pieces: ["the history inherited from session ", " cannot be read: ", " is missing"] },
+    { page: "docs/forks.md", quote: "there is no turn 7: the session has turns 1 to 2", pieces: ["there is no turn ", ": the session has ", "turns 1 to "] },
+    { page: "docs/forks.md", quote: "Its turns:", pieces: ["Its turns:"] },
+    { page: "docs/forks.md", quote: "after turn 2 (event 28).", pieces: ["after turn ", " (event "] },
     { page: "docs/memory.md", quote: `? Allow memory_save: changing ${brand.name}'s own records?`, pieces: ["Allow ", "changing ", "'s own records"] },
     {
       page: "docs/memory.md",
@@ -613,6 +616,47 @@ describe("what the pages say is not there yet", () => {
     // /memory forget <id> is /forget <id>.
     expect(SOURCE).toContain("[confirm|reject|renew|forget <id>]")
   })
+
+  test("forking needs no sign-in, and takes a turn (docs/forks.md)", () => {
+    const forks = text["docs/forks.md"]
+    expect(forks).toContain(`\`${BIN} fork\` calls no model and needs no sign-in`)
+    expect(forks).not.toContain("so it needs a sign-in")
+    // The turn option and the full-screen command's turn argument, as the page gives them.
+    expect(forkUsage()).toContain("--turn <n>")
+    expect(forks).toContain("| `--turn <n>` |")
+    expect(COMMANDS.find((command) => command.name === "fork")?.args).toBe("[<turn>] [copy]")
+    expect(forks).toContain("`/fork <n>`")
+    expect(parseSubcommand(["fork", "--turn", "2"])).not.toHaveProperty("kind", "error")
+  })
+
+  test("signed out, with no scripted model: a session is forked, and a prompt says how to sign in", async () => {
+    const home = mkdtempSync(join(tmpdir(), "feature-docs-fork-"))
+    const run = async (args: string[], env: Record<string, string> = {}) => {
+      const child = Bun.spawn([process.execPath, join(ROOT, "packages/cli/src/main.ts"), ...args], {
+        cwd: home,
+        env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin", XDG_DATA_HOME: join(home, "data"), XDG_CONFIG_HOME: join(home, "config"), NO_COLOR: "1", ...env },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+      return { out, err, code }
+    }
+    try {
+      const script = join(home, "script.json")
+      await Bun.write(script, JSON.stringify({ responses: [[{ type: "text", text: "It says one." }]] }))
+      expect((await run(["what does a.txt say"], { [`${brand.envPrefix}ACP_SCRIPT`]: script })).code).toBe(0)
+      const forked = await run(["fork"])
+      expect(forked.code, forked.err).toBe(0)
+      expect(forked.out).toContain("after its latest step.")
+      expect(forked.out).toContain("Continue in the fork:")
+      const prompt = await run(["go on"])
+      expect(prompt.code).toBe(1)
+      expect(prompt.err).toContain(`${BIN} login`)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   test("nothing puts a pending memory note to the user unasked yet (docs/memory.md, Not yet)", () => {
     expect(text["docs/memory.md"]).toContain("**Pending notes are not put to you unasked.**")

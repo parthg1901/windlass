@@ -26,8 +26,9 @@ Continue in the fork:
   windlass tui --session ses_da7131868a3c5d6dd01028a0
 ```
 
-In the full-screen interface, `/fork` does the same for the session on screen and switches to the fork; `/fork copy`
-gives it a copy of the workspace (below). It works while the agent is idle, and only once the session has a turn: in a
+In the full-screen interface, `/fork` does the same for the session on screen and switches to the fork; `/fork <n>`
+forks after turn `<n>` (the number on that turn's ending row), and `/fork copy` gives the fork a copy of the
+workspace (below). It works while the agent is idle, and only once the session has a turn: in a
 session without one there is nothing to carry over, and it says so. `/sessions` marks a fork with `⑂`, shows the
 start of its ID and of the one it was forked from, and the directory it works in when that is a copy elsewhere; a
 fork's panel counts its own model calls, with the inherited ones on a line of their own.
@@ -39,6 +40,7 @@ session of the current directory picks it even when other directories have sessi
 ## Options
 
 ```sh
+windlass fork --turn 2
 windlass fork ses_f808 --through 7
 windlass fork --copy --title "try a copy"
 windlass fork --copy-to /home/me/proj-experiment -m gpt-6-luna --effort low
@@ -48,23 +50,35 @@ windlass fork --json
 | Option | What |
 |---|---|
 | `<session>` | the session to fork: an ID, or the start of one if it is unique. Default: the most recent session in the directory |
-| `--through <n>` | fork after event `<n>` of the session instead of after its latest step. It must be a step boundary; otherwise it is refused and the nearest boundary before it is named |
+| `--turn <n>` | fork after turn `<n>` of the session instead of after its latest step: 1 is its first prompt, as the full-screen interface numbers turns on their ending rows. A turn that `/undo` took back cannot be forked at |
+| `--through <n>` | the precise form: fork after event `<n>` of the session. It must be a step boundary; otherwise it is refused and the nearest boundary before it is named |
 | `--copy` | the fork works in a copy of the workspace, made under the work directory |
 | `--copy-to <dir>` | the same, in `<dir>`: an absolute path that does not exist yet |
 | `-m`, `--model <name>` | the fork's model; default the session's |
-| `--effort <level>` | the fork's reasoning effort; default the session's |
+| `--effort <level>` | the fork's reasoning effort; default the session's (`default`: the model's own) |
 | `--title <text>` | the fork's title; default the session's, followed by `(fork)` |
 | `--cwd <dir>` | the directory whose most recent session is forked |
 | `--json` | print the new session as one JSON object: `sessionId`, `parentSessionId`, `throughSeq`, `cwd`, `copiedFrom`, `title`, `model`, `effort` |
 
+With `--turn`, the first line says which event that was (`Forked ses_… after turn 2 (event 28).`), and a turn the
+session does not have is refused with the ones it has (exit code 2):
+
+```text
+windlass: there is no turn 7: the session has turns 1 to 2
+Its turns:
+  1  "what does a.txt say"
+  2  "and again"
+```
+
 The event numbers for `--through` are the `seq` of each event in `windlass --json` output (see
-[event-log.md](event-log.md)). A wrong one:
+[event-log.md](event-log.md)). A wrong one (exit code 2):
 
 ```text
 windlass: seq 9 of session ses_f808227c38aa09907cd80c89 is inside a step: a session is forked at a step boundary (the nearest one before it is seq 7)
 ```
 
-`windlass fork` needs no model call, but it starts the engine like every subcommand, so it needs a sign-in.
+`windlass fork` calls no model and needs no sign-in: it works signed out, as `windlass --list-sessions` does. Continuing in
+the fork is a prompt like any other and needs the sign-in.
 
 ## The workspace
 
@@ -97,6 +111,11 @@ A fork's log holds only its own events and reads the earlier ones from the origi
 ## Not yet
 
 - **A fork whose original is gone cannot go on.** If the original session's file is deleted or moved, the fork is
-  still listed, but a new message to it fails: `windlass` prints only `windlass: Internal error` (exit code 1);
-  `--engine direct` shows the reason, `the history inherited from session <id> cannot be read: <file> is missing`.
+  still listed, but a new message to it fails, and so does forking it: `windlass` prints only `windlass: Internal error`
+  (exit code 1). The reason, which nothing prints, is
+  `the history inherited from session <id> cannot be read: <file> is missing`.
+<!-- NOT-YET(fork-inherited-turn): forking a fork at a turn or event it inherited fails with "Internal error" -->
+- **A fork cannot be forked at a point it inherited.** `windlass fork <a fork>` forks it after its latest step, but
+  `--turn <n>` or `--through <n>` for a turn or event of the original's part of the conversation prints only
+  `windlass: Internal error` (exit code 1). Fork the original at that point instead.
 - **No fork from the line interface's prompt**: use `windlass fork`, or `/fork` in `windlass tui`.
