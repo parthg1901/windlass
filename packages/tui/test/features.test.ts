@@ -227,4 +227,24 @@ describe("background commands", () => {
     expect(after).toContain("background bg_1 exited with code 0")
     expect(after).not.toMatch(/bg +◌ bg_1/)
   })
+
+  test("the message its end sends to the model is one line saying where it goes, not the message", async () => {
+    const { session } = await open(140, 40)
+    const told = "Background command bg_1 exited with code 0 after 5.0 s.\nCommand: sleep 5; echo built\nOutput:\nbuilt\nFull output: /tmp/.spill/shell-bg.log"
+    session.emit(
+      event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 5; echo built", logPath: "/tmp/windlass-1001/ses_x/.spill/shell-bg.log" } } as never),
+      event("spawn.ended", { spawnId: "bg_1", outcome: "completed", detail: "exited", exitCode: 0, usage: null, tainted: false, merge: null } as never),
+      event("inbox.enqueued", { messageId: m("b1"), delivery: "queue", origin: "background_command", content: [{ type: "text", text: told }] } as never),
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("✓ background bg_1 exited with code 0")
+    expect(frame).toContain("↳ its result is sent to the agent, which carries on")
+    expect(frame).not.toContain("background_command")
+    expect(frame).not.toContain("⏎")
+    expect(frame).not.toContain("Full output")
+    session.emit(event("inbox.enqueued", { messageId: m("b2"), delivery: "queue", origin: "subagent_result", content: [{ type: "text", text: "Subagent result" }] } as never))
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).toContain("↳ the subagent's result is sent to the agent, which carries on")
+  })
 })

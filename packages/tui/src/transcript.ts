@@ -12,7 +12,7 @@ import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } fr
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack } from "./cli.ts"
-import { type EngineEvent, TASK_TOOL, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText, checkLines, checksSummary, fileList } from "./cli.ts"
+import { type EngineEvent, TASK_TOOL, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, spawnMessageText, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText, checkLines, checksSummary, fileList } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -318,6 +318,8 @@ export class Transcript {
   private stopAsked = false
   /** The stop line that tells how to exit at once; the hint goes once the turn has ended. */
   private stopRow: NoticeRow | null = null
+  /** How the latest spawned work ended, for the line about its message to the model. */
+  private lastSpawnEnd: { readonly outcome: string; readonly detail: string } | null = null
   /** The session's turns as the user counts them, for `/undo`, `/redo` and `/fork <turn>`. */
   turns = new TurnTracker()
   /** The latest stored event applied: what a row added now belongs to. */
@@ -510,6 +512,7 @@ export class Transcript {
         return
       }
       case "spawn.ended": {
+        this.lastSpawnEnd = { outcome: event.data.outcome, detail: event.data.detail }
         const command = this.background.get(event.data.spawnId)
         if (command !== undefined) {
           this.background.delete(event.data.spawnId)
@@ -1134,6 +1137,15 @@ export class Transcript {
     }
     // A watch's message is said by its own event (`watch.fired`), which follows at once: which watch, and the line.
     if (data.origin === "background_watch") return
+    // The end of spawned work was just said on its own row; what the model is sent about it is not the user's to read
+    // again: one line says where it goes.
+    if (data.origin === "background_command" || data.origin === "subagent_result" || data.origin === "spawn_lost") {
+      // A subagent's own row is where its call was, further up: the line names it. A command's ending row is just above.
+      const said = spawnMessageText(data.origin, this.lastSpawnEnd, midTurn)
+      this.notice(SYMBOL.inbox, "dim", [span(data.origin === "subagent_result" ? said.replace(/^its /, "the subagent's ").replace(/^it /, "the subagent ") : said, "dim")], [], replay, "work")
+      this.lastSpawnEnd = null
+      return
+    }
     if (data.origin !== null) {
       this.notice(SYMBOL.inbox, "dim", [span(`${data.origin}: `, "dim"), span(`"${oneLine(text)}"`)], [], replay, "work")
       return
