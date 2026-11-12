@@ -26,7 +26,9 @@ const later = make()
 later.applyDiscount(50)
 later.add("shade", 1000)
 if (later.total() !== 2500) fail(`a discount should apply to items added afterwards too (got ${later.total()}, expected 2500)`)
-// Only what the prompt asks for: below 0 or above 100. NaN is neither, so it is not graded.
+// Only what the prompt asks for: below 0 or above 100. NaN is neither, so it is not graded. Every amount above is a
+// whole number of cents, so rounding (round, floor, none) is not graded either, and neither is what a second
+// applyDiscount does (replace or compound): the prompt leaves both open.
 for (const bad of [-1, 101, -0.5, 100.5]) {
   let error: unknown
   try {
@@ -42,6 +44,6 @@ const tested = [...files].some(([path, text]) => /\.(test|spec)\.ts$/.test(path)
 if (!tested) fail("no test file exercises applyDiscount")
 const tests = await run(["bun", "test"], workspace)
 if (tests.code !== 0) fail(`bun test fails: ${errorLine(tests.output)}`)
-const original = (files.get("src/cart.test.ts") ?? "").match(/\btest\(/g)?.length ?? 0
+const original = (files.get("src/cart.test.ts") ?? "").match(/\b(test|it)\(/g)?.length ?? 0
 if (original < 3) fail("the original cart tests were removed")
 pass("applyDiscount works, is validated and is tested")

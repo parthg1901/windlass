@@ -1,17 +1,18 @@
-import { fail, errorLine, pass, pristine, readTree, run, workspaceArg } from "../../grader.ts"
+import { fail, errorLine, importFrom, pass, pristine, readTree, run, workspaceArg } from "../../grader.ts"
 
 const workspace = workspaceArg()
 const files = await readTree(workspace)
-const leftovers = [...files].filter(([, text]) => /\bgetUsr\b/.test(text)).map(([path]) => path)
+const original = await pristine(import.meta.dir)
+for (const path of original.keys()) if (!files.has(path)) fail(`${path} was deleted`)
+// The old name may survive only in a new note about the rename (a CHANGELOG entry, say), never in code or the docs.
+const leftovers = [...files].filter(([path, text]) => /\bgetUsr\b/.test(text) && (original.has(path) || /\.[cm]?[jt]sx?$/.test(path))).map(([path]) => path)
 if (leftovers.length > 0) fail(`getUsr is still mentioned in ${leftovers.join(", ")}`)
-const store = files.get("src/store.ts") ?? ""
-if (!/export function getUserById\b/.test(store)) fail("src/store.ts does not export a function named getUserById")
+const store = await importFrom<Record<string, unknown>>(workspace, "src/store.ts")
+if (typeof store.getUserById !== "function") fail("src/store.ts does not export a function named getUserById")
+if (typeof store.getUsrsByTeam !== "function") fail("getUsrsByTeam was renamed or removed, but it should be left alone")
 for (const path of ["src/report.ts", "src/api.ts", "scripts/seed.ts", "README.md"]) {
   if (!(files.get(path) ?? "").includes("getUserById")) fail(`${path} does not use getUserById`)
 }
-if (!store.includes("export function getUsrsByTeam(")) fail("getUsrsByTeam was renamed or removed, but it should be left alone")
-const original = await pristine(import.meta.dir)
-for (const path of original.keys()) if (!files.has(path)) fail(`${path} was deleted`)
 
 const expected = [
   "#1: Ada (core, 1 teammates)",

@@ -3,7 +3,8 @@ import { join } from "node:path"
 import { errorLine, fail, importFrom, pass, readTree, requireUnchanged, run, workspaceArg } from "../../grader.ts"
 
 const workspace = workspaceArg()
-await requireUnchanged(import.meta.dir, workspace, ["tests/billing.test.ts", "src/types.ts"])
+// src/types.ts may change: a MoneyFormat type next to Customer is a reasonable place for it.
+await requireUnchanged(import.meta.dir, workspace, ["tests/billing.test.ts"])
 const money = (amount: number, currency: string, locale: string) => new Intl.NumberFormat(locale, { style: "currency", currency }).format(amount)
 
 const { formatMoney } = await importFrom<{ formatMoney: (amount: number, options: { currency: string; locale?: string }) => string }>(workspace, "src/util/money.ts")
@@ -18,18 +19,21 @@ const expected = [money(12.5, "EUR", "de-DE"), money(3, "USD", "en-US"), money(1
 if (formatted.join("|") !== expected.join("|")) fail(`formatMoney with an options object returned ${JSON.stringify(formatted)}, expected ${JSON.stringify(expected)}`)
 
 // Every call in src/ passes the amount and one options argument; none still passes a currency or locale string.
+// Comments are skipped: a doc comment showing the old signature ("formerly formatMoney(1, "EUR", "de-DE")") is not a call.
 const files = await readTree(join(workspace, "src"))
 const callers = new Set<string>()
 for (const [path, source] of files) {
-  for (const args of calls(source, "formatMoney")) {
+  for (const args of calls(withoutComments(source), "formatMoney")) {
     if (args.length !== 2) fail(`src/${path} calls formatMoney with ${args.length} arguments: formatMoney(${args.join(", ")})`)
     if (/^["'`]/.test(args[1]!) || /\.(currency|locale)$/.test(args[1]!)) fail(`src/${path} still passes a bare currency or locale: formatMoney(${args.join(", ")})`)
     callers.add(path)
   }
 }
+// A caller may go through a small helper of its own (say formatFor(customer, amount) in util/money.ts) instead of calling
+// formatMoney directly; what it must not do is format money itself, around the function the task is about.
 const expectedCallers = ["cart.ts", "email.ts", "invoice.ts", "receipt.ts", "refund.ts", "report.ts"]
-const missing = expectedCallers.filter((path) => !callers.has(path))
-if (missing.length > 0) fail(`these files no longer call formatMoney: ${missing.join(", ")} (the refactor should not remove callers)`)
+const bypass = expectedCallers.filter((path) => !callers.has(path) && /Intl\.NumberFormat|toLocaleString\(/.test(files.get(path) ?? ""))
+if (bypass.length > 0) fail(`these files format money themselves instead of using formatMoney: ${bypass.join(", ")}`)
 
 // Hidden inputs through the callers.
 const { invoiceTotal } = await importFrom<{ invoiceTotal: (customer: object, items: object[]) => string }>(workspace, "src/invoice.ts")
@@ -41,6 +45,11 @@ if (refundNote(kenji, 500, "late") !== `Refund of ${money(500, "JPY", "en-US")} 
 const tests = await run(["bun", "test"], workspace)
 if (tests.code !== 0) fail(`bun test fails: ${errorLine(tests.output)}`)
 pass("formatMoney takes an options object and all six callers use it; the suite passes")
+
+/** `source` with block and line comments blanked out (a `//` inside a string is rare enough here to ignore). */
+function withoutComments(source: string) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1")
+}
 
 /** The top-level argument texts of every call `name(...)` in `source` (not its definition). */
 function calls(source: string, name: string): string[][] {

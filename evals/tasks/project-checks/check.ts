@@ -1,9 +1,10 @@
 // The fix the user asks for touches discount.ts; invoice.ts repeats the threshold, so the obvious one-line fix leaves
 // its test failing. The project's declared check (bun test) catches that, whether the agent or the harness runs it.
-import { errorLine, fail, importFrom, pass, requireUnchanged, run, workspaceArg } from "../../grader.ts"
+import { errorLine, fail, importFrom, pass, requireOriginalTestsPass, run, workspaceArg } from "../../grader.ts"
 
 const workspace = workspaceArg()
-await requireUnchanged(import.meta.dir, workspace, ["src/discount.test.ts", "src/invoice.test.ts", ".light-harness/config.json"])
+// The prompt does not forbid touching the tests: adding cases is fine, but the original ones must still pass.
+await requireOriginalTestsPass(import.meta.dir, workspace, ["src/discount.test.ts", "src/invoice.test.ts"])
 const { bulkDiscount } = await importFrom<{ bulkDiscount: (subtotal: number) => number }>(workspace, "src/discount.ts")
 for (const [subtotal, expected] of [[100, 10], [99.99, 0], [100.01, 10], [180, 18], [0, 0]] as const) {
   if (bulkDiscount(subtotal) !== expected) fail(`bulkDiscount(${subtotal}) returned ${bulkDiscount(subtotal)}, expected ${expected}`)

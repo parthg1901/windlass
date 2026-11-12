@@ -1,7 +1,8 @@
-import { fail, importFrom, errorLine, pass, requireUnchanged, run, workspaceArg } from "../../grader.ts"
+import { fail, importFrom, errorLine, pass, requireOriginalTestsPass, run, workspaceArg } from "../../grader.ts"
 
 const workspace = workspaceArg()
-await requireUnchanged(import.meta.dir, workspace, ["src/duration.test.ts"])
+// "The tests are right": the code must pass them as they were. Adding a regression test to the file is fine.
+await requireOriginalTestsPass(import.meta.dir, workspace, ["src/duration.test.ts"])
 const tests = await run(["bun", "test"], workspace)
 if (tests.code !== 0) fail(`bun test still fails: ${errorLine(tests.output)}`)
 const { formatDuration } = await importFrom<{ formatDuration: (ms: number) => string }>(workspace, "src/duration.ts")

@@ -92,3 +92,21 @@ export function errorLine(text: string) {
   const line = text.split("\n").find((candidate) => /error|not ok|\bfail\b|\(fail\)/i.test(candidate) && !/\b0 fail/.test(candidate))
   return line ? line.trim().slice(0, 200) : lastLine(text)
 }
+
+/**
+ * Runs the task's original test files against the finished workspace, each copied next to itself under a name the
+ * agent cannot have used. For tasks where the agent may add tests to an existing file but must not weaken it: the
+ * file itself may change, and the code still has to pass every original test. Fails with the first failing test.
+ */
+export async function requireOriginalTestsPass(taskDir: string, workspace: string, paths: string[]) {
+  const original = await pristine(taskDir)
+  const copies = paths.map((path) => {
+    const text = original.get(path)
+    if (text === undefined) throw new Error(`grader bug: ${path} is not in the task workspace`)
+    return { path: path.replace(/\.test\.ts$/, ".grader-original.test.ts"), text }
+  })
+  await Promise.all(copies.map((copy) => Bun.write(join(workspace, copy.path), copy.text)))
+  const result = await run(["bun", "test", ...copies.map((copy) => `./${copy.path}`)], workspace)
+  await Promise.all(copies.map((copy) => Bun.file(join(workspace, copy.path)).delete()))
+  if (result.code !== 0) fail(`the original tests fail: ${errorLine(result.output)}`)
+}
