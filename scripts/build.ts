@@ -44,7 +44,7 @@
  * Targets are built one at a time.
  */
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, rmSync, statSync } from "node:fs"
 import { basename, dirname, join, relative, resolve } from "node:path"
 import type { BunPlugin } from "bun"
 import { brand } from "../packages/core/src/brand.ts"
@@ -207,10 +207,14 @@ export async function buildTarget(target: Target, outDir: string, git = gitState
       ...(runtime === undefined ? {} : { executablePath: runtime }),
     },
     minify: { syntax: true, whitespace: true },
+    // Embedded in the executable, so that an error's stack and source excerpt name the real files and lines
+    // instead of one minified line (about 2 MB). Bun also writes it beside the executable; that copy is removed.
+    sourcemap: "linked",
     ...(bytecode ? { bytecode: true, format: "esm" as const } : {}),
     plugins: [buildPlugin(stamp, target)],
   })
   if (!result.success) throw new AggregateError(result.logs, `the ${target.id} build failed:\n${result.logs.map(String).join("\n")}`)
+  rmSync(join(outDir, `${basename(ENTRY, ".ts")}.js.map`), { force: true })
   const bytes = statSync(outfile).size
   const sha256 = createHash("sha256").update(await Bun.file(outfile).bytes()).digest("hex")
   return {
