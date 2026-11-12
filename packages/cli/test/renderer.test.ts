@@ -372,6 +372,26 @@ describe("events the core added", () => {
     expect(out).toContain('Reading a.\n\n↳ sent: "Also b.ts" · the agent will see it after the current step\n\n… ts')
   })
 
+  test("a message still waiting when its turn was stopped says so when it goes out with the next one", () => {
+    const exe2 = "exe_2" as never
+    const out = render(
+      stored([
+        event("inbox.enqueued", { messageId: m("u1"), origin: null, delivery: "steer", content: text("Fix a.ts.") }),
+        event("execution.started", { executionId: exe }),
+        event("execution.interrupt_requested", { executionId: exe, reason: "user" }),
+        event("execution.interrupted", { executionId: exe, reason: "user" }),
+        event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("And b.ts.") }),
+        event("execution.started", { executionId: exe2 }),
+        event("inbox.delivered", { messageId: m("u1") }),
+        event("inbox.delivered", { messageId: m("u2") }),
+      ]),
+      { echoPrompts: false },
+    )
+    expect(out).toContain("  1 message still waiting · delivered when work starts again\n")
+    expect(out).toContain('↳ delivered to the agent: "Fix a.ts." · held since the turn was stopped\n')
+    expect(out).not.toContain("And b.ts.")
+  })
+
   test("messages still waiting when a turn is interrupted are counted", () => {
     const out = render(
       stored([

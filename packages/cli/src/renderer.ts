@@ -111,6 +111,8 @@ interface InboxItem {
   /** Admitted while a turn was running (a steer or a queued follow-up), rather than as the prompt that starts one. */
   readonly midTurn: boolean
   readonly origin: string | null
+  /** Still waiting when its turn was stopped: it goes out with the next work, which says so. */
+  waited?: boolean
 }
 
 const SYMBOL = {
@@ -660,14 +662,16 @@ export class PrettyRenderer implements Sink {
       case "inbox.delivered": {
         const item = this.inbox.get(event.data.messageId)
         this.inbox.delete(event.data.messageId)
-        if (item === undefined || !item.midTurn) return
+        if (item === undefined || (!item.midTurn && item.waited !== true)) return
         // The end of spawned work reaching the model is not the user's message: its own line said what it was.
         if (item.origin === "background_command" || item.origin === "subagent_result" || item.origin === "spawn_lost") {
           this.line("info", [seg(`  ${SYMBOL.inbox} `, "magenta"), seg(item.origin === "subagent_result" ? "the subagent's answer reached the agent" : "the result reached the agent", "dim")])
           return
         }
         if (item.origin !== null) return
-        this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg("delivered to the agent: ", "dim"), seg(quote(item.text))])
+        // One that waited since its turn was stopped goes out with the next work: said in full, as nothing else says it.
+        if (item.waited === true) this.lineWrapped([seg(`${SYMBOL.inbox} `, "magenta"), seg("delivered to the agent: ", "dim"), seg(quote(item.text)), seg(" · held since the turn was stopped", "dim")])
+        else this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg("delivered to the agent: ", "dim"), seg(quote(item.text))])
         return
       }
       case "inbox.cancelled": {
@@ -763,6 +767,7 @@ export class PrettyRenderer implements Sink {
         }
         const time = turn === null ? null : formatDuration(event.time - turn.start)
         const waiting = [...this.inbox.values()].filter((item) => item.origin === null).length
+        for (const item of this.inbox.values()) if (item.origin === null) item.waited = true
         const more = waiting === 0 ? [] : [[seg(`  ${plural(waiting, "message")} still waiting · delivered when work starts again`, "dim")]]
         this.summary([seg(`${SYMBOL.stop} `, "yellow"), seg("interrupted", ["yellow", "bold"]), seg(suffix([time]), "dim")], turn, more)
         return
