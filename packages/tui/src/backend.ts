@@ -5,11 +5,12 @@
  * features a backend may lack; the TUI says so instead of offering them.
  */
 import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
+import type { AgentsResult, CompactResult } from "@windlass/acp/extensions"
 import type { DiffResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 
-export type { ApprovalAnswer, ApprovalAsk, DiffResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }
+export type { AgentsResult, ApprovalAnswer, ApprovalAsk, CompactResult, DiffResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }
 
 export type Delivery = "steer" | "queue"
 
@@ -28,6 +29,8 @@ export interface OpenSettings {
   readonly model: string | null
   readonly effort: string | null
   readonly maxSteps: number | null
+  /** The agent a new session starts as, and a resumed one is switched to (`none`: no agent); `null` or absent: the default, or its own. */
+  readonly agent?: string | null
 }
 
 export interface ModelChoice {
@@ -106,8 +109,10 @@ export interface BackendSession {
   interrupt(): void
   revert?(options: RevertOptions): Promise<RevertResult>
   undoRevert?(options: RevertOptions): Promise<RevertResult>
-  /** Switches the model or the effort from the next step boundary, or the approval mode from the next tool call. */
-  setConfig?(id: "model" | "effort" | "approval", value: string): Promise<void>
+  /** Switches the model, the effort or the agent from the next step boundary, or the approval mode from the next tool call. */
+  setConfig?(id: "model" | "effort" | "approval" | "agent", value: string): Promise<void>
+  /** The agents the session can run as, the one in force, and the definitions that could not be used. */
+  agents?(): Promise<AgentsResult>
   /** The choices of a select config option and its current value, as the server last reported them. */
   configChoices?(id: string): { readonly current: string | null; readonly choices: readonly ConfigChoice[] } | null
   /** How tool calls are approved here. */
@@ -118,10 +123,10 @@ export interface BackendSession {
   diff?(params: { readonly executionId?: string; readonly messageId?: string }): Promise<DiffResult>
   /** The session's title as the server has it (its own, or derived from the first message). */
   title?(): Promise<string | null>
-  /** Renames the session, when the server offers it. */
+  /** Renames the session, when the server offers it; resolves with the title as stored. */
   rename?(title: string): Promise<string>
-  /** Compacts the conversation now, when the server offers it. */
-  compact?(): Promise<void>
+  /** Compacts the conversation now, when the server offers it; resolves when it is done with what came of it. */
+  compact?(): Promise<CompactResult>
   /** Another session's stored log (a subagent's, to show its work), also of one this client did not open. */
   storedEvents?(sessionId: string): Promise<readonly EngineEvent[]>
   /** A new session with this one's conversation so far (`copy`: in a copy of the workspace). Nothing is opened. */

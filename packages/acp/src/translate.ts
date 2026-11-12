@@ -335,6 +335,8 @@ export class Translator {
       case "session.archived":
       case "session.unarchived":
       case "history.reverted":
+      // The agent the session runs as: the server sends `config_option_update` for it.
+      case "agent.switched":
       // A subagent's events: the server forwards them on their own (`<prefix>/child`) and puts its questions.
       case "child.event":
         break

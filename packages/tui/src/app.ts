@@ -21,6 +21,7 @@ import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
+import { agentProblemLines, compactText, requestsText } from "./cli.ts"
 import { COPY_NOTE, changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
@@ -570,6 +571,8 @@ export class App {
         return backend.listModels !== undefined && session?.setConfig !== undefined
       case "compact":
         return session?.compact !== undefined
+      case "agent":
+        return session?.agents !== undefined && session.setConfig !== undefined
       case "approval":
         return session?.setConfig !== undefined && session.configChoices?.("approval") !== null && session.configChoices?.("approval") !== undefined
       case "clear-taint":
@@ -637,9 +640,9 @@ export class App {
         case "model":
           return await this.pickModel()
         case "compact":
-          if (this.session?.compact === undefined) return this.say("/compact is not available: the engine has no operation to compact on request (EngineSession.compact)", "warn")
-          this.say("compacting…")
-          return await this.session.compact().catch((error: unknown) => this.say(`/compact failed: ${error instanceof Error ? error.message : String(error)}`, "error"))
+          return await this.compact(rest)
+        case "agent":
+          return await this.pickAgent(rest)
         case "reconnect":
           return await this.reconnect()
         case "approval":
@@ -1148,6 +1151,78 @@ export class App {
       await this.refreshApproval()
     } catch (error) {
       this.say(`/clear-taint failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /**
+   * `/compact`: asks for a compaction now. One that is made is drawn from its
+   * events, with the sizes; what is said here is why there was none, or why
+   * it failed.
+   */
+  private async compact(rest: string): Promise<void> {
+    const session = this.session
+    if (session?.compact === undefined) return this.say(`/compact is not available with this engine (${this.options.backend.label})`, "warn")
+    if (rest !== "") return this.say("/compact takes nothing after it", "warn")
+    try {
+      const said = compactText(await session.compact())
+      if (said !== null) this.say(said.text, said.tone === "warn" ? "warn" : "dim")
+    } catch (error) {
+      this.say(`/compact failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /**
+   * `/agent [name|none]`: the agent the session runs as, from a picker that
+   * says what each may do and which definitions could not be used. The
+   * switch itself is shown from its event, as in a session opened again.
+   */
+  private async pickAgent(rest: string): Promise<void> {
+    const session = this.session
+    if (session?.agents === undefined || session.setConfig === undefined) return this.say(`choosing an agent is not available with this engine (${this.options.backend.label})`, "warn")
+    let listed
+    try {
+      listed = await session.agents()
+    } catch (error) {
+      return this.say(`could not list the agents: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+    if (!listed.available) return this.say("this engine offers no agents", "warn")
+    const problems = agentProblemLines(listed)
+    const named = rest.trim()
+    if (named === "" && listed.agents.length === 0 && listed.current === null) {
+      this.say("no agents are defined here: a definition is a Markdown file in .claude/agents (or your own agents directory) with a name, a description and what the agent may do")
+      if (problems.length > 0) this.showLines(problems, "warn", "!")
+      return
+    }
+    const current = listed.current ?? "none"
+    const chosen =
+      named !== ""
+        ? named
+        : await this.dialog.show({
+            title: "Agent",
+            detail: [
+              [span("The agent this session runs as: its instructions, what it may do, and its model where it names one. Applies from the next step.", "dim")],
+              ...problems.map((line) => [span(`${" ".repeat(line.indent ?? 0)}${line.text}`, line.tone === "warn" ? "warn" : "dim")]),
+            ],
+            items: [
+              { id: "none", label: "no agent", detail: "the session's own instructions, without an agent's restrictions", current: current === "none" },
+              ...listed.agents.map((agent) => ({
+                id: agent.name,
+                label: agent.name,
+                detail: [agent.tag, agent.description, agent.model === null ? null : `model ${agent.model}`, agent.name === listed.default ? "default" : null].filter((part) => part !== null).join(" · "),
+                current: agent.name === current,
+              })),
+            ],
+            filterable: true,
+            footer: "type to filter · Enter choose · Esc keeps it",
+            cancel: null,
+            maxWidth: 110,
+          })
+    if (chosen === null) return
+    if (chosen.toLowerCase() === current.toLowerCase()) return this.say(current === "none" ? "this session runs as no agent already" : `this session runs as the ${current} agent already`)
+    try {
+      await session.setConfig("agent", chosen)
+    } catch (error) {
+      this.say(`/agent: ${error instanceof Error ? error.message : String(error)}`, "warn")
     }
   }
 

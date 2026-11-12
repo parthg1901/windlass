@@ -32,6 +32,8 @@
  */
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@windlass/acp/client"
 import {
+  type AgentsResult,
+  type CompactResult,
   type DiffResult,
   EXT,
   type ForkResult,
@@ -192,7 +194,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
 
 async function openSession(connected: HarnessConnection, request: OpenRequest, stderr: (text: string) => void): Promise<Session> {
   // Who is there to answer, and the user's own mode and unattended behaviour, said when the session is opened.
-  const meta = { model: request.model, effort: request.effort, approval: request.approval ?? null, unattended: request.unattended ?? null, attended: request.attended ?? false }
+  const meta = { model: request.model, effort: request.effort, agent: request.agent ?? null, approval: request.approval ?? null, unattended: request.unattended ?? null, attended: request.attended ?? false }
   const target = request.session
   try {
     if (target.kind === "new") return new AcpSession(await connected.newSession(request.cwd, meta), request.maxSteps)
@@ -334,6 +336,13 @@ class AcpSession implements Session {
     return this.feature(EXT.memoryChange, () => this.session.memoryChange(params))
   }
 
+  agents(): Promise<AgentsResult> {
+    return this.feature(EXT.agents, () => this.session.agents())
+  }
+
+  setAgent(name: string): Promise<void> {
+    return this.feature(EXT.agents, () => this.session.setAgent(name))
+  }
   /** A feature request, refused in one sentence by a server that does not offer it. */
   private async feature<T>(method: string, work: () => Promise<T>): Promise<T> {
     if (!this.session.offers(method)) throw new Error(`this engine does not offer ${method.replace(/^.*\//, "/")} (it may be another version)`)
@@ -348,7 +357,7 @@ class AcpSession implements Session {
   async describe(): Promise<SessionDescription> {
     const [state, events] = await Promise.all([this.session.state(), this.session.connection.storedEvents(this.id)])
     const turns = turnsOf(events)
-    return { title: state.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length, events }
+    return { title: state.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length, events, agent: state.agent ?? null, tasks: state.todos ?? null }
   }
 
   close(): Promise<void> {

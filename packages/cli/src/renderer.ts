@@ -7,7 +7,8 @@
  * - `JsonSink`: every event as one JSON line, nothing else on stdout.
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
-import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
+import { type AgentRecord, type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
+import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
@@ -169,6 +170,10 @@ export class PrettyRenderer implements Sink {
 
   /** The session's turns, as a person counts them: what `/undo` and `/redo` name. */
   private turns = new TurnTracker()
+  /** The agent the session runs as (`agent.switched`), for the words of a call it refuses. */
+  private agent: AgentRecord | null = null
+  /** Calls the agent's restrictions refused, with why in the user's words: said on the call's own line when it settles. */
+  private readonly agentRefusals = new Map<string, string>()
   /** The turns a `history.restored` brings back, read before the tracker forgets that they were undone. */
   private redone: readonly TurnInfo[] = []
   private lastSeq = 0
@@ -384,6 +389,12 @@ export class PrettyRenderer implements Sink {
       case "approval.denied": {
         // Refused without a question. An unattended run says so: nothing waited, and this is what became of the call.
         const needs = event.data.needs.map(describeNeed)
+        // The agent's own rule, not the approval policy: said on the call's line, which follows.
+        if (event.data.agent !== undefined) {
+          const id = key(event.data.messageId, event.data.callId)
+          this.agentRefusals.set(id, agentRefusal(event.data.agent, this.agent?.name === event.data.agent ? this.agent.restrictions : null, this.calls.get(id)?.name ?? "this tool"))
+          return
+        }
         if (event.data.reason === "unattended" && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
         const why =
           event.data.reason === "unattended"
@@ -487,6 +498,8 @@ export class PrettyRenderer implements Sink {
       case "synthetic.appended":
         return this.syntheticAppended(event.data.origin)
       case "instruction.appended": {
+        // An agent's instructions arrive with the switch, whose own line (`agent.switched`, next) says it.
+        if (event.data.source === "agent") return
         const source = sourceLabel(event.data.source)
         if (event.data.fingerprint === null) this.line("info", [seg(`${SYMBOL.note} instructions removed: ${source}`, "dim")])
         else this.line("info", [seg(`${SYMBOL.note} instructions updated (${source}): `, "dim"), seg(flatten(event.data.text), "dim")])
@@ -675,6 +688,14 @@ export class PrettyRenderer implements Sink {
       case "session.created":
         this.settings = event.data.settings
         return
+      case "agent.switched": {
+        // What the session runs as from here on: said once, with what the agent may do.
+        this.agent = event.data.to
+        const said = agentSwitchText(event.data.from, event.data.to)
+        this.lineWrapped([seg(`${SYMBOL.settings} `, "cyan"), seg(said.head), seg(event.data.messageId === null ? "" : " · from the next step", "dim")])
+        if (said.detail !== null) for (const line of wrap(said.detail, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        return
+      }
       case "session.renamed":
       case "session.archived":
       case "session.unarchived":
@@ -774,6 +795,18 @@ export class PrettyRenderer implements Sink {
     const adjacent = call.after === this.lines && this.open.size === 1 && this.open.has(id)
     this.open.delete(id)
     const duration = call.startedAt === null ? null : formatDuration(time - call.startedAt)
+    // Refused by the agent the session runs as: the agent's rule, in the user's words, instead of the text the model got.
+    const refusal = this.agentRefusals.get(id)
+    if (refusal !== undefined) {
+      this.agentRefusals.delete(id)
+      const text = `not run: ${refusal}`
+      if (adjacent) wrap(text, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.notRun} ` : "    ", "yellow"), seg(line, "yellow")]))
+      else {
+        this.lineWithArg("info", [seg(`  ${SYMBOL.notRun} `, "yellow"), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [])
+        for (const line of wrap(text, this.width - 4)) this.line("info", [seg(`    ${line}`, "yellow")])
+      }
+      return
+    }
     // A subagent's answer is prose, said in a few whole lines under its row; its task was said when it started.
     if (call.name === "subagent" && data.outcome === "success" && data.output.trim() !== "") {
       this.line("info", [seg("  "), seg(`${SYMBOL.ok} `, "green"), seg("subagent", "bold"), seg(" answered", undefined), seg(suffix([duration]), "dim")])

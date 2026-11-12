@@ -15,6 +15,8 @@
  */
 import {
   type ChoiceId,
+  currentTodos,
+  describeRestrictions,
   EngineError,
   type EngineSession,
   type Harness,
@@ -23,6 +25,7 @@ import {
   StoreError,
   brand,
   createHarness,
+  restrictionTag,
 } from "@windlass/core"
 import { titleFromEvents } from "@windlass/acp/extensions"
 import { isUndone, turnsOf } from "@windlass/acp/turns"
@@ -84,10 +87,33 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
           const state = session.approval()
           return { mode: state?.policy.mode ?? null, tainted: state?.taint.tainted ?? false, taint: session.projection().session.approval?.taint?.text ?? null }
         },
+        agents: async () => {
+          const listing = session.agents()
+          if (listing === null) return { available: false, agents: [], problems: [], default: null, ignored: [], current: null }
+          return {
+            available: true,
+            agents: listing.agents.map((agent) => ({ name: agent.name, description: agent.description, path: agent.path, scope: agent.root.scope, model: agent.model, effort: agent.effort, restrictions: describeRestrictions(agent.restrictions), tag: restrictionTag(agent.restrictions) })),
+            problems: listing.problems,
+            default: listing.default,
+            ignored: [...listing.ignored],
+            current: session.agent()?.name ?? null,
+          }
+        },
+        setAgent: async (name) => void (await unavailable(async () => session.setAgent(name))),
+        rename: async (title) => unavailable(async () => session.rename(title)),
+        compact: () => session.compact(),
         describe: async () => {
           const events = harness.engine.readEvents(session.id)
           const turns = turnsOf(events)
-          return { title: session.projection().session.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length, events }
+          const projection = session.projection()
+          return {
+            title: projection.session.title ?? titleFromEvents(events),
+            turns: turns.length,
+            undone: turns.filter(isUndone).length,
+            events,
+            agent: session.agent()?.name ?? null,
+            tasks: currentTodos(projection.messages)?.items ?? null,
+          }
         },
         close: () => harness.close(),
       }
@@ -137,7 +163,8 @@ async function sessionFor(harness: Harness, request: OpenRequest): Promise<Engin
   // A model named on the command line is checked before a session is created with it or switched to it.
   if (request.model !== null) await engine.validateSettings(await harness.settingsFor(request.cwd, asked))
   const target = request.session
-  if (target.kind === "new") return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked) })
+  const agent = request.agent ?? null
+  if (target.kind === "new") return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked), ...(agent === null ? {} : { agent }) })
   const id = target.kind === "resume" ? engine.resolveSession(target.id) : engine.latestSession(request.cwd)?.session.id
   if (id === undefined) throw new EngineUnavailable(`there is no session to continue in ${request.cwd}`)
   // A claim left by a process that died or shut down is repaired here. It is worked on again once the user says
@@ -146,6 +173,8 @@ async function sessionFor(harness: Harness, request: OpenRequest): Promise<Engin
   const current = session.projection().session.settings
   if (request.model !== null || request.effort !== null)
     session.setSettings({ model: request.model ?? current.model, reasoningEffort: request.effort ?? current.reasoningEffort })
+  // `--agent` with a session that exists switches it, as `/agent` would.
+  if (agent !== null) session.setAgent(agent)
   return session
 }
 

@@ -15,6 +15,7 @@
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import { brand, versionLine, versionString } from "@windlass/core"
+import { agentLines, compactText, taskLines, tasksProgress } from "./agents.ts"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
 import { recapLines } from "./features.ts"
@@ -89,6 +90,7 @@ const SUBCOMMAND_DEFAULTS: Options = {
   continue: false,
   model: null,
   effort: null,
+  agent: null,
   maxSteps: null,
   approval: null,
   unattended: null,
@@ -182,6 +184,7 @@ export async function run(io: Io): Promise<number> {
       cwd,
       model: options.model,
       effort: options.effort,
+      agent: options.agent,
       maxSteps: options.maxSteps,
       approval: options.approval,
       unattended: options.unattended,
@@ -292,7 +295,7 @@ async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: str
   return runTui({
     cwd,
     target: options.session !== null ? { kind: "resume", id: options.session } : options.continue ? { kind: "continue" } : { kind: "new" },
-    settings: { model: options.model, effort: options.effort, maxSteps: options.maxSteps },
+    settings: { model: options.model, effort: options.effort, maxSteps: options.maxSteps, agent: options.agent },
     env: io.env,
     version: await version(),
     serverCommand: selfCommand(["acp"]),
@@ -408,6 +411,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
             return void approvalMode(session, renderer, found.rest)
           case "diff":
             return void showDiff(session, renderer)
+          case "agent":
+            return void agentCommand(session, renderer, found.rest)
           case "mcp":
           case "skills":
           case "wakeups":
@@ -458,10 +463,12 @@ async function sayOpened(renderer: PrettyRenderer, session: Session, resumed: bo
   // The events the stream will bring are the ones after these: the renderer counts turns from the first.
   if (described != null) renderer.primeTurns(described.events)
   const hint = " · /help lists the commands"
-  if (!resumed || described == null) return renderer.notice(`${resumed ? "resumed" : "new"} session ${session.id}${hint}`)
+  // Which agent it runs as is part of which session this is.
+  const agent = described?.agent == null ? "" : ` · agent ${described.agent}`
+  if (!resumed || described == null) return renderer.notice(`${resumed ? "resumed" : "new"} session ${session.id}${agent}${hint}`)
   const title = described.title === null ? "" : ` "${truncate(flatten(described.title), 50)}"`
   const turns = `${described.turns === 1 ? "1 turn" : `${described.turns} turns`}${described.undone > 0 ? ` (${described.undone} undone)` : ""}`
-  renderer.notice(`resumed session ${session.id}${title} · ${turns}${hint}`)
+  renderer.notice(`resumed session ${session.id}${title} · ${turns}${agent}${hint}`)
   // Where the conversation stands, so the user knows what they are coming back to.
   renderer.printLines(recapLines(described.events))
 }
@@ -537,6 +544,22 @@ async function showDiff(session: Session, renderer: PrettyRenderer): Promise<voi
     renderer.diff(result.files)
   } catch (error) {
     renderer.notice(`/diff failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+  }
+}
+
+/** `/agent [name|none]`: lists the agents and says which one is in force, or switches; the switch itself is shown from its event. */
+async function agentCommand(session: Session, renderer: PrettyRenderer, name: string): Promise<void> {
+  if (session.agents === undefined || session.setAgent === undefined) return renderer.notice("/agent is not available with this engine", "warn")
+  try {
+    if (name === "") return renderer.printLines(agentLines(await session.agents()))
+    if (/\s/.test(name)) return renderer.notice("/agent takes one name, e.g. /agent reviewer (or /agent none)", "warn")
+    const before = (await session.agents()).current
+    await session.setAgent(name)
+    const now = (await session.agents()).current
+    // Nothing is recorded for a switch that changes nothing, so it is said here.
+    if (before === now) renderer.notice(now === null ? "this session runs as no agent already" : `this session runs as the ${now} agent already`)
+  } catch (error) {
+    renderer.notice(`/agent: ${error instanceof Error ? error.message : String(error)}`, "warn")
   }
 }
 

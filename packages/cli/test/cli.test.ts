@@ -101,7 +101,7 @@ describe("prompts and sessions reach the engine", () => {
     const result = await runCli(["--model", "m1", "--effort", "low", "explain", "this"], { engine: () => r.engine })
     expect(result.code).toBe(0)
     expect(r.sent).toEqual(["explain this"])
-    expect(r.opened).toEqual([{ session: { kind: "new" }, cwd: process.cwd(), model: "m1", effort: "low", maxSteps: null, approval: null, unattended: null, attended: false }])
+    expect(r.opened).toEqual([{ session: { kind: "new" }, cwd: process.cwd(), model: "m1", effort: "low", agent: null, maxSteps: null, approval: null, unattended: null, attended: false }])
     // The typed prompt replaces the scripted one; it is not echoed, because the user just typed it.
     expect(result.out.startsWith("∴ thought")).toBe(true)
   })

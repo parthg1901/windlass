@@ -38,8 +38,10 @@ import { readFileSync } from "node:fs"
 import type { EphemeralEvent, HarnessOptions, Need, RevertPlan, RevertResult, RunDecision, StoredEvent } from "@windlass/core"
 import { brand } from "@windlass/core"
 import {
+  type AgentsResult,
   APPROVAL_META,
   type ApprovalStateResult,
+  type CompactResult,
   type DiffParams,
   type DiffResult,
   EXT,
@@ -58,6 +60,7 @@ import {
   type ReplayResult,
   type RevertParams,
   type StateNotification,
+  type TaskItem,
   type TurnNotification,
   type UsageNotification,
 } from "./extensions.ts"
@@ -209,6 +212,10 @@ export interface SessionStateResult {
   readonly archived: boolean
   readonly canUndo: boolean
   readonly canRedo: boolean
+  /** The agent the session runs as; `null`: none (or a server that does not say). */
+  readonly agent?: string | null
+  /** The model's task list as it stands; `null`: it never set one. */
+  readonly todos?: readonly TaskItem[] | null
 }
 
 interface Transported {
@@ -403,6 +410,11 @@ export class HarnessConnection {
   async listModels(): Promise<ModelListing> {
     const listed = await this.request<ModelListing>(EXT.models, {})
     return { defaultModel: listed.defaultModel, models: listed.models.map((model) => ({ ...model, defaultEffort: model.defaultEffort ?? null, contextWindow: model.contextWindow ?? null })) }
+  }
+
+  /** `<prefix>/agents` for a directory: the agents a session started there could run as, and the definitions that could not be used. */
+  listAgents(cwd: string): Promise<AgentsResult> {
+    return this.request<AgentsResult>(EXT.agents, { cwd })
   }
 
   /** `<prefix>/events`: a session's stored log, also of one another process holds. */
@@ -633,7 +645,7 @@ export class ClientSession {
     this.link.agent.notify(methods.agent.session.cancel, { sessionId: this.id }).catch(() => {})
   }
 
-  /** `session/set_config_option`: `model`, `effort` or `approval`. Resolves with the options as they now are. */
+  /** `session/set_config_option`: `model`, `effort`, `approval` or `agent`. Resolves with the options as they now are. */
   async setConfig(configId: string, value: string): Promise<readonly SessionConfigOption[]> {
     const result = await this.link.request<{ configOptions: SessionConfigOption[] }>(methods.agent.session.setConfigOption, { sessionId: this.id, configId, value })
     this.configOptions = result.configOptions
@@ -675,9 +687,19 @@ export class ClientSession {
     return (await this.link.request<{ title: string }>(EXT.rename, { sessionId: this.id, title })).title
   }
 
-  /** `<prefix>/compact`, when the server offers it (`offers(EXT.compact)`). */
-  async compact(): Promise<void> {
-    await this.link.request(EXT.compact, { sessionId: this.id })
+  /** `<prefix>/compact`: compacts the conversation now; resolves when it is done with what came of it (the sizes, or why not). */
+  compact(): Promise<CompactResult> {
+    return this.link.request<CompactResult>(EXT.compact, { sessionId: this.id })
+  }
+
+  /** `<prefix>/agents`: the agents this session can run as, the one it runs as, and the definitions that could not be used. */
+  agents(): Promise<AgentsResult> {
+    return this.link.request<AgentsResult>(EXT.agents, { sessionId: this.id })
+  }
+
+  /** The switch to an agent (`"none"`: to none): the `agent` config option. Its record arrives as the `agent.switched` event. */
+  async setAgent(name: string): Promise<void> {
+    await this.setConfig("agent", name)
   }
 
   /** `<prefix>/mcp`: the session's MCP servers, with their state, tools and where each is configured. */

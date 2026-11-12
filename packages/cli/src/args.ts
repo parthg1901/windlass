@@ -11,6 +11,8 @@ export interface Options {
   readonly continue: boolean
   readonly model: string | null
   readonly effort: string | null
+  /** `--agent <name>`: the agent the session runs as (`none`: no agent); `null`: the configured default, or what a resumed session runs as. */
+  readonly agent: string | null
   /** `--max-steps <n>`: model calls per turn before the final answer without tools; `null` is the engine's default. */
   readonly maxSteps: number | null
   /** `--approval <ask|auto|full>`: when a tool call asks before it runs; `null` is the configuration's (default `auto`). */
@@ -48,7 +50,7 @@ export type Parsed =
   | { readonly kind: "usage"; readonly text: string }
   | { readonly kind: "error"; readonly message: string }
 
-const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--approval", "--unattended", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
+const VALUE_FLAGS = ["--session", "--model", "--effort", "--agent", "--max-steps", "--approval", "--unattended", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
 const APPROVAL_MODES = ["ask", "auto", "full"] as const
 const UNATTENDED_ACTIONS = ["deny", "stop"] as const
 type ValueFlag = (typeof VALUE_FLAGS)[number]
@@ -119,6 +121,7 @@ export function parseArgs(argv: readonly string[]): Parsed {
   const unattended = values["--unattended"] ?? null
   if (unattended !== null && !(UNATTENDED_ACTIONS as readonly string[]).includes(unattended)) return error(`--unattended must be one of: ${UNATTENDED_ACTIONS.join(", ")}`)
   if ((approval !== null || unattended !== null) && values["--demo"] !== undefined) return error("--approval and --unattended do not apply to --demo, which runs no tools")
+  if (values["--agent"] !== undefined && values["--demo"] !== undefined) return error("--agent does not apply to --demo, which plays a script")
   const engine = values["--engine"] ?? "acp"
   if (!(ENGINE_KINDS as readonly string[]).includes(engine)) return error(`--engine must be one of: ${ENGINE_KINDS.join(", ")}`)
   if (values["--engine"] !== undefined && values["--demo"] !== undefined) return error("--engine does not apply to --demo, which plays a script without an engine")
@@ -135,6 +138,7 @@ export function parseArgs(argv: readonly string[]): Parsed {
     continue: flags.has("--continue"),
     model: values["--model"] ?? null,
     effort: values["--effort"] ?? null,
+    agent: values["--agent"] ?? null,
     maxSteps,
     approval: approval as Options["approval"],
     unattended: unattended as Options["unattended"],
@@ -189,6 +193,9 @@ Options:
   -c, --continue         resume the most recent session in this directory
   -m, --model <name>     model to use
   --effort <level>       reasoning effort, e.g. low, medium or high
+  --agent <name>         the agent the session runs as: its instructions, what it may do,
+                         and its model where it names one (none: no agent). A resumed
+                         session is switched to it. /agent lists the ones defined here
   --max-steps <n>        model calls per turn before a final answer without tools
   --approval <mode>      when a tool call asks before it runs (default: auto)
                            ask   reads run; every edit, command and network call asks
@@ -254,6 +261,11 @@ At the prompt (/help lists every command; a /word that is not one is never sent,
                           it overwrites a file edited since by you or another session
   /redo                   bring back what the last /undo took away
   /diff                   the files the last turn changed, with their diffs
+  /agent [name|none]      the agents defined here and the one the session runs as; with a
+                          name, switch to it (from the next step)
+  /rename <title>         give the session a title
+  /compact                compact the conversation now: the older part becomes a
+                          checkpoint; says the sizes, or why there was nothing to compact
   /mcp [approve <name>]   the MCP servers: state, tools, where each is defined; a server
                           this project's configuration names is asked about first
   /skills                 the skills the model can load here, and the ones that failed

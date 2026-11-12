@@ -5,6 +5,7 @@
  * falling back to the model-facing output for tools this file does not know.
  */
 import type { EventData, Json, VerificationOutcome } from "@windlass/core"
+import { TASK_TOOL, tasksOf, tasksProgress } from "./agents.ts"
 import { formatBytes, plural } from "./text.ts"
 
 /** The argument worth showing for a call, from its raw argument text (which may be malformed). */

@@ -50,6 +50,7 @@ import {
   methods,
 } from "@agentclientprotocol/sdk"
 import {
+  type AgentListing,
   EngineError,
   type EngineEvent,
   type EngineSession,
@@ -65,20 +66,26 @@ import {
   type RevertResult,
   type SessionId,
   type SessionSettings,
+  type SessionSummary,
   type StoredEvent,
   StoreError,
   approvalModes,
   brand,
+  currentTodos,
+  describeRestrictions,
   renderReplayReport,
+  restrictionTag,
 } from "@windlass/core"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
 import { compareReplay, renderComparison } from "../../core/src/replay/effects.ts"
 import {
+  type AgentsResult,
   APPROVAL_META,
   type ApprovalRequestMeta,
   type ApprovalStateResult,
   type ClientMeta,
+  type CompactResult,
   type DiffFile,
   type DiffResult,
   type ErrorData,
@@ -94,7 +101,7 @@ import {
   type SubagentRef,
   type SessionState,
   type StateNotification,
-  titleFromEvents,
+  sessionTitle,
 } from "./extensions.ts"
 import { mcpKey, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
@@ -108,7 +115,9 @@ export const SIGN_IN_HINT = `run \`${brand.binary} login\` and finish the ChatGP
 /** The one auth method: the ChatGPT-plan sign-in, which the user completes outside the client. */
 export const AUTH_METHOD_ID = "chatgpt"
 
-export const CONFIG = { model: "model", effort: "effort", approval: "approval" } as const
+export const CONFIG = { model: "model", effort: "effort", approval: "approval", agent: "agent" } as const
+/** The value of the `agent` option that means no agent (the engine's `NO_AGENT`). */
+const NO_AGENT_VALUE = "none"
 const UNATTENDED = ["deny", "stop"] as const
 const DEFAULT_EFFORT_VALUE = "default"
 const LIST_PAGE = 100
@@ -116,10 +125,10 @@ const LIST_PAGE = 100
 const MCP_POLL_MS = 500
 /** How many of the latest turns a `session/load` replays the changed files of. */
 const REPLAYED_TURN_CHANGES = 50
-/** How far into a session's log its first message is looked for, for a derived title. */
-const TITLE_SCAN_EVENTS = 60
-/** Derived titles by session, for the life of the process: a session's first message never changes. */
-const derivedTitles = new Map<string, string>()
+/** How long the answer to a compaction asked for while idle waits for the execution that made it to end. */
+const COMPACT_SETTLE_MS = 2000
+/** How many listings a connection keeps for the pages after their first. */
+const KEPT_LISTINGS = 4
 
 export interface ServeOptions {
   readonly log: Logger
@@ -155,13 +164,13 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
-  openMeta: ["model", "effort", "approval", "unattended", "attended", "children"],
+  openMeta: ["model", "effort", "agent", "approval", "unattended", "attended", "children"],
   /** The permission requests this server sends: the hand-edit question of an undo, and the approval of a tool call (the session's own, or a subagent's). */
   permissionRequests: ["revert", APPROVAL_META],
 } as const
@@ -219,6 +228,12 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.wakeups, parseObject, ({ params }) => wakeList(state.harness, state.view(requireString(params, "sessionId")).session.id))
     .onRequest(EXT.wakeCancel, parseObject, ({ params }) => wakeCancel(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
     .onRequest(EXT.wakeSecret, parseObject, ({ params }) => wakeSecret(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
+    .onRequest(EXT.agents, parseObject, ({ params }) => state.agents(optionalString(params, "sessionId"), optionalString(params, "cwd")))
+    .onRequest(EXT.rename, parseObject, ({ params }) => {
+      if (typeof params.title !== "string") throw RequestError.invalidParams(undefined, "title must be a string")
+      return state.rename(requireString(params, "sessionId"), params.title)
+    })
+    .onRequest(EXT.compact, parseObject, ({ params }) => state.compact(requireString(params, "sessionId")))
     .onRequest(EXT.memory, parseObject, ({ params }) => memoryState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.memoryChange, parseObject, ({ params }) => {
       const action = oneOfOrNull(params.action, ["remember", "retract", "confirm", "reject", "renew"] as const, "action")
@@ -317,7 +332,9 @@ class ConnectionState {
     // A model the client names is checked before a session is created with it, as the command line does.
     if (asked.model !== null) await this.validate(cwd, asked)
     const settings = await this.harness.settingsFor(cwd, asked)
-    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings }))
+    // As the agent the client names; without one, as the default of the user's configuration, if any.
+    const agent = meta?.agent ?? null
+    const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings, ...(agent === null ? {} : { agent }) }))
     applyApproval(session, meta)
     const view = this.attach(session, cwd, session.projection().lastSeq, new Map())
     view.children = meta?.children !== false
@@ -368,11 +385,23 @@ class ConnectionState {
     })
     view.children = meta?.children !== false
     view.syncState(history)
-    // As the command line does on --session and --continue: the model or effort named is switched to, durably.
-    if (asked.model !== null || asked.effort !== null) {
-      const current = session.projection().session.settings
-      session.setSettings({ model: asked.model ?? current.model, reasoningEffort: asked.effort ?? current.reasoningEffort })
+    try {
+      // As the command line does on --session and --continue: the model or effort named is switched to, durably.
+      if (asked.model !== null || asked.effort !== null) {
+        const current = session.projection().session.settings
+        this.engineErrors(() => session.setSettings({ model: asked.model ?? current.model, reasoningEffort: asked.effort ?? current.reasoningEffort }))
+      }
+      // The agent named is switched to, as `--agent` with `--session` asks: recorded as `agent.switched`.
+      const agent = meta?.agent ?? null
+      if (agent !== null) this.engineErrors(() => session.setAgent(agent))
+    } catch (error) {
+      // Refused (an effort the model does not take, an agent that does not exist): the session is not left open here.
+      view.detach()
+      await session.close().catch(() => {})
+      throw error
     }
+    // What the open itself switched (`settings.changed`, `agent.switched`) reaches the client before the answer.
+    if (asked.model !== null || asked.effort !== null || (meta?.agent ?? null) !== null) await view.drained()
     await view.flushed()
     return { configOptions: await this.configOptions(view.settings, view.session) }
   }
@@ -433,6 +462,12 @@ class ConnectionState {
       // The user's own choice for this session; the project's file can still only tighten it.
       view.session.setApproval({ mode: oneOfOrNull(value, approvalModes, "value") ?? "auto" })
       return { configOptions: await this.configOptions(current, view.session) }
+    }
+    if (configId === CONFIG.agent) {
+      // The switch: made now while the session is idle, at the next step boundary while a turn runs. Its record
+      // (`agent.switched`) is what a client shows, and `config_option_update` follows it.
+      this.engineErrors(() => view.session.setAgent(value))
+      return { configOptions: await this.configOptions(view.settings, view.session) }
     }
     const models = await this.catalog.list()
     let next: SessionSettings
@@ -814,19 +849,50 @@ class ConnectionState {
    */
   titleOf(sessionId: string, own: string | null): string | null {
     if (own !== null && own.trim() !== "") return own
-    const known = derivedTitles.get(sessionId)
-    if (known !== undefined) return known
-    const events = (() => {
-      try {
-        return this.harness.engine.readEvents(sessionId as SessionId, { limit: TITLE_SCAN_EVENTS })
-      } catch {
-        return []
-      }
-    })()
-    const title = titleFromEvents(events)
-    // Only a title found is remembered: a session without a message yet gets one later.
-    if (title !== null) derivedTitles.set(sessionId, title)
-    return title
+    try {
+      return sessionTitle(own, this.harness.engine.getSession(sessionId as SessionId)?.firstPrompt ?? null)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * `_<ns>/agents`: the agents a session can run as, as they are now, with
+   * the definitions that could not be used. With `sessionId` (a session open
+   * here) also the one it runs as; with `cwd`, what a session started there
+   * could run as.
+   */
+  agents(sessionId: string | undefined, cwd: string | undefined): AgentsResult {
+    if (sessionId === undefined && cwd === undefined) throw RequestError.invalidParams(undefined, "sessionId or cwd is needed")
+    if (cwd !== undefined && !isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
+    const session = sessionId === undefined ? null : this.requireView(sessionId).session
+    const listing = this.engineErrors(() => (session === null ? this.harness.engine.listAgents(cwd!) : session.agents()))
+    return agentsResult(listing, session === null ? null : (session.agent()?.name ?? null))
+  }
+
+  /** `_<ns>/rename`: the session's title, as the engine stores it (`session.renamed`). */
+  async rename(sessionId: string, title: string) {
+    const view = this.requireView(sessionId)
+    const stored = this.engineErrors(() => view.session.rename(title))
+    // The title reaches the client (`session_info_update`, or the `session.renamed` event) before the answer.
+    await view.drained()
+    return { title: stored }
+  }
+
+  /**
+   * `_<ns>/compact`: the conversation is compacted now, because the user
+   * asks. Answered when it is done, after every event of it, with what came
+   * of it: the sizes, or why nothing was compacted, or why it failed.
+   */
+  async compact(sessionId: string): Promise<CompactResult> {
+    const view = this.requireView(sessionId)
+    const idle = !view.session.working
+    const result = await this.engineErrors(() => view.session.compact())
+    // While idle the compaction runs under an execution of its own, which ends right after: its events come first.
+    // (Briefly: a prompt sent meanwhile carries that execution on, and the answer does not wait for its turn.)
+    if (idle) await Promise.race([view.session.settled(), Bun.sleep(COMPACT_SETTLE_MS)])
+    await view.drained()
+    return result
   }
 
   /** Runs something that may find the session closed in the meantime; that is no error worth a log line. */
@@ -867,6 +933,8 @@ class ConnectionState {
       inbox: projection.inbox.map((item) => ({ messageId: item.messageId, delivery: item.delivery })),
       canUndo: projection.messages.some((message) => message.kind === "user" && message.excluded === null),
       canRedo: session.reverts.length > 0,
+      /** The agent the session runs as (or will from its next step); `null`: none. */
+      agent: view.session.agent()?.name ?? null,
     }
   }
 
@@ -911,7 +979,8 @@ class ConnectionState {
   // ---- shared ----
 
   async configOptions(settings: SessionSettings, session?: EngineSession): Promise<SessionConfigOption[]> {
-    return configOptionsFor(settings, await this.catalog.list(), session?.approval()?.policy.mode ?? null)
+    const agents = session === undefined ? null : agentChoices(session)
+    return configOptionsFor(settings, await this.catalog.list(), session?.approval()?.policy.mode ?? null, agents)
   }
 
   sendUpdate(sessionId: string, update: SessionUpdate): Promise<void> {
@@ -1236,6 +1305,9 @@ class SessionView {
     }
     if (this.connection.fidelity.events) this.queueEvent(item, false)
     for (const output of this.translator.translate(item)) this.handleOutput(output, false, seq)
+    // The switch is durable: the `agent` option now names what the session runs as.
+    if (item.type === "agent.switched")
+      this.enqueue(async () => this.connection.sendUpdate(this.session.id, { sessionUpdate: "config_option_update", configOptions: await this.connection.configOptions(this.settings, this.session) }))
     // The question goes out after the events and updates that lead up to it, so the client can show the call it is about.
     if (item.type === "approval.requested") {
       const data = item.data
@@ -1361,6 +1433,7 @@ function openMeta(meta: unknown): OpenMeta | null {
   return {
     model: text("model"),
     effort: text("effort"),
+    agent: text("agent"),
     archived: value.archived === true,
     approval: oneOfOrNull(value.approval, approvalModes, `_meta.${META.capabilities}.approval`),
     unattended: oneOfOrNull(value.unattended, UNATTENDED, `_meta.${META.capabilities}.unattended`),
@@ -1439,7 +1512,45 @@ function parseRevertParams(raw: unknown): RevertParams {
   }
 }
 
-export function configOptionsFor(settings: SessionSettings, models: readonly ModelEntry[], approval: string | null = null): SessionConfigOption[] {
+/** The agents a session can be switched to, and the one it runs as (`none`: no agent). `null` when the engine offers no agents. */
+function agentChoices(session: EngineSession): { readonly current: string; readonly agents: readonly { readonly name: string; readonly description: string }[] } | null {
+  try {
+    const listing = session.agents()
+    if (listing === null) return null
+    return { current: session.agent()?.name ?? NO_AGENT_VALUE, agents: listing.agents.map((agent) => ({ name: agent.name, description: agent.description })) }
+  } catch {
+    return null
+  }
+}
+
+/** What `<prefix>/agents` answers for a listing of the engine's. */
+function agentsResult(listing: AgentListing | null, current: string | null): AgentsResult {
+  if (listing === null) return { available: false, agents: [], problems: [], default: null, ignored: [], current: null }
+  return {
+    available: true,
+    agents: listing.agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
+      path: agent.path,
+      scope: agent.root.scope,
+      model: agent.model,
+      effort: agent.effort,
+      restrictions: describeRestrictions(agent.restrictions),
+      tag: restrictionTag(agent.restrictions),
+    })),
+    problems: listing.problems.map((problem) => ({ path: problem.path, severity: problem.severity, reason: problem.reason, name: problem.name })),
+    default: listing.default,
+    ignored: [...listing.ignored],
+    current,
+  }
+}
+
+export function configOptionsFor(
+  settings: SessionSettings,
+  models: readonly ModelEntry[],
+  approval: string | null = null,
+  agents: { readonly current: string; readonly agents: readonly { readonly name: string; readonly description: string }[] } | null = null,
+): SessionConfigOption[] {
   const entry = models.find((model) => model.id === settings.model)
   const modelOptions = models.map((model) => ({ value: model.id, name: model.name }))
   if (entry === undefined) modelOptions.unshift({ value: settings.model, name: settings.model })
@@ -1468,6 +1579,26 @@ export function configOptionsFor(settings: SessionSettings, models: readonly Mod
               { value: "ask", name: "Ask", description: "Reads run; every edit, command and network call asks" },
               { value: "auto", name: "Auto", description: "Edits in the workspace and sandboxed commands run; leaving the sandbox asks" },
               { value: "full", name: "Full access", description: "Everything runs without the sandbox and without asking" },
+            ],
+          },
+        ]),
+    // Offered when the engine has agents and there is one to choose (or one in force). A definition that is hidden
+    // or could not be loaded is not a value: `<prefix>/agents` lists those.
+    ...(agents === null || (agents.agents.length === 0 && agents.current === NO_AGENT_VALUE)
+      ? []
+      : [
+          {
+            id: CONFIG.agent,
+            name: "Agent",
+            description: "The agent the session runs as: its instructions, its restrictions, and its model where it names one",
+            category: `_${CONFIG.agent}`,
+            type: "select" as const,
+            currentValue: agents.current,
+            options: [
+              { value: NO_AGENT_VALUE, name: "No agent", description: "The session's own instructions, without an agent's restrictions" },
+              ...agents.agents.map((agent) => ({ value: agent.name, name: agent.name, description: agent.description })),
+              // The one in force stays a value when its definition is gone: the session runs as the record it was given.
+              ...(agents.current !== NO_AGENT_VALUE && !agents.agents.some((agent) => agent.name === agents.current) ? [{ value: agents.current, name: agents.current }] : []),
             ],
           },
         ]),

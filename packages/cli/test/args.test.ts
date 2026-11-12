@@ -20,6 +20,7 @@ describe("parseArgs", () => {
       continue: false,
       model: null,
       effort: null,
+      agent: null,
       maxSteps: null,
       approval: null,
       unattended: null,

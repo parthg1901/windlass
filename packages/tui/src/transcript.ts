@@ -10,8 +10,8 @@
  */
 import { type DiffResult, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
-import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
-import { type EngineEvent, callArgument, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type AgentRecord, type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
+import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, callArgument, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -114,8 +114,11 @@ export type ToolApproval =
   | { readonly state: "asked"; readonly title: string; readonly live: boolean }
   | { readonly state: "allowed"; readonly title: string; readonly choice: string; readonly note: string | null }
   | { readonly state: "declined"; readonly title: string; readonly note: string | null }
-  /** Refused without a question: by the policy, or because nobody was present (`stop`: the run ended with it). */
-  | { readonly state: "denied"; readonly reason: "policy" | "unattended"; readonly needs: readonly string[]; readonly stop: boolean }
+  /**
+   * Refused without a question: by the policy, or because nobody was present (`stop`: the run ended with it). With
+   * `refusal`, by the restrictions of the agent the session runs as: the agent's rule, in the user's words.
+   */
+  | { readonly state: "denied"; readonly reason: "policy" | "unattended"; readonly needs: readonly string[]; readonly stop: boolean; readonly refusal?: string | null }
 
 export interface NoticeRow extends RowBase {
   readonly kind: "notice"
@@ -200,6 +203,8 @@ export interface SessionInfo {
   title: string | null
   model: string | null
   effort: string | null
+  /** The agent the session runs as (`agent.switched`); `null`: none. */
+  agent?: string | null
   /** Untrusted content is in the conversation: where it came from, in a sentence. */
   taint: string | null
   /** A fork: the session it was forked from. */
@@ -242,7 +247,9 @@ export class Transcript {
   readonly rows: Row[] = []
   readonly pending: PendingItem[] = []
   readonly calls: CallUsage[] = []
-  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null, taint: null, forkedFrom: null, inheritedCalls: 0 }
+  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 }
+  /** The record of the agent in force, for the words of a call it refuses. */
+  private agentRecord: AgentRecord | null = null
   readonly activity: Activity = blankActivity()
   /** Bumped on every change. */
   version = 0
@@ -299,7 +306,8 @@ export class Transcript {
     this.rows.length = 0
     this.pending.length = 0
     this.calls.length = 0
-    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, taint: null, forkedFrom: null, inheritedCalls: 0 })
+    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 })
+    this.agentRecord = null
     Object.assign(this.activity, blankActivity())
     for (const map of [this.background, this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
     this.diagnosticsForNext = []
@@ -406,6 +414,8 @@ export class Transcript {
       case "diagnostic": {
         const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind.replace(/_/g, " ")
         this.notice(SYMBOL.unknown, "warn", [span(`${what}: `, "warn"), span(sanitize(event.message))], [], replay, "work")
+        // A definition that could not be used is about the files, not about a model call: no call is marked for it.
+        if (event.kind === "agents") return
         const call = this.activity.call
         if (event.kind !== "prefix_violation" && call !== null) this.callDiagnostics.set(call.messageId, [...(this.callDiagnostics.get(call.messageId) ?? []), event.kind])
         else this.diagnosticsForNext.push(event.kind)
@@ -479,6 +489,14 @@ export class Transcript {
       case "session.renamed":
         this.session.title = event.data.title
         return
+      case "agent.switched": {
+        // What the session runs as from here on: in the panel, and said once with what the agent may do.
+        this.session.agent = event.data.to?.name ?? null
+        this.agentRecord = event.data.to
+        const said = agentSwitchText(event.data.from, event.data.to)
+        this.notice(SYMBOL.settings, "accent", [span(said.head), span(event.data.messageId === null ? "" : " · from the next step", "dim")], said.detail === null ? [] : [[span(said.detail, "dim")]], replay, "session")
+        return
+      }
       case "settings.changed": {
         const previous = { model: this.session.model, effort: this.session.effort }
         this.session.model = event.data.model
@@ -544,7 +562,9 @@ export class Transcript {
       case "approval.denied": {
         const data = event.data
         const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
-        this.touch(row, () => (row.approval = { state: "denied", reason: data.reason, needs: data.needs.map(describeNeed), stop: data.stop }))
+        // Refused by the agent's restrictions: the agent's own rule, not the approval policy.
+        const refusal = data.agent === undefined ? null : agentRefusal(data.agent, this.agentRecord?.name === data.agent ? this.agentRecord.restrictions : null, row.name)
+        this.touch(row, () => (row.approval = { state: "denied", reason: data.reason, needs: data.needs.map(describeNeed), stop: data.stop, refusal }))
         return
       }
       case "taint.noticed":
@@ -646,6 +666,8 @@ export class Transcript {
       case "synthetic.appended":
         return this.synthetic(event.data.origin, replay)
       case "instruction.appended": {
+        // An agent's instructions arrive with the switch, whose own row (`agent.switched`, next) says it.
+        if (event.data.source === "agent") return
         const source = sourceLabel(event.data.source)
         if (event.data.fingerprint === null) this.notice(SYMBOL.note, "dim", [span(`instructions removed: ${source}`, "dim")], [], replay, "work")
         else this.notice(SYMBOL.note, "dim", [span(`instructions updated (${source}): `, "dim"), span(oneLine(event.data.text), "dim")], [], replay, "work")

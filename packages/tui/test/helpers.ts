@@ -149,6 +149,8 @@ export class ScriptSession implements BackendSession {
   setConfig?: BackendSession["setConfig"]
   diff?: BackendSession["diff"]
   rename?: BackendSession["rename"]
+  compact?: BackendSession["compact"]
+  agents?: BackendSession["agents"]
   storedEvents?: BackendSession["storedEvents"]
   fork?: BackendSession["fork"]
   mcp?: BackendSession["mcp"]

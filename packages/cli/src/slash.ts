@@ -40,6 +40,7 @@ export const BUILTIN_COMMANDS: CommandSource = {
     { name: "undo", args: "", description: "go back to before your last message: the files and the conversation", when: "idle" },
     { name: "redo", args: "", description: "bring back what the last /undo took away", when: "idle" },
     { name: "diff", args: "", description: "the files the last turn changed, with their diffs", when: "any" },
+    { name: "agent", args: "[name|none]", description: "the agents defined here and the one this session runs as; with a name, switch to it", aliases: ["agents"], when: "any" },
     { name: "approval", args: "[ask|auto|full]", description: "say the approval mode, or switch it from the next tool call", aliases: ["mode"], when: "any" },
     { name: "clear-taint", args: "", description: "say you trust the untrusted content in this conversation", when: "any" },
     { name: "mcp", args: "[approve <server>]", description: "the MCP servers: state, tools, where each is defined; approve one the project names", when: "any" },

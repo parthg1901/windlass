@@ -54,10 +54,12 @@ export const EXT = {
   notice: `${prefix}/notice`,
   /** Request `DiffParams` → `DiffResult`: the files a turn or a step changed, with bounded per-file patches, from the workspace snapshots. */
   diff: `${prefix}/diff`,
-  /** Request `{ sessionId, title }` → `{ title }`: renames a session. Offered only when the engine can (`EngineSession.rename`). */
+  /** Request `{ sessionId, title }` → `{ title }`: gives a session a title (`session.renamed`); the answer is the title as stored. */
   rename: `${prefix}/rename`,
-  /** Request `{ sessionId }` → `{}`: compacts the conversation now. Offered only when the engine can (`EngineSession.compact`). */
+  /** Request `{ sessionId }` → `CompactResult`: compacts the conversation now, and says what came of it. Answered when it is done. */
   compact: `${prefix}/compact`,
+  /** Request `{ sessionId }` or `{ cwd }` → `AgentsResult`: the agents a session can run as, the definitions that could not be used, and the one in force. */
+  agents: `${prefix}/agents`,
   /** Request `ForkParams` → `ForkResult`: a new session with the history of another up to a step boundary. The fork is not opened; load it to work in it. */
   fork: `${prefix}/fork`,
   /** Request `ReplayParams` → `ReplayResult`: replays a recorded session against a changed baseline. Its progress is the replay session's events, after `replayStarted`. */
@@ -117,6 +119,12 @@ export interface OpenMeta {
   readonly model?: string | null
   /** The reasoning effort; `null` keeps the default. */
   readonly effort?: string | null
+  /**
+   * The agent the session runs as, by name; `"none"` is no agent. On
+   * `session/new`, absent is the default of the user's configuration; on
+   * load and resume it switches the session, and absent keeps what it runs as.
+   */
+  readonly agent?: string | null
   /** Load and resume: open the session even if it is archived (deleted), as `windlass --session <id>` does. */
   readonly archived?: boolean
   /** The approval mode the user chose for this session: `ask`, `auto` or `full`. The project's file can still only tighten it. */
@@ -269,6 +277,8 @@ export interface ErrorData {
     | "session_not_found"
     | "ambiguous_session"
     | "unknown_model"
+    /** The model does not take the reasoning effort; `message` names the ones it accepts. */
+    | "unknown_effort"
     | "auth_required"
     | "schema_mismatch"
     | "execution_failed"
@@ -536,6 +546,55 @@ export interface MemoryChangeResult {
   readonly message: string
 }
 
+/** One agent a session can run as (`<prefix>/agents`). */
+export interface AgentInfo {
+  readonly name: string
+  readonly description: string
+  /** The file that defines it. */
+  readonly path: string
+  /** `project`: from the repository; `config`: a directory the configuration names; `user`: the user's own. */
+  readonly scope: "project" | "config" | "user"
+  /** The model and effort it runs with; `null`: the session's. */
+  readonly model: string | null
+  readonly effort: string | null
+  /** What it may not do, in a sentence or two (the engine's `describeRestrictions`). */
+  readonly restrictions: string
+  /** `read only`, `restricted`, or `null` for an agent without restrictions. */
+  readonly tag: string | null
+}
+
+/** Result of `<prefix>/agents`. `available: false`: this engine offers no agents. */
+export interface AgentsResult {
+  readonly available: boolean
+  /** By name. */
+  readonly agents: readonly AgentInfo[]
+  /** Definitions that were skipped, are hidden by a nearer one of the same name, or were loaded with a warning; `name` when it could be told. */
+  readonly problems: readonly { readonly path: string; readonly severity: "skipped" | "shadowed" | "warning"; readonly reason: string; readonly name: string | null }[]
+  /** The agent a new session runs as when none is named (the user's `agents.default`). */
+  readonly default: string | null
+  /** Settings of the project's file about agents that were not followed. */
+  readonly ignored: readonly string[]
+  /** With `sessionId`: the agent the session runs as (or will from its next step); `null`: none. */
+  readonly current: string | null
+}
+
+/**
+ * Result of `<prefix>/compact`, the engine's own (`EngineSession.compact`):
+ * `compacted` with the sizes the next request was estimated at before and
+ * after, `nothing` when there is nothing worth compacting, `failed` when it
+ * did not complete; the last two say why in `message`.
+ */
+export type CompactResult =
+  | { readonly kind: "compacted"; readonly tokensBefore: number; readonly tokensAfter: number; readonly source: "model" | "repaired" | "fallback"; readonly detail: string | null }
+  | { readonly kind: "nothing"; readonly message: string }
+  | { readonly kind: "failed"; readonly message: string }
+
+/** One item of the model's task list (the `todo` tool). */
+export interface TaskItem {
+  readonly text: string
+  readonly status: "pending" | "in_progress" | "done"
+}
+
 /** The longest derived title, in characters. */
 export const TITLE_LENGTH = 60
 
@@ -555,6 +614,12 @@ export function deriveTitle(message: string): string | null {
   const cut = line.slice(0, TITLE_LENGTH - 1)
   const space = cut.lastIndexOf(" ")
   return `${(space >= TITLE_LENGTH / 2 ? cut.slice(0, space) : cut).replace(/[\s,.;:–-]+$/, "")}…`
+}
+
+/** A session's title: its own, or else derived from the beginning of the first thing the user said in it (`SessionSummary.firstPrompt`). */
+export function sessionTitle(own: string | null, firstPrompt: string | null): string | null {
+  if (own !== null && own.trim() !== "") return own
+  return firstPrompt === null ? null : deriveTitle(firstPrompt)
 }
 
 /** The derived title of a session from the start of its log: its first message from the user (`deriveTitle`), or `null`. */

@@ -32,6 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
+import type { AgentsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
 import type { DiffResult, ForkResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
@@ -108,6 +109,12 @@ export interface OpenRequest {
   readonly model: string | null
   /** Provider-interpreted reasoning effort such as `"low"` or `"high"`; `null` keeps the default. */
   readonly effort: string | null
+  /**
+   * `--agent <name>`: the agent the session runs as (`none`: no agent). A new
+   * session starts as it; a resumed one is switched to it. `null`: a new
+   * session's is the configured default, a resumed one keeps its own.
+   */
+  readonly agent?: string | null
   /**
    * `--max-steps <n>`: the most model calls one turn may make before the loop
    * asks for a final answer without tools (the `step_limit` note). A whole
@@ -251,6 +258,14 @@ export interface Session {
   /** `/memory`, and the user's own changes to notes (`/remember`, `/forget`, `/memory confirm|reject|renew`). */
   memory?(): Promise<MemoryStateResult>
   memoryChange?(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult>
+  /** `/agent`: the agents the session can run as, the one in force, and the definitions that could not be used. */
+  agents?(): Promise<AgentsResult>
+  /** `/agent <name>`: switches the session to that agent (`none`: to none). What happened arrives as the `agent.switched` event. */
+  setAgent?(name: string): Promise<void>
+  /** `/rename <title>`: gives the session a title; resolves with it as stored. */
+  rename?(title: string): Promise<string>
+  /** `/compact`: compacts the conversation now; resolves when it is done with what came of it. */
+  compact?(): Promise<CompactResult>
   /** What the interactive mode says when it opens the session: its title and its turns (`/undo` keeps their count, marked undone). */
   describe?(): Promise<SessionDescription>
   /** Stops anything still running (as a shutdown) and ends `events`. */
@@ -270,6 +285,10 @@ export interface SessionDescription {
   readonly undone: number
   /** The stored log, from which the turns were counted: what `/undo` and `/redo` then name. */
   readonly events: readonly TurnEvent[]
+  /** The agent the session runs as; `null` (or absent): none. */
+  readonly agent?: string | null
+  /** The model's task list as it stands; `null` (or absent): it has none. */
+  readonly tasks?: readonly TaskItem[] | null
 }
 
 /** How long the CLI waits for `Session.close` before it exits anyway. */

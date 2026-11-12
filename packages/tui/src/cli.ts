@@ -24,6 +24,7 @@ export {
   webhookSecretLines,
 } from "../../cli/src/features.ts"
 export { mcpArguments } from "../../cli/src/tools.ts"
+export { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentLines, agentProblemLines, agentRefusal, agentSwitchText, compactText, requestsText, taskLines, tasksOf, tasksProgress } from "../../cli/src/agents.ts"
 export { usageText } from "../../cli/src/renderer.ts"
 export { FakeEngine, type FakeOptions, type FakeSession } from "../../cli/src/fake-engine.ts"
 export { type DemoScenario, demoScenarios, findScenario } from "../../cli/src/demo/scenarios.ts"

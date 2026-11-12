@@ -142,6 +142,8 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
     else if (approval?.state === "declined") lines.push([span(`${INDENT}the agent was told you declined`, "dim")])
     else if (approval?.state === "denied" && approval.reason === "unattended")
       lines.push(...wrapLine([span(`${INDENT}it needs ${approval.needs.join(", ")}${approval.stop ? "; the run ends here" : ""}`, "warn")], columns, [span(INDENT)]))
+    // The agent's rule is on the row itself; the text the model was given says the same to the model.
+    else if (approval?.state === "denied" && approval.refusal != null) return lines
     else if (row.phase === "settled" && row.outcome === "error") for (const detail of detailLines(row.name, settledData(row)).slice(-3)) lines.push([span(`${INDENT}${truncate(detail, columns - INDENT.length)}`, "dim")])
     return lines
   }
@@ -278,6 +280,7 @@ function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: stri
   const data = settledData(row)
   const approval = row.approval
   if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: "not allowed by you" }
+  if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: `not run: ${approval.refusal}` }
   if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }
   switch (row.outcome) {
     case "success":

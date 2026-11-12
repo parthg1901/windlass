@@ -67,6 +67,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   field("dir", session.cwd === null ? "—" : middle(tilde(session.cwd, input.home), inner - 7))
   field("model", session.model ?? "—")
   field("effort", session.effort ?? "default")
+  if ((session.agent ?? null) !== null) field("agent", session.agent!, "accent")
   field("state", stateText(input))
   // Every subagent at work, one line each: what it was asked, and whether it waits for you or works in the background.
   for (const [index, agent] of (input.subagents ?? []).entries())

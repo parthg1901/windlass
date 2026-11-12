@@ -40,11 +40,13 @@ import { EXT, type MemoryChangeParams, type MemoryChangeResult } from "@windlass
 import { type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
+  type AgentsResult,
   type ApprovalHandler,
   type ApprovalInfo,
   type Backend,
   BackendError,
   type BackendSession,
+  type CompactResult,
   type ConfigChoice,
   type Delivery,
   type DiffResult,
@@ -104,7 +106,7 @@ export class AcpBackend implements Backend {
 
   async open(target: OpenTarget, cwd: string, settings: OpenSettings): Promise<BackendSession> {
     const link = await this.connect()
-    const meta = { model: settings.model, effort: settings.effort }
+    const meta = { model: settings.model, effort: settings.effort, agent: settings.agent ?? null }
     try {
       if (target.kind === "new") return new AcpSession(this, await link.newSession(cwd, meta), settings.maxSteps)
       const named = target.kind === "resume" ? await link.resolveTyped(cwd, target.id) : await link.resolve(cwd)
@@ -167,7 +169,8 @@ class AcpSession implements BackendSession {
   readonly id: string
   readonly cwd: string
   readonly events: AsyncIterable<StreamItem>
-  readonly compact?: () => Promise<void>
+  readonly compact?: () => Promise<CompactResult>
+  readonly agents?: () => Promise<AgentsResult>
   readonly rename?: (title: string) => Promise<string>
   readonly fork?: (options: { readonly copy: boolean; readonly throughSeq?: number }) => Promise<ForkInfo>
   readonly storedEvents?: (sessionId: string) => Promise<readonly EngineEvent[]>
@@ -214,6 +217,7 @@ class AcpSession implements BackendSession {
         return { sessionId: forked.sessionId, cwd: forked.cwd, copiedFrom: forked.copiedFrom, title: forked.title }
       }
     if (session.offers(EXT.rename)) this.rename = (title) => this.call(() => session.rename(title))
+    if (session.offers(EXT.agents)) this.agents = () => this.call(() => session.agents())
   }
 
   async send(text: string, delivery: Delivery): Promise<string | null> {
@@ -233,7 +237,7 @@ class AcpSession implements BackendSession {
     return this.call(() => this.session.undoRevert(options))
   }
 
-  async setConfig(id: "model" | "effort" | "approval", value: string): Promise<void> {
+  async setConfig(id: "model" | "effort" | "approval" | "agent", value: string): Promise<void> {
     await this.call(() => this.session.setConfig(id, value))
   }
 
