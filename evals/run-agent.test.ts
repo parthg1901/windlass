@@ -472,12 +472,12 @@ describe("per-task run options and the memory A/B sides", () => {
 
   test("a task's run.contextWindow reaches the agent as the test window; a bad run section is refused", async () => {
     const audit = await (await import("./run-check.ts")).loadTask("audit-every-handler")
-    expect(taskRunEnv(audit)).toEqual({ [TEST_CONTEXT_WINDOW_ENV]: "32000" })
+    expect(taskRunEnv(audit)).toEqual({ [TEST_CONTEXT_WINDOW_ENV]: "26000" })
     expect(taskRunEnv({ ...audit, run: undefined } as never)).toEqual({})
     expect(() => taskRunEnv({ ...audit, run: { contextWindow: 10.5 } } as never)).toThrow("whole number")
     expect(() => taskRunEnv({ ...audit, run: { window: 1 } } as never)).toThrow("unknown run option window")
     await run("nothing", { tasks: ["audit-every-handler"], cli: spy("seen-window") })
-    expect((await Bun.file(join(scratch.dir, "seen-window")).text()).trim().split("\n").at(-1)).toBe("window=32000")
+    expect((await Bun.file(join(scratch.dir, "seen-window")).text()).trim().split("\n").at(-1)).toBe("window=26000")
     await run("nothing", { tasks: ["answer-question"], cli: spy("seen-plain") })
     expect(await Bun.file(join(scratch.dir, "seen-plain")).text()).toBe("none\nwindow=unset\n")
   }, 60_000)

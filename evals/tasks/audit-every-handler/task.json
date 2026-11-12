@@ -5,5 +5,5 @@
   "tags": ["multi-file", "long", "compaction", "conventions"],
   "timeoutSeconds": 900,
   "maxSteps": 45,
-  "run": { "contextWindow": 32000 }
+  "run": { "contextWindow": 26000 }
 }

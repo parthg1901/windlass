@@ -431,6 +431,7 @@ const MORE_CASES: Case[] = [
     },
     pass: true,
   },
+  { task: "due-dates-feature", name: "accepts --overdue in the order the tasks were added", change: (dir) => replace(dir, "src/commands.ts", 'if (args.includes("--overdue")) tasks = tasks.filter(', 'if (args.includes("--overdue")) tasks = all.filter('), pass: true },
   { task: "due-dates-feature", name: "rejects a date check that lets impossible dates roll over", change: (dir) => replace(dir, "src/format.ts", "return date.toISOString().slice(0, 10) === text", "return !Number.isNaN(date.getTime())"), pass: false },
 
   // reconcile-several-bugs: integer cents work as well as Decimal; two of three fixes, or an edited expectation, do not.

@@ -16,10 +16,13 @@ try {
     const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
     return { code, stdout: stdout.split("\n").map((line) => line.trimEnd()).filter((line) => line !== ""), stderr }
   }
+  // The prompt fixes the order of `list`; for `list --overdue` it does not, so its lines are compared as a set.
   const expectList = async (args: string[], want: string[], what: string, today?: string) => {
     const out = await cli(args, today)
     if (out.code !== 0) fail(`${what}: exit ${out.code}: ${out.stderr.trim().slice(0, 120)}`)
-    if (out.stdout.join("\n") !== want.join("\n")) fail(`${what}: got ${JSON.stringify(out.stdout)}, expected ${JSON.stringify(want)}`)
+    const ordered = !args.includes("--overdue")
+    const shape = (lines: string[]) => (ordered ? lines : [...lines].sort()).join("\n")
+    if (shape(out.stdout) !== shape(want)) fail(`${what}: got ${JSON.stringify(out.stdout)}, expected ${JSON.stringify(want)}${ordered ? "" : " in any order"}`)
   }
 
   // An existing file from before due dates.
