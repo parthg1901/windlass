@@ -1,0 +1,8 @@
+{
+  "id": "generated-file-trap",
+  "title": "Add an error code where the obvious file to edit is generated from a JSON source",
+  "prompt": "We need a RATE_LIMITED error for the upload endpoint: HTTP 429, message \"Too many uploads, try again in a minute.\" Add it and make the upload handler return it when a user has more than 20 uploads in the current window.",
+  "tags": ["trap", "generated-code", "feature", "conventions"],
+  "timeoutSeconds": 360,
+  "maxSteps": 18
+}

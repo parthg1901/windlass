@@ -1,0 +1,8 @@
+{
+  "id": "due-dates-feature",
+  "title": "A feature across parsing, storage, ordering and output of a small CLI, with exact behaviour specified",
+  "prompt": "Add due dates to the tasks CLI.\n\n- `add \"<title>\" --due YYYY-MM-DD` stores a due date. A date that isn't a real calendar date (2026-02-30, \"tomorrow\") is rejected: exit code 2, a message on stderr, nothing stored.\n- `list` shows the tasks that have a due date first, earliest due date first, then the ones without, in the order they were added. A task with a due date gets ` (due YYYY-MM-DD)` at the end of its line, except an open task whose due date is before today, which gets ` (overdue YYYY-MM-DD)` instead.\n- `list --overdue` shows only the open overdue tasks.\n\nToday is whatever src/clock.ts says. Existing task files without due dates have to keep working. Add tests for it.",
+  "tags": ["feature", "multi-file", "cli", "harder"],
+  "timeoutSeconds": 600,
+  "maxSteps": 30
+}

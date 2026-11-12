@@ -1,0 +1,9 @@
+{
+  "items": [
+    { "sku": "SCR-0300", "kind": "sale", "qty": 7 },
+    { "sku": "PIN-0077", "kind": "receipt", "qty": 50 },
+    { "sku": "NUT-0450", "kind": "adjustment", "qty": -13 },
+    { "sku": "WSH-0012", "kind": "return", "qty": 25 }
+  ],
+  "next": "page-3.json"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "reconcile-several-bugs",
+  "title": "A report that is wrong for three separate reasons in three modules (pagination, a sign, rounding)",
+  "prompt": "python3 -m inventory.reconcile fixtures/ should print exactly what's in fixtures/expected.txt, but it doesn't. Find out why and fix the code. There may be more than one thing wrong. Don't change anything in fixtures/.",
+  "tags": ["fix", "python", "debugging", "multi-file", "harder"],
+  "timeoutSeconds": 600,
+  "maxSteps": 30
+}

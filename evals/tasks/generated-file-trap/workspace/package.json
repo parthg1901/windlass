@@ -1,0 +1,6 @@
+{
+  "name": "uploads-api",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "bun test", "gen": "bun scripts/gen-errors.ts" }
+}

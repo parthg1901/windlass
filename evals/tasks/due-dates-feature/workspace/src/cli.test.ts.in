@@ -1,0 +1,30 @@
+import { afterEach, beforeEach, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { main } from "./cli.ts"
+
+let dir = ""
+let env: Record<string, string> = {}
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "tasks-"))
+  env = { TASKS_FILE: join(dir, "tasks.json"), TASKS_TODAY: "2026-03-10" }
+})
+afterEach(() => rm(dir, { recursive: true, force: true }))
+
+test("add, list, done", async () => {
+  expect((await main(["add", "Buy", "milk"], env)).stdout).toEqual(["added 1"])
+  await main(["add", "Pay rent"], env)
+  await main(["done", "1"], env)
+  expect((await main(["list"], env)).stdout).toEqual(["[x] 1 Buy milk", "[ ] 2 Pay rent"])
+})
+
+test("an empty list", async () => {
+  expect((await main(["list"], env)).stdout).toEqual(["nothing to do"])
+})
+
+test("usage errors exit 2", async () => {
+  const out = await main(["add"], env)
+  expect(out.code).toBe(2)
+  expect(out.stderr[0]).toContain("needs a title")
+})

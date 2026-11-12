@@ -1,0 +1,8 @@
+[
+  { "code": "BAD_REQUEST", "status": 400, "message": "The request is not valid." },
+  { "code": "UNAUTHENTICATED", "status": 401, "message": "Sign in first." },
+  { "code": "FORBIDDEN", "status": 403, "message": "You cannot do that." },
+  { "code": "NOT_FOUND", "status": 404, "message": "There is nothing here." },
+  { "code": "FILE_TOO_LARGE", "status": 413, "message": "The file is over the 25 MB limit." },
+  { "code": "INTERNAL", "status": 500, "message": "Something went wrong on our side." }
+]

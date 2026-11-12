@@ -1,0 +1,8 @@
+{
+  "id": "read-chart-image",
+  "title": "Read a bar chart image to decide which services to scale",
+  "prompt": "docs/cpu-last-night.png is the peak CPU per service from last night. In deploy/services.json, set scaleUp to true for the service that peaked highest and scaleDown to true for the one that peaked lowest. Leave everything else as it is.",
+  "tags": ["image", "config", "read-only-answer"],
+  "timeoutSeconds": 240,
+  "maxSteps": 12
+}

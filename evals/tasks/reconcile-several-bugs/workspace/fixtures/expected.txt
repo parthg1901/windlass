@@ -1,0 +1,8 @@
+SKU        EXPECTED  COUNTED   DIFF
+BLT-0001        101      101     +0
+NUT-0450        987      987     +0
+PIN-0077         39       39     +0
+SCR-0300         93       92     -1
+WSH-0012       1225     1225     +0
+mismatches: 1
+valuation: 204.91

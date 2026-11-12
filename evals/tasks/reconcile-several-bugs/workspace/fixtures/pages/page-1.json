@@ -1,0 +1,9 @@
+{
+  "items": [
+    { "sku": "BLT-0001", "kind": "sale", "qty": 20 },
+    { "sku": "NUT-0450", "kind": "receipt", "qty": 200 },
+    { "sku": "WSH-0012", "kind": "sale", "qty": 300 },
+    { "sku": "BLT-0001", "kind": "return", "qty": 3 }
+  ],
+  "next": "page-2.json"
+}

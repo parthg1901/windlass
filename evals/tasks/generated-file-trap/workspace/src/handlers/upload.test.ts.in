@@ -1,0 +1,16 @@
+import { beforeEach, expect, test } from "bun:test"
+import { handleUpload, uploadsInWindow } from "./upload.ts"
+
+beforeEach(() => uploadsInWindow.clear())
+
+test("stores a file", () => {
+  expect(handleUpload({ user: "ada", name: "a.png", bytes: 10 })).toEqual({ status: 200, body: { stored: "a.png" } })
+})
+
+test("rejects a file over the limit", () => {
+  expect(handleUpload({ user: "ada", name: "a.png", bytes: 26 * 1024 * 1024 }).status).toBe(413)
+})
+
+test("needs a user", () => {
+  expect(handleUpload({ user: null, name: "a.png", bytes: 10 }).status).toBe(401)
+})

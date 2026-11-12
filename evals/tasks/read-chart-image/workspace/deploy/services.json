@@ -1,0 +1,9 @@
+{
+  "region": "eu-west",
+  "services": [
+    { "name": "storefront", "dashboardLabel": "WEB", "replicas": 4, "cpu": "500m", "scaleUp": false, "scaleDown": false },
+    { "name": "public-api", "dashboardLabel": "API", "replicas": 3, "cpu": "1000m", "scaleUp": false, "scaleDown": false },
+    { "name": "scheduler", "dashboardLabel": "CRON", "replicas": 2, "cpu": "250m", "scaleUp": false, "scaleDown": false },
+    { "name": "queue-worker", "dashboardLabel": "WORKER", "replicas": 6, "cpu": "1000m", "scaleUp": false, "scaleDown": false }
+  ]
+}
