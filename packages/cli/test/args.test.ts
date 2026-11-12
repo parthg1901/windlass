@@ -88,6 +88,8 @@ describe("parseArgs", () => {
     for (const line of ["  0    done", "  1    failed", "  2    usage error", "  3    done, but the project's checks still fail and were left unresolved", "  130  interrupted (Ctrl-C)", "  141  output closed", "  143  terminated (SIGTERM)"])
       expect(helpText()).toContain(line)
     expect(helpText()).toContain('data.verification.status is "unresolved"')
+    // The commands for running work, and every form of /wakeups.
+    for (const command of ["/stop [<number>]", "/watch <id> <text>", "/wakeups [add|cancel|secret …]"]) expect(helpText()).toContain(`  ${command} `)
     // Both session commands are listed.
     expect(helpText()).toMatch(/^  \/undo {2,}go back to before your last message/m)
     expect(helpText()).toMatch(/^  \/redo {2,}bring back what the last \/undo took away/m)

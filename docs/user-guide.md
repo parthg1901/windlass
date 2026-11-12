@@ -290,7 +290,7 @@ is sent as typed. Commands of your own are files: [commands.md](commands.md).
 | `/hooks [approve <hook>]` | the hooks, when each runs and its state; approves one the project names | yes |
 | `/lsp [approve <server>]` | the language servers that add diagnostics to edits; approves one the project names | yes |
 | `/skills` | the skills the model can load here | yes |
-| `/wakeups [cancel\|secret <id>]` | the session's wake-ups; cancels one, shows a webhook's secret | yes |
+| `/wakeups [add\|cancel\|secret …]` | the session's wake-ups; adds one of your own (`/wakeups add` shows the forms), cancels one, shows a webhook's secret | yes |
 | `/memory [confirm\|reject\|renew\|forget <id>]` | the notes later sessions are given, and the ones waiting for you | yes |
 | `/remember [--me] <text>`, `/forget <id>` | save a note, retract one (memory is off unless turned on) | yes |
 | `/stop [<number>]` | stops one tool call that is running and lets the turn go on; without a number, lists the running calls | yes |

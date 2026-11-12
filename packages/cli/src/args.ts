@@ -244,6 +244,11 @@ Interactive keys:
 While the agent works:
   type and press Enter    sent at once; the agent sees it after the current step
   /queue <message>        held until the turn is done (its checks have run), then delivered
+  /stop [<number>]        stop one running tool call and let the turn go on; with several
+                          running, /stop alone lists them by number
+  /watch <id> <text>      tell the agent when the background command <id> prints a
+                          line with that text; /watch lists the watches, and
+                          /watch remove <id> removes one
   /exit                   leave (the running work is stopped as a shutdown)
 
 When a tool call needs your approval (interactive mode):
@@ -278,7 +283,8 @@ At the prompt (/help lists every command; a /word that is not one is never sent,
   /lsp [approve <name>]   the language servers that add diagnostics to the agent's edits:
                           state, the files each serves, where it is defined
   /skills                 the skills the model can load here, and the ones that failed
-  /wakeups [cancel|secret <id>]  this session's wake-ups; a webhook's secret
+  /wakeups [add|cancel|secret …]  this session's wake-ups; add one of your own
+                          (/wakeups add shows the forms), cancel one, a webhook's secret
   /memory, /remember <text>, /forget <id>  notes for later sessions (memory is off
                           unless turned on; /memory says how)
 
