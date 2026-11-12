@@ -1,12 +1,11 @@
 /**
  * Small wording, each where a user read it wrong: counts in the singular and
  * the plural, an undo that removed files, the help's columns under any
- * binary name, wake-up times on the user's clock, `/compact` with nothing to
- * compact, and the replay comparison's counts.
+ * binary name, wake-up times on the user's clock, and `/compact` with nothing
+ * to compact.
  */
 import { describe, expect, test } from "bun:test"
 import { brand, event } from "@windlass/core"
-import { comparisonWords } from "@windlass/acp"
 import { compactText, firstSentence } from "../src/agents.ts"
 import { helpText } from "../src/args.ts"
 import { restoredFiles } from "../src/commands.ts"
@@ -72,19 +71,5 @@ describe("/compact with nothing to compact", () => {
     // A failure keeps all of its reason; a compaction that was made is drawn from its events.
     expect(compactText({ kind: "failed", message: "The compaction was interrupted; the conversation is unchanged." })).toEqual({ text: "The compaction was interrupted; the conversation is unchanged.", tone: "warn" })
     expect(compactText({ kind: "compacted", tokensBefore: 9000, tokensAfter: 3000, source: "model", detail: null })).toBeNull()
-  })
-})
-
-describe("the replay comparison", () => {
-  test("no act on either side is said as that, and one read is one read", () => {
-    const rendered = ["compared on what it did (reads ignored)", "  side effects   the same 0 acts as the recording", "  lenient        would have stayed on the recording (1 reads answerable from the recording, 0 not)", "  files          the same as the recording's at its end"].join("\n")
-    const said = comparisonWords(rendered)
-    expect(said).toContain("  side effects   none on either side: the recording changed nothing, and neither did the replay\n")
-    expect(said).toContain("(1 read answerable from the recording, 0 not)")
-    expect(said).not.toContain("0 acts")
-    expect(said).not.toContain("1 reads")
-    // Counts that read right are left as the engine wrote them.
-    const plural = rendered.replace("the same 0 acts", "the same 3 acts").replace("1 reads", "12 reads")
-    expect(comparisonWords(plural)).toBe(plural)
   })
 })

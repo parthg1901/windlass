@@ -177,7 +177,8 @@ describe("as a process", () => {
     expect(same.out).toContain("(2 model calls)")
     // The comparison that carries the signal, as scripts/replay.ts prints it.
     expect(same.out).toContain("compared on what it did (reads ignored)")
-    expect(same.out).toContain("  side effects   ")
+    // The engine's own words, counts included: one act is "1 act".
+    expect(same.out).toContain("  side effects   the same 1 act as the recording\n")
     expect(same.out).toContain("  files          ")
     expect(readFileSync(join(at.workspace, "b.txt"), "utf8")).toBe("bee\n")
 
