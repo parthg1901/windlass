@@ -7,8 +7,8 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { EngineError, type StoredEvent } from "@light-harness/core"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { EngineError, type StoredEvent } from "@windlass/core"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { revertable } from "../src/commands.ts"
 import { type EngineEvent, EngineUnavailable, type Session } from "../src/engine.ts"
 import { createRealEngine } from "../src/real-engine.ts"
@@ -22,7 +22,7 @@ afterAll(() => {
 })
 
 function place() {
-  const root = mkdtempSync(join(tmpdir(), "lh-cli-real-"))
+  const root = mkdtempSync(join(tmpdir(), "wl-cli-real-"))
   scratch.push(root)
   const workspace = join(root, "project")
   mkdirSync(workspace)

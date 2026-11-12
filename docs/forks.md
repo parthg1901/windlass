@@ -10,11 +10,11 @@ other. Everything on this page was run against the program with a scripted model
 In the project, fork the most recent session there, then continue in the fork:
 
 ```sh
-lh fork
-lh --session ses_da7131868a3c "try it with a regular expression instead"
+windlass fork
+windlass --session ses_da7131868a3c "try it with a regular expression instead"
 ```
 
-`lh fork` prints the new session and how to continue in it:
+`windlass fork` prints the new session and how to continue in it:
 
 ```text
 Forked ses_f808227c38aa09907cd80c89 after its latest step.
@@ -22,8 +22,8 @@ New session: ses_da7131868a3c5d6dd01028a0 "start a build in the background (fork
 It works in the same directory as the original, /home/me/proj: both sessions change the same files.
 
 Continue in the fork:
-  lh --session ses_da7131868a3c5d6dd01028a0 "<your next message>"
-  lh tui --session ses_da7131868a3c5d6dd01028a0
+  windlass --session ses_da7131868a3c5d6dd01028a0 "<your next message>"
+  windlass tui --session ses_da7131868a3c5d6dd01028a0
 ```
 
 In the full-screen interface, `/fork` does the same for the session on screen and switches to the fork; `/fork copy`
@@ -32,17 +32,17 @@ session without one there is nothing to carry over, and it says so. `/sessions` 
 start of its ID and of the one it was forked from, and the directory it works in when that is a copy elsewhere; a
 fork's panel counts its own model calls, with the inherited ones on a line of their own.
 
-`--session` and `lh fork <session>` take an ID, its start, or its start without `ses_`; a start that names one
+`--session` and `windlass fork <session>` take an ID, its start, or its start without `ses_`; a start that names one
 session of the current directory picks it even when other directories have sessions that start the same. With
 `--list-sessions`, `--session` narrows the listing to the sessions that start so.
 
 ## Options
 
 ```sh
-lh fork ses_f808 --through 7
-lh fork --copy --title "try a copy"
-lh fork --copy-to /home/me/proj-experiment -m gpt-6-luna --effort low
-lh fork --json
+windlass fork ses_f808 --through 7
+windlass fork --copy --title "try a copy"
+windlass fork --copy-to /home/me/proj-experiment -m gpt-6-luna --effort low
+windlass fork --json
 ```
 
 | Option | What |
@@ -57,14 +57,14 @@ lh fork --json
 | `--cwd <dir>` | the directory whose most recent session is forked |
 | `--json` | print the new session as one JSON object: `sessionId`, `parentSessionId`, `throughSeq`, `cwd`, `copiedFrom`, `title`, `model`, `effort` |
 
-The event numbers for `--through` are the `seq` of each event in `lh --json` output (see
+The event numbers for `--through` are the `seq` of each event in `windlass --json` output (see
 [event-log.md](event-log.md)). A wrong one:
 
 ```text
-lh: seq 9 of session ses_f808227c38aa09907cd80c89 is inside a step: a session is forked at a step boundary (the nearest one before it is seq 7)
+windlass: seq 9 of session ses_f808227c38aa09907cd80c89 is inside a step: a session is forked at a step boundary (the nearest one before it is seq 7)
 ```
 
-`lh fork` needs no model call, but it starts the engine like every subcommand, so it needs a sign-in.
+`windlass fork` needs no model call, but it starts the engine like every subcommand, so it needs a sign-in.
 
 ## The workspace
 
@@ -73,14 +73,14 @@ nothing stops that, each session keeps its own undo history, and neither's `/und
 without asking.
 
 **With `--copy`** (or `--copy-to`, or `/fork copy`) the fork gets a directory of its own, by default
-`~/.local/share/light-harness-work/workspaces/<fork's session id>`. It holds what an undo snapshot holds: the files
+`~/.local/share/windlass-work/workspaces/<fork's session id>`. It holds what an undo snapshot holds: the files
 of the workspace as they are now if you fork the latest point of an idle session (your uncommitted edits included),
 otherwise as they were at the fork point. It does not hold ignored files, large untracked files, nested
 repositories, or `.git`: **the copy is not a git repository**, so git commands and a subagent's `worktree` do not
-work in it. `lh fork` and `/fork copy` say so when they make it, with what follows: commands that need installed
+work in it. `windlass fork` and `/fork copy` say so when they make it, with what follows: commands that need installed
 dependencies (and the project's checks) fail there until they are installed in the copy. At its first step the model
 is told the working directory changed. A fork in a copy is listed by
-`lh --list-sessions` in the copy's directory, not in the original's.
+`windlass --list-sessions` in the copy's directory, not in the original's.
 
 ## What a fork has and has not
 
@@ -97,6 +97,6 @@ A fork's log holds only its own events and reads the earlier ones from the origi
 ## Not yet
 
 - **A fork whose original is gone cannot go on.** If the original session's file is deleted or moved, the fork is
-  still listed, but a new message to it fails: `lh` prints only `lh: Internal error` (exit code 1);
+  still listed, but a new message to it fails: `windlass` prints only `windlass: Internal error` (exit code 1);
   `--engine direct` shows the reason, `the history inherited from session <id> cannot be read: <file> is missing`.
-- **No fork from the line interface's prompt**: use `lh fork`, or `/fork` in `lh tui`.
+- **No fork from the line interface's prompt**: use `windlass fork`, or `/fork` in `windlass tui`.

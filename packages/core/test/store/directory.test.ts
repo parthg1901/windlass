@@ -23,7 +23,7 @@ afterAll(() => {
 })
 
 function dataDir() {
-  const directory = mkdtempSync(join(tmpdir(), "lh-directory-"))
+  const directory = mkdtempSync(join(tmpdir(), "wl-directory-"))
   directories.push(directory)
   return directory
 }

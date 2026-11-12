@@ -295,7 +295,7 @@ function handTrace(calls: readonly { readonly blocks: readonly object[]; readonl
         ...(call.fidelity === "usage-only" ? {} : { request: { blocks: call.blocks } }),
         usage: { input_tokens: 3000 + index * 300 - call.read, cache_read_tokens: call.read, cache_write_tokens: null, output_tokens: 10 },
         ...(call.hints ? { hints: call.hints } : {}),
-        x_light_harness: { ordinal: index, message_id: `msg_${index + 1}`, attempt: 1, purpose: "step", outcome: "ok", verified: call.fidelity !== "usage-only", ...(call.reason ? { unverified_reason: call.reason } : {}), params_omitted: [] },
+        x_windlass: { ordinal: index, message_id: `msg_${index + 1}`, attempt: 1, purpose: "step", outcome: "ok", verified: call.fidelity !== "usage-only", ...(call.reason ? { unverified_reason: call.reason } : {}), params_omitted: [] },
       }),
     )
     .join("\n")

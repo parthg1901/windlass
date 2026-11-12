@@ -8,7 +8,7 @@ until they are needed. Everything on this page was run against the program with 
 
 ## The smallest working example
 
-In your project, create `.light-harness/skills/release-notes/SKILL.md`:
+In your project, create `.windlass/skills/release-notes/SKILL.md`:
 
 ```markdown
 ---
@@ -18,10 +18,10 @@ description: How to write release notes for this project. Use when asked for rel
 Write one line per change, newest first, in the past tense.
 ```
 
-Then give `lh` a task in that project:
+Then give `windlass` a task in that project:
 
 ```sh
-lh "write release notes for the last three commits"
+windlass "write release notes for the last three commits"
 ```
 
 At the first step you see `· instructions updated (skills): Skills you can load: ...`, and when the model decides the
@@ -32,10 +32,10 @@ skill applies, `▸ skill release-notes`, then its work. Nothing else is needed:
 Searched in this order; when two skills have the same name, the first one found wins:
 
 1. In the working directory and each directory above it, up to the repository root (outside a repository, the
-   working directory alone): `.light-harness/skills/`, `.agents/skills/` and `.claude/skills/`. Skills written for
+   working directory alone): `.windlass/skills/`, `.agents/skills/` and `.claude/skills/`. Skills written for
    other agents work unchanged.
 2. The directories listed in `skills.paths` in your own configuration file.
-3. Your own skills, `~/.config/light-harness/skills/` (`$XDG_CONFIG_HOME/light-harness/skills/` when that is set),
+3. Your own skills, `~/.config/windlass/skills/` (`$XDG_CONFIG_HOME/windlass/skills/` when that is set),
    for every project.
 
 Each skill is a directory holding a `SKILL.md`. It may sit up to three levels below one of these directories, so you
@@ -104,8 +104,8 @@ left out the same way: `⚠ skills: The skill at <path> is hidden by another ski
 
 ## Listing them: /skills
 
-`/skills` (in `lh` and `lh tui`) lists the skills of the session's directory as the model would be given them now:
+`/skills` (in `windlass` and `windlass tui`) lists the skills of the session's directory as the model would be given them now:
 each with its description and the file it comes from (this project, `skills.paths`, or your own skills), then the
 ones hidden by a skill of the same name, then the ones that could not be loaded, each with its full path and the
-reason. A skill you fix is picked up at the next message. An editor gets the same list from `_light-harness/skills`
+reason. A skill you fix is picked up at the next message. An editor gets the same list from `_windlass/skills`
 ([acp.md](acp.md)).

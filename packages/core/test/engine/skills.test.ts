@@ -27,7 +27,7 @@ const answer = (text: string) => [script.text(text), U]
 
 /** A real project directory with these skill files, and an empty directory for the user's own. */
 function project(skills: Record<string, string> = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-skills-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-skills-")))
   made.push(root)
   const cwd = join(root, "repo")
   mkdirSync(join(cwd, ".git"), { recursive: true })

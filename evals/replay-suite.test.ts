@@ -15,7 +15,7 @@ import { snapshotOfCopy } from "../scripts/replay.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../packages/core/src/testing/fake-provider.ts"
 import { describeChange, fisherExact, formatSuite, readRuns, runReplaySuite, verdict } from "./replay-suite.ts"
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-replay-suite-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-replay-suite-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const call = (name: string, input: Record<string, string>) => script.toolCall("call_1", name, input)

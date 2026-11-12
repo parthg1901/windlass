@@ -18,7 +18,7 @@ const dirs: string[] = []
 const registries: LspRegistry[] = []
 
 export function tempDir(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "lh-lsp-")))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "wl-lsp-")))
   dirs.push(dir)
   return dir
 }

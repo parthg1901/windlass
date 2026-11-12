@@ -1,6 +1,6 @@
 /**
  * `fork` and `replay` as a user runs them: the CLI as a real process with
- * `lh acp` as its child, a scripted model (each process plays its script
+ * `windlass acp` as its child, a scripted model (each process plays its script
  * from the start) and a temporary data directory. A fork is listed and can
  * be continued with `--session`; a replay of a scripted recording prints
  * its progress and the report.
@@ -9,16 +9,16 @@ import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SCRIPT_ENV } from "@light-harness/acp"
-import { brand } from "@light-harness/core"
+import { SCRIPT_ENV } from "@windlass/acp"
+import { brand } from "@windlass/core"
 import { parseArgs } from "../src/args.ts"
-import { FakeProvider } from "@light-harness/core/testing"
+import { FakeProvider } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { CLI, runCli } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-fork-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-fork-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 let scripts = 0

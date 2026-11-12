@@ -1,9 +1,9 @@
 ---
 name: harness-testing
-description: How to test light-harness like a user, headless. Use before calling any wave or feature done, when a live ChatGPT-plan request is needed, or when sign-in fails.
+description: How to test Windlass like a user, headless. Use before calling any wave or feature done, when a live ChatGPT-plan request is needed, or when sign-in fails.
 ---
 
-# Testing light-harness headless
+# Testing Windlass headless
 
 Unit tests prove the pieces; this skill is for proving the product. Run the real entry points end to end and read the output as a user would. Add to this file whenever a test run teaches something (a failure mode, a slow path, a trick that saved time).
 
@@ -21,7 +21,7 @@ bun scripts/login.ts status     # account, client ID, scopes, minutes until the 
 bun scripts/login.ts ping       # lists models, then one "Hello, world!" request with usage and event counts
 ```
 
-Credentials are at `~/.local/share/light-harness/auth.json` (mode 0600). The access token lasts an hour and refreshes itself on use; the refresh token lasts 30 days and rotates on every refresh.
+Credentials are at `~/.local/share/windlass/auth.json` (mode 0600). The access token lasts an hour and refreshes itself on use; the refresh token lasts 30 days and rotates on every refresh.
 
 ## Signing in again (remote machine)
 
@@ -87,11 +87,11 @@ Reading a result:
 - Byte-for-byte file comparisons differ for equivalent work (reordered YAML entries, an equivalent formula, prose notes): 12 of 20 unchanged replays differed in bytes while 0 of 20 changed other files.
 - A replay that answered without running a tool leaves an empty `<data dir>-work/replays/<id>` behind; nothing removes it yet.
 
-## Scripted model (`LH_ACP_SCRIPT`) gotchas
+## Scripted model (`WINDLASS_ACP_SCRIPT`) gotchas
 
 - The script is shared by a parent and its subagents and consumed in call order. Keep one subagent per step; parallel children race for the responses.
 - Each process plays its script from the start: the `fork` subcommand needs no responses, the `replay` subcommand needs the recording's responses again.
-- With a throwaway `XDG_DATA_HOME` there is no sign-in, and every subcommand that starts the server needs either the sign-in or `LH_ACP_SCRIPT`, `fork` included although it calls no model.
+- With a throwaway `XDG_DATA_HOME` there is no sign-in, and every subcommand that starts the server needs either the sign-in or `WINDLASS_ACP_SCRIPT`, `fork` included although it calls no model.
 - To reproduce "session in use" after a kill: put a command with `trap '' TERM` in the scripted turn, `kill -9` the CLI, then run `--continue` within 5 s.
 - In a git worktree, set `PREFIXLENS_DIR=/home/ubuntu/projects/prefixlens`: the prefix gate and the eval classifier look for prefixlens beside the repository and skip silently when it is not there.
 
@@ -101,7 +101,7 @@ Reading a result:
 - `evals/dogfood/mcp-server.ts` is a user-style stdio server (legacy handshake, tools with answers the model cannot guess, `--log` of every request) and `mcp-config.ts` writes it into a throwaway user config (`--user <dir>` with `XDG_CONFIG_HOME=<dir>`) or a project config. The server's log is the proof of whether it started and what it received.
 - A server named by the PROJECT's config file is not started until the user approves it; only a server in the user's file starts by itself. Point `XDG_CONFIG_HOME` at a throwaway directory to give a run its own user config; the sign-in stays in the data directory.
 - A skill in the workspace (`.claude/skills/<name>/SKILL.md`) shows in the CLI as `· instructions updated (skills)` at the first step, then `▸ skill <name>`. Checked live: 3 requests, 3 full-request records, one provider-side miss.
-- Wake-ups fire only in a process whose engine was told to run them (`engine.wake.run`). As of 2026-11-12 no client passes it, the `lh acp` child of the CLI and the TUI included: a wake-up is created and never fires. Cancel every wake-up a test creates (`wake_cancel`, interactively: unattended it is refused as "writing files"), or it will fire into that session, at a cost, once a process runs the scheduler.
+- Wake-ups fire only in a process whose engine was told to run them (`engine.wake.run`). As of 2026-11-12 no client passes it, the `windlass acp` child of the CLI and the TUI included: a wake-up is created and never fires. Cancel every wake-up a test creates (`wake_cancel`, interactively: unattended it is refused as "writing files"), or it will fire into that session, at a cost, once a process runs the scheduler.
 - A scripted turn can finish before an `await fetch()` in the test returns: take the event index before the request.
 - `afterEach` in a shared test helper runs only for the first test file that imports it; register clean-up in each file.
 - The frozen tool list has 19 tools since this pass (13 before); the first request of a session is about 5,000 tokens.
@@ -109,7 +109,7 @@ Reading a result:
 ## The line CLI after the first-user fixes (2026-11-12)
 
 - `--json` ends each turn with a `{"type":"cli.summary",…}` line (steps, time, usage, cached share): the engine's last event is the line before it (`.at(-2)`). The eval runner counts the line under `unknownEvents`; that is information, not a failure.
-- `LH_ACP_SCRIPT` accepts every `--model`, so an unknown-model test needs an in-process harness with `engine.listModels`.
+- `WINDLASS_ACP_SCRIPT` accepts every `--model`, so an unknown-model test needs an in-process harness with `engine.listModels`.
 - `export XDG_DATA_HOME=…` in one tool call does not carry to the next: set it inline on each command, or a "signed out" check quietly uses the real sign-in.
 - A first word of `/<letters>` is taken as a command and never sent to the model; `//` at the start sends a message that begins with a slash. `/tmp is full` is caught; `/etc/hosts …` (a second slash) is sent as typed.
 - A queued message is its own turn; a steer belongs to the turn it steers. Fork points can be given as turns (`fork --turn N`).
@@ -119,11 +119,11 @@ Reading a result:
 
 - `evals/dogfood/events.ts <id> [--type <prefix>]` prints a session's events read-only: the quickest way to see how many compactions or summary calls happened, a fork's lineage, what an MCP catalogue said. The event table is `event` (not `events`); the session row has `cwd`, `title`, `parent_id`.
 - `calls.ts --cwd` now counts descendants (subagents, forks in copies, replays) through the lineage in `session.created`: they work under `<data dir>-work/`, and a count by directory missed them. A replay's lineage names its recording, not a parent.
-- Compaction on demand: `LH_TEST_CONTEXT_WINDOW=20000` (usable window 16,000 after the 20% output reserve; compaction is due from about 10,400 tokens at a user message and at once from 12,800). Two `-c` turns that each read a 10 to 20 KB file get there; three big reads in one turn compact in the middle of it. The TUI's panel still shows the model's real window (272k) under the variable.
+- Compaction on demand: `WINDLASS_TEST_CONTEXT_WINDOW=20000` (usable window 16,000 after the 20% output reserve; compaction is due from about 10,400 tokens at a user message and at once from 12,800). Two `-c` turns that each read a 10 to 20 KB file get there; three big reads in one turn compact in the middle of it. The TUI's panel still shows the model's real window (272k) under the variable.
 - The line interface shows nothing when a session is resumed (`-c` with no prompt): no history, no ID. Read a resumed session in the TUI or with `events.ts`.
-- `lh fork --through <n>` takes an event number, which only `events.ts` shows; a number between a message's `inbox.enqueued` and its `inbox.delivered` makes a fork without that message.
+- `windlass fork --through <n>` takes an event number, which only `events.ts` shows; a number between a message's `inbox.enqueued` and its `inbox.delivered` makes a fork without that message.
 - A fork made with `--copy`, and a replay under `execute`, work in a copy without `node_modules` and without `.git`: the project's checks fail there (`could not start` for `tsc`). Expect exit code 3 from such a fork's first edit.
-- `lh replay` prints the divergence report only; the "compared on what it did (reads ignored)" part that `docs/replay.md` says carries the signal is printed by `bun scripts/replay.ts` alone.
+- `windlass replay` prints the divergence report only; the "compared on what it did (reads ignored)" part that `docs/replay.md` says carries the signal is printed by `bun scripts/replay.ts` alone.
 - A foreground subagent's running command is invisible in the line interface until it settles (only `⋯ running subagent …`); the TUI shows `now: shell …`. To interrupt at the right moment, poll `pgrep -a -x sleep` for the child's command, not the screen: the task text already contains the command.
 - Background commands and subagent children are killed on Ctrl-C and on exit (checked with `pgrep -a -x sleep`). The output path a background start prints (`/tmp/.spill/…`) is the sandbox's view; on the host it is `/tmp/<brand.directory>-<uid>/<session>/.spill/`.
 - Images: `evals/dogfood/make-image.ts` makes PNGs with checkable answers. The live model described both correctly (2 of 2) after `read`; the tool row says `1 line`.
@@ -134,7 +134,7 @@ Reading a result:
 ## After the second engine pass (2026-11-12)
 
 - The frozen tool list has 20 tools, about 3,300 estimated tokens (`bun scripts/tool-block.ts` prints it); a session's first request is about 4,550 tokens.
-- Wake-ups fire in the server of an interactive run (`lh`, `lh tui`, an editor's `lh acp`), never in a one-prompt run, a listing or a subcommand (the CLI sets `LH_WAKE=off` for those). List pending wake-ups before starting an interactive session in a data directory with old ones: they fire at once, late.
+- Wake-ups fire in the server of an interactive run (`windlass`, `windlass tui`, an editor's `windlass acp`), never in a one-prompt run, a listing or a subcommand (the CLI sets `WINDLASS_WAKE=off` for those). List pending wake-ups before starting an interactive session in a data directory with old ones: they fire at once, late.
 - A question asked after a hand edit ends "nothing to check"; the next turn that edits a file runs the checks on everything unverified, the hand edit included, and the model may then repair the user's file.
 - The CLI has no `--agent` yet: test an agent with `agents.default` in a throwaway `XDG_CONFIG_HOME`.
 - In tmux, wait for the `›` prompt before sending keys: under load a fixed 6-second wait lost the Enter.
@@ -143,7 +143,7 @@ Reading a result:
 
 ## Client commands for MCP, skills, wake-ups and memory (2026-11-12)
 
-- A scripted `LH_ACP_SCRIPT` response without a `usage` item records no model call (the TUI panel then says "no model call yet").
+- A scripted `WINDLASS_ACP_SCRIPT` response without a `usage` item records no model call (the TUI panel then says "no model call yet").
 - A background command's log is named in the tool output by the sandbox's path (`/tmp/.spill/...`); the path on the host is `spawn.started.data.work.logPath`, and the clients print that one.
 - Approvals of a project's MCP server are kept under `XDG_DATA_HOME`, so a fresh data directory asks again. A one-prompt run cannot approve: it prints how (`/mcp approve <name>` in an interactive run).
 - At a load average above 10 the killed-CLI subprocess test, the undo/redo test and the TUI crash test have each timed out and then passed alone. Re-run a failing file alone before treating it as a failure.

@@ -15,7 +15,7 @@ extra cost. Until that is shown, a session behaves exactly as without it (its re
 
 ## Turning it on
 
-In your own file, `~/.config/light-harness/config.json`:
+In your own file, `~/.config/windlass/config.json`:
 
 ```json
 { "memory": { "enabled": true } }
@@ -27,7 +27,7 @@ A session that already exists keeps what it had: whether a session has memory is
 | Key in `memory` | Value |
 |---|---|
 | `enabled` | `true` turns memory on for new sessions; default `false` |
-| `inRepository` | `true`: keep this project's notes in the project, in `.light-harness/memory/`, where they can be committed. Only from your own file |
+| `inRepository` | `true`: keep this project's notes in the project, in `.windlass/memory/`, where they can be committed. Only from your own file |
 | `projectChars` | how many characters of project notes a session is given at most; default 4000 |
 | `userChars` | the same for notes about you; default 2000 |
 
@@ -67,13 +67,13 @@ not given to any session until you confirm it.
 Each note is one Markdown file you can read, edit or delete; the next session reads what is there.
 
 ```text
-~/.local/share/light-harness/memory/
+~/.local/share/windlass/memory/
   user/<id>.md                         about you, for every project
   projects/<name>-<hash>/<id>.md       about one project; project.json in it names the project's directory
   usage/<session id>.jsonl             what each session was given and read, and how its turns ended
 ```
 
-The project is the directory that holds `.light-harness/config.json`, else the repository root, else the working
+The project is the directory that holds `.windlass/config.json`, else the repository root, else the working
 directory. A note:
 
 ```markdown
@@ -107,7 +107,7 @@ A file with a mistake is not used, and you are told at the first step (the model
 
 ## Commands
 
-In `lh` and `lh tui`, for a session that has memory:
+In `windlass` and `windlass tui`, for a session that has memory:
 
 | Command | What it does |
 |---|---|
@@ -118,7 +118,7 @@ In `lh` and `lh tui`, for a session that has memory:
 | `/forget <id>` | retract a note: no later session is given it; the file is kept with `status: retracted` |
 
 When memory is off, `/memory` says so and how to turn it on; a session started while it was off has none, so it also
-says to start a new session. An editor does the same with `_light-harness/memory` and `_light-harness/memory_change`
+says to start a new session. An editor does the same with `_windlass/memory` and `_windlass/memory_change`
 ([acp.md](acp.md)).
 
 ## Not yet

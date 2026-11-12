@@ -1,14 +1,14 @@
 # MCP servers
 
-An MCP (Model Context Protocol) server gives the agent tools that live outside `lh`: an issue tracker, a database, a
-documentation search. You name the server in a configuration file; `lh` starts it (or reaches it over HTTP), lists
+An MCP (Model Context Protocol) server gives the agent tools that live outside `windlass`: an issue tracker, a database, a
+documentation search. You name the server in a configuration file; `windlass` starts it (or reaches it over HTTP), lists
 its tools to the model, and runs a tool when the model asks and you allow it. Everything on this page was run against
 the program with a scripted model and a test server; `test/release/feature-docs.test.ts` checks the keys, options
 and messages against the code.
 
 ## The smallest working example
 
-Put the server in your own configuration file, `~/.config/light-harness/config.json`:
+Put the server in your own configuration file, `~/.config/windlass/config.json`:
 
 ```json
 {
@@ -23,7 +23,7 @@ Put the server in your own configuration file, `~/.config/light-harness/config.j
 Then work as usual, interactively:
 
 ```sh
-lh
+windlass
 ```
 
 At the first step you see `· instructions updated (mcp): MCP tools are available: ...`: the model has been given
@@ -57,17 +57,17 @@ started by a `command` or reached at a `url`, never both.
 | `tools` | `allow` and `deny`: lists of tool names, `*` matches anything; `deny` wins. Default: every tool |
 | `timeoutSeconds` | one call, 1 to 3600; default 60 |
 | `startupTimeoutSeconds` | starting, connecting and listing the tools, 1 to 600; default 30 |
-| `untrusted` | `true` (default): what the server returns is content `lh` does not control (see "Trust" below) |
+| `untrusted` | `true` (default): what the server returns is content `windlass` does not control (see "Trust" below) |
 | `enabled` | `false` leaves the server out |
 | `protocol` | `auto` (default), `modern` or `legacy`: skip detecting which MCP revision the server speaks |
 
-`${NAME}` in `env` and `headers` is replaced by the variable from the environment `lh` runs in, when the server
+`${NAME}` in `env` and `headers` is replaced by the variable from the environment `windlass` runs in, when the server
 starts. That is how a token gets to a server without being written in the file. If the variable is not set, that
 server does not start.
 
 ## A server in the project's file
 
-A server can also be named in the project's file, `.light-harness/config.json`. The two files are merged key by key,
+A server can also be named in the project's file, `.windlass/config.json`. The two files are merged key by key,
 so a project can name its own servers or change a field of one of yours. But a server the project's file names, or
 changes, **is not started**: opening a repository must not run a command, or send your environment to an address,
 that the repository chose. You see, at the first step:
@@ -88,7 +88,7 @@ about again.
 
 ### Approving it
 
-Interactively, `lh` asks at the prompt right after that line, with the command (or address) it would start, the file
+Interactively, `windlass` asks at the prompt right after that line, with the command (or address) it would start, the file
 that defines it, the engine's own explanation, and what each answer does:
 
 ```text
@@ -99,19 +99,19 @@ that defines it, the engine's own explanation, and what each answer does:
 [y] start it · [N] not now ›
 ```
 
-`lh tui` puts the same question in the approval dock above the input (`a` starts it, `n` leaves it stopped), and an
-editor through `lh acp` can put it too (`_light-harness/mcp`, `_light-harness/mcp_approve`, [acp.md](acp.md)). A yes
+`windlass tui` puts the same question in the approval dock above the input (`a` starts it, `n` leaves it stopped), and an
+editor through `windlass acp` can put it too (`_windlass/mcp`, `_windlass/mcp_approve`, [acp.md](acp.md)). A yes
 starts the server at once; its tools reach the model at its next step. A tool call's question always comes first: the
 server's question steps aside and is put again after it.
 
-In a one-shot run nobody can answer, so the server stays stopped and `lh` says once how to approve it: run `lh`
+In a one-shot run nobody can answer, so the server stays stopped and `windlass` says once how to approve it: run `windlass`
 interactively in that directory and answer the question (or type `/mcp approve <name>`). The approval is remembered,
 so later one-shot runs in the project start it. You can also copy the definition into your own file
-(`~/.config/light-harness/config.json`) after reading what it runs.
+(`~/.config/windlass/config.json`) after reading what it runs.
 
 ## Seeing the servers: /mcp
 
-`/mcp` (in `lh` and `lh tui`) lists each server with its state (running with its tool count, starting, failed to
+`/mcp` (in `windlass` and `windlass tui`) lists each server with its state (running with its tool count, starting, failed to
 start with why and when it is retried, waiting for your approval, disabled, or not started yet: servers start with
 the first message of a session), what it runs or where it is reached, and the file that defines it.
 
@@ -148,9 +148,9 @@ text. An image in a result is attached for the model to see.
 
 ## Trust and taint
 
-- `mcp_call` runs outside the sandbox, so in `ask` and `auto` every call asks (above). Under the question, `lh`
+- `mcp_call` runs outside the sandbox, so in `ask` and `auto` every call asks (above). Under the question, `windlass`
   shows the arguments that would be sent (`arguments sent: {...}`, cut after 600 characters with how much more there
-  is), and `lh tui` shows them in the dock (`sends: {...}`); the call's row reads `mcp_call <server>/<tool>`. In a one-shot run, with
+  is), and `windlass tui` shows them in the dock (`sends: {...}`); the call's row reads `mcp_call <server>/<tool>`. In a one-shot run, with
   nobody to ask, it is refused: `Not run: this call needs the user's approval for using <server>/<tool>, and this run has no one to approve it.`
   Use `--approval full` (or the interactive mode) to let calls run.
 - With `untrusted: true` (the default), the first result from the server *taints* the session:
@@ -171,7 +171,7 @@ text. An image in a result is attached for the model to see.
 - **A server that does not start.** You are told, once per reason, with why (the end of what it wrote to stderr)
   and when it is tried again; `/mcp` shows its state. The model learns it from `mcp_search`, whose output ends with,
   for example, `Not available right now: tracker (the environment variable TRACKER_TOKEN named in its env is not set, retrying in 5 s)`
-  or `(the server process exited with code 1; stderr ends with: ...)`. `lh` keeps retrying with growing pauses.
+  or `(the server process exited with code 1; stderr ends with: ...)`. `windlass` keeps retrying with growing pauses.
 - **A slow server.** The first step of a turn waits up to 1.5 seconds for servers that have not answered yet; one
   that is ready later is added to the catalogue at a later step.
 - **A mistake in the file** fails the turn before anything is sent, naming the file and the key (an unknown key gets
@@ -181,6 +181,6 @@ text. An image in a result is attached for the model to see.
 
 ## Not supported
 
-Only tools. MCP resources, prompts, completion, logging, sampling, elicitation and roots are not supported (`lh`
+Only tools. MCP resources, prompts, completion, logging, sampling, elicitation and roots are not supported (`windlass`
 declares none of these capabilities), nor OAuth sign-in to a server (put a token in `headers` with `${NAME}`), nor
 the deprecated HTTP+SSE transport.

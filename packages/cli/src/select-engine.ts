@@ -5,14 +5,14 @@
  *
  * The real engine is reached one of two ways (`--engine`):
  * - `acp` (the default): through the Agent Client Protocol, as an editor
- *   reaches it, with `lh acp` as a child process (`./acp-engine.ts`);
+ *   reaches it, with `windlass acp` as a child process (`./acp-engine.ts`);
  *   `acp-memory` is the same client with the server in this process.
  * - `direct`: the engine in this process, behind a thin adapter
  *   (`./real-engine.ts`). For debugging, and the reference the ACP path is
  *   tested against.
  */
-import type { HarnessOptions } from "@light-harness/core"
-import { type Scenario } from "@light-harness/core/testing/scenarios"
+import type { HarnessOptions } from "@windlass/core"
+import { type Scenario } from "@windlass/core/testing/scenarios"
 import type { AcpEngineOptions } from "./acp-engine.ts"
 import type { Engine } from "./engine.ts"
 import { FakeEngine, type FakeOptions } from "./fake-engine.ts"
@@ -48,7 +48,7 @@ export async function selectEngine(
   if (demo !== null) return { kind: "engine", engine: new FakeEngine(demo.scenario, demo.options) }
   if (module !== undefined) return loadRealEngine(module, REAL_ENGINE_EXPORT, [])
   if (kind === "acp") return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "child" } satisfies AcpEngineOptions])
-  // In this process, the scripted model of tests (`LH_ACP_SCRIPT`) is read here; `lh acp` reads it itself.
+  // In this process, the scripted model of tests (`WINDLASS_ACP_SCRIPT`) is read here; `windlass acp` reads it itself.
   const harness = await scripted(context.env ?? {})
   if (kind === "direct") return loadRealEngine(REAL_ENGINE_MODULE, REAL_ENGINE_EXPORT, harness === null ? [] : [harness])
   return loadRealEngine(ACP_ENGINE_MODULE, ACP_ENGINE_EXPORT, [{ ...context, transport: "memory", ...(harness === null ? {} : { harness }) } satisfies AcpEngineOptions])
@@ -81,7 +81,7 @@ async function loadRealEngine(module: string, name: string, args: readonly unkno
 
 /** The harness options for the scripted model a test names in the environment, or `null`. */
 async function scripted(env: Record<string, string | undefined>): Promise<HarnessOptions | null> {
-  const { SCRIPT_ENV, scriptedProvider } = await import("@light-harness/acp")
+  const { SCRIPT_ENV, scriptedProvider } = await import("@windlass/acp")
   const path = env[SCRIPT_ENV]
   if (path === undefined || path === "") return null
   return { provider: await scriptedProvider(path) }

@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@light-harness/core/testing"
+import { script } from "@windlass/core/testing"
 import { EXT, type ForkResult, META, type ReplayResult } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 

@@ -9,11 +9,11 @@
  * edit, the tail of a command's output, the match list of a search. Output is
  * capped; a second expansion shows it in full up to `FULL_OUTPUT_LINES`.
  */
-import { SUBAGENT_NOTE } from "@light-harness/core"
+import { SUBAGENT_NOTE } from "@windlass/core"
 import { detailLines, diffStat, errorSummary, fileList, formatBytes, formatDuration, successSummary, unresolvedReason, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
-import type { DiffFile } from "@light-harness/acp/extensions"
+import type { DiffFile } from "@windlass/acp/extensions"
 import { type Line, type Role, type Span, span } from "./theme.ts"
 import { type NoticeRow, type OutcomeRow, type PendingItem, type ReasoningRow, type Row, type SubagentView, type TextRow, type ToolRow, type UserRow, asObject, isUndoneRow } from "./transcript.ts"
 

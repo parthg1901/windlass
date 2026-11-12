@@ -1,9 +1,9 @@
 ---
 name: harness-testing
-description: How to test light-harness like a user, headless, without spending model calls unless they are needed. Use before calling a feature done, when a change needs proof beyond unit tests, when a live ChatGPT-plan request is needed, or when sign-in fails.
+description: How to test Windlass like a user, headless, without spending model calls unless they are needed. Use before calling a feature done, when a change needs proof beyond unit tests, when a live ChatGPT-plan request is needed, or when sign-in fails.
 ---
 
-# Testing light-harness headless
+# Testing Windlass headless
 
 Unit tests prove the pieces; this proves the product. Run the real entry points end to end and read the output as a user would. Work from the cheapest check to the most expensive and stop as soon as one fails.
 

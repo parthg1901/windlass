@@ -99,14 +99,14 @@ describe("the build script", () => {
       buildPlugin({ ...stamp, tui }, TARGETS[0]!).setup({
         onLoad: (options: { filter: RegExp; namespace?: string }, load: (args: { path: string }) => unknown) => void loads.push({ ...options, load }),
         onResolve: (options: { filter: RegExp }, resolve: (args: { path: string }) => unknown) => {
-          for (const path of ["@light-harness/tui", "@opentui/core-linux-x64", "@opentui/core-darwin-arm64"]) if (options.filter.test(path)) resolved[`${tui}:${path}`] = resolve({ path })
+          for (const path of ["@windlass/tui", "@opentui/core-linux-x64", "@opentui/core-darwin-arm64"]) if (options.filter.test(path)) resolved[`${tui}:${path}`] = resolve({ path })
         },
       } as never)
     }
     capture(true)
     capture(false)
-    expect(resolved["true:@light-harness/tui"]).toBeUndefined()
-    expect(resolved["false:@light-harness/tui"]).toEqual({ path: `${ROOT}/packages/cli/src/tui-unavailable.ts` })
+    expect(resolved["true:@windlass/tui"]).toBeUndefined()
+    expect(resolved["false:@windlass/tui"]).toEqual({ path: `${ROOT}/packages/cli/src/tui-unavailable.ts` })
     expect(resolved["true:@opentui/core-linux-x64"]).toBeUndefined()
     expect(resolved["true:@opentui/core-darwin-arm64"]).toEqual({ path: "@opentui/core-darwin-arm64", namespace: "absent-native" })
     const stampLoad = loads.find((item) => item.filter.test("/x/packages/core/src/build-stamp.ts"))

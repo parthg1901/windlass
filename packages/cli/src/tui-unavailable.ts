@@ -1,10 +1,10 @@
 /**
- * Stands in for `@light-harness/tui` in an executable built without the
+ * Stands in for `@windlass/tui` in an executable built without the
  * full-screen interface (`scripts/build.ts` swaps it in when OpenTUI's native
  * library for the target is not available to embed). `tui` then says so and
  * fails instead of crashing on a missing library.
  */
-import { brand, buildStamp } from "@light-harness/core"
+import { brand, buildStamp } from "@windlass/core"
 
 export async function runTui(_options: unknown): Promise<number> {
   const target = buildStamp()?.target.replace(/^bun-/, "") ?? `${process.platform}-${process.arch}`

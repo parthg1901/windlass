@@ -30,7 +30,7 @@ crashes. `bun scripts/lsp-demo.ts --python -- <command...>` runs the same kind o
 
 ### The configuration
 
-In your configuration file (`~/.config/light-harness/config.json`) or a project's (`.light-harness/config.json`;
+In your configuration file (`~/.config/windlass/config.json`) or a project's (`.windlass/config.json`;
 the directory names come from `packages/core/src/brand.ts`):
 
 ```json

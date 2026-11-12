@@ -21,7 +21,7 @@ import { reduceAll } from "../../src/message/reducer.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { SESSION, families } from "../scenarios/index.ts"
 
-const directory = mkdtempSync(join(tmpdir(), "lh-projection-read-"))
+const directory = mkdtempSync(join(tmpdir(), "wl-projection-read-"))
 afterAll(() => rmSync(directory, { recursive: true, force: true }))
 
 const scenarios = Object.values(families)

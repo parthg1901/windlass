@@ -38,8 +38,8 @@ import {
   brand,
   event,
   text,
-} from "@light-harness/core"
-import { EFFECT_UNKNOWN, INTERRUPTED_READ, NOT_STARTED, type Scenario } from "@light-harness/core/testing/scenarios"
+} from "@windlass/core"
+import { EFFECT_UNKNOWN, INTERRUPTED_READ, NOT_STARTED, type Scenario } from "@windlass/core/testing/scenarios"
 import type { Engine, EngineEvent, OpenRequest, SendOptions, Session } from "./engine.ts"
 
 export interface FakeOptions {

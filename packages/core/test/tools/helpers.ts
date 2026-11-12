@@ -12,7 +12,7 @@ const created: string[] = []
 
 /** A fresh temporary directory, removed after the test. Its path has symlinks resolved (macOS /var -> /private/var). */
 export function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "lh-tools-"))
+  const dir = mkdtempSync(join(tmpdir(), "wl-tools-"))
   created.push(dir)
   return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()
 }

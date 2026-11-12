@@ -10,51 +10,44 @@
       },
     },
     "packages/acp": {
-      "name": "@light-harness/acp",
+      "name": "@windlass/acp",
       "version": "0.0.0",
       "dependencies": {
         "@agentclientprotocol/sdk": "2.5.0",
-        "@light-harness/core": "workspace:*",
+        "@windlass/core": "workspace:*",
       },
     },
     "packages/cli": {
-      "name": "@light-harness/cli",
+      "name": "@windlass/cli",
       "version": "0.0.0",
       "bin": {
-        "lh": "./src/main.ts",
+        "windlass": "./src/main.ts",
+        "wl": "./src/main.ts",
       },
       "dependencies": {
         "@agentclientprotocol/sdk": "2.5.0",
-        "@light-harness/acp": "workspace:*",
-        "@light-harness/core": "workspace:*",
-        "@light-harness/tui": "workspace:*",
+        "@windlass/acp": "workspace:*",
+        "@windlass/core": "workspace:*",
+        "@windlass/tui": "workspace:*",
       },
     },
     "packages/core": {
-      "name": "@light-harness/core",
+      "name": "@windlass/core",
       "version": "0.0.0",
     },
     "packages/tui": {
-      "name": "@light-harness/tui",
+      "name": "@windlass/tui",
       "version": "0.0.0",
       "dependencies": {
         "@agentclientprotocol/sdk": "2.5.0",
-        "@light-harness/acp": "workspace:*",
-        "@light-harness/core": "workspace:*",
         "@opentui/core": "0.8.4",
+        "@windlass/acp": "workspace:*",
+        "@windlass/core": "workspace:*",
       },
     },
   },
   "packages": {
     "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@2.5.0", "", { "peerDependencies": { "@modelcontextprotocol/server": "^2.4.0", "zod": "^3.25.76 || ^4.0.0" }, "optionalPeers": ["@modelcontextprotocol/server"] }, "sha512-MFlXeIuwN6nZSK45SAsSnVjbLgQ2r4fnthoF1lQoGJP3PdaPRpOZeCF2Dds8S4cN8yZP5QbxB1bkJccGskmcYw=="],
-
-    "@light-harness/acp": ["@light-harness/acp@workspace:packages/acp"],
-
-    "@light-harness/cli": ["@light-harness/cli@workspace:packages/cli"],
-
-    "@light-harness/core": ["@light-harness/core@workspace:packages/core"],
-
-    "@light-harness/tui": ["@light-harness/tui@workspace:packages/tui"],
 
     "@opentui/core": ["@opentui/core@0.8.4", "", { "dependencies": { "bun-ffi-structs": "0.3.1", "diff": "9.0.0", "marked": "17.0.1", "string-width": "7.2.0" }, "optionalDependencies": { "@opentui/core-darwin-arm64": "0.8.4", "@opentui/core-darwin-x64": "0.8.4", "@opentui/core-linux-arm64": "0.8.4", "@opentui/core-linux-arm64-musl": "0.8.4", "@opentui/core-linux-x64": "0.8.4", "@opentui/core-linux-x64-musl": "0.8.4", "@opentui/core-win32-arm64": "0.8.4", "@opentui/core-win32-x64": "0.8.4" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-s2z2FFEWxsQ6IPVEiAjlHHY5yssnCI+dIltL54+ZhVz1EWxylaB0HER+ypPL2goot0DKwKqrM57rnomh19/2rQ=="],
 
@@ -77,6 +70,14 @@
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
     "@types/node": ["@types/node@26.6.6", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog=="],
+
+    "@windlass/acp": ["@windlass/acp@workspace:packages/acp"],
+
+    "@windlass/cli": ["@windlass/cli@workspace:packages/cli"],
+
+    "@windlass/core": ["@windlass/core@workspace:packages/core"],
+
+    "@windlass/tui": ["@windlass/tui@workspace:packages/tui"],
 
     "ansi-regex": ["ansi-regex@6.6.0", "", {}, "sha512-XZ5apbzreCbXSKwPjJstu8R0zOi247w3XYwWxtwBXgpZrCyc1Ka7p9/xY0A9/diMewmHbEKz+FIraWaEWjlN5g=="],
 

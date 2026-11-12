@@ -28,7 +28,7 @@ const registries: McpRegistry[] = []
 const cleanups: (() => Promise<void> | void)[] = []
 
 export function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "lh-mcp-"))
+  const dir = mkdtempSync(join(tmpdir(), "wl-mcp-"))
   dirs.push(dir)
   return dir
 }

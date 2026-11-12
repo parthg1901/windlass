@@ -3,7 +3,7 @@
  * else, so every line goes to stderr (which editors keep as the agent's log)
  * unless a test passes its own sink.
  */
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 

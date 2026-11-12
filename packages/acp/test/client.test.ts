@@ -11,8 +11,8 @@ import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { brand } from "@light-harness/core"
-import { FakeProvider, type ScriptedResponse, script } from "@light-harness/core/testing"
+import { brand } from "@windlass/core"
+import { FakeProvider, type ScriptedResponse, script } from "@windlass/core/testing"
 import { type ApprovalAsk, ClientError, type ClientSession, HarnessClient, HarnessConnection, type SessionItem } from "../src/client.ts"
 import { EXT } from "../src/extensions.ts"
 import { SCRIPT_ENV } from "../src/scripted.ts"
@@ -25,7 +25,7 @@ const dirs: string[] = []
 const links: HarnessConnection[] = []
 const clients: HarnessClient[] = []
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "lh-client-outside-"))
+const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-client-outside-"))
 
 afterEach(async () => {
   for (const link of links.splice(0)) await link.stop()
@@ -35,7 +35,7 @@ afterEach(async () => {
 afterAll(() => rmSync(elsewhere, { recursive: true, force: true }))
 
 function place(): { root: string; workspace: string; dataDir: string } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-client-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-client-")))
   dirs.push(root)
   const workspace = join(root, "work")
   Bun.spawnSync(["mkdir", "-p", workspace])

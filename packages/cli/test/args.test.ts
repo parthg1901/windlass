@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { type Options, helpText, parseArgs } from "../src/args.ts"
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 
 const options = (argv: string[]): Options => {
   const parsed = parseArgs(argv)

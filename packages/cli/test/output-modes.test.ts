@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { validateEvent } from "@light-harness/core"
-import { brand } from "@light-harness/core"
+import { validateEvent } from "@windlass/core"
+import { brand } from "@windlass/core"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { findScenario } from "../src/demo/scenarios.ts"
 import { CLI, runCli } from "./helpers.ts"

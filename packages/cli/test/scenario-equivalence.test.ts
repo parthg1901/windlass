@@ -1,5 +1,5 @@
 /**
- * Every scripted scenario of the step loop (`@light-harness/core/testing/scenarios`,
+ * Every scripted scenario of the step loop (`@windlass/core/testing/scenarios`,
  * the same scripts the demo plays) through the protocol: its log is stored,
  * loaded over ACP by a client that asks for the harness's events, and what
  * arrives is rendered by the CLI's own sinks. The pretty output and the
@@ -12,10 +12,10 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type ClientConnection, type Stream, client, methods } from "@agentclientprotocol/sdk"
-import { EXT, META, type Served, serve, silentLogger } from "@light-harness/acp"
-import { type Harness, type NewEvent, type SessionId, type StoredEvent, createHarness } from "@light-harness/core"
-import { FakeProvider } from "@light-harness/core/testing"
-import { families } from "@light-harness/core/testing/scenarios"
+import { EXT, META, type Served, serve, silentLogger } from "@windlass/acp"
+import { type Harness, type NewEvent, type SessionId, type StoredEvent, createHarness } from "@windlass/core"
+import { FakeProvider } from "@windlass/core/testing"
+import { families } from "@windlass/core/testing/scenarios"
 import type { EngineEvent } from "../src/engine.ts"
 import { JsonSink } from "../src/renderer.ts"
 import { render } from "./helpers.ts"
@@ -28,9 +28,9 @@ let connection: ClientConnection
 const received = new Map<string, { event: EngineEvent; replay?: boolean }[]>()
 
 beforeAll(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), "lh-scenarios-")))
+  root = realpathSync(mkdtempSync(join(tmpdir(), "wl-scenarios-")))
   harness = createHarness({ dataDir: join(root, "data"), provider: new FakeProvider([]), log: () => {}, engine: { loadConfig: null, discover: () => [], snapshots: null } })
-  // The wire as `lh acp` has it: every message copied as JSON.
+  // The wire as `windlass acp` has it: every message copied as JSON.
   const wire = () => new TransformStream<object, object>({ transform: (message, controller) => controller.enqueue(JSON.parse(JSON.stringify(message))) })
   const toClient = wire()
   const toAgent = wire()

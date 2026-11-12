@@ -169,7 +169,7 @@ export function buildPlugin(stamp: BuildStamp, target: Target): BunPlugin {
     name: `${brand.directory}-build`,
     setup(build) {
       build.onLoad({ filter: /[\\/]core[\\/]src[\\/]build-stamp\.ts$/ }, () => ({ contents: stampModule(stamp), loader: "ts" }))
-      if (!stamp.tui) build.onResolve({ filter: /^@light-harness\/tui$/ }, () => ({ path: TUI_STUB }))
+      if (!stamp.tui) build.onResolve({ filter: /^@windlass\/tui$/ }, () => ({ path: TUI_STUB }))
       build.onResolve({ filter: /^@opentui\/core-(linux|darwin|win32)-/ }, (args) =>
         args.path === target.nativePackage ? undefined : { path: args.path, namespace: "absent-native" },
       )

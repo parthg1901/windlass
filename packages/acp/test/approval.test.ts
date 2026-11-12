@@ -10,8 +10,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { createCommandSandbox } from "@light-harness/core"
-import { script } from "@light-harness/core/testing"
+import { createCommandSandbox } from "@windlass/core"
+import { script } from "@windlass/core/testing"
 import { APPROVAL_META, EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 
@@ -23,7 +23,7 @@ const sandboxed = createCommandSandbox().state.available
  * workspaces here are in /tmp, where a path beside the workspace means the
  * session's own temp directory (commands see nothing else of /tmp).
  */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "lh-acp-outside-"))
+const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-acp-outside-"))
 afterAll(() => rmSync(elsewhere, { recursive: true, force: true }))
 
 let h: Harness | null = null

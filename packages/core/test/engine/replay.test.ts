@@ -33,7 +33,7 @@ const types = (events: readonly StoredEvent[]) => events.map((item) => item.type
 
 /** Records a session: a read, a write, a command, an answer, then a second turn with one more write. */
 async function record(more: Parameters<typeof start>[2] = {}) {
-  const spot = place("lh-replay-")
+  const spot = place("wl-replay-")
   const directory = spot.workspace("w", { "a.txt": "one\n", "AGENTS.md": "Keep it short.\n" })
   const started = start(
     spot.data,

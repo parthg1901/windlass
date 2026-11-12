@@ -15,21 +15,21 @@
  * within two seconds exits at once, Ctrl-C at the prompt clears it, Ctrl-D on
  * an empty prompt leaves.
  */
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
-import type { RevertPlan, RevertResult } from "@light-harness/core"
+import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
 import { COPY_NOTE, changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
-import type { McpServerInfo, McpStateResult } from "@light-harness/acp/extensions"
+import type { McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { type OutcomeRow, type Row, Transcript, expandable } from "./transcript.ts"
-import { forkPointOfTurn } from "@light-harness/acp/turns"
+import { forkPointOfTurn } from "@windlass/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
 /** How long after a first Ctrl-C a second one exits instead of waiting for the stop. */

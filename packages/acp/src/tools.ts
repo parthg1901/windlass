@@ -8,7 +8,7 @@
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import type { ToolCallContent, ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk"
-import type { EventData, Json } from "@light-harness/core"
+import type { EventData, Json } from "@windlass/core"
 import { fenced } from "./prompt.ts"
 
 export function toolKind(name: string): ToolKind {

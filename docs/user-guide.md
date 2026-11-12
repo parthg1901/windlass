@@ -1,6 +1,6 @@
 # User guide
 
-How to use `lh` day to day. `lh --help` is the reference for every option; this page explains what they are for.
+How to use `windlass` day to day. `windlass --help` is the reference for every option; this page explains what they are for.
 Every command and message on this page was run against the program, and `test/release/docs.test.ts` checks the
 options, configuration keys, exit codes and environment variables here against the code.
 
@@ -10,13 +10,13 @@ Every conversation is a session, kept on disk until you delete it. A session bel
 started in.
 
 ```sh
-lh "explain what src/server.ts does"
-lh --list-sessions
-lh -c "now add a test for it"
-lh --session ses_9acf "and run it"
+windlass "explain what src/server.ts does"
+windlass --list-sessions
+windlass -c "now add a test for it"
+windlass --session ses_9acf "and run it"
 ```
 
-- `lh --list-sessions` lists the sessions of the current directory, newest first: ID, last use, model, title.
+- `windlass --list-sessions` lists the sessions of the current directory, newest first: ID, last use, model, title.
   `--json` prints one JSON object per line.
 - A run with `--json` writes every event as one JSON line, and after each turn's last event one line of its own,
   `{"type":"cli.summary", "outcome", "steps", "durationMs", "usage", "cachedShare", ...}`: what the end of the
@@ -26,25 +26,25 @@ lh --session ses_9acf "and run it"
   by the start of one if it is unique. Both work with a prompt (one-shot) and without one (interactive).
 - `--cwd <dir>` works in another directory without changing to it.
 - The interactive mode starts by naming its session: `new session ses_…`, or for one it resumed
-  `resumed session ses_… "<title>" · 3 turns (1 undone)`. Leaving it prints `session ses_… · resume with: lh --session
+  `resumed session ses_… "<title>" · 3 turns (1 undone)`. Leaving it prints `session ses_… · resume with: windlass --session
   ses_…`, as the full-screen interface does. A one-shot run prints neither.
-- `lh fork` starts a new session with another's conversation, to try another way without changing the original:
+- `windlass fork` starts a new session with another's conversation, to try another way without changing the original:
   after its latest step, or after a turn with `--turn <n>` (1 is the session's first prompt; the full-screen interface
-  shows each turn's number on its ending row, and `/fork <n>` does the same there). `lh fork --help` has the precise
+  shows each turn's number on its ending row, and `/fork <n>` does the same there). `windlass fork --help` has the precise
   form, an event number. Forking and listing need no sign-in.
 
-**Several at once.** Each `lh` process (and each editor using `lh acp`) works in its own session, so you can run
+**Several at once.** Each `windlass` process (and each editor using `windlass acp`) works in its own session, so you can run
 several side by side in the same project. One session can be open in only one process at a time; a second one is
 refused with a message that names the process holding it (see [troubleshooting](troubleshooting.md#a-session-in-use-by-another-process)).
 
 ## Models and effort
 
 ```sh
-lh --models
-lh -m gpt-6-luna --effort low "rename the helper to parseLine"
+windlass --models
+windlass -m gpt-6-luna --effort low "rename the helper to parseLine"
 ```
 
-`lh --models` lists the models your plan offers and the efforts each accepts; the one marked `*` is the default.
+`windlass --models` lists the models your plan offers and the efforts each accepts; the one marked `*` is the default.
 `-m` (`--model`) and `--effort` choose for a new session. A session keeps the model it was started with when you
 resume it, unless you name another. `--max-steps <n>` limits the model calls in one turn; at the limit the model is
 asked for a final answer without tools.
@@ -69,7 +69,7 @@ Before every tool call the program decides whether it runs, runs in a sandbox, a
   (`--unattended deny`, the default), or the run stops with exit code 4 (`--unattended stop`). With `deny` the agent
   carries on without those calls and the run can still end as done, with exit code 0: its ending says how many calls
   were refused. A script that must not count such a run as done uses `--unattended stop`. A stopped run ends
-  with `■ stopped for your approval` and the two ways on: run it interactively (`lh -i "<prompt>"`) and answer the
+  with `■ stopped for your approval` and the two ways on: run it interactively (`windlass -i "<prompt>"`) and answer the
   question, or choose what such a call becomes (`--unattended deny`, or another `--approval` mode).
 - In the interactive mode a question shows the command and the choices: `a` allow once, `s` for this session, `p`
   in this project, `n` no; words after the letter go to the agent as your note.
@@ -82,8 +82,8 @@ Before every tool call the program decides whether it runs, runs in a sandbox, a
 
 Two JSON files, both optional:
 
-- your own: `~/.config/light-harness/config.json` (`$XDG_CONFIG_HOME/light-harness/config.json` when that is set);
-- the project's: `.light-harness/config.json`, looked for from the working directory up to the repository root.
+- your own: `~/.config/windlass/config.json` (`$XDG_CONFIG_HOME/windlass/config.json` when that is set);
+- the project's: `.windlass/config.json`, looked for from the working directory up to the repository root.
 
 The project file overrides yours key by key (a list such as `checks` replaces yours whole), except `approval`,
 where the project can only tighten what you chose. An unknown key is an error that names the file and suggests the
@@ -141,7 +141,7 @@ Every key:
 
 The agent reads `AGENTS.md` files and follows them:
 
-1. yours, `~/.config/light-harness/AGENTS.md`, for every project;
+1. yours, `~/.config/windlass/AGENTS.md`, for every project;
 2. the project's, from the repository root down to the working directory, and in any other directory of the
    repository the session works in. The nearest file comes last and takes precedence.
 
@@ -204,7 +204,7 @@ messages and the files, commands and errors so far), and a short recent part is 
 Nothing is lost: the session's log keeps every message, and the agent has two tools to get exact details back,
 `history_search` (words or a quoted phrase, across the whole session) and `history_read` (messages by position).
 The first requests after a compaction cost more, because the provider's prompt cache has to be written again for
-the new prefix. `lh --demo list` has scripted compactions under "Compaction".
+the new prefix. `windlass --demo list` has scripted compactions under "Compaction".
 
 ## Exit codes
 
@@ -219,17 +219,17 @@ the new prefix. `lh --demo list` has scripted compactions under "Compaction".
 | 141 | output closed (a pipe reader left) |
 | 143 | terminated (SIGTERM) |
 
-`lh login` uses 0, 1 (failed; for `status`: not signed in), 2 and 130. `lh tui` exits with 0 when you leave it, 1
+`windlass login` uses 0, 1 (failed; for `status`: not signed in), 2 and 130. `windlass tui` exits with 0 when you leave it, 1
 when you leave without a session open (not signed in, the session in use elsewhere, the engine gone; the reason is
 printed after the screen is back), and 129, 130 or 143 when a signal ends it.
 
 ## The data directory
 
-Everything the program keeps is in `~/.local/share/light-harness` (`$XDG_DATA_HOME/light-harness` when that is set):
+Everything the program keeps is in `~/.local/share/windlass` (`$XDG_DATA_HOME/windlass` when that is set):
 
 | Path | What |
 |---|---|
-| `auth.json` | your sign-in (mode 0600); `lh login logout` deletes it |
+| `auth.json` | your sign-in (mode 0600); `windlass login logout` deletes it |
 | `host-id` | this machine's ID for the sign-in |
 | `sessions/` | one SQLite database per session, with its lock files |
 | `index.db` | a cache for listing sessions; safe to delete |
@@ -237,7 +237,7 @@ Everything the program keeps is in `~/.local/share/light-harness` (`$XDG_DATA_HO
 | `approvals/` | what you allowed "in this project", kept for 30 days |
 | `blobs/`, `spill/` | images, and tool output too long to show the model |
 
-Each session also has a temp directory, `/tmp/light-harness-<uid>/<session id>/` (under `$TMPDIR` instead of `/tmp`
+Each session also has a temp directory, `/tmp/windlass-<uid>/<session id>/` (under `$TMPDIR` instead of `/tmp`
 when that is set), which sandboxed commands can write to (they see it as `/tmp` on Linux) and which holds the full
 output of long commands.
 
@@ -245,11 +245,11 @@ output of long commands.
 
 ```sh
 sh scripts/install.sh --uninstall
-rm -rf ~/.local/share/light-harness ~/.config/light-harness "/tmp/light-harness-$(id -u)"
+rm -rf ~/.local/share/windlass ~/.config/windlass "/tmp/windlass-$(id -u)"
 ```
 
 This removes the program, every session, your sign-in (the plan's authorization on OpenAI's side stays until you
-revoke it there), your configuration and `AGENTS.md`. Projects may also have a `.light-harness/` directory of their
+revoke it there), your configuration and `AGENTS.md`. Projects may also have a `.windlass/` directory of their
 own.
 
 ## Environment variables
@@ -263,12 +263,12 @@ own.
 | `PATH` | where `bwrap`, `env` and `git` are found; commands the agent runs get it too |
 | `NO_COLOR` | set to anything: no colour |
 | `COLUMNS` | the width when the terminal does not say |
-| `LH_TUI` | `1`: plain `lh` (interactive, no prompt) starts the full-screen interface |
-| `LH_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
-| `LH_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
-| `LH_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
-| `LH_WAKE` | `off`: this process's server fires no wake-ups (an interactive `lh`, `lh tui` and `lh acp` fire them; a one-prompt run never does) |
-| `DISPLAY`, `WAYLAND_DISPLAY`, `SSH_CONNECTION`, `SSH_TTY` | `lh login` opens a browser only with a display and not over SSH |
+| `WINDLASS_TUI` | `1`: plain `windlass` (interactive, no prompt) starts the full-screen interface |
+| `WINDLASS_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
+| `WINDLASS_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
+| `WINDLASS_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
+| `WINDLASS_WAKE` | `off`: this process's server fires no wake-ups (an interactive `windlass`, `windlass tui` and `windlass acp` fire them; a one-prompt run never does) |
+| `DISPLAY`, `WAYLAND_DISPLAY`, `SSH_CONNECTION`, `SSH_TTY` | `windlass login` opens a browser only with a display and not over SSH |
 | `OPENTUI_LIB_PATH`, `OPENTUI_LIBC` | read by the full-screen interface's library: another native library, or `musl` |
 
 Variables whose names look like credentials (`*TOKEN*`, `*KEY*`, `AWS_*`, ...) are not passed to sandboxed
@@ -278,8 +278,8 @@ For tests only, never for real use:
 
 | Variable | Effect |
 |---|---|
-| `LH_ACP_SCRIPT` | a JSON file of scripted model responses: no model is called and no sign-in is needed |
-| `LH_DEMO_TRACE` | a file the demo engine appends its shutdown steps to |
-| `LH_TEST_CONTEXT_WINDOW` | a smaller context window, in tokens, so that compaction happens early |
+| `WINDLASS_ACP_SCRIPT` | a JSON file of scripted model responses: no model is called and no sign-in is needed |
+| `WINDLASS_DEMO_TRACE` | a file the demo engine appends its shutdown steps to |
+| `WINDLASS_TEST_CONTEXT_WINDOW` | a smaller context window, in tokens, so that compaction happens early |
 
 A project's `.env` and `bunfig.toml` are never loaded by the built executable.

@@ -32,7 +32,7 @@ const texts = (events: readonly StoredEvent[]) => events.flatMap((item) => (item
 
 describe("a fork between a message's enqueue and its delivery", () => {
   test("every point in that window is a boundary; the fork has neither the message nor an inbox, and the parent still delivers it", async () => {
-    const { data, workspace } = place("lh-fork-window-")
+    const { data, workspace } = place("wl-fork-window-")
     const { harness } = start(data, [say("One."), say("Two."), ...Array.from({ length: 12 }, () => say("In the fork."))])
     const engine = harness.engine
     const parent = engine.createSession({ cwd: workspace("w"), settings: SETTINGS })
@@ -66,7 +66,7 @@ describe("a fork between a message's enqueue and its delivery", () => {
   }, 60_000)
 
   test("before the very first delivery: the fork has no messages at all", async () => {
-    const { data, workspace } = place("lh-fork-window-")
+    const { data, workspace } = place("wl-fork-window-")
     const { harness } = start(data, [say("One."), say("In the fork.")])
     const engine = harness.engine
     const parent = engine.createSession({ cwd: workspace("w"), settings: SETTINGS })

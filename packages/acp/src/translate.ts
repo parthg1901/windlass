@@ -27,8 +27,8 @@
  *   still growing.
  */
 import type { SessionUpdate, ToolCallContent, ToolCallLocation } from "@agentclientprotocol/sdk"
-import type { EngineEvent, EventData, ProviderError, SessionSettings, StoredEvent, Usage } from "@light-harness/core"
-import { HARNESS_ORIGIN } from "@light-harness/core"
+import type { EngineEvent, EventData, ProviderError, SessionSettings, StoredEvent, Usage } from "@windlass/core"
+import { HARNESS_ORIGIN } from "@windlass/core"
 import { EXT, META, type StateNotification, type TurnNotification, type UsageNotification } from "./extensions.ts"
 import type { Logger } from "./log.ts"
 import { outcomeSuffix, parseInput, progressContent, rawInput, settledContent, toolKind, toolLocations, toolTitle } from "./tools.ts"

@@ -33,7 +33,7 @@ export const say = (value: string): ScriptedResponse => [script.text(value)]
 export const USAGE = (inputTokens: number, outputTokens = 10) => script.usage({ inputTokens, cachedInputTokens: 0, outputTokens, reasoningTokens: 0 })
 
 /** A temporary root with a data directory and workspaces in it. */
-export function place(prefix = "lh-ops-") {
+export function place(prefix = "wl-ops-") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
   scratch.push(root)
   const workspace = (name: string, files: Record<string, string> = { "notes.md": "# Notes\n" }) => {

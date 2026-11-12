@@ -1,6 +1,6 @@
 /**
  * `scripts/export-otel.ts` on a session the real CLI wrote with the scripted
- * model (`LH_ACP_SCRIPT`) in a throwaway data directory: to a file, to a
+ * model (`WINDLASS_ACP_SCRIPT`) in a throwaway data directory: to a file, to a
  * fake collector, and read-only (the session's file is not changed).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
@@ -11,7 +11,7 @@ import { brand } from "../../src/brand.ts"
 import type { ExportTraceServiceRequest, OtlpSpan } from "../../src/telemetry/otlp.ts"
 
 const REPO = resolve(import.meta.dir, "../../../..")
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-otel-script-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-otel-script-")))
 const xdg = join(root, "xdg")
 const dataDir = join(xdg, brand.directory)
 const work = join(root, "work")
@@ -57,7 +57,7 @@ beforeAll(async () => {
       ],
     }),
   )
-  const cli = await run(["bun", "packages/cli/src/main.ts", "--json", "--cwd", work, "--", "What is a?"], { LH_ACP_SCRIPT: script })
+  const cli = await run(["bun", "packages/cli/src/main.ts", "--json", "--cwd", work, "--", "What is a?"], { WINDLASS_ACP_SCRIPT: script })
   expect(cli.code).toBe(0)
   const created = JSON.parse(cli.stdout.split("\n")[0]!) as { sessionId: string; data: { settings: { model: string } } }
   sessionId = created.sessionId

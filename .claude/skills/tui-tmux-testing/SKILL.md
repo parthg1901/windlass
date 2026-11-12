@@ -1,6 +1,6 @@
 ---
 name: tui-tmux-testing
-description: How to test the full-screen TUI (packages/tui) in a real terminal through tmux, against the scripted demo engine, the real `lh acp` with a scripted model, or the live model. Use before calling TUI work done, when a frame looks wrong on screen, or when an end-to-end TUI test is flaky.
+description: How to test the full-screen TUI (packages/tui) in a real terminal through tmux, against the scripted demo engine, the real `windlass acp` with a scripted model, or the live model. Use before calling TUI work done, when a frame looks wrong on screen, or when an end-to-end TUI test is flaky.
 ---
 
 # Testing the TUI through tmux
@@ -18,19 +18,19 @@ Component tests (`packages/tui/test/frames.test.ts`, `input.test.ts`) render the
 
 ```sh
 cd /home/ubuntu/projects/light-harness
-T="tmux -L lh-manual"
+T="tmux -L windlass-manual"
 # Scripted demo engine (no model, no server): any of `bun packages/cli/src/main.ts --demo list`
 $T new-session -d -s tui -x 100 -y 30 "bun packages/cli/src/main.ts tui --demo find-and-fix-a-failing-test; echo status=\$?; sleep 600"
-# Real `lh acp` with a scripted model, in a throwaway git workspace and data directory (no sign-in needed)
-$T new-session -d -s tui -x 100 -y 30 "XDG_DATA_HOME=$TMP/xdg LH_ACP_SCRIPT=$TMP/script.json bun packages/cli/src/main.ts tui --cwd $TMP/work; echo status=\$?; sleep 600"
+# Real `windlass acp` with a scripted model, in a throwaway git workspace and data directory (no sign-in needed)
+$T new-session -d -s tui -x 100 -y 30 "XDG_DATA_HOME=$TMP/xdg WINDLASS_ACP_SCRIPT=$TMP/script.json bun packages/cli/src/main.ts tui --cwd $TMP/work; echo status=\$?; sleep 600"
 # The live model (check `bun scripts/login.ts status` first)
 $T new-session -d -s tui -x 120 -y 40 "bun packages/cli/src/main.ts tui --cwd $TMP/work --model gpt-6-luna --effort low; echo status=\$?; sleep 600"
 ```
 
 - `--demo-speed 4` plays a demo faster; `--demo-grace <ms>` makes a stopped command take that long to wind down (for Ctrl-C tests).
-- A script for `LH_ACP_SCRIPT` is `{ "responses": [[items...], ...] }`, one list per model call; items are `text`, `reasoning`, `tool_call` (`callId`, `name`, `input`), `usage`, `delay` (`ms`), `finish`, `fail` (see `packages/acp/src/scripted.ts`). The workspace needs `git init` and a commit for undo to have snapshots.
+- A script for `WINDLASS_ACP_SCRIPT` is `{ "responses": [[items...], ...] }`, one list per model call; items are `text`, `reasoning`, `tool_call` (`callId`, `name`, `input`), `usage`, `delay` (`ms`), `finish`, `fail` (see `packages/acp/src/scripted.ts`). The workspace needs `git init` and a commit for undo to have snapshots.
 - Approvals are scripted with calls the default mode (`auto`) asks about, so the question is the engine's own: a `write` to a path outside the workspace (not under `/tmp`, see Known issues), a `shell` call with `"sandbox": { "network": true }`, or anything after `/approval ask`. A `read` of a file outside the workspace taints the session. `{ "type": "delay", "ms": 1500 }` before the call gives a test time to type first.
-- `LH_TUI_DEBUG=1` shows events the TUI does not know as dim rows; `NO_COLOR=1` turns colour off; `LH_TUI=1` makes plain `lh` (interactive, no prompt) start the TUI.
+- `WINDLASS_TUI_DEBUG=1` shows events the TUI does not know as dim rows; `NO_COLOR=1` turns colour off; `WINDLASS_TUI=1` makes plain `windlass` (interactive, no prompt) start the TUI.
 - In tests use `packages/tui/test/tmux.ts`: `Tmux.start({ width, height, command, env })` runs the command under a shell that records its exit status and keeps the pane, on a private server per test process.
 
 ## Approvals, taint and diffs
@@ -50,14 +50,14 @@ $T send-keys -t tui -l "m"; $T send-keys -t tui -l "keep it in the workspace"; $
 
 - A subagent shares the scripted model with its parent: one `responses` list, consumed in call order. A foreground child's calls come between the parent's call that starts it and the parent's next step: `[[parent: subagent call], [child: tool calls], [child: answer], [parent: answer]]`. The child asks like the parent does (a `write` outside the workspace); the dock then says `subagent: <first line of the task>` and the status line `? waiting for your answer · subagent <task>`.
 - The `subagent` row: collapsed, one `↳` line (`starting`, `now: <tool> <arg>`, `it asks you something: answer below`, `finished after N steps, M tool calls`); selected (Alt-Up until `▌` is on it) and expanded (Ctrl-O), the child's own rows framed by `│ `, a second Ctrl-O shows all of them. A running subagent is in the panel (`agents ⋯ <task>`, `?` when it asks, `◌` in the background) and, in the background or after the turn, in the status line (`· 1 subagent at work: <task>`).
-- `/fork` (or `/fork copy`) switches to the new session: the `⑂ forked from …` note first, then the history. `lh fork` and `lh replay` are one-off CLI subcommands; test them headless (`packages/cli/test/fork-replay.test.ts`), not in tmux.
+- `/fork` (or `/fork copy`) switches to the new session: the `⑂ forked from …` note first, then the history. `windlass fork` and `windlass replay` are one-off CLI subcommands; test them headless (`packages/cli/test/fork-replay.test.ts`), not in tmux.
 
 ## MCP servers, skills, wake-ups, memory, background work
 
-- A project's MCP server (`.light-harness/config.json` → `mcp.servers`; the core fixture `packages/core/test/mcp/fixtures/stdio-server.ts --only echo` is a real one) is asked about in the dock after the first message's `⚠ mcp: ... It was not started` line: `─ ? Start the MCP server "<name>" ...`, the command, `Defined in <file>`, the engine's details, `[a] Start it for this project` / `[n] Not now`. No "with a note" item. `a` → `✓ approved: MCP server "<name>" starts now`; the next `/mcp` shows `<name> · running · N tools` (the first `/mcp` right after can still say starting). A tool call's question displaces it and it comes back after. The approval is kept under the data directory: a fresh `XDG_DATA_HOME` asks again.
+- A project's MCP server (`.windlass/config.json` → `mcp.servers`; the core fixture `packages/core/test/mcp/fixtures/stdio-server.ts --only echo` is a real one) is asked about in the dock after the first message's `⚠ mcp: ... It was not started` line: `─ ? Start the MCP server "<name>" ...`, the command, `Defined in <file>`, the engine's details, `[a] Start it for this project` / `[n] Not now`. No "with a note" item. `a` → `✓ approved: MCP server "<name>" starts now`; the next `/mcp` shows `<name> · running · N tools` (the first `/mcp` right after can still say starting). A tool call's question displaces it and it comes back after. The approval is kept under the data directory: a fresh `XDG_DATA_HOME` asks again.
 - An MCP call's dock shows `mcp_call  <server>/<tool>` and `sends: {...}` (the arguments), the row `mcp_call <server>/<tool>`.
 - `/skills`, `/mcp`, `/wakeups`, `/memory` print notes in the conversation (the line CLI's words); long paths wrap, never cut. A webhook `wake_create` is followed at once by `⏰ Webhook wake-up created <id>` with `URL` and `secret`; `/wakeups secret <id>` again. Memory off: `· Memory is off. To turn it on, ...`.
-- A background command: `◌ background <id> · <command>` with `output: <path on this machine>` (the tool's own output names the sandbox's `/tmp/.spill/...`), status line `● ready · ◌ background <id>: <command>`, panel `bg ◌ <id>: ...`, a note after the turn's ending row, and on `/quit` the TUI prints `lh: leaving stopped the background command still running (<id>); ...` after the screen is gone.
+- A background command: `◌ background <id> · <command>` with `output: <path on this machine>` (the tool's own output names the sandbox's `/tmp/.spill/...`), status line `● ready · ◌ background <id>: <command>`, panel `bg ◌ <id>: ...`, a note after the turn's ending row, and on `/quit` the TUI prints `windlass: leaving stopped the background command still running (<id>); ...` after the screen is gone.
 - The panel counts a model call only when the response reports usage: a scripted response without a `usage` item leaves `no model call yet`. Give scripted responses `{ "type": "usage", ... }` when a test reads tokens.
 - `/fork copy` shows the copy note (no ignored files, not a git repository); `/sessions` is 120 columns wide at most and marks a fork `⑂`, with `fork of <id>` and `in <dir>` for a copy elsewhere.
 - The line CLI in tmux: keys typed before its prompt (even with Enter) are sent as the first message; a project's server is asked at the prompt (`[y] start it · [N] not now ›`), also after the turn ended.
@@ -115,7 +115,7 @@ Set `window-size manual` on the session first (the helper does), or tmux sizes t
 ## Kill and clean up
 
 ```sh
-$T kill-session -t tui; $T kill-server; rm -f /tmp/tmux-$(id -u)/lh-manual
+$T kill-session -t tui; $T kill-server; rm -f /tmp/tmux-$(id -u)/windlass-manual
 ```
 
 To kill the ACP server under a running TUI: `pgrep -P <TUI pid> -f "main.ts acp"`, then `kill -9 <pid>` (the TUI pid is the pane's pid when the command is exec'd, otherwise a child of it). `term.children("main.ts acp")` does this in tests. Tests kill their sessions in `afterEach` and call `killServer()` in `afterAll`, which also removes the socket file and the helper's directory.
@@ -137,7 +137,7 @@ bun test packages/tui/test/frames.test.ts --update-snapshots   # after an intend
 Worth doing after any change to the TUI, before the test suite:
 
 ```sh
-T="tmux -L lh-manual"
+T="tmux -L windlass-manual"
 $T new-session -d -s tui -x 120 -y 34 "bun packages/cli/src/main.ts tui --demo find-and-fix-a-failing-test --demo-speed 3; echo status=\$?; sleep 120"
 until $T capture-pane -p -t tui | grep -q "● ready"; do sleep 0.1; done
 $T send-keys -t tui Enter                                   # the demo prompt is pre-filled; Enter plays the turn
@@ -145,7 +145,7 @@ until $T capture-pane -p -t tui | grep -qE "○ done|✓ done"; do sleep 0.1; do
 $T capture-pane -p -t tui                                   # read the whole frame
 $T send-keys -t tui M-Up; $T send-keys -t tui M-Up; $T send-keys -t tui C-o   # select a tool row and expand it
 $T capture-pane -p -t tui
-$T kill-server; rm -f /tmp/tmux-$(id -u)/lh-manual
+$T kill-server; rm -f /tmp/tmux-$(id -u)/windlass-manual
 ```
 
 What a good frame shows: tool rows with outcome and duration, the turn ending row with its verification state, the changed-files line, and on the right the panel with session totals, the last call, and one cache bar per model call (the first call 0% cached, later ones high).
@@ -158,7 +158,7 @@ Reviewed at 80, 100, 120 and 200 columns (2026-11-12): the demo hint wraps inste
 
 Everything here was hit while building and testing the TUI (2026-11-12).
 
-- **pkill killed the tmux server.** `pkill -f "LH_ACP_SCRIPT=..."` matched the tmux server, whose argv holds the session's command; every pane died with EIO (`setRawMode failed with errno: 5` in the TUI's stderr). Kill by PID.
+- **pkill killed the tmux server.** `pkill -f "WINDLASS_ACP_SCRIPT=..."` matched the tmux server, whose argv holds the session's command; every pane died with EIO (`setRawMode failed with errno: 5` in the TUI's stderr). Kill by PID.
 - **`pane_dead_status` is not reliable.** tmux marks a pane dead when its pty closes, which can come before it reaps the process; the status was then empty (read as 0) about one run in five, and once the process sat as a zombie for seconds. The helper runs the program under `sh -c '<command>; echo $? > <file>; exec sleep 600'` and reads the file.
 - **A dead pane reports a hidden cursor.** `#{cursor_flag}` was 0 after every exit path although the raw output ended with `\e[?25h`: tmux hides the cursor of a dead pane. Read modes while the wrapper shell still holds the pane; `pipe-pane` shows what the program really wrote.
 - **The exit is known before the last bytes are drawn.** Right after the exit status appeared, a capture still showed the alternate screen, or an empty main screen without the line printed after it. Poll the screen (`waitFor`) and the modes (`term.until`) after `exited()`, never one capture.
@@ -178,23 +178,23 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **The network question has no "project" choice** (network is never remembered for a project), so `p` is absent and Up/Down counts differ from a file question's. Read the choices before scripting keys.
 - **An "outside" path under /tmp is not outside.** With the workspace in /tmp, a path beside it is the session's own temp directory: no question, no taint. Use `/var/tmp` (or the home directory) for the outside directory in tests.
 - **A cancelled question was recorded as a refusal.** The client answered the pending `session/request_permission` with `cancelled` right after sending `session/cancel`; inside the server the answer overtook the cancel and the engine recorded `approval.answered` with `deny`. The shared client now answers once the interrupt is in the log (at most 1 s later); the dock leaves the screen at once.
-- **Replayed turn endings came before the replayed events.** On `session/load` a full-fidelity client got every `_light-harness/turn` before the events of the turns they end, so the changed files had no ending row to go to. Fixed in the server; a TUI test asserts a replayed ending gets its files.
+- **Replayed turn endings came before the replayed events.** On `session/load` a full-fidelity client got every `_windlass/turn` before the events of the turns they end, so the changed files had no ending row to go to. Fixed in the server; a TUI test asserts a replayed ending gets its files.
 - **`conversation()` does not read dialogs.** It splits each line at `│` to drop the panel, and a dialog's own borders are `│` too: check dialog text in the raw frame.
 - **The live model may skip the failure.** Asked to fetch a URL it often asks for `sandbox: { network: true }` up front (the question appears in the first step); told "exactly this, no extra arguments" it reported the sandbox's DNS failure instead of asking. Steering ("ask for network access and run it again") then asked.
 - **Engine work in progress breaks unrelated suites.** Another agent edits `packages/core` in this checkout; once every engine-backed test failed with `this.concludeReplay is not a function` from `engine.ts`. Not the TUI: retry a few minutes later, and run the component tests (no engine) meanwhile.
 - **The live model's second call often reads 0% from cache** (seen in the panel's per-call bars: 89%, 0%, 90%, 83%). That is the provider's lag on quick follow-ups described in the harness-testing skill, not the TUI.
 
-- **Parallel subagents race for the script.** Two `subagent` calls in one response start at once, and their children's model calls take scripted responses in whatever order they arrive: a child may get the other's script. With `LH_ACP_SCRIPT` keep one subagent per step; in-process tests give `FakeProvider` a function response that picks by the task in `request.input` (`packages/acp/test/client.test.ts`, "two subagents asking at once").
+- **Parallel subagents race for the script.** Two `subagent` calls in one response start at once, and their children's model calls take scripted responses in whatever order they arrive: a child may get the other's script. With `WINDLASS_ACP_SCRIPT` keep one subagent per step; in-process tests give `FakeProvider` a function response that picks by the task in `request.input` (`packages/acp/test/client.test.ts`, "two subagents asking at once").
 - **Two questions at once used to cancel each other.** The dock (and the CLI's prompt) answered a pending question `null` when the next arrived, which refused the first subagent's call (the CLI even interrupted the turn). The shared client now puts one approval question to a front end at a time and queues the rest.
 - **The dock ignores letters for 0.4 s after it takes the focus by itself.** A component test that advanced the clock past `QUIET_MS` only, then pressed `a`, waited forever for the answer. Advance it by `ARMING_MS` too (both are exported from `src/approval.ts`).
 - **A note added before a session opens stands above its history**, but a wait for the note returns before the history is there: `/fork`'s test waits for the note, a line of the inherited history and `● ready` together.
-- **Forwarded subagent events are not stored.** A session opened again (`--session`, a fork, the picker) shows its `subagent` rows without activity (`↳ finished · expand to read its work`); expanding one reads the subagent's own log over `_light-harness/events`. A test of the live view must feed `child.event`s; a test of a reload must give the backend `storedEvents`.
+- **Forwarded subagent events are not stored.** A session opened again (`--session`, a fork, the picker) shows its `subagent` rows without activity (`↳ finished · expand to read its work`); expanding one reads the subagent's own log over `_windlass/events`. A test of the live view must feed `child.event`s; a test of a reload must give the backend `storedEvents`.
 - **The subagent's task carries the harness's note to it** ("(You are a subagent. …)"). The TUI drops it from the expanded view; the stored message keeps it, so `--json` and the child's log show it.
 - **Paths are cut inside an expanded subagent at 100 columns** (the frame and the panel take room): match `✓ write \S+ · created`, not the whole path.
 - **A server that died at start showed Bun's banner as the reason** (`… before it was ready: Bun v1.4.0 (Linux arm64)`), after the runtime's source excerpt on stderr. The shared client now holds the server's raw output until it is ready and names the uncaught error's message. Inject it with a fixture that throws at the top level as the server command.
-- **A CLI killed with SIGKILL leaves its `lh acp` shutting down for up to 5 s**, holding the session. A command with `trap '' TERM` in the scripted turn keeps that window open long enough to test; the next `--continue` now waits for the orphaned server (its parent is init or the systemd user manager) and says so.
-- **Leaving without a session open exits 1** (fixed 2026-11-12; it was 0). `tui -c` on a session another TUI holds shows `✗ could not open the session … /reconnect`; Ctrl-D then exits 1 and prints `lh: could not open the session: …` after the screen is back. The same for signed out and for an engine that died. Read the status from the wrapper (`echo status=$?`), the sentence with `capture-pane -S -`.
-- **With no sign-in** (a throwaway `XDG_DATA_HOME`) the conversation says `✗ not signed in`, then `To sign in, run lh login in another terminal …` and `Then type /reconnect here`; a sent message gives `! not sent: not signed in; run lh login in another terminal, then /reconnect`. To test that `/reconnect` picks a sign-in up without a restart, write a synthetic `auth.json` (any strings, `expiresAt` an hour ahead, mode 0600) into the throwaway data directory and type `/reconnect`: `● ready` follows. The TUI then lists models with that fake token, which is one request to the provider that fails; do it once, never with a real token.
+- **A CLI killed with SIGKILL leaves its `windlass acp` shutting down for up to 5 s**, holding the session. A command with `trap '' TERM` in the scripted turn keeps that window open long enough to test; the next `--continue` now waits for the orphaned server (its parent is init or the systemd user manager) and says so.
+- **Leaving without a session open exits 1** (fixed 2026-11-12; it was 0). `tui -c` on a session another TUI holds shows `✗ could not open the session … /reconnect`; Ctrl-D then exits 1 and prints `windlass: could not open the session: …` after the screen is back. The same for signed out and for an engine that died. Read the status from the wrapper (`echo status=$?`), the sentence with `capture-pane -S -`.
+- **With no sign-in** (a throwaway `XDG_DATA_HOME`) the conversation says `✗ not signed in`, then `To sign in, run windlass login in another terminal …` and `Then type /reconnect here`; a sent message gives `! not sent: not signed in; run windlass login in another terminal, then /reconnect`. To test that `/reconnect` picks a sign-in up without a restart, write a synthetic `auth.json` (any strings, `expiresAt` an hour ahead, mode 0600) into the throwaway data directory and type `/reconnect`: `● ready` follows. The TUI then lists models with that fake token, which is one request to the provider that fails; do it once, never with a real token.
 - **After `/undo` the panel's `context` figure is stale** until the next model call.
 - **An undone turn is one dim line** where its prompt was: `↶ undone turn 2: "<prompt>" · out of the conversation · /redo brings it back` (the explanation is shortened first on a narrow pane), also in `tui -c`; its other rows are not drawn. Wait for `↶ undone turn`; the note after the undo says `↶ undone: turn 2 "…"`.
 - **Ending rows carry the turn number** (`○ done · … · turn 2`), which `/fork <n>` takes. A message queued with `/queue` (or Ctrl-T) is a turn of its own, so the second ending row of such a run is `turn 2` and `/undo` names that turn.
@@ -209,5 +209,5 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 
 ## Measured (two-core aarch64, 2026-11-12)
 
-- Start to `● ready`: 0.37 s with the demo engine, 0.7 s with the `lh acp` child (most of it the server).
+- Start to `● ready`: 0.37 s with the demo engine, 0.7 s with the `windlass acp` child (most of it the server).
 - CPU: 0% idle; 4% during a demo turn; 18% of a core with about 90 text deltas a second; a 110 KB reply in about 14,000 deltas renders and settles in 1.1 s. RSS 115 MB, 250 MB after that reply.

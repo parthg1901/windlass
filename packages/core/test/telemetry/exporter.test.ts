@@ -14,7 +14,7 @@ import { type ExportTraceServiceRequest, SCOPE, batches, encodeSpan, nanos } fro
 import type { Span } from "../../src/telemetry/span.ts"
 import { spanIdOf, traceIdOf } from "../../src/telemetry/span.ts"
 
-const scratch = mkdtempSync(join(tmpdir(), "lh-otel-export-"))
+const scratch = mkdtempSync(join(tmpdir(), "wl-otel-export-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 function span(n: number, more: Partial<Span> = {}): Span {

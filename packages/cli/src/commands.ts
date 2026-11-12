@@ -17,7 +17,7 @@
  * attached to the editor when it opened it (`Screen.attach`). An engine
  * whose sessions cannot revert attaches none, and the commands say so.
  */
-import type { HandEditPolicy, RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
+import type { HandEditPolicy, RevertOptions, RevertPlan, RevertResult } from "@windlass/core"
 import type { SessionRevertOptions } from "./engine.ts"
 import { type Segment, plural, seg } from "./text.ts"
 import { fileList } from "./tools.ts"

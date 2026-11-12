@@ -1,6 +1,6 @@
 /**
  * The TUI as a client of the harness's own ACP server, through the protocol
- * client every terminal client shares (`@light-harness/acp/client`): `lh acp`
+ * client every terminal client shares (`@windlass/acp/client`): `windlass acp`
  * in a child process over stdio, asked at `initialize` for every harness
  * event and for no standard updates (the TUI renders the events itself).
  *
@@ -35,9 +35,9 @@
  *   `approval.subagent`; its activity: `child.event` in the events
  */
 import { handEditChoices, signInReason } from "./cli.ts"
-import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@light-harness/acp/client"
-import { EXT, type MemoryChangeParams, type MemoryChangeResult } from "@light-harness/acp/extensions"
-import { type RevertResult, brand } from "@light-harness/core"
+import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
+import { EXT, type MemoryChangeParams, type MemoryChangeResult } from "@windlass/acp/extensions"
+import { type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
   type ApprovalHandler,
@@ -63,7 +63,7 @@ import {
   type StreamItem,
 } from "./backend.ts"
 
-export { EventQueue } from "@light-harness/acp/client"
+export { EventQueue } from "@windlass/acp/client"
 
 /** The compaction method, should the server offer it. */
 export const COMPACT_METHOD = EXT.compact

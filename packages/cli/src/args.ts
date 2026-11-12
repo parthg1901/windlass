@@ -1,5 +1,5 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { nearest } from "./text.ts"
 import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"

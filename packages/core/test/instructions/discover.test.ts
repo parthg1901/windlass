@@ -18,7 +18,7 @@ import { READ, SETTINGS, SHELL, Script, developer } from "../request/session.ts"
 let tree: string
 
 beforeAll(() => {
-  tree = mkdtempSync(join(tmpdir(), "light-harness-instructions-"))
+  tree = mkdtempSync(join(tmpdir(), "windlass-instructions-"))
 })
 
 afterAll(() => {
@@ -165,9 +165,9 @@ describe("discoverSources", () => {
 
 describe("defaultConfigDir", () => {
   test("follows XDG_CONFIG_HOME and falls back to ~/.config", () => {
-    expect(defaultConfigDir({ XDG_CONFIG_HOME: "/xdg" }, "/home/u")).toBe(join("/xdg", "light-harness"))
-    expect(defaultConfigDir({}, "/home/u")).toBe(join("/home/u", ".config", "light-harness"))
-    expect(defaultConfigDir({ XDG_CONFIG_HOME: "" }, "/home/u")).toBe(join("/home/u", ".config", "light-harness"))
+    expect(defaultConfigDir({ XDG_CONFIG_HOME: "/xdg" }, "/home/u")).toBe(join("/xdg", "windlass"))
+    expect(defaultConfigDir({}, "/home/u")).toBe(join("/home/u", ".config", "windlass"))
+    expect(defaultConfigDir({ XDG_CONFIG_HOME: "" }, "/home/u")).toBe(join("/home/u", ".config", "windlass"))
   })
 })
 

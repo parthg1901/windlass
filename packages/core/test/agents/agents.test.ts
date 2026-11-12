@@ -31,7 +31,7 @@ afterEach(() => {
 })
 
 function layout() {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-agents-")))
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "wl-agents-")))
   dirs.push(base)
   const repo = join(base, "repo")
   const cwd = join(repo, "packages", "app")
@@ -75,7 +75,7 @@ describe("discovery", () => {
   })
 
   test("outside a repository only the working directory is searched", () => {
-    const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-agents-norepo-")))
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "wl-agents-norepo-")))
     dirs.push(base)
     const cwd = join(base, "a", "b")
     mkdirSync(cwd, { recursive: true })

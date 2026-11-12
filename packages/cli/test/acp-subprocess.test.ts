@@ -1,6 +1,6 @@
 /**
  * The default path as a user meets it: the CLI as a real process, with
- * `lh acp` as its child, a scripted model, and a temporary data directory.
+ * `windlass acp` as its child, a scripted model, and a temporary data directory.
  * Ctrl-C, SIGTERM, a closed output pipe, and the server dying under a turn;
  * then a server that is slow to start, exits before it is ready, or speaks
  * something else.
@@ -10,8 +10,8 @@ import type { Subprocess } from "bun"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SCRIPT_ENV } from "@light-harness/acp"
-import { brand } from "@light-harness/core"
+import { SCRIPT_ENV } from "@windlass/acp"
+import { brand } from "@windlass/core"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { EngineUnavailable } from "../src/engine.ts"
 import { CLI } from "./helpers.ts"
@@ -29,7 +29,7 @@ afterAll(() => {
 
 /** A workspace, a data directory, and scripts for the model, one file per run. */
 function place() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-acp-cli-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-acp-cli-")))
   scratch.push(root)
   const workspace = join(root, "work")
   mkdirSync(workspace)

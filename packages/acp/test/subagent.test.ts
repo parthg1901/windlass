@@ -12,13 +12,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@light-harness/core/testing"
+import { script } from "@windlass/core/testing"
 import { APPROVAL_META, EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 
 const NS = META.capabilities
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "lh-acp-child-"))
+const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-acp-child-"))
 afterAll(() => rmSync(elsewhere, { recursive: true, force: true }))
 
 let h: Harness | null = null

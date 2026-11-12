@@ -2,7 +2,7 @@
  * The CLI's behaviour through every way it reaches the engine, from one
  * parameterised suite: `direct` (the engine in this process, the reference),
  * `acp-memory` (the ACP client and server in this process) and `acp` (the
- * default: `lh acp` as a child process). Every scenario is played through all
+ * default: `windlass acp` as a child process). Every scenario is played through all
  * three with the same scripted model and the same workspace, and what the
  * user sees (stdout, stderr, the exit code, the files) must be the same apart
  * from IDs, times and the temporary directory. Any difference is a failure.
@@ -11,9 +11,9 @@ import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SCRIPT_ENV, scriptedProvider } from "@light-harness/acp"
-import { brand, createHarness, type SessionId } from "@light-harness/core"
-import { FakeProvider } from "@light-harness/core/testing"
+import { SCRIPT_ENV, scriptedProvider } from "@windlass/acp"
+import { brand, createHarness, type SessionId } from "@windlass/core"
+import { FakeProvider } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import type { Engine } from "../src/engine.ts"
 import type { Io } from "../src/main.ts"
@@ -34,7 +34,7 @@ afterAll(() => {
 })
 
 type Item = Record<string, unknown>
-/** A scripted model: one response per model call. The same file drives every path (`LH_ACP_SCRIPT` for the child). */
+/** A scripted model: one response per model call. The same file drives every path (`WINDLASS_ACP_SCRIPT` for the child). */
 type Script = readonly (readonly Item[])[]
 
 const text = (value: string): Item => ({ type: "text", text: value })
@@ -57,7 +57,7 @@ interface Place {
 }
 
 function place(path: Path, script: Script, files: Record<string, string> = {}): Place {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `lh-paths-${path}-`)))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `wl-paths-${path}-`)))
   scratch.push(root)
   const workspace = join(root, "work")
   mkdirSync(workspace)
@@ -80,7 +80,7 @@ function place(path: Path, script: Script, files: Record<string, string> = {}): 
     scriptFile,
     serverErr,
     engine: async (options = {}) => {
-      // A fresh model per run, as a new `lh` process would have: each run plays the script from its start.
+      // A fresh model per run, as a new `windlass` process would have: each run plays the script from its start.
       const provider = options.signedOut ? undefined : await scriptedProvider(scriptFile)
       const harness = {
         dataDir,
@@ -251,8 +251,8 @@ describe("one prompt, every path", () => {
     const results = await everyPath(async (path) => {
       const shown: Record<string, unknown> = {}
       const setups: Record<string, Record<string, string>> = {
-        passed: { ".light-harness/config.json": config("true") },
-        unresolved: { ".light-harness/config.json": config("echo lint failed; exit 1") },
+        passed: { ".windlass/config.json": config("true") },
+        unresolved: { ".windlass/config.json": config("echo lint failed; exit 1") },
         none: {},
       }
       for (const [name, files] of Object.entries(setups)) {

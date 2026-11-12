@@ -9,7 +9,7 @@
  * The configuration files are read only to say where a server is defined and
  * to name one the session has not started yet (servers start with a turn).
  */
-import { type EngineSession, type Harness, type SessionId, brand } from "@light-harness/core"
+import { type EngineSession, type Harness, type SessionId, brand } from "@windlass/core"
 import { findConfigFiles, readConfigFile } from "../../core/src/config/load.ts"
 import { type ConfigFile, mergeConfigFiles } from "../../core/src/config/schema.ts"
 import { type McpServerConfig, resolveMcpConfig } from "../../core/src/mcp/config.ts"

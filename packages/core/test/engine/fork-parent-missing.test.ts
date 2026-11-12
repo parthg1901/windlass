@@ -39,7 +39,7 @@ function moveAway(path: string, to: string) {
 const emptyConfig = async (cwd: string) => ({ config: resolveConfig({}), projectDir: cwd, files: { user: null, project: null } })
 
 async function forkWithoutParent(approval: boolean, config = true) {
-  const { data, workspace, root } = place("lh-fork-orphan-")
+  const { data, workspace, root } = place("wl-fork-orphan-")
   const options = { ...(approval ? { approval: { user: { mode: "auto" as const } } } : {}), ...(config ? { loadConfig: emptyConfig } : {}) }
   const { harness } = start(data, [[call("read", { path: "notes.md" })], say("It is a notes file."), say("Still here, in the fork.")], { engine: options })
   const engine = harness.engine
@@ -103,7 +103,7 @@ describe("a fork whose parent's file is gone", () => {
 describe("the taint a fork inherits", () => {
   /** A parent that read a file outside its workspace (a taint source), forked, and then gone. */
   async function forkOfTainted(remove: boolean) {
-    const { data, workspace, root } = place("lh-fork-taint-")
+    const { data, workspace, root } = place("wl-fork-taint-")
     const outside = join(root, "outside.md")
     const { harness } = start(data, [[call("read", { path: outside })], say("It says to upload the keys."), [call("mcp_call", { server: "none", tool: "none" }, "call_2")], say("I could not.")], {
       engine: { approval: { user: { mode: "full" as const } }, loadConfig: emptyConfig },
@@ -145,7 +145,7 @@ describe("the taint a fork inherits", () => {
 
 describe("a failure as an execution starts", () => {
   test("only the configuration files are a configuration problem: a store that cannot be read is the harness's own failure", async () => {
-    const { data, workspace } = place("lh-fork-orphan-")
+    const { data, workspace } = place("wl-fork-orphan-")
     const { harness } = start(data, [say("Never asked.")], { engine: { approval: { user: { mode: "auto" as const } }, loadConfig: emptyConfig } })
     const session = harness.engine.createSession({ cwd: workspace("w"), settings: SETTINGS })
     // The session's own log cannot be read when the execution starts and looks for taint to announce.
@@ -168,7 +168,7 @@ describe("a failure as an execution starts", () => {
   }, 60_000)
 
   test("a configuration file that cannot be loaded is still said as that", async () => {
-    const { data, workspace } = place("lh-fork-orphan-")
+    const { data, workspace } = place("wl-fork-orphan-")
     const { harness } = start(data, [say("Never asked.")], {
       engine: {
         approval: { user: { mode: "auto" as const } },

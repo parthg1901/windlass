@@ -20,7 +20,7 @@ function tempDir(prefix: string) {
 
 /** A results directory as `evals/run-agent.ts` writes it, with the fields the gate's statistics read. */
 function resultsDir(name: string, runs: { task: string; passes: number; runs: number; input?: number; steps?: number }[], config = { model: "m1", effort: "high" }) {
-  const dir = join(tempDir("lh-memory-ab-"), name)
+  const dir = join(tempDir("wl-memory-ab-"), name)
   mkdirSync(dir, { recursive: true })
   const results = runs.flatMap((task) =>
     Array.from({ length: task.runs }, (_, index) => ({

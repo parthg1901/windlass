@@ -15,7 +15,7 @@ import { readTool } from "../../src/tools/read.ts"
 import { locate, redactedView, restore } from "../../src/tools/redacted.ts"
 import { writeTool } from "../../src/tools/write.ts"
 
-const dir = mkdtempSync(join(tmpdir(), "lh-redacted-"))
+const dir = mkdtempSync(join(tmpdir(), "wl-redacted-"))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const TOKEN = "tok_live_9f8e7d6c5b4a3210"

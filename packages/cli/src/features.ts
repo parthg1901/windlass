@@ -5,9 +5,9 @@
  * line is a sentence a first-time user can act on: what is so, and what to do
  * next. Nothing here is ever cut: long paths and reasons wrap where they are shown.
  */
-import { brand } from "@light-harness/core"
-import { isUndone, turnsOf } from "@light-harness/acp/turns"
-import type { McpServerInfo, McpStateResult, MemoryStateResult, SkillsResult, WakeListResult, WakeSecretResult } from "@light-harness/acp/extensions"
+import { brand } from "@windlass/core"
+import { isUndone, turnsOf } from "@windlass/acp/turns"
+import type { McpServerInfo, McpStateResult, MemoryStateResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 
 export type LineTone = "plain" | "dim" | "warn" | "error" | "ok" | "bold" | "accent"
 

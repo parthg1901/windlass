@@ -39,13 +39,13 @@ let configDir: string | null = null
 /** The private directory for the tmux config and the exit-status files, made on first use. */
 function workDir(): string {
   if (configDir !== null) return configDir
-  configDir = mkdtempSync(join(tmpdir(), "lh-tmux-"))
+  configDir = mkdtempSync(join(tmpdir(), "wl-tmux-"))
   // A large history allows reading back what a program printed after it left the alternate screen.
   writeFileSync(join(configDir, "tmux.conf"), ["set -g history-limit 5000", 'set -g default-terminal "tmux-256color"', "set -g escape-time 10", "set -g status off"].join("\n"))
   return configDir
 }
 
-export const DEFAULT_SOCKET = `lh-tui-test-${process.pid}`
+export const DEFAULT_SOCKET = `wl-tui-test-${process.pid}`
 
 export class Tmux {
   private constructor(

@@ -124,12 +124,12 @@ prompt and looks sent (task 21).
     src/trace.ts, one at a time (not in parallel). Then tell me in one sentence each what they are for. Change
     nothing."` Read the compaction rows and `events.ts <id> --type compaction`: how many summary calls, and does the
     ending's step count say what was spent? About 6 requests each.
-13. **Forks** (no request to make them). `lh fork <id>`, `lh fork <id> --through <n>` (find step boundaries with
-    `events.ts`: a user has no way to), `lh fork <id> --copy`, `/fork` in the TUI and `/sessions` there. Continue each
+13. **Forks** (no request to make them). `windlass fork <id>`, `windlass fork <id> --through <n>` (find step boundaries with
+    `events.ts`: a user has no way to), `windlass fork <id> --copy`, `/fork` in the TUI and `/sessions` there. Continue each
     with one question about the conversation (`"What was the codeword?"`) and, in the copy, one edit: are the project's
     checks able to run in the copy (no `node_modules`, no `.git`)? About 4 requests.
 14. **Replay** of a recorded edit (record: `"In src/analyze.ts, add a one-line comment above the line where the
-    default tolerance (128) is set, saying what unit it is in. Nothing else."`), then `lh replay <id>` under `stop`,
+    default tolerance (128) is set, saying what unit it is in. Nothing else."`), then `windlass replay <id>` under `stop`,
     `--policy execute-read-only`, and `--policy execute --system-prompt <file>` (a prompt that says to run `bun test`
     before editing). Compare with `docs/replay.md` and with `bun scripts/replay.ts <id>`. About 15 requests.
 15. **Subagents** (one-shot, then interactive line mode, then TUI). Foreground: `"Use a subagent to count how many test
@@ -164,7 +164,7 @@ prompt and looks sent (task 21).
 21. **Edges and the built executable**: `--session` with an ambiguous, a wrong and a short prefix; `--unattended deny`
     with the curl of task 7; Ctrl-C while the answer streams (`"Without tools, write a 600-word essay about prompt
     caching."`); two interactive sessions in one workspace editing one file, then `/undo` in the first; text typed
-    before the line interface shows `›`. Then `bun scripts/build.ts`, copy `dist/lh-linux-arm64` out of the
+    before the line interface shows `›`. Then `bun scripts/build.ts`, copy `dist/windlass-linux-arm64` out of the
     repository, and repeat a one-shot, `tui` with `/fork`, `fork --json`, and `--models` with an empty
     `XDG_DATA_HOME` (a crash: does it name source lines?). Time `--version` and the TUI's `● ready` against the
     source, and say the machine's load (`uptime`) with the numbers. About 10 requests.

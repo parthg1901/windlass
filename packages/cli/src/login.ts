@@ -1,6 +1,6 @@
 /**
- * `lh login`: the ChatGPT sign-in, inside the program. The flow itself is
- * `@light-harness/core/auth/chatgpt`, used as it is; this file is the part a
+ * `windlass login`: the ChatGPT sign-in, inside the program. The flow itself is
+ * `@windlass/core/auth/chatgpt`, used as it is; this file is the part a
  * person sees.
  *
  * - `login` / `login start`: saves a pending sign-in and prints its address.
@@ -21,7 +21,7 @@
  * Exit codes: 0 done, 1 failed (or `status`: signed out), 2 usage, 130 the
  * paste was abandoned with Ctrl-C.
  */
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import {
   type AuthConfig,
   AuthError,
@@ -35,7 +35,7 @@ import {
   forgetCredentials,
   loadCredentials,
   loadPending,
-} from "@light-harness/core/auth/chatgpt"
+} from "@windlass/core/auth/chatgpt"
 
 /** What `runLogin` needs of the process. The CLI's `Io` is one. */
 export interface LoginIo {

@@ -34,7 +34,7 @@ import type { SessionId } from "../../src/id.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 
 const COUNT = Number(process.env[`${brand.envPrefix}LISTING_SESSIONS`] ?? 60)
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-listing-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-listing-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const CLI = resolve(import.meta.dir, "../../../cli/src/main.ts")

@@ -1,5 +1,5 @@
 {
-  "name": "@light-harness/acp",
+  "name": "@windlass/acp",
   "version": "0.0.0",
   "license": "MIT",
   "private": true,
@@ -12,6 +12,6 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.5.0",
-    "@light-harness/core": "workspace:*"
+    "@windlass/core": "workspace:*"
   }
 }

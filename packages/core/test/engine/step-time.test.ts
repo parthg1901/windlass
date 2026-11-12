@@ -35,7 +35,7 @@ import { type ScriptItem, script } from "../../src/testing/fake-provider.ts"
 import { ManualClock, ScriptedTools } from "./harness.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 
-const directory = mkdtempSync(join(tmpdir(), "lh-step-time-"))
+const directory = mkdtempSync(join(tmpdir(), "wl-step-time-"))
 afterAll(() => rmSync(directory, { recursive: true, force: true }))
 
 const WINDOW = 128_000

@@ -4,8 +4,8 @@
  * TUI's theme), and the question about a project's MCP server as an approval
  * the dock can show.
  */
-import type { ApprovalAsk } from "@light-harness/acp/client"
-import type { McpServerInfo } from "@light-harness/acp/extensions"
+import type { ApprovalAsk } from "@windlass/acp/client"
+import type { McpServerInfo } from "@windlass/acp/extensions"
 import type { Line } from "./cli.ts"
 import { type Role, type Span, span } from "./theme.ts"
 

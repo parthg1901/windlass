@@ -27,7 +27,7 @@ afterAll(() => {
 })
 
 function place() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-processes-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-processes-")))
   scratch.push(root)
   const workspace = (name: string) => {
     mkdirSync(join(root, name), { recursive: true })
@@ -172,7 +172,7 @@ describe("a session and the process that holds it", () => {
     const id = await holder.started()
     const refused = await run<{ ok: boolean; code: string; holderPid: number; message: string }>("open", data, id)
     expect(refused).toMatchObject({ ok: false, code: "session_in_use", holderPid: holder.child.pid })
-    expect(refused.message).toBe(`session ${id} is in use by another lh process (pid ${holder.child.pid}): wait for it to finish or stop it (kill ${holder.child.pid}), or start a new session`)
+    expect(refused.message).toBe(`session ${id} is in use by another windlass process (pid ${holder.child.pid}): wait for it to finish or stop it (kill ${holder.child.pid}), or start a new session`)
 
     holder.child.kill("SIGKILL")
     await holder.child.exited

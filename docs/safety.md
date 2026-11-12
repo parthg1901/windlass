@@ -1,21 +1,21 @@
 # Safety: what the agent may do without asking
 
-light-harness decides, before every tool call, whether it runs, runs inside an OS sandbox, asks you, or is refused.
+Windlass decides, before every tool call, whether it runs, runs inside an OS sandbox, asks you, or is refused.
 This page says what each mode does, what the sandbox stops and what it does not, how the agent asks for more
-access, what "tainted" means, and what the secret redaction misses. (The binary `lh` and the directory names below
+access, what "tainted" means, and what the secret redaction misses. (The binary `windlass` and the directory names below
 come from `packages/core/src/brand.ts`.)
 
 ## The modes
 
-Choose with `lh --approval <mode>`, with the `approval` option in an editor, or with `"approval": { "mode": ... }` in
-your configuration file (`~/.config/light-harness/config.json`). The default is `auto`.
+Choose with `windlass --approval <mode>`, with the `approval` option in an editor, or with `"approval": { "mode": ... }` in
+your configuration file (`~/.config/windlass/config.json`). The default is `auto`.
 
 | | `ask` | `auto` (default) | `full` |
 |---|---|---|---|
 | Read a file | runs | runs | runs |
 | Read a credential store (`~/.ssh`, `~/.aws`, ...) | asks, once only | asks, once only | runs |
 | Edit a file in the working directory | asks | runs | runs |
-| Edit in `.git/` or `.light-harness/` | asks | asks | runs |
+| Edit in `.git/` or `.windlass/` | asks | asks | runs |
 | Edit outside the working directory | asks | asks | runs |
 | Edit a credential store or the harness's own data | refused | refused | runs |
 | Run a command | asks, then runs in the sandbox | runs in the sandbox | runs with your full permissions |
@@ -26,13 +26,13 @@ your configuration file (`~/.config/light-harness/config.json`). The default is 
 | After untrusted content entered the conversation: network access for a command, a command without the sandbox | asks again; earlier approvals for it stop applying | same | commands run in the sandbox; the rest asks |
 
 `full` is an explicit choice for a container or a machine with nothing to lose. A project's own configuration file
-(`.light-harness/config.json` in the repository) can make the policy stricter and never looser: a repository you
+(`.windlass/config.json` in the repository) can make the policy stricter and never looser: a repository you
 cloned cannot switch the questions off. When it tries, you are told once and its setting is not followed.
 
 ## When nobody is there to answer
 
-A question is put only where someone can answer it: the interactive mode of `lh`, or an editor. A one-shot run
-(`lh "fix the test"`), `--json`, a pipe and the eval runner are unattended. There, a call that would ask is refused
+A question is put only where someone can answer it: the interactive mode of `windlass`, or an editor. A one-shot run
+(`windlass "fix the test"`), `--json`, a pipe and the eval runner are unattended. There, a call that would ask is refused
 at once, the agent is told why and goes on (`--unattended deny`, the default), or the run ends with exit code 4
 (`--unattended stop`). Nothing ever waits, and no setting turns a question into a yes: to let more run unattended,
 choose a looser mode. The output says what was refused and why.
@@ -50,7 +50,7 @@ command:
 - gets no environment variable whose name looks like a credential (`*TOKEN*`, `*KEY*`, `AWS_*`, ...);
 - cannot reach the user's session bus or a container daemon's socket, either of which would run things outside;
 - cannot change the repository's `.git/hooks` and `.git/config`, or the harness's project directory
-  (`.light-harness/`): a hook or a configured check it planted would run later, outside the sandbox;
+  (`.windlass/`): a hook or a configured check it planted would run later, outside the sandbox;
 - on Linux, cannot see or signal other processes, and does not outlive being stopped.
 
 What works inside without asking: `bun test`, `bun run <script>`, `bun install` from the lockfile with packages
@@ -181,4 +181,4 @@ keep credentials away from commands.
 Everything above is in the session's log: for each call that ran, the mode, where its paths really pointed and
 whether a command ran in the sandbox and with what extra access; each question as it was shown, the answer, and
 what the answer allowed from then on; each refusal and why; when the session became tainted and from what, and when
-you cleared it. `lh --json` prints these events as they happen.
+you cleared it. `windlass --json` prints these events as they happen.

@@ -14,8 +14,8 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type CallId, type MessageId, brand, event } from "@light-harness/core"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { type CallId, type MessageId, brand, event } from "@windlass/core"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { loadConfig } from "../../core/src/config/load.ts"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { wakeMessageSummary } from "../src/features.ts"
@@ -30,7 +30,7 @@ const QUICK = { startWaitMs: 0, probeMs: 300, graceMs: 500, backoff: { initialMs
 let root = ""
 let saved: string | undefined
 beforeAll(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-features-")))
+  root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-features-")))
   saved = process.env.XDG_CONFIG_HOME
   process.env.XDG_CONFIG_HOME = join(root, "config")
 })

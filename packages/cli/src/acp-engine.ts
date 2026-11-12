@@ -5,7 +5,7 @@
  * the protocol cannot carry, the CLI cannot do.
  *
  * The protocol client is the one every terminal client shares
- * (`@light-harness/acp/client`): it starts `lh acp` as a child process (or
+ * (`@windlass/acp/client`): it starts `windlass acp` as a child process (or
  * the server in this process, `memory`), asks at `initialize` for every
  * harness event as `<prefix>/event` and for no standard updates, and routes
  * permission requests to the session they are about. This file only maps it
@@ -30,7 +30,7 @@
  *   listing is all the run does (no session is open), the server is let go of
  *   after it; a server in use is never stopped by a listing.
  */
-import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@light-harness/acp/client"
+import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@windlass/acp/client"
 import {
   type DiffResult,
   EXT,
@@ -44,9 +44,9 @@ import {
   type WakeListResult,
   type WakeSecretResult,
   titleFromEvents,
-} from "@light-harness/acp/extensions"
-import { forkPointOfTurn, isUndone, turnsOf } from "@light-harness/acp/turns"
-import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
+} from "@windlass/acp/extensions"
+import { forkPointOfTurn, isUndone, turnsOf } from "@windlass/acp/turns"
+import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@windlass/core"
 import { selfCommand } from "./self.ts"
 import {
   type Approver,
@@ -76,7 +76,7 @@ export interface AcpEngineOptions {
   readonly env?: Record<string, string | undefined>
   /** `memory`: the harness the in-process server runs on. */
   readonly harness?: HarnessOptions
-  /** Where the server's warnings and errors go, as the CLI's own lines (`lh: ...`). Defaults to standard error. */
+  /** Where the server's warnings and errors go, as the CLI's own lines (`windlass: ...`). Defaults to standard error. */
   readonly stderr?: (text: string) => void
   /** How long the server may take to answer `initialize`. */
   readonly startTimeoutMs?: number

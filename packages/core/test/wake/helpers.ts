@@ -19,7 +19,7 @@ export const HOUR = 60 * MINUTE
 const dirs: string[] = []
 const cleanups: (() => Promise<void> | void)[] = []
 
-export function tempDir(prefix = "lh-wake-"): string {
+export function tempDir(prefix = "wl-wake-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   dirs.push(dir)
   return dir

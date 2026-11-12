@@ -18,8 +18,8 @@ import {
   client,
   methods,
 } from "@agentclientprotocol/sdk"
-import { type AnyTool, type EngineOptions, type Harness as CoreHarness, type ModelEntry, type SignInState, createHarness } from "@light-harness/core"
-import { FakeProvider, type ScriptedResponse } from "@light-harness/core/testing"
+import { type AnyTool, type EngineOptions, type Harness as CoreHarness, type ModelEntry, type SignInState, createHarness } from "@windlass/core"
+import { FakeProvider, type ScriptedResponse } from "@windlass/core/testing"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
 import { silentLogger } from "../src/log.ts"
 import { type Served, serve } from "../src/server.ts"
@@ -76,7 +76,7 @@ export interface Harness {
 }
 
 export async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
-  const root = options.dataDir === undefined ? realpathSync(mkdtempSync(join(tmpdir(), "lh-acp-"))) : null
+  const root = options.dataDir === undefined ? realpathSync(mkdtempSync(join(tmpdir(), "wl-acp-"))) : null
   const dataDir = options.dataDir ?? join(root!, "data")
   const workspace = options.dataDir === undefined ? join(root!, "work") : join(dataDir, "..", "work")
   await Bun.write(join(workspace, ".keep"), "")

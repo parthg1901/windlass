@@ -1,6 +1,6 @@
-# ACP v2 reference for light-harness
+# ACP v2 reference for Windlass
 
-This page is what an engineer needs to expose the light-harness core as an Agent Client Protocol (ACP) v2 agent over
+This page is what an engineer needs to expose the Windlass core as an Agent Client Protocol (ACP) v2 agent over
 stdio, and to build the harness's own CLI client on the same protocol. It was written on 2026-11-11.
 
 **Sources and how they are cited**
@@ -96,8 +96,8 @@ Receivers ignore unknown capability fields. An agent **MUST NOT** send `capabili
 it supports all seven baseline methods (`doc:extensibility#advertising-custom-capabilities`).
 
 ```json
-{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":2,"info":{"name":"lh-cli","version":"0.1.0"},"capabilities":{"auth":{"terminal":{}},"elicitation":{"url":{}}}}}
-{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":2,"info":{"name":"light-harness","version":"0.1.0"},"capabilities":{"session":{"prompt":{"image":{},"embeddedContext":{}},"mcp":{"stdio":{},"http":{}}}},"authMethods":[{"type":"agent","methodId":"chatgpt","name":"Sign in with ChatGPT"}]}}
+{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":2,"info":{"name":"windlass-cli","version":"0.1.0"},"capabilities":{"auth":{"terminal":{}},"elicitation":{"url":{}}}}}
+{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":2,"info":{"name":"windlass","version":"0.1.0"},"capabilities":{"session":{"prompt":{"image":{},"embeddedContext":{}},"mcp":{"stdio":{},"http":{}}}},"authMethods":[{"type":"agent","methodId":"chatgpt","name":"Sign in with ChatGPT"}]}}
 ```
 
 ### 1.4 Protocol version handling (`doc:initialization#version-negotiation`)
@@ -111,7 +111,7 @@ it supports all seven baseline methods (`doc:extensibility#advertising-custom-ca
   than reject.
 - The client checks the returned version and disconnects if unsupported.
 - To serve v1 and v2 on one binary, the SDK has `agentProtocolRouter().withV1(a1).withV2(a2).connect(stream)`
-  (`sdk:src/protocol-router.ts:308`, used in `sdk:src/examples/dual-version-agent.ts:202`). light-harness only needs v2
+  (`sdk:src/protocol-router.ts:308`, used in `sdk:src/examples/dual-version-agent.ts:202`). Windlass only needs v2
   **(inferred)**: our only planned client is our own.
 
 ### 1.5 Authentication (`doc:authentication`)
@@ -603,7 +603,7 @@ What the agent must do (`doc:session-setup#session-lifecycle`, `#resuming-sessio
 - **list** is mandatory with `session`; only sessions the agent still has.
 - **close**: §2.4. **delete**: §2.5 (optional).
 
-For light-harness: the log is complete and nothing is deleted, so replay is a fold of the projection
+For Windlass: the log is complete and nothing is deleted, so replay is a fold of the projection
 (`core:message/message.ts`) into updates, one entity per message part **(inferred)**. Because replay may send current
 state only, no streaming deltas are needed **(inferred)**.
 
@@ -628,7 +628,7 @@ capability (`doc:extensibility#experimental-features-and-negotiation`). Use one 
 | `auth/status` | C→A | `capabilities.auth.status: {}` | `{}` → `{ state: "authenticated"\|"unauthenticated"\|"not_required"\|"unknown"\|_..., accounts?: { label, active?, name?, email?, organization? }[] }` (`U:AuthStatusResponse@3941`). **MUST NOT** fail with `-32000`. |
 | `auth/status_update` | A→C notif | same | same fields as the `auth/status` result (`U:AuthStatusUpdateNotification@7605`). |
 | `mcp/message` | both | `session.mcp.acp: {}` | MCP over the ACP channel. Request `{ serverId, requestId, method, params? }` → `{ result }` or `{ error: { code, message, data? } }`; notification form for subscriptions. Server config `{ type: "acp", name, serverId }` (`U:MessageMcpRequest@2656`, `U:McpServerAcp@8376`). |
-| `proxy/initialize`, `proxy/successor` | conductor↔proxy | n/a | Proxy chains: `proxy/initialize` has `InitializeRequest` shape; `proxy/successor` wraps `{ method, params?, _meta? }` (`U:InitializeProxyRequest@9727`, `U:ProxySuccessorRequest@9737`). Not needed by light-harness **(inferred)**. |
+| `proxy/initialize`, `proxy/successor` | conductor↔proxy | n/a | Proxy chains: `proxy/initialize` has `InitializeRequest` shape; `proxy/successor` wraps `{ method, params?, _meta? }` (`U:InitializeProxyRequest@9727`, `U:ProxySuccessorRequest@9737`). Not needed by Windlass **(inferred)**. |
 
 Unstable additions to stable shapes that matter here:
 - `IdleStateUpdate.usage?: U:Usage@5247` = `{ totalTokens, inputTokens, outputTokens, thoughtTokens?, cachedReadTokens?, cachedWriteTokens? }`,
@@ -678,7 +678,7 @@ update variants, so these shapes are moving. Treat every unstable shape as pinne
 - Everywhere else (requests, responses, chunks, content items, `plan_update`) `_meta` describes only its own object,
   and `null` values are ordinary data. Data about a single notification goes in `params._meta`.
 
-### 8.3 Extensions light-harness needs (proposed, all **inferred**)
+### 8.3 Extensions Windlass needs (proposed, all **inferred**)
 
 `<ns>` is a reverse-DNS prefix the project controls; it has to be chosen (open question). Advertise each under
 `capabilities._meta["<ns>/<feature>"]` in the `initialize` response.
@@ -849,10 +849,10 @@ import { agent, methods, ndJsonStream, RequestError, PROTOCOL_VERSION } from "@a
 
 const sessions = new Map<string, { cwd: string; active: boolean }>()
 
-const app = agent({ name: "light-harness" })
+const app = agent({ name: "windlass" })
   .onRequest(methods.agent.initialize, () => ({
     protocolVersion: PROTOCOL_VERSION,
-    info: { name: "light-harness", version: "0.1.0" },
+    info: { name: "windlass", version: "0.1.0" },
     capabilities: { session: { prompt: { image: {} } } },
     authMethods: [{ type: "agent", methodId: "chatgpt", name: "Sign in with ChatGPT" }],
   }))

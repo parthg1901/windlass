@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { type SessionId, brand, openSessionDirectory } from "@light-harness/core"
-import { script } from "@light-harness/core/testing"
+import { type SessionId, brand, openSessionDirectory } from "@windlass/core"
+import { script } from "@windlass/core/testing"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
 

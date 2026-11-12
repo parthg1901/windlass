@@ -74,7 +74,7 @@ afterAll(() => {
  * stands for the scenarios' `/repo` when the logs are compared.
  */
 function projectDirectory(): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-conformance-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-conformance-")))
   projects.push(root)
   const cwd = join(root, "repo")
   mkdirSync(join(cwd, ".git"), { recursive: true })

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@light-harness/core/testing"
+import { script } from "@windlass/core/testing"
 import { type DiffResult, EXT, META, TITLE_LENGTH, deriveTitle } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 

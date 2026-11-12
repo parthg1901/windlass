@@ -44,7 +44,7 @@ Skills you can load:
 Skills are instructions for particular kinds of task, kept as files. When a task matches a skill's description, load the skill with the skill tool (by name) before you start, and follow it.
 
 - commit: How to commit when other people or agents work in the same working tree: stage and commit only your own paths, with a one-line conventional message. Use whenever you are asked to commit.
-- harness-testing: How to test light-harness like a user, headless, ...
+- harness-testing: How to test Windlass like a user, headless, ...
 </skills>
 ```
 

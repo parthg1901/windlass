@@ -33,16 +33,16 @@ many model calls as the recording has steps (5.9 per replay here), per replay.
 One session:
 
 ```
-lh replay [<session-id>] [--system-prompt <file>] [--tool-description <tool>=<file>]...
+windlass replay [<session-id>] [--system-prompt <file>] [--tool-description <tool>=<file>]...
           [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute]
           [--strict] [--json] [--through <seq>] [--workspace <dir>]
 ```
 
-`lh replay` prints the replay's report, then the comparison that carries the signal (its side effects against the
+`windlass replay` prints the replay's report, then the comparison that carries the signal (its side effects against the
 recording's, reads ignored, and whether it ended with the recording's files; the grade is the eval suite's, below),
 then the replay session and the copy it worked in. `--json` prints the same as one object,
-the comparison under `compared` (and as printed under `comparison`). It runs through `lh acp` like every subcommand
-(`_light-harness/replay`, [acp.md](acp.md)). `bun scripts/replay.ts` takes the same options and `--data-dir <dir>`,
+the comparison under `compared` (and as printed under `comparison`). It runs through `windlass acp` like every subcommand
+(`_windlass/replay`, [acp.md](acp.md)). `bun scripts/replay.ts` takes the same options and `--data-dir <dir>`,
 and runs the engine in its own process.
 
 - `<session-id>` is a session of the harness data directory, or a unique prefix of one (the most recent session of
@@ -53,7 +53,7 @@ and runs the engine in its own process.
 - `--model`, `--effort` (`default` for the model's own) change the settings of the whole replay.
 - Under `execute` the copy holds the recorded workspace's tracked and small untracked files, and not the ignored
   ones (`node_modules`, build output), large untracked files or `.git`: it is not a git repository. A check or
-  command that needs installed dependencies fails there unless the replay installs them first. `lh replay` says so
+  command that needs installed dependencies fails there unless the replay installs them first. `windlass replay` says so
   when it makes the copy.
 - `--strict` compares arguments byte for byte after JSON canonicalisation and requires the same step boundaries.
   Without it a path given relative or absolute is the same path, trailing whitespace of a command does not matter,

@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function layout() {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-commands-")))
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "wl-commands-")))
   dirs.push(base)
   const repo = join(base, "repo")
   const cwd = join(repo, "app")

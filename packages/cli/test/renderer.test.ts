@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { type EphemeralEvent, type NewEvent, type ProviderErrorKind, type SessionId, brand, event, makeProviderError, text } from "@light-harness/core"
-import { c, m, opening, stepStarted, synthetic } from "@light-harness/core/testing/scenarios"
+import { type EphemeralEvent, type NewEvent, type ProviderErrorKind, type SessionId, brand, event, makeProviderError, text } from "@windlass/core"
+import { c, m, opening, stepStarted, synthetic } from "@windlass/core/testing/scenarios"
 import { demoScenarios } from "../src/demo/scenarios.ts"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { displayWidth, stripAnsi } from "../src/text.ts"
@@ -271,7 +271,7 @@ describe("events the core added", () => {
     const sink = new QuietSink((text) => (out += text), (text) => (err += text))
     for (const item of stored(failedWith(providerError("rate_limit", "slow down", 429, undefined, "req_9")))) sink.event(item)
     expect(out).toBe("")
-    expect(err).toBe("lh: failed: The model call failed: it went wrong. (request req_9)\n".replace("lh", brandBinary))
+    expect(err).toBe("windlass: failed: The model call failed: it went wrong. (request req_9)\n".replace("windlass", brandBinary))
   })
 
   test("a stalled connection is named as such on the retry line", () => {

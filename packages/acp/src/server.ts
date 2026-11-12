@@ -1,6 +1,6 @@
 /**
  * The ACP v1 agent: one instance per client connection, on top of the
- * process's harness (`createHarness` in `@light-harness/core`, the same
+ * process's harness (`createHarness` in `@windlass/core`, the same
  * assembly the command line uses). Everything it does to a session goes
  * through the engine: creating and opening, the stored log for a replay,
  * settings, withdrawing a prompt, closing one session, archiving. A session
@@ -70,7 +70,7 @@ import {
   approvalModes,
   brand,
   renderReplayReport,
-} from "@light-harness/core"
+} from "@windlass/core"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
 import { compareReplay, renderComparison } from "../../core/src/replay/effects.ts"

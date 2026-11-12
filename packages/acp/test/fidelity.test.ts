@@ -11,8 +11,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import type { AnyTool, StoredEvent } from "@light-harness/core"
-import { script } from "@light-harness/core/testing"
+import type { AnyTool, StoredEvent } from "@windlass/core"
+import { script } from "@windlass/core/testing"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
 
@@ -346,7 +346,7 @@ describe("diagnostics and errors", () => {
     const sessionId = await harness.newSession()
     await harness.connection.agent.request(methods.agent.session.close, { sessionId })
     const holder = Bun.spawn(
-      [process.execPath, "-e", `import { createHarness } from "@light-harness/core"; import { FakeProvider } from "@light-harness/core/testing"; const h = createHarness({ dataDir: ${JSON.stringify(harness.dataDir)}, provider: new FakeProvider([]), log: () => {} }); h.engine.openSession(${JSON.stringify(sessionId)}); console.log("held"); for await (const _ of Bun.stdin.stream()) {} await h.close()`],
+      [process.execPath, "-e", `import { createHarness } from "@windlass/core"; import { FakeProvider } from "@windlass/core/testing"; const h = createHarness({ dataDir: ${JSON.stringify(harness.dataDir)}, provider: new FakeProvider([]), log: () => {} }); h.engine.openSession(${JSON.stringify(sessionId)}); console.log("held"); for await (const _ of Bun.stdin.stream()) {} await h.close()`],
       { stdin: "pipe", stdout: "pipe", stderr: "inherit", cwd: import.meta.dir },
     )
     try {

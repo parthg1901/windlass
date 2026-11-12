@@ -259,7 +259,7 @@ describe("the index", () => {
   })
 
   test("survives a restart in the session's own file, and an index of another version is built again", () => {
-    const directory = mkdtempSync(join(tmpdir(), "lh-history-"))
+    const directory = mkdtempSync(join(tmpdir(), "wl-history-"))
     directories.push(directory)
     const path = join(directory, "session.db")
     const first = openSqliteStore({ path })

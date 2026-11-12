@@ -15,7 +15,7 @@ export function removeTempDirs() {
 }
 
 export function project() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-verify-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-verify-")))
   created.push(root)
   const dir = join(root, "project")
   const spillDir = join(root, "spill")

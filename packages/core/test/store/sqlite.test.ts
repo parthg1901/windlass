@@ -33,7 +33,7 @@ afterAll(() => {
 })
 
 function temporaryPath() {
-  const directory = mkdtempSync(join(tmpdir(), "lh-store-"))
+  const directory = mkdtempSync(join(tmpdir(), "wl-store-"))
   directories.push(directory)
   return join(directory, "store.db")
 }

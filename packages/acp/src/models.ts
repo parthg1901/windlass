@@ -4,7 +4,7 @@
  * usage update need them. A failure is logged and answered with an empty
  * list (and asked again next time), so a client can always open a session.
  */
-import type { Harness, ModelEntry } from "@light-harness/core"
+import type { Harness, ModelEntry } from "@windlass/core"
 import { type Logger, describeError } from "./log.ts"
 
 const MODEL_LIST_TIMEOUT_MS = 5000

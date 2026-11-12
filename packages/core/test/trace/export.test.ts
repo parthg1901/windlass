@@ -125,7 +125,7 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
       })
       // A scripted provider served these calls: nobody was billed, so the trace does not say how, and says who answered.
       expect(call.record.billing).toBeUndefined()
-      expect(call.record.x_light_harness?.served_by).toBe("fake")
+      expect(call.record.x_windlass?.served_by).toBe("fake")
       expect(call.record.ts).toBe(new Date(call.row.startedAt).toISOString())
       expect(call.record.model).toBe(call.row.model)
       expect(call.record.session).toBe(loop.id)
@@ -159,7 +159,7 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
         const written = usage.cacheWriteTokens!
         expect(call.record!.billing).toBe("subscription")
         expect(call.record!.provider).toBe("openai")
-        expect(call.record!.x_light_harness?.served_by).toBe(SIGNED_IN_PROVIDER)
+        expect(call.record!.x_windlass?.served_by).toBe(SIGNED_IN_PROVIDER)
         expect(call.record!.usage).toEqual({
           input_tokens: usage.inputTokens - usage.cachedInputTokens - written,
           cache_read_tokens: usage.cachedInputTokens,
@@ -187,7 +187,7 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
     for (const call of result.calls) {
       if (call.record === null) continue
       // Declared in the spec's own hint now (format 1.1), not in the extension field.
-      expect(Object.keys(call.record.x_light_harness!)).not.toContain("prefix_break")
+      expect(Object.keys(call.record.x_windlass!)).not.toContain("prefix_break")
       expect(call.record.hints?.filter((hint) => hint.kind === "prefix_break") ?? []).toEqual(call.hinted as never)
       // A summary request that leaves a kept tail out declares that itself; no event in the log is that break.
       if (call.breaks.length === 0 && call.row.purpose !== "compaction") expect(call.declared).toEqual([])
@@ -294,9 +294,9 @@ describe("a request that cannot be shown to be the one sent", () => {
 
     const call = result.calls[2]!
     expect(call.request).toBeNull()
-    expect(call.record).toMatchObject({ fidelity: "usage-only", x_light_harness: { verified: false } })
+    expect(call.record).toMatchObject({ fidelity: "usage-only", x_windlass: { verified: false } })
     expect(call.record!.request).toBeUndefined()
-    expect(call.record!.x_light_harness!.unverified_reason).toContain("block 5")
+    expect(call.record!.x_windlass!.unverified_reason).toContain("block 5")
     // The other rows are still proven, and the mixed trace is still a valid trace.
     expect(result.calls.filter((other) => other.request !== null)).toHaveLength(result.calls.length - 1)
     expect(validateTrace(serializeTrace(result.records)).errors).toEqual([])

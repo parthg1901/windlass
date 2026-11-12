@@ -1,5 +1,5 @@
 /**
- * `lh tui`: the full-screen terminal interface. The CLI parses the arguments
+ * `windlass tui`: the full-screen terminal interface. The CLI parses the arguments
  * and calls `runTui`; everything after that is here.
  *
  * The terminal is put back on every way out: a normal quit, the second
@@ -8,8 +8,8 @@
  */
 import { homedir } from "node:os"
 import { createCliRenderer } from "@opentui/core"
-import { brand } from "@light-harness/core"
-import type { Scenario } from "@light-harness/core/testing/scenarios"
+import { brand } from "@windlass/core"
+import type { Scenario } from "@windlass/core/testing/scenarios"
 import { AcpBackend } from "./acp-client.ts"
 import { App } from "./app.ts"
 import type { Backend, OpenSettings, OpenTarget } from "./backend.ts"
@@ -22,7 +22,7 @@ export { DemoBackend } from "./demo-backend.ts"
 export { Transcript } from "./transcript.ts"
 export { Theme } from "./theme.ts"
 
-/** Turns the TUI on for `lh` run interactively with no prompt (until it is the default). */
+/** Turns the TUI on for `windlass` run interactively with no prompt (until it is the default). */
 export const TUI_ENV = `${brand.envPrefix}TUI`
 /** Shows events this client does not know as dim rows. */
 export const DEBUG_ENV = `${brand.envPrefix}TUI_DEBUG`

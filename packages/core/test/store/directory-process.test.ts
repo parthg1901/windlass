@@ -26,7 +26,7 @@ afterAll(() => {
 })
 
 function dataDir() {
-  const directory = mkdtempSync(join(tmpdir(), "lh-directory-process-"))
+  const directory = mkdtempSync(join(tmpdir(), "wl-directory-process-"))
   directories.push(directory)
   return directory
 }
@@ -93,7 +93,7 @@ describe("who holds a session", () => {
     })()
     expect(refused).toBeInstanceOf(SessionInUseError)
     expect(refused).toMatchObject({ code: "locked", sessionId: "ses_a", holderPid: holder.pid })
-    expect((refused as Error).message).toBe(`session ses_a is in use by another lh process (pid ${holder.pid}): wait for it to finish or stop it (kill ${holder.pid}), or start a new session`)
+    expect((refused as Error).message).toBe(`session ses_a is in use by another windlass process (pid ${holder.pid}): wait for it to finish or stop it (kill ${holder.pid}), or start a new session`)
     // The same from a third process.
     expect(await run("open", dir, "ses_a")).toMatchObject({ ok: false, name: "SessionInUseError", code: "locked", holderPid: holder.pid })
     // Only that session is held: the other one opens, and the held one can still be read and listed.

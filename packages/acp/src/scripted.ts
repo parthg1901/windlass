@@ -13,8 +13,8 @@
  * `input`), `usage` (token counts), `delay` (`ms`), `finish` (`reason`), and
  * `fail` (`kind`, `message`). It is a testing aid and is never used otherwise.
  */
-import { brand } from "@light-harness/core"
-import { FakeProvider, type ScriptItem, script } from "@light-harness/core/testing"
+import { brand } from "@windlass/core"
+import { FakeProvider, type ScriptItem, script } from "@windlass/core/testing"
 
 export const SCRIPT_ENV = `${brand.envPrefix}ACP_SCRIPT`
 

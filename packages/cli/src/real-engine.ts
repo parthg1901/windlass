@@ -2,7 +2,7 @@
  * The real engine behind the CLI's `Engine` interface: a thin adapter. The
  * harness itself (the data directory, a store per session, the ChatGPT-plan
  * provider with the saved sign-in, the standard tools, the defaults) is put
- * together by `createHarness` in `@light-harness/core`, which the ACP server
+ * together by `createHarness` in `@windlass/core`, which the ACP server
  * uses too. What is added here is the CLI's own: an `OpenRequest` becomes a
  * session, and everything that can be missing in a user's environment (no
  * sign-in, a session another process is working in, an unknown session or
@@ -23,13 +23,13 @@ import {
   StoreError,
   brand,
   createHarness,
-} from "@light-harness/core"
-import { titleFromEvents } from "@light-harness/acp/extensions"
-import { isUndone, turnsOf } from "@light-harness/acp/turns"
+} from "@windlass/core"
+import { titleFromEvents } from "@windlass/acp/extensions"
+import { isUndone, turnsOf } from "@windlass/acp/turns"
 import { askLocally } from "./commands.ts"
 import { type Approver, type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, type Session, type SessionSummary, signInSentence } from "./engine.ts"
 
-export { DEFAULT_EFFORT, DEFAULT_MODEL } from "@light-harness/core"
+export { DEFAULT_EFFORT, DEFAULT_MODEL } from "@windlass/core"
 
 /** For tests and scripts. The CLI passes nothing. */
 export type RealEngineOptions = HarnessOptions

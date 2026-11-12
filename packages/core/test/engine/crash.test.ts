@@ -41,7 +41,7 @@ afterAll(() => {
 
 /** A workspace for the child. With `check`, a project: its configuration declares that command as the check `exists`. */
 function place(check?: string) {
-  const directory = mkdtempSync(join(tmpdir(), "lh-engine-crash-"))
+  const directory = mkdtempSync(join(tmpdir(), "wl-engine-crash-"))
   directories.push(directory)
   const workspace = join(directory, "workspace")
   mkdirSync(workspace)

@@ -114,7 +114,7 @@ describe(`a session in which a tool reads an image, exported as format ${TRACE_F
   const marker = `<binary image/png, ${picture.length} bytes, sha256 ${sha(base64)}>`
 
   async function session() {
-    const { data, workspace } = place("lh-trace-media-")
+    const { data, workspace } = place("wl-trace-media-")
     const cwd = workspace("w", {})
     await Bun.write(`${cwd}/shot.png`, picture)
     const { harness, provider } = start(data, [

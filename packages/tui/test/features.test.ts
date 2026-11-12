@@ -7,8 +7,8 @@
  * labelled as one; an MCP call's question shows the arguments it would send.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import type { McpServerInfo } from "@light-harness/acp/extensions"
-import { type CallId, type MessageId, event } from "@light-harness/core"
+import type { McpServerInfo } from "@windlass/acp/extensions"
+import { type CallId, type MessageId, event } from "@windlass/core"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
 
@@ -32,7 +32,7 @@ const THEIRS: McpServerInfo = {
   error: null,
   retryInMs: null,
   origin: "project",
-  file: "/work/.light-harness/config.json",
+  file: "/work/.windlass/config.json",
   question: { fingerprint: "0123456789abcdef", subject: "tracker-mcp --stdio", details: ['This project\'s configuration names the MCP server "theirs", which is started by running that command. It runs outside the sandbox, with your permissions.'] },
 }
 
@@ -72,7 +72,7 @@ describe("MCP servers", () => {
 
   test("a server that cannot start is said once, with why; /mcp lists the servers", async () => {
     const { session } = await open()
-    const failed: McpServerInfo = { ...THEIRS, name: "tracker", state: "failed", origin: "user", file: "/home/u/.config/light-harness/config.json", question: null, error: "the server process exited with code 1; stderr ends with: TRACKER_TOKEN is not set", retryInMs: 5000 }
+    const failed: McpServerInfo = { ...THEIRS, name: "tracker", state: "failed", origin: "user", file: "/home/u/.config/windlass/config.json", question: null, error: "the server process exited with code 1; stderr ends with: TRACKER_TOKEN is not set", retryInMs: 5000 }
     session.mcp = async () => ({ sessionId: session.id, available: true, servers: [failed] })
     session.pushMcp({ sessionId: session.id, available: true, servers: [failed] })
     session.pushMcp({ sessionId: session.id, available: true, servers: [failed] })
@@ -121,12 +121,12 @@ describe("/skills, /wakeups, /memory and what wake-ups deliver", () => {
     session.skills = async () => ({
       sessionId: session.id,
       available: true,
-      skills: [{ name: "release-notes", description: "How to write release notes.", path: "/work/.light-harness/skills/release-notes/SKILL.md", scope: "project", root: "/work/.light-harness/skills" }],
-      problems: [{ path: "/work/.light-harness/skills/broken/SKILL.md", severity: "skipped", reason: "it does not start with front matter" }],
+      skills: [{ name: "release-notes", description: "How to write release notes.", path: "/work/.windlass/skills/release-notes/SKILL.md", scope: "project", root: "/work/.windlass/skills" }],
+      problems: [{ path: "/work/.windlass/skills/broken/SKILL.md", severity: "skipped", reason: "it does not start with front matter" }],
       roots: [],
     })
     session.wakeSecret = async (id) => ({ id, url: "http://127.0.0.1:47863/w/wk_1", secret: "whsec_abc", message: null })
-    session.memory = async () => ({ sessionId: session.id, enabled: false, off: "Memory is off. To turn it on, put { \"memory\": { \"enabled\": true } } in ~/.config/light-harness/config.json; sessions started after that have it.", notes: [], pending: [], problems: [], review: [], paths: null })
+    session.memory = async () => ({ sessionId: session.id, enabled: false, off: "Memory is off. To turn it on, put { \"memory\": { \"enabled\": true } } in ~/.config/windlass/config.json; sessions started after that have it.", notes: [], pending: [], problems: [], review: [], paths: null })
     await mounted!.setup.mockInput.typeText("/skills")
     mounted!.setup.mockInput.pressEnter()
     await mounted!.settle()
@@ -144,7 +144,7 @@ describe("/skills, /wakeups, /memory and what wake-ups deliver", () => {
     await mounted!.settle()
     const frame = flat(await mounted!.frame())
     expect(frame).toContain("release-notes · How to write release notes.")
-    expect(frame).toContain("/work/.light-harness/skills/broken/SKILL.md")
+    expect(frame).toContain("/work/.windlass/skills/broken/SKILL.md")
     expect(frame).toContain("secret whsec_abc")
     expect(frame).toContain("Memory is off.")
     expect(frame).toContain("wake-up wk_9: it fired (every 1m) · not typed by you")
@@ -211,13 +211,13 @@ describe("background commands", () => {
     session.emit(
       event("execution.started", { executionId: "exe_1" } as never),
       event("tool.called", { messageId: m("m1"), callId: c("c1"), name: "shell", input: '{"command":"sleep 5; echo built","background":true}', providerData: null }),
-      event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 5; echo built", logPath: "/tmp/lh-1001/ses_x/.spill/shell-bg.log" } } as never),
+      event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 5; echo built", logPath: "/tmp/windlass-1001/ses_x/.spill/shell-bg.log" } } as never),
       event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } } as never),
     )
     await mounted!.settle()
     const frame = flat(await mounted!.frame())
     expect(frame).toContain("background bg_1 · sleep 5; echo built")
-    expect(frame).toContain("output: /tmp/lh-1001/ses_x/.spill/shell-bg.log")
+    expect(frame).toContain("output: /tmp/windlass-1001/ses_x/.spill/shell-bg.log")
     expect(frame).toContain("1 background command still running (bg_1)")
     expect(frame).toMatch(/bg +◌ bg_1: sleep 5/)
     session.emit(event("spawn.ended", { spawnId: "bg_1", outcome: "completed", detail: "exited", exitCode: 0, usage: null, tainted: false, merge: null } as never))

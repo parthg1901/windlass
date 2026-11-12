@@ -43,7 +43,7 @@ const sh = (cwd: string, command: string) => {
 
 /** Runs the child until it kills itself. */
 async function crash(name: string, git = false) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-lineage-crash-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-lineage-crash-")))
   directories.push(root)
   const workspace = join(root, "workspace")
   const data = join(root, "data")

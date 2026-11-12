@@ -23,7 +23,7 @@ import { mkdtempSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type SessionNotification, client, methods, ndJsonStream } from "@agentclientprotocol/sdk"
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import { EXT } from "../src/extensions.ts"
 
 const MAIN = join(import.meta.dir, "..", "..", "cli", "src", "main.ts")

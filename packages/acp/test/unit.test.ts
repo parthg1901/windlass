@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { type EngineEvent, brand } from "@light-harness/core"
+import { type EngineEvent, brand } from "@windlass/core"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
 import { lastWords } from "../src/client.ts"
 import { META } from "../src/extensions.ts"

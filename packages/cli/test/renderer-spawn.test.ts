@@ -5,7 +5,7 @@
  * its ending with the count.
  */
 import { describe, expect, test } from "bun:test"
-import { type CallId, type EphemeralEvent, type MessageId, type NewEvent, type SessionId, type StoredEvent, event, text } from "@light-harness/core"
+import { type CallId, type EphemeralEvent, type MessageId, type NewEvent, type SessionId, type StoredEvent, event, text } from "@windlass/core"
 import { render, stored } from "./helpers.ts"
 import { COPY_NOTE } from "../src/features.ts"
 import { wrap } from "../src/text.ts"
@@ -31,7 +31,7 @@ const started = (background: boolean, worktree = false) =>
     messageId: m("a1"),
     callId: c("call_1"),
     background,
-    work: { kind: "subagent", sessionId: CHILD, worktree: worktree ? { path: "/data/worktrees/x", branch: "lh/subagent-x", base: "abc", repository: "/repo" } : null },
+    work: { kind: "subagent", sessionId: CHILD, worktree: worktree ? { path: "/data/worktrees/x", branch: "windlass/subagent-x", base: "abc", repository: "/repo" } : null },
   })
 const ended = (more: Partial<NewEvent<"spawn.ended">["data"]> = {}) => event("spawn.ended", { spawnId: "bg_1", outcome: "completed", detail: "It finished.", exitCode: null, usage, tainted: false, merge: null, ...more })
 
@@ -52,11 +52,11 @@ describe("a subagent", () => {
   })
 
   test("in the background and in a worktree says so; a merge, a conflict, a failure and untrusted content each get their line", () => {
-    const merged = render(stored([started(true, true), ended({ merge: { status: "merged", branch: "lh/subagent-x", commit: "abc", files: ["a.ts", "b.ts"], conflicts: [], kept: false } })]))
+    const merged = render(stored([started(true, true), ended({ merge: { status: "merged", branch: "windlass/subagent-x", commit: "abc", files: ["a.ts", "b.ts"], conflicts: [], kept: false } })]))
     expect(merged).toContain("  ▸ subagent ses_01234567 started in the background, in its own worktree\n")
     expect(merged).toContain("    merged 2 files into the workspace: a.ts, b.ts\n")
-    const conflict = render(stored([started(false, true), ended({ merge: { status: "conflicts", branch: "lh/subagent-x", commit: "abc", files: ["a.ts"], conflicts: ["a.ts"], kept: true } })]))
-    expect(conflict).toContain("    ⚠ not merged, conflicts in: a.ts\n    its work is on branch lh/subagent-x; nothing was changed in the workspace\n")
+    const conflict = render(stored([started(false, true), ended({ merge: { status: "conflicts", branch: "windlass/subagent-x", commit: "abc", files: ["a.ts"], conflicts: ["a.ts"], kept: true } })]))
+    expect(conflict).toContain("    ⚠ not merged, conflicts in: a.ts\n    its work is on branch windlass/subagent-x; nothing was changed in the workspace\n")
     const failed = render(stored([started(false), ended({ outcome: "failed", detail: "It failed: The request was rejected.", usage: null, tainted: true })]))
     expect(failed).toContain("  ✗ subagent ses_01234567 failed · 100ms\n    It failed: The request was rejected.\n    ⚠ its result may carry untrusted content\n")
     expect(render(stored([started(true), ended({ outcome: "lost", detail: "It was cut off when the harness restarted.", usage: null })]))).toContain("  ⚠ subagent ses_01234567 lost")

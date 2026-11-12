@@ -9,7 +9,7 @@
  *
  * The words are `features.ts`'s, shared with the TUI.
  */
-import type { McpServerInfo, McpStateResult } from "@light-harness/acp/extensions"
+import type { McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { EngineEvent, Session } from "./engine.ts"
 import {
   type Line,

@@ -286,7 +286,7 @@ describe("a configuration that cannot be loaded", () => {
       // What `loadConfig` does with an invalid file.
       Object.defineProperty(h, "config", {
         get: () => {
-          throw new Error('/repo/.light-harness/config.json: verify: unknown key "mod" (did you mean "mode"?)')
+          throw new Error('/repo/.windlass/config.json: verify: unknown key "mod" (did you mean "mode"?)')
         },
       })
       h.provider.enqueue(say("Never sent."))

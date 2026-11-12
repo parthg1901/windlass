@@ -22,7 +22,7 @@ afterEach(() => {
 
 /** A repository with a nested working directory, and a separate config directory. */
 function layout() {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-skills-")))
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "wl-skills-")))
   dirs.push(base)
   const repo = join(base, "repo")
   const cwd = join(repo, "packages", "app")

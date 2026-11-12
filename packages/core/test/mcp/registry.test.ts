@@ -60,10 +60,10 @@ describe("start-up", () => {
   })
 
   test("a missing environment variable fails only that server, naming it", async () => {
-    const r = registry(configOf({ needs: fixtureServer([], { env: { TOKEN: "${LH_TEST_MISSING_TOKEN}" } }) }), { env: { PATH: process.env.PATH } })
+    const r = registry(configOf({ needs: fixtureServer([], { env: { TOKEN: "${WINDLASS_TEST_MISSING_TOKEN}" } }) }), { env: { PATH: process.env.PATH } })
     r.start()
     await r.settled(5000)
-    expect(r.status()[0]!.error).toBe("the environment variable LH_TEST_MISSING_TOKEN named in its env is not set")
+    expect(r.status()[0]!.error).toBe("the environment variable WINDLASS_TEST_MISSING_TOKEN named in its env is not set")
   })
 
   test("the server's environment holds the base variables and its own env only", async () => {
@@ -71,8 +71,8 @@ describe("start-up", () => {
     const script = join(dir, "env-server.sh")
     // A "server" that dumps its environment to a file and exits: enough to see what it was given.
     await Bun.write(script, `#!/bin/sh\nenv > "${join(dir, "env.txt")}"\n`)
-    const r = registry(configOf({ dump: { command: "/bin/sh", args: [script], env: { GREETING: "hello ${LH_NAME}" } } }), {
-      env: { PATH: process.env.PATH, HOME: "/home/test", LH_NAME: "world", SECRET_TOKEN: "do-not-pass" },
+    const r = registry(configOf({ dump: { command: "/bin/sh", args: [script], env: { GREETING: "hello ${WINDLASS_NAME}" } } }), {
+      env: { PATH: process.env.PATH, HOME: "/home/test", WINDLASS_NAME: "world", SECRET_TOKEN: "do-not-pass" },
     })
     r.start()
     await waitFor(() => Bun.file(join(dir, "env.txt")).size > 0)
@@ -80,7 +80,7 @@ describe("start-up", () => {
     expect(env).toContain("GREETING=hello world")
     expect(env).toContain("HOME=/home/test")
     expect(env).not.toContain("SECRET_TOKEN")
-    expect(env).not.toContain("LH_NAME")
+    expect(env).not.toContain("WINDLASS_NAME")
   })
 
   test("allow and deny lists hide tools", async () => {

@@ -16,8 +16,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { brand } from "@light-harness/core"
-import { script } from "@light-harness/core/testing"
+import { brand } from "@windlass/core"
+import { script } from "@windlass/core/testing"
 import { loadConfig } from "../../core/src/config/load.ts"
 import { EXT, META, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeListResult, type WakeSecretResult } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
@@ -30,7 +30,7 @@ let configHome = ""
 let saved: string | undefined
 beforeAll(() => {
   saved = process.env.XDG_CONFIG_HOME
-  configHome = realpathSync(mkdtempSync(join(tmpdir(), "lh-acp-config-")))
+  configHome = realpathSync(mkdtempSync(join(tmpdir(), "wl-acp-config-")))
   process.env.XDG_CONFIG_HOME = configHome
 })
 afterAll(() => {

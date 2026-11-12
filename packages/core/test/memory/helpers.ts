@@ -16,7 +16,7 @@ export const cleanup = () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 }
 
-export function tempDir(prefix = "lh-memory-") {
+export function tempDir(prefix = "wl-memory-") {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
   dirs.push(dir)
   return dir

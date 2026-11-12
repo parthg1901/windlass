@@ -1,7 +1,7 @@
 /**
  * Every step-loop scenario, by family, in the order docs/step-loop-scenarios.md
  * lists them, together with the vocabulary they are written in. Other
- * packages import this module as `@light-harness/core/testing/scenarios`.
+ * packages import this module as `@windlass/core/testing/scenarios`.
  */
 import { agentScenarios } from "./agents.ts"
 import { approvalScenarios } from "./approval.ts"

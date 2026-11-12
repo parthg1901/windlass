@@ -1,5 +1,5 @@
 /**
- * `lh login` against a fake authorization server (`fake-auth.ts`) and a
+ * `windlass login` against a fake authorization server (`fake-auth.ts`) and a
  * temporary data directory, injected through the auth module's configuration.
  * The machine's real sign-in is never read or written.
  */
@@ -24,7 +24,7 @@ interface Run {
   readonly err: string
 }
 
-/** Runs `lh login ...` in-process. `paste` types into a terminal with echo off; `stdin` is a pipe's contents. */
+/** Runs `windlass login ...` in-process. `paste` types into a terminal with echo off; `stdin` is a pipe's contents. */
 async function login(argv: readonly string[], deps: LoginDeps, input: { paste?: (type: (data: string) => void, out: () => string) => void; stdin?: string } = {}): Promise<Run> {
   let out = ""
   let err = ""

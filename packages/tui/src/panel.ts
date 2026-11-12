@@ -7,7 +7,7 @@
  * nothing is estimated. Bars use different glyphs for cached and uncached
  * input, so they read the same without colour.
  */
-import type { Usage } from "@light-harness/core"
+import type { Usage } from "@windlass/core"
 import { compact, plural, thousands, truncate, width } from "./layout.ts"
 import { type Span, span } from "./theme.ts"
 import type { Activity, CallUsage, SessionInfo } from "./transcript.ts"

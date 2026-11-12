@@ -100,7 +100,7 @@ describe("how calls are decided, before the first turn", () => {
 
   /** A real project and a real user configuration directory, with nothing of this machine's. */
   function machine(user: unknown, project: unknown) {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-settings-")))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-settings-")))
     made.push(root)
     const cwd = join(root, "repo")
     mkdirSync(join(cwd, ".git"), { recursive: true })

@@ -68,7 +68,7 @@ export const simpleRequest =
   })
 
 const dirs: string[] = []
-export function tempDir(prefix = "lh-replay-"): string {
+export function tempDir(prefix = "wl-replay-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   dirs.push(dir)
   return dir

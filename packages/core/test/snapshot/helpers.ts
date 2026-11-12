@@ -8,11 +8,11 @@ import { type SnapshotOptions, type Snapshots, openSnapshots } from "../../src/s
 
 const created: string[] = []
 /** HOME for the user's git in tests, so the real ~/.gitconfig never applies. */
-export const userHome = join(tmpdir(), `lh-snap-home-${process.pid}`)
+export const userHome = join(tmpdir(), `wl-snap-home-${process.pid}`)
 
 /** A fresh temporary directory with symlinks resolved (macOS /var -> /private/var), removed by `removeTempDirs`. */
 export function tempDir(label = "snap"): string {
-  const dir = mkdtempSync(join(tmpdir(), `lh-${label}-`))
+  const dir = mkdtempSync(join(tmpdir(), `wl-${label}-`))
   created.push(dir)
   return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()
 }

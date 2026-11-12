@@ -1,7 +1,7 @@
 /**
  * The TUI in a real pseudo-terminal (tmux), as a user drives it: against the
- * scripted demo engine, and against the real `lh acp` server with a scripted
- * model (`LH_ACP_SCRIPT`) in a temporary git workspace and data directory.
+ * scripted demo engine, and against the real `windlass acp` server with a scripted
+ * model (`WINDLASS_ACP_SCRIPT`) in a temporary git workspace and data directory.
  * No model requests are made.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
@@ -30,16 +30,16 @@ async function start(args: readonly string[], options: { width?: number; height?
   return term
 }
 
-/** A git workspace, a private data directory and a scripted model, for `lh acp`. */
+/** A git workspace, a private data directory and a scripted model, for `windlass acp`. */
 function workspace(responses: readonly unknown[]): { cwd: string; env: Record<string, string> } {
-  const root = mkdtempSync(join(tmpdir(), "lh-tui-e2e-"))
+  const root = mkdtempSync(join(tmpdir(), "wl-tui-e2e-"))
   dirs.push(root)
   const cwd = join(root, "work")
   Bun.spawnSync(["mkdir", "-p", cwd, join(root, "xdg")])
   writeFileSync(join(cwd, "README.md"), "# demo\n")
   for (const args of [["init", "-q"], ["add", "."], ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]]) Bun.spawnSync(["git", ...args], { cwd })
   writeFileSync(join(root, "script.json"), JSON.stringify({ responses }))
-  return { cwd, env: { XDG_DATA_HOME: join(root, "xdg"), LH_ACP_SCRIPT: join(root, "script.json") } }
+  return { cwd, env: { XDG_DATA_HOME: join(root, "xdg"), WINDLASS_ACP_SCRIPT: join(root, "script.json") } }
 }
 
 /** The conversation column of a frame as one line of words: the panel on the right is left out. */
@@ -82,7 +82,7 @@ describe("against the scripted demo engine", () => {
   }, 40_000)
 
   test("a crash of the TUI itself puts the terminal back and says how to reopen the session", async () => {
-    const root = mkdtempSync(join(tmpdir(), "lh-tui-crash-"))
+    const root = mkdtempSync(join(tmpdir(), "wl-tui-crash-"))
     dirs.push(root)
     const preload = join(root, "crash.ts")
     // Thrown from a timer once the TUI is up: an uncaught error, as a bug in a handler would be.
@@ -94,7 +94,7 @@ describe("against the scripted demo engine", () => {
     await term.until(() => term.capture({ history: true }).includes("open it again with"))
     const frame = term.capture({ history: true })
     expect(frame).toContain("the TUI crashed: Error: boom from a test")
-    expect(frame).toContain("open it again with: lh tui --session ses_demo")
+    expect(frame).toContain("open it again with: windlass tui --session ses_demo")
     // tmux may not have processed the program's last bytes when its exit is known: the screen and the modes are polled.
     await term.waitFor((frame) => !frame.includes(READY))
     await term.until(() => !term.modes().alternateScreen)
@@ -157,7 +157,7 @@ describe("against the scripted demo engine", () => {
   }, 60_000)
 })
 
-describe("against lh acp with a scripted model", () => {
+describe("against windlass acp with a scripted model", () => {
   test("undo asks before it overwrites a file changed outside the session", async () => {
     const space = workspace(WRITE_TURN)
     const term = await start(["--cwd", space.cwd], { env: space.env })
@@ -222,7 +222,7 @@ describe("against lh acp with a scripted model", () => {
 
   test("a server that writes to stderr does not corrupt the screen", async () => {
     const space = workspace(WRITE_TURN)
-    const term = await start(["--cwd", space.cwd], { env: { ...space.env, LH_ACP_LOG: "debug" } })
+    const term = await start(["--cwd", space.cwd], { env: { ...space.env, WINDLASS_ACP_LOG: "debug" } })
     await term.waitFor(READY, { timeoutMs: 20_000 })
     term.type("write the notes")
     term.keys("Enter")
@@ -239,8 +239,8 @@ describe("against lh acp with a scripted model", () => {
  * questions are the engine's own. A directory outside every workspace and not
  * under /tmp (a path beside a /tmp workspace is the session's temp directory).
  */
-describe("approvals and safety, against lh acp", () => {
-  const outside = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "lh-tui-outside-"))
+describe("approvals and safety, against windlass acp", () => {
+  const outside = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-outside-"))
   dirs.push(outside)
   const target = join(outside, "out.txt")
   const writeOutside = [[{ type: "text", text: "Writing outside." }, { type: "tool_call", callId: "c1", name: "write", input: { path: target, content: "outside\n" } }], [{ type: "text", text: "Finished." }]]

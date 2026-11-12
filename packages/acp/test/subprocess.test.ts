@@ -1,5 +1,5 @@
 /**
- * The real binary: `lh acp` started as a subprocess with a scripted model,
+ * The real binary: `windlass acp` started as a subprocess with a scripted model,
  * spoken to over its real stdin and stdout by the SDK's client.
  */
 import { expect, test } from "bun:test"
@@ -7,13 +7,13 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type SessionNotification, client, methods, ndJsonStream } from "@agentclientprotocol/sdk"
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import { SCRIPT_ENV } from "../src/scripted.ts"
 
 const MAIN = join(import.meta.dir, "..", "..", "cli", "src", "main.ts")
 
 test(`${brand.binary} acp speaks ACP over real stdio and exits when the client closes stdin`, async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-acp-proc-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-acp-proc-")))
   const workspace = join(root, "work")
   await Bun.write(join(workspace, "README.md"), "# demo\n")
   const scriptFile = join(root, "script.json")

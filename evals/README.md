@@ -52,8 +52,8 @@ the next prompt is sent with `--session <id>` (the ID from the first turn's even
 cache). The time limit covers the whole run; a turn that times out, crashes or exits non-zero (exit 3 included) ends
 the run, and the grader runs after the last turn that was sent. All turns go into one event stream.
 
-After each run the runner exports the session from the CLI's data directory (`$XDG_DATA_HOME/light-harness/`, or
-`~/.local/share/light-harness/`, where each session is its own database file, `sessions/<id>.db`; or `--db`) with
+After each run the runner exports the session from the CLI's data directory (`$XDG_DATA_HOME/windlass/`, or
+`~/.local/share/windlass/`, where each session is its own database file, `sessions/<id>.db`; or `--db`) with
 `scripts/export-trace.ts` and runs `prefixlens report --json` on the trace
 (`classify.ts`; prefixlens is the sibling checkout `../prefixlens` or `PREFIXLENS_DIR`, run by path). Each call that
 lost cached tokens is sorted into provider-side (prefix intact, the provider missed: common on quick follow-ups),

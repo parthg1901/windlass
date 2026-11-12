@@ -9,7 +9,7 @@ come from the blueprint *Agent session core — storage, cancel, retries, contex
 as e.g. "cancel rule 4".
 
 The scenarios live in `packages/core/test/scenarios/`, one module per family, and are exported for other packages as
-`@light-harness/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state
+`@windlass/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state
 after each phase, and checks, one test per entry, that the reducer rejects every wrong move listed with a phase.
 
 `packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario (90 of them) with the

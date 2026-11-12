@@ -421,7 +421,7 @@ describe("revert", () => {
 
 describe("with the real snapshot module and the real tools", () => {
   function project() {
-    const root = mkdtempSync(join(tmpdir(), "lh-engine-workspace-"))
+    const root = mkdtempSync(join(tmpdir(), "wl-engine-workspace-"))
     scratch.push(root)
     const workspace = join(root, "project")
     mkdirSync(workspace)

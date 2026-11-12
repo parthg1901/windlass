@@ -10,7 +10,7 @@ const shell = { name: "shell", description: "Run a command", inputSchema: { type
 const grep = { name: "grep", description: "Search", inputSchema: { type: "object" } }
 
 const sources = [
-  agentsSource("/home/u/.config/light-harness/AGENTS.md", "Be brief."),
+  agentsSource("/home/u/.config/windlass/AGENTS.md", "Be brief."),
   agentsSource("/repo/AGENTS.md", "Use bun."),
   environmentSource({ cwd: "/repo", platform: "linux", gitRepository: true }),
   dateSource(2026, 11, 11),

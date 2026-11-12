@@ -12,7 +12,7 @@ afterEach(() => {
 })
 
 function tempDir() {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "lh-config-")))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "wl-config-")))
   created.push(dir)
   return dir
 }

@@ -32,10 +32,10 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { DiffResult, ForkResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@light-harness/acp/extensions"
-import type { TurnEvent } from "@light-harness/acp/turns"
-import { brand } from "@light-harness/core"
-import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
+import type { DiffResult, ForkResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import type { TurnEvent } from "@windlass/acp/turns"
+import { brand } from "@windlass/core"
+import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
 export type EngineEvent = StoredEvent | EphemeralEvent
@@ -74,7 +74,7 @@ export const SIGN_IN_ADVICE = `run \`${brand.binary} login\` to sign in with Cha
 
 /**
  * A sign-in problem as one sentence with the way forward: `not signed in; run
- * \`lh login\` ...`. `message` is the engine's own wording (which may repeat
+ * \`windlass login\` ...`. `message` is the engine's own wording (which may repeat
  * the advice, or carry the provider's prefix); `what` says what could not be
  * done, for a command that is not a session (`--models`).
  */

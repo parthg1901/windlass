@@ -15,8 +15,8 @@
  * Pure: `dockLines` lays the dock out at a width, `DockState.key` turns a key
  * into an action. The app draws the lines and carries the actions out.
  */
-import type { ApprovalAsk } from "@light-harness/acp/client"
-import { describeNeed } from "@light-harness/core"
+import type { ApprovalAsk } from "@windlass/acp/client"
+import { describeNeed } from "@windlass/core"
 import { mcpArguments } from "./cli.ts"
 import { plural, sanitize, truncate, wrapLine, width as textWidth } from "./layout.ts"
 import { type Span, span } from "./theme.ts"

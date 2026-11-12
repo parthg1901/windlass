@@ -1,5 +1,5 @@
 {
-  "name": "@light-harness/cli",
+  "name": "@windlass/cli",
   "version": "0.0.0",
   "license": "MIT",
   "private": true,
@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.5.0",
-    "@light-harness/core": "workspace:*",
-    "@light-harness/acp": "workspace:*",
-    "@light-harness/tui": "workspace:*"
+    "@windlass/core": "workspace:*",
+    "@windlass/acp": "workspace:*",
+    "@windlass/tui": "workspace:*"
   }
 }

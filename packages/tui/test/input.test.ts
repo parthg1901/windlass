@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { type NewEvent, brand, event } from "@light-harness/core"
-import { executionSucceeded, m, opening, say, stepStarted } from "@light-harness/core/testing/scenarios"
+import { type NewEvent, brand, event } from "@windlass/core"
+import { executionSucceeded, m, opening, say, stepStarted } from "@windlass/core/testing/scenarios"
 import { BackendError } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
 
@@ -301,11 +301,11 @@ describe("robustness", () => {
 
   test("the server dying is said, with how to resume", async () => {
     const { mounted, backend } = await scripted()
-    backend.session!.die("the engine process was killed (SIGKILL); its work is recovered when the session is opened again: lh tui --session ses_script")
+    backend.session!.die("the engine process was killed (SIGKILL); its work is recovered when the session is opened again: windlass tui --session ses_script")
     await mounted.settle()
     const frame = await mounted.frame()
     expect(frame).toContain("the engine is gone")
-    expect(frame).toContain("lh tui --session ses_script")
+    expect(frame).toContain("windlass tui --session ses_script")
     expect(frame).toContain("✗ disconnected")
   })
 
@@ -330,7 +330,7 @@ describe("robustness", () => {
 
   test("leaving without a session open exits with 1", async () => {
     const backend = new ScriptBackend()
-    backend.failOpen = new BackendError("session ses_x is in use by another lh process (pid 1)", "session_in_use")
+    backend.failOpen = new BackendError("session ses_x is in use by another windlass process (pid 1)", "session_in_use")
     mounted = await mount({ width: 100, height: 20, backend })
     expect(await mounted.app.leave(0)).toBe(1)
   })

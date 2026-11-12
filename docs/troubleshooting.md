@@ -6,22 +6,22 @@ produced by the built program unless it is marked otherwise; `<...>` stands for 
 ## Not signed in
 
 ```
-lh: not signed in; run `lh login` to sign in with ChatGPT, then try again
+windlass: not signed in; run `windlass login` to sign in with ChatGPT, then try again
 ```
 
-Exit code 1. `lh --models` says the same (`not signed in, so the models cannot be listed (they come from your ChatGPT
-plan); ...`), since the list comes from your plan. What calls no model works signed out: `lh --list-sessions`,
-`lh fork`, and `lh --demo`. Sign in, then check:
+Exit code 1. `windlass --models` says the same (`not signed in, so the models cannot be listed (they come from your ChatGPT
+plan); ...`), since the list comes from your plan. What calls no model works signed out: `windlass --list-sessions`,
+`windlass fork`, and `windlass --demo`. Sign in, then check:
 
 ```sh
-lh login
-lh login status
+windlass login
+windlass login status
 ```
 
-`lh login status` prints `not signed in; run \`lh login\`` (exit code 1) when there is no saved sign-in, and says
-so when a sign-in was started but not finished: run `lh login finish` and paste the address the browser ended on.
+`windlass login status` prints `not signed in; run \`windlass login\`` (exit code 1) when there is no saved sign-in, and says
+so when a sign-in was started but not finished: run `windlass login finish` and paste the address the browser ended on.
 
-In the full-screen interface (`lh tui`) the conversation says `✗ not signed in` and how to go on: run `lh login` in
+In the full-screen interface (`windlass tui`) the conversation says `✗ not signed in` and how to go on: run `windlass login` in
 another terminal, then type `/reconnect` in the interface, which picks the new sign-in up without a restart. Leaving
 before that exits with code 1 and prints the same sentence as the line interface.
 
@@ -31,29 +31,29 @@ The access token lasts an hour and is refreshed by itself; the refresh token las
 refresh. When the refresh is refused (the sign-in was revoked, or not used for 30 days), a run fails at the start:
 
 ```
-lh: token request failed (400 invalid_grant): <OpenAI's description>; run `lh login` to sign in with ChatGPT, then try again
+windlass: token request failed (400 invalid_grant): <OpenAI's description>; run `windlass login` to sign in with ChatGPT, then try again
 ```
 
 *Reproduced against the test suite's fake authorization server; OpenAI's own description text was not seen.* Run
-`lh login` again; your sessions are kept. `lh login status` shows `access token: expired <n> minutes ago` while the
+`windlass login` again; your sessions are kept. `windlass login status` shows `access token: expired <n> minutes ago` while the
 refresh has not happened yet; that alone is not a problem.
 
 If the browser's page says the sign-in failed, the terminal says why, for example:
 
 ```
-lh: sign-in failed: The callback does not belong to the sign-in that is in progress. (state_mismatch)
+windlass: sign-in failed: The callback does not belong to the sign-in that is in progress. (state_mismatch)
 ```
 
-That address belongs to an older `lh login`. Start again and paste the address from the newest one.
+That address belongs to an older `windlass login`. Start again and paste the address from the newest one.
 
 ## A session in use by another process
 
 ```
-lh: session ses_<id> is in use by another lh process (pid <pid>): wait for it to finish or stop it (kill <pid>), or start a new session
+windlass: session ses_<id> is in use by another windlass process (pid <pid>): wait for it to finish or stop it (kill <pid>), or start a new session
 ```
 
 Exit code 1, also from the full-screen interface when you leave it without having opened a session. One session can
-be open in one process at a time (another terminal, an editor, the full-screen interface). Wait for that process, stop it, or start a new session (`lh` without `-c` or `--session`). A process that
+be open in one process at a time (another terminal, an editor, the full-screen interface). Wait for that process, stop it, or start a new session (`windlass` without `-c` or `--session`). A process that
 died holds nothing: its sessions open normally (see "A crashed session" below).
 
 ## The sandbox is unavailable
@@ -120,25 +120,25 @@ The turn fails with the provider's message, for example:
 ✗ failed (usage_limit): Usage limit reached; it resets in 3 hours.
 ```
 
-Exit code 1. *This text is from the scripted demo (`lh --demo a-non-retryable-error-usage-limit`); a real one
+Exit code 1. *This text is from the scripted demo (`windlass --demo a-non-retryable-error-usage-limit`); a real one
 carries ChatGPT's own wording.* It is not retried. Wait until the limit resets, or use a smaller model
-(`lh --models`); the session can be continued later with `lh -c`.
+(`windlass --models`); the session can be continued later with `windlass -c`.
 
 ## The server child fails to start
 
-`lh` and `lh tui` start `lh acp` as a child process. If it dies before it is ready:
+`windlass` and `windlass tui` start `windlass acp` as a child process. If it dies before it is ready:
 
 ```
-lh: the engine could not start: <what it said> (its process exited with code 1)
+windlass: the engine could not start: <what it said> (its process exited with code 1)
 ```
 
-When the process said nothing: `lh: the engine process exited with code 1 before it was ready`. If it does not answer in time:
+When the process said nothing: `windlass: the engine process exited with code 1 before it was ready`. If it does not answer in time:
 
 ```
-lh: the engine process did not start within <n> s; giving up
+windlass: the engine process did not start within <n> s; giving up
 ```
 
-On a slow or busy machine raise the limit, for example `LH_ENGINE_START_TIMEOUT_MS=60000`. `lh --engine direct`
+On a slow or busy machine raise the limit, for example `WINDLASS_ENGINE_START_TIMEOUT_MS=60000`. `windlass --engine direct`
 runs without the child process, which tells whether the problem is the child or the session.
 
 ## A crashed session
@@ -150,7 +150,7 @@ written as it goes. The next time the session is opened it resumes where it stop
 ↻ resuming after the previous process stopped unexpectedly
 ```
 
-Open it with `lh -c` (the most recent session here) or `lh --session <id>`. The interrupted step is closed as
+Open it with `windlass -c` (the most recent session here) or `windlass --session <id>`. The interrupted step is closed as
 crashed, the agent is told its response was cut short, and a fresh step runs. A tool call that was running when the
 process died is never run again behind your back: a read is settled as failed and safe to repeat, a command as
 "effect unknown" (it may have run), and the agent is told which, so it checks before going on.
@@ -168,14 +168,14 @@ work goes on, only more slowly and with more tokens. Please report it with the s
 
 ## Something else
 
-- `lh --help` lists every option and exit code; [user-guide.md](user-guide.md) explains them.
-- `LH_ACP_LOG=debug` makes the server child log what it does on standard error.
+- `windlass --help` lists every option and exit code; [user-guide.md](user-guide.md) explains them.
+- `WINDLASS_ACP_LOG=debug` makes the server child log what it does on standard error.
 - A configuration file with a mistake fails the turn before anything is sent, and names the file and the key:
 
   ```
   ✗ failed
     The configuration could not be loaded:
-    /home/me/project/.light-harness/config.json: chekcs: unknown key
+    /home/me/project/.windlass/config.json: chekcs: unknown key
     "chekcs" (did you mean "checks"?); known keys: $schema, model, effort, checks,
     verify, approval
   ```

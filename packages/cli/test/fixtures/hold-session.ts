@@ -5,8 +5,8 @@
  *
  *   bun hold-session.ts <dataDir> <cwd>
  */
-import { createHarness } from "@light-harness/core"
-import { FakeProvider } from "@light-harness/core/testing"
+import { createHarness } from "@windlass/core"
+import { FakeProvider } from "@windlass/core/testing"
 
 const [dataDir, cwd] = process.argv.slice(2)
 const harness = createHarness({ dataDir: dataDir!, provider: new FakeProvider([]), log: () => {} })

@@ -57,8 +57,8 @@ test("there are at least eight memory tasks", () => {
 for (const id of memoryIds) {
   describe(`memory-tasks/${id}`, () => {
     test("the untouched workspace fails and the reference solution passes", async () => {
-      const untouched = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
-      const solved = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
+      const untouched = await mkdtemp(join(tmpdir(), "wl-eval-memory-"))
+      const solved = await mkdtemp(join(tmpdir(), "wl-eval-memory-"))
       dirs.push(untouched, solved)
       await memoryTaskSource.prepare(id, untouched)
       await memoryTaskSource.prepare(id, solved)
@@ -69,8 +69,8 @@ for (const id of memoryIds) {
     }, 300_000)
 
     test("its notes are valid project notes, found by the store once seeded, and in force on the day of the run", async () => {
-      const workspace = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
-      const config = await mkdtemp(join(tmpdir(), "lh-eval-memory-config-"))
+      const workspace = await mkdtemp(join(tmpdir(), "wl-eval-memory-"))
+      const config = await mkdtemp(join(tmpdir(), "wl-eval-memory-config-"))
       dirs.push(workspace, config)
       await memoryTaskSource.prepare(id, workspace)
       const now = new Date()

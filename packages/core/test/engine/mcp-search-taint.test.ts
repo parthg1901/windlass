@@ -53,7 +53,7 @@ const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbo
 const of = <T extends StoredEvent["type"]>(h: Harness, type: T) => h.log().filter((item) => item.type === type) as unknown as StoredEvent<T>[]
 
 function project() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-mcp-search-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-mcp-search-")))
   made.push(root)
   const cwd = join(root, "repo")
   mkdirSync(join(cwd, ".git"), { recursive: true })

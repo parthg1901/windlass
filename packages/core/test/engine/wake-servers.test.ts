@@ -51,7 +51,7 @@ async function until(what: string, condition: () => boolean | Promise<boolean>, 
 
 describe("several servers that fire wake-ups", () => {
   test("a timer and a webhook: each fires once, in one of them, and both servers stay up and shut down cleanly", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-wake-servers-")))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-wake-servers-")))
     made.push(root)
     const dataDir = join(root, "data")
     const cwd = join(root, "repo")

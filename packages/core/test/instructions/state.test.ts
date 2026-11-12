@@ -24,7 +24,7 @@ import { selectModelHistory } from "../../src/message/history.ts"
 import { comparePrefix } from "../../src/request/prefix.ts"
 import { READ, SETTINGS, SHELL, Script, developer } from "../request/session.ts"
 
-const userFile = agentsSource("/home/u/.config/light-harness/AGENTS.md", "Be brief.")
+const userFile = agentsSource("/home/u/.config/windlass/AGENTS.md", "Be brief.")
 const rootFile = agentsSource("/repo/AGENTS.md", "Use bun.")
 const environment = environmentSource({ cwd: "/repo", platform: "linux", gitRepository: true })
 const monday = dateSource(2026, 11, 9)
@@ -95,7 +95,7 @@ describe("instructionState", () => {
     expect(current.get("date")).toBe(fingerprint(tuesday.value))
     expect(current.get(rootFile.key)).toBeNull()
     expect(current.get(userFile.key)).toBe(fingerprint(userFile.value))
-    expect(knownAgentsFiles(current)).toEqual(["/home/u/.config/light-harness/AGENTS.md"])
+    expect(knownAgentsFiles(current)).toEqual(["/home/u/.config/windlass/AGENTS.md"])
   })
 
   test("a message counts for its own source only, by its stored fingerprint and never by its text", () => {

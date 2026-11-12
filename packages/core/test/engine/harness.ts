@@ -406,7 +406,7 @@ export class Harness {
     this.config = options.config === undefined ? null : resolveConfig(options.config)
     this.files = { user: options.userConfig ?? null, project: options.config ?? null }
     this.toolNames = Object.keys(this.tools.effects)
-    this.directory = mkdtempSync(join(tmpdir(), "lh-engine-"))
+    this.directory = mkdtempSync(join(tmpdir(), "wl-engine-"))
     directories.push(this.directory)
     this.path = join(this.directory, "store.db")
     this.boot()

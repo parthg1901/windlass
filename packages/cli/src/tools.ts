@@ -4,7 +4,7 @@
  * call's argument text and the tool's `display` data (see packages/core/src/tools),
  * falling back to the model-facing output for tools this file does not know.
  */
-import type { EventData, Json, VerificationOutcome } from "@light-harness/core"
+import type { EventData, Json, VerificationOutcome } from "@windlass/core"
 import { formatBytes, plural } from "./text.ts"
 
 /** The argument worth showing for a call, from its raw argument text (which may be malformed). */

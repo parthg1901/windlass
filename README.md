@@ -1,8 +1,8 @@
-# light-harness
+# Windlass
 
 A coding agent for the terminal: you describe a change, and it reads your code, edits files and runs commands in
 your project until the change is done. Commands run in an operating-system sandbox, edits can be undone, and every
-session is kept on disk so it can be resumed. It is one program, `lh` (`wl` for short, wherever it is installed), with a line interface, a full-screen
+session is kept on disk so it can be resumed. It is one program, `windlass` (`wl` for short, wherever it is installed), with a line interface, a full-screen
 interface, and a server for editors (the Agent Client Protocol).
 
 **State of the project.** It works on Linux (built and run on arm64). macOS and Linux x64 executables can be built,
@@ -24,27 +24,27 @@ published: there is no package, no download and no release; you build it from th
 ```sh
 bun scripts/build.ts
 sh scripts/install.sh
-lh --version
+windlass --version
 ```
 
-The first builds `dist/lh-<os>-<arch>` for this machine (about 95 MB: Bun's runtime, the program, and the full-screen
-interface's native library). The second copies it to `~/.local/bin/lh`, checks the requirements, and tells you if
+The first builds `dist/windlass-<os>-<arch>` for this machine (about 95 MB: Bun's runtime, the program, and the full-screen
+interface's native library). The second copies it to `~/.local/bin/windlass`, checks the requirements, and tells you if
 that directory is not on your `PATH` (it asks before touching a shell profile). `bun scripts/build.ts --all` builds
 all four targets; see the top of `scripts/build.ts` for what each includes. `sh scripts/install.sh --uninstall`
 removes the program and keeps your sessions.
 
-You can also run it from source without building: `bun packages/cli/src/main.ts` instead of `lh`.
+You can also run it from source without building: `bun packages/cli/src/main.ts` instead of `windlass`.
 
 ## Sign in
 
 ```sh
-lh login
-lh login status
+windlass login
+windlass login status
 ```
 
-On a machine with a browser, `lh login` opens it. On a remote machine it prints an address: open it in a browser
+On a machine with a browser, `windlass login` opens it. On a remote machine it prints an address: open it in a browser
 anywhere, approve, and the browser ends on a page at `127.0.0.1` that fails to load. Copy that page's address and
-paste it at the prompt (it is not shown, and it never goes on the command line). `lh login status` says who is
+paste it at the prompt (it is not shown, and it never goes on the command line). `windlass login status` says who is
 signed in; it never prints a token.
 
 ## A first session (five minutes)
@@ -52,25 +52,25 @@ signed in; it never prints a token.
 Try the interface without a model first: the demos are scripted sessions, played without a model or a sign-in.
 
 ```sh
-lh --demo list
-lh --demo find-and-fix-a-failing-test
+windlass --demo list
+windlass --demo find-and-fix-a-failing-test
 ```
 
 In a project of yours, give it one task and let it finish:
 
 ```sh
-lh --model gpt-6-luna --effort low "the add test fails; find out why and fix it"
+windlass --model gpt-6-luna --effort low "the add test fails; find out why and fix it"
 ```
 
 It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 4 steps · 7.5s`.
 The exit code says how it went (0 done, 1 failed, 2 a usage error such as a mistyped option, 3 done but the
 project's checks still fail, 4 stopped because a tool call needed your approval and nobody was there).
 
-Work interactively: run `lh` with no prompt. It names the session it opened (`new session ses_…`, or for `-c` the
+Work interactively: run `windlass` with no prompt. It names the session it opened (`new session ses_…`, or for `-c` the
 one it resumed, with its title and turns), and on leaving prints how to resume it. Type a message and press Enter.
 
 ```sh
-lh
+windlass
 ```
 
 - **Steer a running turn:** type while the agent works and press Enter. The message is sent at once and the agent
@@ -78,19 +78,19 @@ lh
 - **Undo:** `/undo` at the prompt takes the files and the conversation back to before your last message, and shows
   what will change first. `/redo` brings it back. `/diff` shows what the last turn changed.
 - **Stop:** Ctrl-C stops the agent; Ctrl-D leaves.
-- **Continue later:** `lh -c` resumes the most recent session in this directory; `lh fork --turn 2` starts a new
+- **Continue later:** `windlass -c` resumes the most recent session in this directory; `windlass fork --turn 2` starts a new
   session with the conversation up to the end of its second turn.
 
 The full-screen interface does the same in one screen, with a panel for tokens and the prompt cache:
 
 ```sh
-lh tui
+windlass tui
 ```
 
 `/help` lists the commands and keys in both. A `/word` that is not a command is never sent to the model; to send a
 message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 
-| Command | Line interface (`lh`) | Full-screen (`lh tui`) |
+| Command | Line interface (`windlass`) | Full-screen (`windlass tui`) |
 |---|---|---|
 | `/help` | the commands and keys | the keys and commands |
 | `/undo`, `/redo` | yes | yes |
@@ -99,7 +99,7 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 | `/clear-taint` | yes | yes |
 | `/queue <message>` | yes | yes (or Ctrl-T) |
 | `/exit`, `/quit` | yes | yes |
-| `/fork [<turn>] [copy]` | `lh fork` instead | yes |
+| `/fork [<turn>] [copy]` | `windlass fork` instead | yes |
 | `/sessions`, `/new`, `/model` | `--list-sessions`, `-c`, `--session`, `-m` instead | yes |
 | `/reconnect`, `/panel`, `/debug` | | yes |
 | `/compact`, `/rename` | | listed; they wait for an engine operation |
@@ -119,7 +119,7 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 - [docs/wake-ups.md](docs/wake-ups.md): timers, checks and webhooks that wake a session.
 - [docs/memory.md](docs/memory.md): notes that persist across sessions (off by default).
 - [docs/event-log.md](docs/event-log.md): the format of a session's log.
-- `lh --help`: every option and exit code.
+- `windlass --help`: every option and exit code.
 
 ## Licence
 

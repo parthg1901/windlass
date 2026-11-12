@@ -187,7 +187,7 @@ describe("the engine strategy: the real engine, a real store, the real history t
     for (const directory of scratch) rmSync(directory, { recursive: true, force: true })
   })
   const place = () => {
-    const directory = mkdtempSync(join(tmpdir(), "lh-recall-test-"))
+    const directory = mkdtempSync(join(tmpdir(), "wl-recall-test-"))
     scratch.push(directory)
     return directory
   }

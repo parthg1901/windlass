@@ -9,7 +9,7 @@ the program itself decodes with, so they are what this build writes and reads.
 
 ## Where a log is
 
-Each session is one SQLite database, `~/.local/share/light-harness/sessions/<session id>.db` (`$XDG_DATA_HOME/light-harness/sessions/`
+Each session is one SQLite database, `~/.local/share/windlass/sessions/<session id>.db` (`$XDG_DATA_HOME/windlass/sessions/`
 when that is set), in WAL mode, so `-wal` and `-shm` files sit beside it, with `-lock` and `-holder` files that
 say which process works in it. The log is the table `event`:
 
@@ -72,7 +72,7 @@ not copy a live database file without its `-wal` file: the newest events may be 
 ```ts
 import { Database } from "bun:sqlite"
 
-const db = new Database(`${process.env.HOME}/.local/share/light-harness/sessions/ses_1f0c3a9e.db`, { readonly: true })
+const db = new Database(`${process.env.HOME}/.local/share/windlass/sessions/ses_1f0c3a9e.db`, { readonly: true })
 for (const row of db.query("SELECT seq, type, v, time, data FROM event ORDER BY seq").all() as { seq: number; type: string; v: number; time: number; data: string }[]) {
   const data = JSON.parse(row.data)
   console.log(row.seq, row.type, data)
@@ -82,7 +82,7 @@ db.close()
 
 To check events against the schema as the program does, decode each row with `decodeEvent` from
 `packages/core/src/event/decode.ts`; it throws on an unknown type, an unknown version or invalid data. Two other ways
-to see events: `lh --json "<prompt>"` prints every event of a run as one JSON line as it is written (each
+to see events: `windlass --json "<prompt>"` prints every event of a run as one JSON line as it is written (each
 with its `seq`), and `bun scripts/export-trace.ts <session id> -o <file>` exports a session's requests.
 
 ## An example: one turn

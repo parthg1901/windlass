@@ -11,7 +11,7 @@ import type { HookTrustContext } from "../../src/hooks/trust.ts"
 const dirs: string[] = []
 
 /** A fresh temporary directory with symlinks resolved, removed by `cleanup`. */
-export function tempDir(prefix = "lh-hooks-"): string {
+export function tempDir(prefix = "wl-hooks-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   dirs.push(dir)
   return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()

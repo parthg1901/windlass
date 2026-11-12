@@ -2,18 +2,18 @@
 
 A wake-up is a message the agent leaves for its own session, to be delivered later when something happens: a time
 comes, a command starts to succeed or its output changes, or a signed HTTP request arrives. It is how the agent waits
-for CI, a deploy or a reminder without keeping a turn open or polling. `lh` checks the condition itself, with no
+for CI, a deploy or a reminder without keeping a turn open or polling. `windlass` checks the condition itself, with no
 model call, and the wake-up survives restarts. `test/release/feature-docs.test.ts` checks the keys, limits, headers
 and messages on this page against the code.
 
 ## Where wake-ups fire today
 
 <!-- WAKE-UPS-FIRE: update this section when where wake-ups fire changes -->
-**Wake-ups fire while a server process of the program runs**: an interactive `lh`, `lh tui`, or an editor's
-`lh acp`. That process fires every wake-up that comes due, of any session, and runs the webhook listener. When
-several run at once, each wake-up is fired by exactly one of them. A one-prompt run (`lh "..."`), a listing and
+**Wake-ups fire while a server process of the program runs**: an interactive `windlass`, `windlass tui`, or an editor's
+`windlass acp`. That process fires every wake-up that comes due, of any session, and runs the webhook listener. When
+several run at once, each wake-up is fired by exactly one of them. A one-prompt run (`windlass "..."`), a listing and
 the `fork` and `replay` subcommands never fire wake-ups: they would start another session's turn and cut it
-short when they exit. `LH_WAKE=off` switches firing off for a process.
+short when they exit. `WINDLASS_WAKE=off` switches firing off for a process.
 
 So a wake-up fires on time only if one of those is open then. One that came due while nothing ran fires once in
 the next process that does, late, as described under "Missed while nothing ran".
@@ -24,7 +24,7 @@ You ask the agent; it calls `wake_create`. For example "check every minute wheth
 tell me": the agent creates a check wake-up and ends its turn. In a one-shot run:
 
 ```sh
-lh "in a minute, remind me to look at the canary"
+windlass "in a minute, remind me to look at the canary"
 ```
 
 ```text
@@ -32,7 +32,7 @@ lh "in a minute, remind me to look at the canary"
   ✓ Created wake-up wk_7a3c12139dd8: after 1m (at 2026-11-12T08:39:20Z). ⊡
 ```
 
-`lh` and `lh tui` list the session's wake-ups with `/wakeups` (pending first, each with its trigger, state, next
+`windlass` and `windlass tui` list the session's wake-ups with `/wakeups` (pending first, each with its trigger, state, next
 time, firings and limits in the engine's words), `/wakeups cancel <id>` stops one, and `/wakeups secret <id>` shows
 a webhook's URL and secret (below). The name is the feature's: `/wake` (an alias) reads like an order to wake
 something up, which it is not.
@@ -77,7 +77,7 @@ Look at the canary.
 nobody to ask: a call that would ask is refused, as in a one-shot run (`--unattended deny`), and the model is told.
 Nothing is ever approved because nobody answered. The message itself tells the model that no one may be watching.
 
-A webhook's body, and the output of a check that ran with the network or without the sandbox, are content `lh` does
+A webhook's body, and the output of a check that ran with the network or without the sandbox, are content `windlass` does
 not control: they are delivered fenced as data, and the session is tainted before the turn starts (see
 [safety.md](safety.md)).
 
@@ -112,11 +112,11 @@ about which wake-ups exist:
 ### The secret
 
 The model is told `The secret that signs requests is shown to the user, not to you.` When the agent creates a
-webhook wake-up, `lh` and `lh tui` show you its URL and secret once, right under the call; `/wakeups secret <id>`
-shows them again. `lh` prints the secret only to a terminal: in a one-shot run whose output goes to a file or a pipe
+webhook wake-up, `windlass` and `windlass tui` show you its URL and secret once, right under the call; `/wakeups secret <id>`
+shows them again. `windlass` prints the secret only to a terminal: in a one-shot run whose output goes to a file or a pipe
 it says where to see it instead, and `--json` never carries it (the event stream is the engine's events, and the
-secret is in none of them). An editor asks for it with `_light-harness/wake_secret` ([acp.md](acp.md)). It is kept in
-the wake-up store, `~/.local/share/light-harness/wake/wake.db`.
+secret is in none of them). An editor asks for it with `_windlass/wake_secret` ([acp.md](acp.md)). It is kept in
+the wake-up store, `~/.local/share/windlass/wake/wake.db`.
 
 ### Not yet
 
@@ -170,5 +170,5 @@ In the `wake` section of your own file. A project's file can only tighten: turn 
 Whether a session has the tools is decided when it starts: changing `enabled` later does not add them to, or take
 them from, a session that exists.
 
-The wake-ups of every session are kept in one store, `~/.local/share/light-harness/wake/`, shared by every `lh`
+The wake-ups of every session are kept in one store, `~/.local/share/windlass/wake/`, shared by every `windlass`
 process of the data directory.

@@ -8,9 +8,9 @@
  * live or replayed, and never touches a terminal. The wording follows the
  * line-based CLI's renderer, so both clients say the same things.
  */
-import { type DiffResult, type TurnNotification, deriveTitle } from "@light-harness/acp/extensions"
-import { type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
-import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@light-harness/core"
+import { type DiffResult, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
+import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
+import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type EngineEvent, callArgument, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"

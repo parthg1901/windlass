@@ -2,7 +2,7 @@ export * from "./provider.ts"
 export * from "./error.ts"
 export * from "./usage.ts"
 // The Responses provider's entry points. Its wire-level pieces (encoding, the
-// stream mapper, error classification) stay behind `@light-harness/core/provider/openai-responses`.
+// stream mapper, error classification) stay behind `@windlass/core/provider/openai-responses`.
 export {
   type FetchFunction,
   type ModelInfo,

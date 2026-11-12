@@ -9,8 +9,8 @@
  * `runReplay` print and return the exit code.
  */
 import { parseArgs as parseFlags } from "node:util"
-import type { ForkResult, ReplayParams, ReplayResult } from "@light-harness/acp/extensions"
-import { brand } from "@light-harness/core"
+import type { ForkResult, ReplayParams, ReplayResult } from "@windlass/acp/extensions"
+import { brand } from "@windlass/core"
 import { type Engine, type EngineEvent, EngineUnavailable, exitCodeOfRefusal } from "./engine.ts"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { COPY_NOTE } from "./features.ts"

@@ -53,7 +53,7 @@ const CASES: Case[] = [
     name: "accepts new test cases and a changed harness config",
     change: async (dir) => {
       await write(dir, "src/discount.test.ts", `${await read(dir, "src/discount.test.ts")}\ntest("just above the threshold", () => {\n  expect(bulkDiscount(100.01)).toBe(10)\n})\n`)
-      await write(dir, ".light-harness/config.json", '{\n  "checks": [{ "name": "tests", "command": "bun test", "timeoutSeconds": 180 }]\n}\n')
+      await write(dir, ".windlass/config.json", '{\n  "checks": [{ "name": "tests", "command": "bun test", "timeoutSeconds": 180 }]\n}\n')
     },
     pass: true,
   },
@@ -512,7 +512,7 @@ const MEMORY_CASES: Case[] = [
 describe("graders of the memory tasks judge the outcome", () => {
   for (const item of MEMORY_CASES) {
     test(`${item.task}: ${item.name}`, async () => {
-      const dir = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
+      const dir = await mkdtemp(join(tmpdir(), "wl-eval-memory-"))
       dirs.push(dir)
       await memoryTaskSource.prepare(item.task, dir)
       if ((item.from ?? "solution") === "solution") await memoryTaskSource.solve(item.task, dir)

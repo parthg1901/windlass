@@ -4,9 +4,9 @@
  * CLI's scripted demo engine (`demo-backend.ts`). Optional members are
  * features a backend may lack; the TUI says so instead of offering them.
  */
-import type { ApprovalAnswer, ApprovalAsk } from "@light-harness/acp/client"
-import type { DiffResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@light-harness/acp/extensions"
-import type { RevertResult } from "@light-harness/core"
+import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
+import type { DiffResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import type { RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 
 export type { ApprovalAnswer, ApprovalAsk, DiffResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }

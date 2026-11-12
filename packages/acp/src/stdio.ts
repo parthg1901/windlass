@@ -13,7 +13,7 @@
  * still kills the commands' process groups.
  */
 import { ndJsonStream } from "@agentclientprotocol/sdk"
-import { brand, createHarness } from "@light-harness/core"
+import { brand, createHarness } from "@windlass/core"
 import { LOG_LEVEL_ENV, createLogger, describeError, levelFromEnv } from "./log.ts"
 import { SCRIPT_ENV, scriptedProvider } from "./scripted.ts"
 import { serve } from "./server.ts"

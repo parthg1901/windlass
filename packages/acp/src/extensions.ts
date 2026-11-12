@@ -4,7 +4,7 @@
  * leading underscore marks an ACP extension); `_meta` keys use the same name
  * without the underscore, as ACP's extensibility rules ask.
  */
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 
 const prefix = brand.extensionPrefix
 /** The namespace for `_meta` keys and capability entries: the extension prefix without its underscore. */
@@ -117,7 +117,7 @@ export interface OpenMeta {
   readonly model?: string | null
   /** The reasoning effort; `null` keeps the default. */
   readonly effort?: string | null
-  /** Load and resume: open the session even if it is archived (deleted), as `lh --session <id>` does. */
+  /** Load and resume: open the session even if it is archived (deleted), as `windlass --session <id>` does. */
   readonly archived?: boolean
   /** The approval mode the user chose for this session: `ask`, `auto` or `full`. The project's file can still only tighten it. */
   readonly approval?: string | null

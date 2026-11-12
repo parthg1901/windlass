@@ -3,15 +3,15 @@
  * and what an unattended run says and exits with. The run tests start the
  * real CLI, which starts the real `acp` server, with a scripted model.
  */
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SCRIPT_ENV } from "@light-harness/acp"
-import type { CallId, MessageId, Question } from "@light-harness/core"
+import { SCRIPT_ENV } from "@windlass/acp"
+import type { CallId, MessageId, Question } from "@windlass/core"
 import { helpText, parseArgs } from "../src/args.ts"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { EXIT_APPROVAL_REQUIRED } from "../src/engine.ts"
 import { approverAt } from "../src/main.ts"
@@ -96,7 +96,7 @@ describe("the answer typed at the prompt", () => {
 describe("an unattended run", () => {
   /** Runs the real CLI once, with a scripted model, in a workspace of its own. */
   async function run(responses: unknown[][], args: readonly string[]) {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-approval-")))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-approval-")))
     scratch.push(root)
     const workspace = join(root, "work")
     mkdirSync(workspace)
@@ -156,7 +156,7 @@ describe("an unattended run", () => {
 
 describe("the sandbox marker, /approval and /diff", () => {
   test("a command shows how it ran: ⊡ in the sandbox, \"no sandbox\" with --approval full", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-marker-")))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-marker-")))
     scratch.push(root)
     const runIn = async (args: readonly string[]) => {
       const workspace = join(root, `work-${args.length}`)
@@ -172,7 +172,7 @@ describe("the sandbox marker, /approval and /diff", () => {
   }, 60_000)
 
   test("the session's approval mode is read and switched through the protocol; the latest turn's diff has its files and patches", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-diff-")))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-diff-")))
     scratch.push(root)
     const workspace = join(root, "work")
     mkdirSync(workspace)

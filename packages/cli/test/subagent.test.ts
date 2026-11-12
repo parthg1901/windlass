@@ -10,16 +10,16 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { runCli } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
 
 setDefaultTimeout(30_000)
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-child-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-child-")))
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "lh-cli-child-"))
+const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-cli-child-"))
 afterAll(() => {
   rmSync(root, { recursive: true, force: true })
   rmSync(elsewhere, { recursive: true, force: true })

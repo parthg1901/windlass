@@ -11,7 +11,7 @@
  * resolved, and Bun runs a linked `main.ts` from the file it points to, so
  * `import.meta.url` is the real `main.ts`.
  */
-import { buildStamp } from "@light-harness/core"
+import { buildStamp } from "@windlass/core"
 
 const MAIN = new URL("./main.ts", import.meta.url).pathname
 

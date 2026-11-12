@@ -12,7 +12,7 @@
  * here depends on them, so there is no cycle.
  *
  * Two transports reach the same server:
- * - `child`: `lh acp` as a child process over stdio, in its own process group
+ * - `child`: `windlass acp` as a child process over stdio, in its own process group
  *   (a Ctrl-C at the terminal is the client's to turn into a cancel). It
  *   leaves when its stdin closes, which also happens when the client dies.
  *   Its stderr is parsed into log lines for the client to show or drop.
@@ -35,8 +35,8 @@ import {
   ndJsonStream,
 } from "@agentclientprotocol/sdk"
 import { readFileSync } from "node:fs"
-import type { EphemeralEvent, HarnessOptions, Need, RevertPlan, RevertResult, RunDecision, StoredEvent } from "@light-harness/core"
-import { brand } from "@light-harness/core"
+import type { EphemeralEvent, HarnessOptions, Need, RevertPlan, RevertResult, RunDecision, StoredEvent } from "@windlass/core"
+import { brand } from "@windlass/core"
 import {
   APPROVAL_META,
   type ApprovalStateResult,
@@ -891,7 +891,7 @@ function childTransport(transport: Extract<Transport, { kind: "child" }>, log: C
 async function memoryTransport(transport: Extract<Transport, { kind: "memory" }>, log: ConnectOptions["log"]): Promise<Transported> {
   const { createLogger } = await import("./log.ts")
   const { serve } = await import("./server.ts")
-  const { createHarness } = await import("@light-harness/core")
+  const { createHarness } = await import("@windlass/core")
   const logger = createLogger({
     level: "warn",
     write: (line) => {

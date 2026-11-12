@@ -3,7 +3,7 @@
  * import the CLI uses for the real one. It plays the "a-plain-answer" scenario
  * and records what the CLI asked for.
  */
-import type { SessionId } from "@light-harness/core"
+import type { SessionId } from "@windlass/core"
 import { findScenario } from "../../src/demo/scenarios.ts"
 import type { Engine, OpenRequest } from "../../src/engine.ts"
 import { FakeEngine } from "../../src/fake-engine.ts"

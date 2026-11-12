@@ -4,10 +4,10 @@
  * a fixed virtual clock), so a frame is the same on every run and can be
  * compared as text.
  */
-import type { McpStateResult } from "@light-harness/acp/extensions"
+import type { McpStateResult } from "@windlass/acp/extensions"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { NewEvent, SessionId, StoredEvent } from "@light-harness/core"
-import type { Scenario } from "@light-harness/core/testing/scenarios"
+import type { NewEvent, SessionId, StoredEvent } from "@windlass/core"
+import type { Scenario } from "@windlass/core/testing/scenarios"
 import { App } from "../src/app.ts"
 import type { ApprovalHandler, TurnNotification, Backend, BackendSession, Delivery, OpenSettings, OpenTarget, Question, StreamItem } from "../src/backend.ts"
 import { EventQueue } from "../src/acp-client.ts"

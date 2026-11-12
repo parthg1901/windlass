@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { event, type NewEvent } from "@light-harness/core"
-import { c, executionSucceeded, m, opening, say, stepStarted } from "@light-harness/core/testing/scenarios"
+import { event, type NewEvent } from "@windlass/core"
+import { c, executionSucceeded, m, opening, say, stepStarted } from "@windlass/core/testing/scenarios"
 import { findScenario } from "../src/cli.ts"
 import { summarize } from "../src/panel.ts"
 import { Transcript } from "../src/transcript.ts"

@@ -31,7 +31,7 @@ A leaf module: nothing in core imports it, and it defines no durable events (it 
 
 ### The configuration
 
-In your configuration file (`~/.config/light-harness/config.json`) or a project's (`.light-harness/config.json`;
+In your configuration file (`~/.config/windlass/config.json`) or a project's (`.windlass/config.json`;
 the directory names come from `packages/core/src/brand.ts`):
 
 ```json
@@ -41,7 +41,7 @@ the directory names come from `packages/core/src/brand.ts`):
       {
         "name": "no-push",
         "tools": ["shell"],
-        "command": "case \"$LH_HOOK_COMMAND\" in *'git push'*) echo 'Pushing is not allowed here. Commit locally and tell the user.'; exit 2;; esac"
+        "command": "case \"$WINDLASS_HOOK_COMMAND\" in *'git push'*) echo 'Pushing is not allowed here. Commit locally and tell the user.'; exit 2;; esac"
       }
     ],
     "afterTool": [
@@ -49,7 +49,7 @@ the directory names come from `packages/core/src/brand.ts`):
         "name": "prettier",
         "tools": ["edit", "write"],
         "paths": ["**/*.ts", "**/*.tsx"],
-        "command": "printf '%s\\n' \"$LH_HOOK_PATHS\" | xargs ./node_modules/.bin/prettier --write >/dev/null 2>&1 || { echo 'prettier could not format this file; run it to see why.'; exit 2; }"
+        "command": "printf '%s\\n' \"$WINDLASS_HOOK_PATHS\" | xargs ./node_modules/.bin/prettier --write >/dev/null 2>&1 || { echo 'prettier could not format this file; run it to see why.'; exit 2; }"
       }
     ],
     "stop": [
@@ -96,7 +96,7 @@ An `afterTool` event adds `"result": { "status": "success" | "error", "output": 
 `"turn": { "round": 1, "maxRounds": 3, "lastText": "…", "lastTextCut": false }` (the end of the agent's last
 message, 8 KiB at most). Arguments over 24 KiB are left out (`"arguments": null`, with their size).
 
-In the **environment** (the prefix is the product's environment prefix, `brand.envPrefix`): `LH_HOOK_POINT`,
+In the **environment** (the prefix is the product's environment prefix, `brand.envPrefix`): `WINDLASS_HOOK_POINT`,
 `_NAME`, `_ORIGIN`; for before and after `_TOOL`, `_COMMAND` (the call's `command` argument, for shell calls) and
 `_PATHS` (the call's paths, relative to the working directory, one per line); for after `_STATUS`; for stop `_ROUND`
 and `_MAX_ROUNDS`. A value over 16 KiB is not set.

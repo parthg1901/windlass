@@ -10,8 +10,8 @@ import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type CallId, type MessageId, event } from "@light-harness/core"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { type CallId, type MessageId, event } from "@windlass/core"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { spawnMessageText } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
@@ -19,7 +19,7 @@ import { VirtualTerminal } from "./vt.ts"
 
 setDefaultTimeout(40_000)
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-second-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-second-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 const workspace = join(root, "work")
 mkdirSync(workspace)
@@ -94,15 +94,15 @@ describe("what the renderer says", () => {
       stored([
         event("execution.started", { executionId: "exe_1" } as never),
         event("tool.called", { messageId: m("m1"), callId: c("c1"), name: "shell", input: '{"command":"sleep 3; echo built","background":true}', providerData: null }),
-        event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 3; echo built", logPath: "/tmp/lh-1001/ses_x/.spill/shell-bg.log" } } as never),
+        event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command: "sleep 3; echo built", logPath: "/tmp/windlass-1001/ses_x/.spill/shell-bg.log" } } as never),
         event("tool.settled", { messageId: m("m1"), callId: c("c1"), outcome: "success", output: "Started in the background as bg_1. Its output is written to /tmp/.spill/shell-bg.log.", truncation: null, attachments: [], display: { background: "bg_1", logPath: "/tmp/.spill/shell-bg.log" } } as never),
         event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } } as never),
       ]),
       { afterTurn: "exits", columns: () => 200 },
     )
-    expect(out).toContain("/tmp/lh-1001/ses_x/.spill/shell-bg.log")
+    expect(out).toContain("/tmp/windlass-1001/ses_x/.spill/shell-bg.log")
     expect(out).not.toContain("/tmp/.spill/shell-bg.log")
-    expect(out).toContain("1 background command still running (bg_1): it is stopped now that lh exits; the agent is told when the session is next opened")
+    expect(out).toContain("1 background command still running (bg_1): it is stopped now that windlass exits; the agent is told when the session is next opened")
   })
 
   test("the message about spawned work says what is true in each case", () => {

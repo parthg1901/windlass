@@ -14,7 +14,7 @@
  */
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
-import { brand, versionLine, versionString } from "@light-harness/core"
+import { brand, versionLine, versionString } from "@windlass/core"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
 import { recapLines } from "./features.ts"
@@ -134,7 +134,7 @@ export async function run(io: Io): Promise<number> {
     }
     case "acp": {
       // Loaded only here, so a normal run does not pay for the protocol SDK. The server builds the same harness the CLI does.
-      const { serveStdio } = await import("@light-harness/acp")
+      const { serveStdio } = await import("@windlass/acp")
       return serveStdio({ env: io.env, version: await version() })
     }
     case "list":
@@ -156,7 +156,7 @@ export async function run(io: Io): Promise<number> {
     const engine = await engineFor(io, options, demo)
     return engine === null ? EXIT.usage : listing(io, engine, parsed.what, options, cwd)
   }
-  // The TUI is opt-in until it becomes the default: `lh tui`, or `LH_TUI=1` for an interactive `lh` with no prompt.
+  // The TUI is opt-in until it becomes the default: `windlass tui`, or `WINDLASS_TUI=1` for an interactive `windlass` with no prompt.
   const tuiByDefault = parsed.kind === "run" && options.prompt === null && !options.interactive && options.output === "pretty" && io.stdin.isTTY && io.stdout.isTTY && io.env[`${brand.envPrefix}TUI`] === "1"
   if (parsed.kind === "tui" || tuiByDefault) return tui(io, options, demo, cwd)
 
@@ -288,7 +288,7 @@ export async function run(io: Io): Promise<number> {
 
 /** Hands the run to the full-screen TUI, loaded only here. */
 async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: string): Promise<number> {
-  const { runTui } = await import("@light-harness/tui")
+  const { runTui } = await import("@windlass/tui")
   return runTui({
     cwd,
     target: options.session !== null ? { kind: "resume", id: options.session } : options.continue ? { kind: "continue" } : { kind: "new" },

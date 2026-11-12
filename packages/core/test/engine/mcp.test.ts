@@ -36,7 +36,7 @@ const answer = (text: string) => [script.text(text), U]
 const QUICK: McpSetup = { startWaitMs: 0, probeMs: 300, graceMs: 500, backoff: { initialMs: 100, maxMs: 400, stableMs: 60_000 }, dropAfterMs: 200 }
 
 function project() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-engine-mcp-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-engine-mcp-")))
   made.push(root)
   const cwd = join(root, "repo")
   mkdirSync(join(cwd, ".git"), { recursive: true })

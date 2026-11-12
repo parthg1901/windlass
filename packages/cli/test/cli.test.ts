@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { brand } from "@light-harness/core"
+import { brand } from "@windlass/core"
 import { findScenario } from "../src/demo/scenarios.ts"
 import { FakeEngine } from "../src/fake-engine.ts"
 import { CLI, runCli } from "./helpers.ts"

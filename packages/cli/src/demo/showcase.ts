@@ -4,7 +4,7 @@
  * what a real session looks like: searches, a failing command, an edit with a
  * diff, parallel calls, usage on every step, and output capped to a spill file.
  */
-import { type Json, type NewEvent, type ToolEffect, type Truncation, brand, event } from "@light-harness/core"
+import { type Json, type NewEvent, type ToolEffect, type Truncation, brand, event } from "@windlass/core"
 import {
   type Scenario,
   c,
@@ -14,7 +14,7 @@ import {
   say,
   stepStarted,
   think,
-} from "@light-harness/core/testing/scenarios"
+} from "@windlass/core/testing/scenarios"
 
 const EFFECTS: Record<string, ToolEffect> = { read: "read", grep: "read", glob: "read", ls: "read", edit: "write", write: "write", shell: "exec" }
 

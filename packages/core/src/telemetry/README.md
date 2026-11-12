@@ -43,7 +43,7 @@ invoke_agent <brand>            the execution (INTERNAL); conversation, model, e
 Times are the timestamps the log and the ledger stored. Trace and span IDs are derived from the session ID and
 positions in its log, so exporting the same session twice gives the same IDs (and the same bytes). A span whose end is
 not in the log yet (a running session, or one a crash cut off) ends at the last event and carries
-`light_harness.span.open = true`; exporting again later sends it again, with the same ID and the real end. How a
+`windlass.span.open = true`; exporting again later sends it again, with the same ID and the real end. How a
 backend treats a span sent twice differs (most keep the last); export a session once it has finished when that
 matters.
 
@@ -85,22 +85,22 @@ output is what the collector's `otlpjsonfile` receiver reads.
 One line per batch (at most 512 spans or 1 MiB), an `ExportTraceServiceRequest`, shortened here:
 
 ```json
-{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"light-harness"}}]},
- "scopeSpans":[{"scope":{"name":"light-harness/telemetry","version":"1"},"spans":[
-  {"traceId":"7c0e…","spanId":"1e814b7b6e62c29c","name":"invoke_agent light-harness","kind":1,
+{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"Windlass"}}]},
+ "scopeSpans":[{"scope":{"name":"Windlass/telemetry","version":"1"},"spans":[
+  {"traceId":"7c0e…","spanId":"1e814b7b6e62c29c","name":"invoke_agent Windlass","kind":1,
    "startTimeUnixNano":"1794474000000000000","endTimeUnixNano":"1794474000460000000",
    "attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"invoke_agent"}},
                  {"key":"gen_ai.conversation.id","value":{"stringValue":"ses_405a…"}},
                  {"key":"gen_ai.usage.input_tokens","value":{"intValue":"2500"}},
                  {"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":"1100"}},
-                 {"key":"light_harness.execution.outcome","value":{"stringValue":"succeeded"}}, …],
+                 {"key":"windlass.execution.outcome","value":{"stringValue":"succeeded"}}, …],
    "events":[],"links":[],"status":{"code":1}},
   {"traceId":"7c0e…","spanId":"6ee6829ce216af00","parentSpanId":"1e814b7b6e62c29c","name":"chat gpt-…","kind":3,
    "attributes":[{"key":"gen_ai.response.finish_reasons","value":{"arrayValue":{"values":[{"stringValue":"tool_calls"}]}}}, …]},
   {"traceId":"7c0e…","spanId":"8c0add449f350906","parentSpanId":"1e814b7b6e62c29c","name":"execute_tool read","kind":1,
-   "attributes":[{"key":"light_harness.tool.effect","value":{"stringValue":"read"}},
-                 {"key":"light_harness.approval.asked","value":{"boolValue":false}},
-                 {"key":"light_harness.tool.sandboxed","value":{"boolValue":false}}, …]}]}]}]}
+   "attributes":[{"key":"windlass.tool.effect","value":{"stringValue":"read"}},
+                 {"key":"windlass.approval.asked","value":{"boolValue":false}},
+                 {"key":"windlass.tool.sandboxed","value":{"boolValue":false}}, …]}]}]}]}
 ```
 
 Read it with `jq -c '.resourceSpans[].scopeSpans[].spans[] | {name, attributes}' spans.jsonl`.
@@ -154,7 +154,7 @@ Unsure, used anyway, and worth checking when the conventions settle:
 Not used, deliberately: `gen_ai.response.id` (the Responses API's response ID is not stored), `server.address`,
 `gen_ai.request.stream`, `gen_ai.conversation.compacted` (no definition found; compaction is a span of its own),
 `gen_ai.system_instructions` and `gen_ai.tool.definitions` (the system prompt and tool list are large and frozen;
-they are not content a trace needs). Everything else is in the `light_harness.*` namespace (the brand's directory
+they are not content a trace needs). Everything else is in the `windlass.*` namespace (the brand's directory
 name, `brand.ts`): the ledger's request ID and purpose, attempts, retry delays, the provider's request ID, HTTP
 status and error code, effect classes, sandbox and approval facts, compaction, checks, spawned work.
 
@@ -208,7 +208,7 @@ never disagree. The loop needs no new writes for it.
   the turn's start (the delivery after `turn.ended`) to be read as such, which the log allows but the conventions do
   not ask for.
 - **The approval's wait** is an event pair (`approval.requested`, `approval.answered`), shown as span events and in
-  `light_harness.tool.wait_ms` (from the call to its start); the time a person took is the difference of the two
+  `windlass.tool.wait_ms` (from the call to its start); the time a person took is the difference of the two
   events.
 - **Cache writes** (`gen_ai.usage.cache_write.input_tokens`): the provider does not report them.
 - **The process.** Host, process ID, harness version: not in the log. The resource has only `service.name`; live

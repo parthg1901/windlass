@@ -4,8 +4,8 @@
  * accepts. Then the same through the interactive CLI.
  */
 import { describe, expect, test } from "bun:test"
-import type { NewEvent, StoredEvent } from "@light-harness/core"
-import { fold } from "@light-harness/core/testing/scenarios"
+import type { NewEvent, StoredEvent } from "@windlass/core"
+import { fold } from "@windlass/core/testing/scenarios"
 import { findScenario } from "../src/demo/scenarios.ts"
 import type { EngineEvent } from "../src/engine.ts"
 import { FakeEngine, type FakeSession } from "../src/fake-engine.ts"

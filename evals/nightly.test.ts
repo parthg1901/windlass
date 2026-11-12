@@ -13,7 +13,7 @@ import { EXIT, LOCK_FILE, type NightlySummary, STAGING_PREFIX, acquireLock, coun
 import type { HistoryRow } from "./recall/track.ts"
 
 const REPO = resolve(import.meta.dir, "..")
-const scratch = realpathSync(mkdtempSync(join(tmpdir(), "lh-nightly-")))
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), "wl-nightly-")))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 const TASKS = ["answer-question", "config-edits", "large-log"]
 const hasPrefixlens = existsSync(join(prefixlensDir(), "src", "cli.ts"))

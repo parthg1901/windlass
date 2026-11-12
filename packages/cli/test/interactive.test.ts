@@ -8,15 +8,15 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { brand } from "@light-harness/core"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { brand } from "@windlass/core"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { runCli } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
 
 setDefaultTimeout(30_000)
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-interactive-")))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-interactive-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 const workspace = join(root, "work")
 mkdirSync(workspace)

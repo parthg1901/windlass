@@ -34,7 +34,7 @@ const PINNED = "---\nname: pinned\ndescription: Runs on another model.\nmodel: g
 
 /** A real project directory with these agent definitions, and a directory for the user's own. */
 function project(agents: Record<string, string> = {}, own: Record<string, string> = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-agents-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-agents-")))
   made.push(root)
   const cwd = join(root, "repo")
   const configDir = join(root, "config")

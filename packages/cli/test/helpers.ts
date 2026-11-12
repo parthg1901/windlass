@@ -1,5 +1,5 @@
-import type { NewEvent, SessionId, StoredEvent } from "@light-harness/core"
-import type { Scenario } from "@light-harness/core/testing/scenarios"
+import type { NewEvent, SessionId, StoredEvent } from "@windlass/core"
+import type { Scenario } from "@windlass/core/testing/scenarios"
 import type { Engine, EngineEvent } from "../src/engine.ts"
 import { type Io, run } from "../src/main.ts"
 import { PrettyRenderer, type PrettyOptions } from "../src/renderer.ts"

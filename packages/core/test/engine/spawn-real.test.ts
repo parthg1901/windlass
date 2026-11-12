@@ -34,7 +34,7 @@ const sh = (cwd: string, command: string) => {
 
 describe("a real background command", () => {
   test("runs beside the session's steps, writes its log, and its exit wakes the idle session with its output", async () => {
-    const { data, workspace } = place("lh-bg-")
+    const { data, workspace } = place("wl-bg-")
     const directory = workspace("w")
     const { harness, provider } = start(data, [[call("shell", { command: "sleep 0.4; echo tests passed; exit 3", background: true })], [call("read", { path: "notes.md" })], say("Reading while it runs."), say("It exited with 3.")])
     const session = harness.engine.createSession({ cwd: directory, settings: SETTINGS })
@@ -58,7 +58,7 @@ describe("a real background command", () => {
   })
 
   test("is stopped, with everything it started, by the stop tool and when the session is closed", async () => {
-    const { data, workspace } = place("lh-bg-")
+    const { data, workspace } = place("wl-bg-")
     const directory = workspace("w")
     const command = "echo $$ > own.pid; sleep 300 & echo $! > child.pid; echo started; wait"
     const stopId = (request: ModelRequest) => {
@@ -101,7 +101,7 @@ describe("a real background command", () => {
 
 describe("subagents in git worktrees", () => {
   function repository() {
-    const spot = place("lh-wt-")
+    const spot = place("wl-wt-")
     const directory = spot.workspace("repo", { "a.txt": "a1\n", "b.txt": "b1\n", "shared.txt": "line 1\nline 2\nline 3\n", ".gitignore": "ignored/\n" })
     sh(directory, "git init -q -b main && git add -A && git commit -q -m first")
     // The user's own state: an uncommitted edit, something staged, an untracked file, a stash.
@@ -215,7 +215,7 @@ describe("subagents in git worktrees", () => {
   })
 
   test("outside a git repository the worktree is refused with the reason, and nothing is started", async () => {
-    const { data, workspace } = place("lh-wt-")
+    const { data, workspace } = place("wl-wt-")
     const { harness } = start(data, [[call("subagent", { task: "Fix a", worktree: true })], say("No repository.")])
     const session = harness.engine.createSession({ cwd: workspace("plain"), settings: SETTINGS })
     session.send("Fix it in a worktree.")

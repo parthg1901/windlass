@@ -99,10 +99,10 @@ describe("runCheck", () => {
 
   test("a command that does not exist could not start", async () => {
     const p = project()
-    const result = await runCheck(check("lint", "definitely-not-a-command-lh"), p.options())
+    const result = await runCheck(check("lint", "definitely-not-a-command-windlass"), p.options())
     expect(result).toMatchObject({ status: "could_not_start", exitCode: 127, startError: null })
-    expect(renderOutput(result.output)).toContain("definitely-not-a-command-lh")
-    expect(renderReport([result])).toContain("could not start: lint (definitely-not-a-command-lh), exit code 127. Output:\n")
+    expect(renderOutput(result.output)).toContain("definitely-not-a-command-windlass")
+    expect(renderReport([result])).toContain("could not start: lint (definitely-not-a-command-windlass), exit code 127. Output:\n")
   })
 
   test("a shell that cannot be spawned could not start, with the reason", async () => {

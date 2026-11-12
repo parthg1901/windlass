@@ -7,11 +7,11 @@
  * - `JsonSink`: every event as one JSON line, nothing else on stdout.
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
-import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@light-harness/core"
+import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
-import type { DiffFile } from "@light-harness/acp/extensions"
-import { type TurnEvent, type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
+import type { DiffFile } from "@windlass/acp/extensions"
+import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
 

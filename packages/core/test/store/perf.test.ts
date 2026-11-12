@@ -96,7 +96,7 @@ describe.skipIf(!Bun.env.STORE_PERF)("performance", () => {
   }, 300_000)
 
   test("on a file with synchronous = FULL", () => {
-    const directory = mkdtempSync(join(tmpdir(), "lh-store-perf-"))
+    const directory = mkdtempSync(join(tmpdir(), "wl-store-perf-"))
     try {
       report("file", run(join(directory, "store.db")))
     } finally {

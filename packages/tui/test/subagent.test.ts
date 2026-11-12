@@ -10,14 +10,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { type EngineEvent, type StoredEvent, createHarness } from "@light-harness/core"
-import { FakeProvider, script } from "@light-harness/core/testing"
+import { type EngineEvent, type StoredEvent, createHarness } from "@windlass/core"
+import { FakeProvider, script } from "@windlass/core/testing"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import type { ApprovalAsk } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-tui-child-")))
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "lh-tui-child-"))
+const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-tui-child-")))
+const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-child-"))
 const note = join(elsewhere, "note.txt")
 const TASK = "Write the note outside"
 
@@ -105,7 +105,7 @@ describe("a subagent", () => {
       expect(frame).toContain(`subagent: ${TASK}`)
       expect(frame).toContain("? Allow write: writing")
       // The tool line of the dock is the subagent's own call.
-      expect(frame).toMatch(/write {2}\/\S*lh-tui-child-/)
+      expect(frame).toMatch(/write {2}\/\S*wl-tui-child-/)
       expect(frame).toContain("[a] Allow once")
       expect(frame).toContain("↳ it asks you something: answer below")
       expect(frame).toMatch(/\? waiting for your answer · subagent /)

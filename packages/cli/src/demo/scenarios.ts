@@ -1,5 +1,5 @@
 /** Every scenario `--demo` can play: the CLI's showcase first, then the step-loop scenarios from core, numbered. */
-import { type Scenario, families } from "@light-harness/core/testing/scenarios"
+import { type Scenario, families } from "@windlass/core/testing/scenarios"
 import { showcase } from "./showcase.ts"
 
 export interface DemoScenario {

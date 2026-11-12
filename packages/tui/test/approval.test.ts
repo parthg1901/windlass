@@ -8,10 +8,10 @@
  * scenario (`networkEscalation`), played through a script backend.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import type { ApprovalAsk } from "@light-harness/acp/client"
-import type { DiffResult } from "@light-harness/acp/extensions"
-import type { StoredEvent } from "@light-harness/core"
-import { families } from "@light-harness/core/testing/scenarios"
+import type { ApprovalAsk } from "@windlass/acp/client"
+import type { DiffResult } from "@windlass/acp/extensions"
+import type { StoredEvent } from "@windlass/core"
+import { families } from "@windlass/core/testing/scenarios"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import { type Mounted, ScriptBackend, mount, stamp } from "./helpers.ts"
 

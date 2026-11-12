@@ -4,7 +4,7 @@
  * overwritten, and hands everything else on as input.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import type { RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
+import type { RevertOptions, RevertPlan, RevertResult } from "@windlass/core"
 import { type RevertableSession, askLocally, revertable, sessionCommand } from "../src/commands.ts"
 import { type EditorAction, Screen } from "../src/terminal.ts"
 import { VirtualTerminal } from "./vt.ts"

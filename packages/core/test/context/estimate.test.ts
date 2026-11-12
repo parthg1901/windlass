@@ -80,10 +80,10 @@ describe("estimateNextInput", () => {
 /**
  * The estimator against the provider's numbers. The calibration runs are not
  * part of the repository (they are local eval output); point
- * `LH_CALIBRATION_DIR` at a directory of `*.jsonl` event streams to run this.
+ * `WINDLASS_CALIBRATION_DIR` at a directory of `*.jsonl` event streams to run this.
  * The bounds are the ones the file comment of `estimate.ts` states.
  */
-const calibration = process.env.LH_CALIBRATION_DIR ?? ""
+const calibration = process.env.WINDLASS_CALIBRATION_DIR ?? ""
 
 describe.skipIf(calibration === "" || !existsSync(calibration))("estimator error on real runs", () => {
   const runs = calibration !== "" && existsSync(calibration) ? readdirSync(calibration).filter((name) => name.endsWith(".jsonl")) : []

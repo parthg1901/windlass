@@ -1,6 +1,6 @@
 # Architecture
 
-light-harness is a coding-agent harness built around one idea: a session is an append-only log of events in SQLite,
+Windlass is a coding-agent harness built around one idea: a session is an append-only log of events in SQLite,
 and everything else (the messages a UI shows, the request sent to the model) is computed from that log. Every
 session has a database file of its own, so the unit of the single-writer rule is the session, not the machine:
 two terminals, an editor and the eval runner each work in their own sessions at once.
@@ -78,7 +78,7 @@ Naming: a lowercase export such as `message` or `usage` is a validator; the Pasc
 type. Dependencies point one way: `event` knows nothing about `message`, `store` or the step loop; `provider` and
 `tool` know nothing about sessions.
 
-Entry points: `@light-harness/core` exports the contracts, the SQLite store, the Responses provider, the request
+Entry points: `@windlass/core` exports the contracts, the SQLite store, the Responses provider, the request
 builder, instructions, the tool runtime, the standard tools and `brand`. Subpaths: `/store/sqlite`,
 `/provider/openai-responses` (with the wire-level pieces), `/request`, `/instructions`, `/tools`, `/engine`, `/auth/chatgpt`,
 `/testing` (the fake provider) and `/testing/scenarios` (the step-loop scenarios and their vocabulary).
@@ -618,7 +618,7 @@ is a new version with a decoder for the old one.
   names the messages before and after. Reverted and refused messages are never returned, and a checkpoint is not
   searched. Their output goes through the tool runtime's one cap like any tool's. They see what the model was
   shown: a tool output that was capped when it ran is stored capped, with the path of the full output.
-- *The context window in tests.* `LH_TEST_CONTEXT_WINDOW` (the name is built from `brand`) lowers the
+- *The context window in tests.* `WINDLASS_TEST_CONTEXT_WINDOW` (the name is built from `brand`) lowers the
   window `createHarness` hands the engine, so an evaluation run compacts after tens of thousands of tokens. It can
   only lower it, the harness says so on its log, and no configuration file has a key for it.
 - A diagnostic about a session (a prefix violation, an internal error, a tool that threw) is said once: as an

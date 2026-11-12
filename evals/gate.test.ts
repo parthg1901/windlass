@@ -63,7 +63,7 @@ async function resultsDir(results: RunResult[], config: { model?: string | null;
   const report: Report = {
     startedAt: "2026-11-12T10:00:00.000Z",
     commit: { sha: config.sha ?? "abc1234", dirty: false },
-    cli: ["lh"],
+    cli: ["windlass"],
     model: config.model === undefined ? "gpt-test" : config.model,
     effort: config.effort === undefined ? "low" : config.effort,
     out,

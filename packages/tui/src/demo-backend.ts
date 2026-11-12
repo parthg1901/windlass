@@ -1,13 +1,13 @@
 /**
  * The CLI's scripted demo engine as a TUI backend: any of the scripted
- * sessions (`lh tui --demo <name>`) replayed with realistic timing, no model
+ * sessions (`windlass tui --demo <name>`) replayed with realistic timing, no model
  * and no tools. It is how the TUI is developed and tested without spending
  * model requests. It has no undo, no session list and no model list; the TUI
  * says so when they are asked for.
  */
 import type { ApprovalHandler, Backend, BackendSession, Delivery, ModelChoice, OpenSettings, OpenTarget, QuestionHandler, StreamItem } from "./backend.ts"
 import { FakeEngine, type FakeOptions, type FakeSession } from "./cli.ts"
-import type { Scenario } from "@light-harness/core/testing/scenarios"
+import type { Scenario } from "@windlass/core/testing/scenarios"
 
 export class DemoBackend implements Backend {
   readonly label: string
