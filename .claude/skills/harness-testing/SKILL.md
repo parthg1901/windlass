@@ -219,7 +219,7 @@ Reading a result:
 - Checks run before stop hooks. After a stop hook sends the agent back, the ending says `nothing to check` and adds the note about files "changed outside this turn": that note is about the agent's own work after the checks, not a hand edit.
 - A file changed by hand while a turn runs is listed in that turn's `· changed` line, and `/undo` takes it back without the question it asks about hand edits made after the turn. Hand-edit only between turns unless the test is about this.
 - `/diff` after a queued message shows the files of the turn before it, and the line interface prints one ending row for a turn and its queued message together (the step count is their sum).
-- `fork --turn <n>` fails with `seq … is inside a step` when turn n was followed by a queued message; `--turn <n+1>` works.
+- `fork --turn <n>` after a turn that a queued message followed forks at the step boundary before that turn's `turn.ended` (the event number it prints is one less than the `turn.ended`); `--through` with the `turn.ended` number itself is still refused as inside a step.
 - `/compact` is accepted while a turn runs and answers when the running call ends. With the real context window a session of 30,000 tokens still answers `Not compacted: only about 449 tokens … could be summarised`: use the test window to see a compaction.
 - `replay` now prints the `compared on what it did (reads ignored)` part itself, and names the copy it worked in (under `<data dir>-work/replays/`): delete that copy, and a `fork --copy`'s (`<data dir>-work/workspaces/<id>`), when done.
 - The Ctrl-T choice between steering and queueing in the full-screen interface stays as set for later turns: read the hint line before typing.

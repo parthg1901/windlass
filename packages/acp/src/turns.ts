@@ -3,8 +3,8 @@
  * every prompt that set the agent to work is a turn, numbered from 1 in the
  * order they happened, and a turn taken back by `/undo` keeps its number and
  * is marked undone (until `/redo` brings it back). Both front ends show these
- * numbers, and `fork --turn <n>` / `/fork <n>` take them; the event number a
- * turn ends at is the precise form the server's fork takes.
+ * numbers, and `fork --turn <n>` / `/fork <n>` take them; the event number of
+ * the step boundary a turn ends at is the precise form the server's fork takes.
  *
  * A turn starts with an execution (`execution.started`) and ends with its
  * terminal event; a message queued behind it (`turn.ended`, then its
@@ -33,6 +33,12 @@ export interface TurnInfo {
   messageSeq: number
   /** The seq of the event that ended it; `null` while it runs. */
   endSeq: number | null
+  /**
+   * The seq a fork that holds this turn and nothing after it is made at; `null` while it runs. The end of its
+   * execution is one; a `turn.ended` is not (it opens the handover to the queued message), so for a turn a queued
+   * message followed it is the event before, where the engine was at a step boundary.
+   */
+  forkSeq: number | null
   readonly executionId: string | null
   /** The seqs of the reverts (`history.reverted`) that took it back and were not undone since. */
   readonly undoneBy: Set<number>
@@ -82,6 +88,7 @@ export class TurnTracker {
         const last = this.turns.at(-1)
         if (last !== undefined && last.executionId === data.executionId) {
           last.endSeq = null
+          last.forkSeq = null
           this.current = last
         } else this.current = this.start(event.seq, typeof data.executionId === "string" ? data.executionId : null)
         return
@@ -106,7 +113,11 @@ export class TurnTracker {
       }
       case "turn.ended": {
         const turn = this.current
-        if (turn !== null) turn.endSeq = event.seq
+        if (turn !== null) {
+          turn.endSeq = event.seq
+          // The log's numbers are dense, and the engine writes `turn.ended` only at a boundary: the one before it.
+          turn.forkSeq = event.seq - 1
+        }
         this.queuedNext = turn?.executionId ?? null
         this.current = null
         return
@@ -115,7 +126,7 @@ export class TurnTracker {
       case "execution.failed":
       case "execution.interrupted": {
         const turn = this.current
-        if (turn !== null) turn.endSeq = event.seq
+        if (turn !== null) turn.endSeq = turn.forkSeq = event.seq
         // Only a compaction the user asked for: not a turn.
         if (turn !== null && this.compactionAsked && !this.stepped && !this.delivered.has(turn) && this.turns.at(-1) === turn) this.turns.pop()
         this.current = null
@@ -142,7 +153,7 @@ export class TurnTracker {
   private readonly delivered = new WeakSet<TurnInfo>()
 
   private start(seq: number, executionId: string | null): TurnInfo {
-    const turn: TurnInfo = { number: this.turns.length + 1, prompt: "", messageSeq: seq, endSeq: null, executionId, undoneBy: new Set() }
+    const turn: TurnInfo = { number: this.turns.length + 1, prompt: "", messageSeq: seq, endSeq: null, forkSeq: null, executionId, undoneBy: new Set() }
     this.turns.push(turn)
     return turn
   }
@@ -162,7 +173,7 @@ export function forkPointOfTurn(turns: readonly TurnInfo[], n: number): { readon
   const turn = turns.find((candidate) => candidate.number === n)
   if (turn === undefined)
     return { problem: turns.length === 0 ? "the session has no turns yet" : `there is no turn ${n}: the session has ${turns.length === 1 ? "1 turn" : `turns 1 to ${turns.length}`}` }
-  if (turn.endSeq === null) return { problem: `turn ${n} has not ended yet` }
+  if (turn.forkSeq === null) return { problem: `turn ${n} has not ended yet` }
   if (isUndone(turn)) return { problem: `turn ${n} was undone (/undo); fork after another turn, or /redo it first` }
-  return { throughSeq: turn.endSeq }
+  return { throughSeq: turn.forkSeq }
 }

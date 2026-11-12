@@ -23,7 +23,10 @@ test("each prompt is a turn; a steer is part of its turn; a queued message is a 
     [2, "second", 13],
     [3, "after that", 15],
   ])
-  expect(forkPointOfTurn(turns, 2)).toEqual({ throughSeq: 13 })
+  // A turn a queued message followed is forked at the boundary before its `turn.ended`, which is inside the handover.
+  expect(forkPointOfTurn(turns, 2)).toEqual({ throughSeq: 12 })
+  expect(forkPointOfTurn(turns, 1)).toEqual({ throughSeq: 8 })
+  expect(forkPointOfTurn(turns, 3)).toEqual({ throughSeq: 15 })
   expect(forkPointOfTurn(turns, 4)).toEqual({ problem: "there is no turn 4: the session has turns 1 to 3" })
 })
 

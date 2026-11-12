@@ -9,7 +9,7 @@ import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SCRIPT_ENV } from "@windlass/acp"
+import { SCRIPT_ENV, scriptedProvider } from "@windlass/acp"
 import { brand } from "@windlass/core"
 import { parseArgs } from "../src/args.ts"
 import { FakeProvider } from "@windlass/core/testing"
@@ -196,6 +196,47 @@ describe("as a process", () => {
     expect(usage.code).toBe(2)
     expect(usage.err).toContain("--system-prompt")
     expect(usage.err).toContain("no such file")
+  })
+})
+
+describe("fork --turn after a queued message", () => {
+  test("a turn that a queued message followed is forked at the step boundary before the handover", async () => {
+    const at = place("queued")
+    const scriptFile = script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command: "sleep 0.3" } }], [say("Slept.")], [say("And the second.")]])
+    const harness = async () => ({ dataDir: join(at.xdg, brand.directory), provider: await scriptedProvider(scriptFile), log: () => {} })
+    // One session, two turns in one execution: the second message is queued while the first turn's command runs.
+    const engine = createAcpEngine({ transport: "memory", harness: await harness() })
+    const session = await engine.open({ session: { kind: "new" }, cwd: at.workspace, model: null, effort: null, agent: null, maxSteps: null, approval: "full", unattended: null, attended: false })
+    await session.send("sleep a little")
+    let queued = false
+    const seen: string[] = []
+    for await (const item of session.events) {
+      seen.push(item.type)
+      if (item.type === "tool.started" && !queued) {
+        queued = true
+        await session.send("then say more", { delivery: "queue" })
+      }
+      if (item.type === "execution.succeeded") break
+    }
+    await session.close()
+    expect(seen.filter((type) => type === "turn.ended" || type === "execution.succeeded")).toEqual(["turn.ended", "execution.succeeded"])
+
+    const made: string[] = []
+    for (const turn of ["1", "2"]) {
+      const forkEngine = createAcpEngine({ transport: "memory", harness: await harness() })
+      const forked = await runCli(["fork", session.id, "--turn", turn, "--cwd", at.workspace, "--json"], { engine: () => forkEngine })
+      expect([turn, forked.code, forked.err]).toEqual([turn, 0, ""])
+      made.push((JSON.parse(forked.out) as { sessionId: string }).sessionId)
+    }
+    // The fork after turn 1 holds the first message only; the one after turn 2 holds both.
+    const prompts: number[] = []
+    for (const id of made) {
+      const reader = createAcpEngine({ transport: "memory", harness: { dataDir: join(at.xdg, brand.directory), provider: new FakeProvider([]), log: () => {} } })
+      const opened = await reader.open({ session: { kind: "resume", id }, cwd: at.workspace, model: null, effort: null, agent: null, maxSteps: null, approval: null, unattended: null, attended: false })
+      prompts.push((await opened.describe!()).turns)
+      await opened.close()
+    }
+    expect(prompts).toEqual([1, 2])
   })
 })
 
