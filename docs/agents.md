@@ -34,7 +34,7 @@ The first lines say what the session runs as, and a call the agent may not make 
 ⇄ working as the agent reviewer (read only)
   Only tools that read (effects: read).
 ▸ edit math.ts
-  ○ not run: the reviewer agent may not change files
+  ⊘ refused by the reviewer agent: it may not change files
 ```
 
 Asked to change a line under this agent, the real model did not try the edit: it read the file and answered that
@@ -89,9 +89,11 @@ Not run: you are working as the agent "docs", which may use only these tools: re
 Not run: you are working as the agent "careful", which may not use the tool "background_stop". Carry on without it, or tell the user what you would need and why.
 ```
 
-You see the agent's rule on the call's row: `○ not run: the reviewer agent may not change files` in `windlass`,
-`⊘ edit math.ts · not run: the reviewer agent may not change files` in `windlass tui`. In `--json` it is an
-`approval.denied` event with `agent` set.
+You see who refused the call, and the agent's rule, on the call's row:
+`⊘ refused by the reviewer agent: it may not change files` in `windlass`,
+`⊘ edit math.ts · refused by the reviewer agent: it may not change files` in `windlass tui`. A tool the agent's
+`tools` leave out reads `it may use only read, grep, glob, edit, write, not shell`, and one its `disallowed-tools`
+name `it may not use edit`. In `--json` it is an `approval.denied` event with `agent` set.
 
 - **A call the agent allows still goes through your approval mode**, exactly as without an agent.
 - **`approval` can only tighten.** With `approval: ask` in a session in `auto`, an edit asks (and in a one-shot
@@ -105,6 +107,15 @@ You see the agent's rule on the call's row: `○ not run: the reviewer agent may
 `--agent <name>` on `windlass` and `windlass tui`; `--agent none` starts without one. Interactively the session line
 names it (`new session ses_… · agent reviewer`), and the panel of `windlass tui` has an `agent` field. When the
 definition names a `model` or an `effort`, the session is created with them.
+
+Two warnings are given when the session starts, in a one-prompt run (`windlass --agent <name> "<prompt>"`) too:
+that the agent's `tools` or `disallowed-tools` name a tool that does not exist here, and that a project's
+`agents.default` was not followed.
+
+```text
+⚠ agents: The agent "docs" (<path>) names a tool that does not exist here, which therefore restricts nothing: Bash.
+⚠ agents: Not followed: agents.default "docs" in the project's configuration (only the user's own configuration chooses the default agent).
+```
 
 A name that cannot be used ends the run before anything is sent, with exit code 2:
 
@@ -147,12 +158,17 @@ that could not be used:
 
 ```text
 Agents (this session runs as reviewer):
-    docs      Writes and edits documentation only.
-      restricted · <path>
+  docs      Writes and edits documentation only.
+      restricted · model gpt-6-luna
+      <path>
   * reviewer  Reviews a change without editing anything. Use for a second opinion before a commit.
-      read only · <path>
+      read only
+      <path>
 /agent <name> switches to another · /agent none switches it off
 ```
+
+Under each agent: what it may do, the model it names if it names one, and its file (a path too long for the line
+is printed whole, on a line of its own).
 
 `/agent <name>` switches and `/agent none` switches it off. In `windlass tui`, `/agent` opens a picker. On the command
 line, `--agent <name>` with `-c` or `--session` switches the resumed session. The switch applies from the model's
@@ -183,6 +199,8 @@ An agent is a role kept as a file: instructions, and sometimes a model and restr
 ```
 
 - The child works under the agent's instructions and restrictions; a call it may not make is refused as above.
+  Its row names the agent: `▸ subagent ses_… started as the agent reviewer` in `windlass`,
+  `✓ subagent (reviewer) <task>` in `windlass tui`; in `--json` it is `work.agent` of `spawn.started`.
 - **A restricted session cannot get around its restrictions through a child.** A subagent started without `agent`
   by a session that runs as an agent runs as that agent. One started as another agent gets both sets of
   restrictions: under a parent that may never call `write`, a `docs` child was refused `write` too.
@@ -233,13 +251,6 @@ name `none`.
 
 ## Not yet
 
-<!-- NOT-YET(agents-start-warnings): the engine says these when the session is created, before a client listens -->
-- **Two warnings are missed when a session starts.** That an agent's `tools` or `disallowed-tools` name a tool
-  that does not exist here is said when you switch to the agent in a running session, and that a project's
-  `agents.default` was not followed is listed by `/agent`; neither is printed by `windlass --agent <name> "<prompt>"`.
-<!-- NOT-YET(agents-subagent-row): the line interface's subagent row -->
-- **A subagent's row does not name its agent.** `▸ subagent ses_… started` reads the same with and without one;
-  `--json` has it (`spawn.started`, `work.agent`).
 <!-- NOT-YET(agents-model-switch): no tool lets the model change the session's agent -->
 - **The model cannot switch the session's agent.** Only you can; the model can only start a subagent as one.
 - **No servers or commands of its own.** A definition cannot give an agent its own MCP servers or hooks.

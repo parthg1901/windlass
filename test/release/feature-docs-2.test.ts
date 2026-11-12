@@ -320,8 +320,26 @@ describe("quoted program messages", () => {
     // agents
     { page: "docs/agents.md", quote: "⇄ working as the agent reviewer (read only)", pieces: ["working as the agent ", "read only"] },
     { page: "docs/agents.md", quote: "Only tools that read (effects: read).", pieces: ["Only tools that ", "(effects: "] },
-    { page: "docs/agents.md", quote: "○ not run: the reviewer agent may not change files", pieces: ["not run: ", " may not change files"] },
-    { page: "docs/agents.md", quote: "⊘ edit math.ts · not run: the reviewer agent may not change files", pieces: ["not run: ", " may not change files"] },
+    { page: "docs/agents.md", quote: "⊘ refused by the reviewer agent: it may not change files", pieces: ["refused by ", " may not change files"] },
+    { page: "docs/agents.md", quote: "⊘ edit math.ts · refused by the reviewer agent: it may not change files", pieces: ["refused by ", " may not change files"] },
+    { page: "docs/agents.md", quote: "it may use only read, grep, glob, edit, write, not shell", pieces: [" may use only ", ", not "] },
+    { page: "docs/agents.md", quote: "it may not use edit", pieces: [" may not use "] },
+    {
+      page: "docs/agents.md",
+      quote: '⚠ agents: The agent "docs" (<path>) names a tool that does not exist here, which therefore restricts nothing: Bash.',
+      pieces: ["The agent ", " not exist here, which therefore ", " nothing: "],
+    },
+    {
+      page: "docs/agents.md",
+      quote: '⚠ agents: Not followed: agents.default "docs" in the project\'s configuration (only the user\'s own configuration chooses the default agent).',
+      pieces: ["Not followed: ", "agents.default ", " in the project's configuration (only the user's own configuration chooses the default agent)"],
+    },
+    { page: "docs/agents.md", quote: "▸ subagent ses_… started as the agent reviewer", pieces: [" started", " as the agent "] },
+    {
+      page: "docs/agents.md",
+      quote: '⚠ agents: The session keeps the model "<model>", which the agent "<name>" set: switching the agent off does not put back what the session ran with before. Change the session\'s model or effort to use another.',
+      pieces: ["The session keeps ", ", which the agent ", "switching the agent off", " does not put back what the session ran with before. Change the session's model or effort to use another."],
+    },
     {
       page: "docs/agents.md",
       quote: '⚠ agents: The agent definition at <path> is hidden by another agent of the same name: the agent "reviewer" at <path> takes precedence',
@@ -528,7 +546,7 @@ describe("quoted program messages", () => {
 
   test("every line a page shows as the program's output is covered by a quote", () => {
     // What a `text` block shows that is not a quoted message: the examples' own content (a task, a path, a diff line).
-    const own = /^([✓▸○] |\* |docs |(restricted|read only) · <path>|- (docs|reviewer) |<\/?agents?[ >]|\.\.\.$|\[[x> ]\] |math\.ts:|1:export |Edited math\.ts|Do not leave TODO|Files named \.env|SCRATCH\.md still|Pushing is not allowed|✗ )/
+    const own = /^([✓▸○] |\* |docs |(restricted|read only)( · model \S+)?$|<path>$|- (docs|reviewer) |<\/?agents?[ >]|\.\.\.$|\[[x> ]\] |math\.ts:|1:export |Edited math\.ts|Do not leave TODO|Files named \.env|SCRATCH\.md still|Pushing is not allowed|✗ )/
     const uncovered: string[] = []
     for (const page of PAGES)
       for (const body of blocks(page, "text"))
@@ -544,7 +562,7 @@ describe("quoted program messages", () => {
 describe("what the pages say is not there yet", () => {
   test("each Not yet section marks its sentences for whoever adds the feature", () => {
     const markers: Readonly<Record<Page, readonly string[]>> = {
-      "docs/agents.md": ["agents-start-warnings", "agents-subagent-row", "agents-model-switch"],
+      "docs/agents.md": ["agents-model-switch"],
       "docs/hooks.md": [],
       "docs/diagnostics.md": [],
       "docs/task-list.md": ["tasks-command", "tasks-edit"],
@@ -582,16 +600,19 @@ describe("what the pages say is not there yet", () => {
     expect(durable).toContain('"hook.ran"')
   })
 
-  test("the warnings of a session's start are said before a client listens (agents-start-warnings)", () => {
-    expect(text["docs/agents.md"]).toContain("**Two warnings are missed when a session starts.**")
-    // The engine says them while it creates the session; a client subscribes after. When that changes, the page does.
+  test("the warnings of a session's start reach the client, and the page says so", () => {
+    // The engine says them while it creates the session and keeps them for the session's first listener; a
+    // one-prompt run printing both is run in feature-docs-3.test.ts.
+    expect(text["docs/agents.md"]).toContain("Two warnings are given when the session starts, in a one-prompt run")
+    expect(text["docs/agents.md"]).not.toContain("warnings are missed")
     expect(read(join(ROOT, "packages/core/src/engine/engine.ts"))).toContain('for (const warning of start.warnings) session.say("agents", warning)')
   })
 
   test("a subagent's row names the agent it runs as, and no tool switches the session's agent (agents-model-switch)", () => {
-    // Both interfaces read the agent from `spawn.started` and say it on the subagent's row. The page's note that the
-    // row does not name it (agents-subagent-row) is out of date since then: it goes, with its marker in the list
-    // above, when the page is next corrected.
+    // Both interfaces read the agent from `spawn.started` and say it on the subagent's row, as the page shows.
+    expect(text["docs/agents.md"]).toContain("`▸ subagent ses_… started as the agent reviewer` in")
+    expect(text["docs/agents.md"]).toContain("`✓ subagent (reviewer) <task>` in")
+    expect(text["docs/agents.md"]).not.toContain("does not name its agent")
     expect(read(join(ROOT, "packages/cli/src/renderer.ts"))).toMatch(/work\.agent\b/)
     expect(read(join(ROOT, "packages/tui/src/transcript.ts"))).toMatch(/work\.agent\b/)
     expect(SOURCE).toMatch(/work: \{[^}]*agent/)
