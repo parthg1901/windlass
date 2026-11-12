@@ -43,11 +43,12 @@ export function agentLines(result: AgentsResult): Line[] {
   const current = result.current
   if (result.agents.length === 0) lines.push(line("No agents are defined here. A definition is a Markdown file in .claude/agents (or the user's agents directory): a name, a description, and what the agent may do.", "dim"))
   else {
-    lines.push(line(current === null ? "Agents (this session runs as none):" : `Agents (this session runs as ${current}):`, "bold"))
+    lines.push(line(current === null ? "Agents (this session runs as no agent):" : `Agents (this session runs as ${current}):`, "bold"))
     const width = Math.max(...result.agents.map((agent) => agent.name.length))
     for (const agent of result.agents) {
       const marks = [agent.tag, agent.model === null ? null : `model ${agent.model}${agent.effort === null ? "" : ` ${agent.effort}`}`, agent.name === result.default ? "the default for new sessions" : null].filter((part) => part !== null)
-      lines.push(line(`${agent.name === current ? "*" : " "} ${agent.name.padEnd(width)}  ${agent.description}`, agent.name === current ? "accent" : "plain", 2))
+      // The description wraps in its own column, after the names.
+      lines.push({ ...line(`${agent.name === current ? "*" : " "} ${agent.name.padEnd(width)}  ${agent.description}`, agent.name === current ? "accent" : "plain", 2), hang: width + 4 })
       if (marks.length > 0) lines.push(line(marks.join(" · "), "dim", 6))
       lines.push(pathLine(agent.path, "dim", 6))
     }

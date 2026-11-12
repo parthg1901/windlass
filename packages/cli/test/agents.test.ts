@@ -9,9 +9,9 @@ import { FakeProvider, script } from "@windlass/core/testing"
 import { c, executionStarted, m, opening, stepEnded, stepStarted } from "@windlass/core/testing/scenarios"
 import { SUMMARY } from "../../core/test/scenarios/script.ts"
 import { createAcpEngine } from "../src/acp-engine.ts"
-import { UNVERIFIED_HINT } from "../src/agents.ts"
+import { UNVERIFIED_HINT, agentLines } from "../src/agents.ts"
 import { helpText, parseArgs } from "../src/args.ts"
-import { JsonSink } from "../src/renderer.ts"
+import { JsonSink, PrettyRenderer } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { REVIEWER, call, compactionEnded, compactionStarted, settle, succeeded, todo, typedSessions } from "./typed.ts"
 
@@ -97,4 +97,12 @@ describe("as a user types them", () => {
     expect(run.err).toContain("reviewer")
     expect(run.out).toBe("")
   })
+})
+
+test("/agent: with none in force it says no agent, and a description wraps in its own column", () => {
+  let out = ""
+  const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => 60, live: false, showReasoning: false, echoPrompts: false })
+  const agent = { name: "reviewer", description: "Reviews a change for correctness and risk without editing anything.", path: "/w/.claude/agents/reviewer.md", scope: "project" as const, model: null, effort: null, restrictions: "", tag: "read only" }
+  renderer.printLines(agentLines({ available: true, agents: [agent], problems: [], default: null, ignored: [], current: null }))
+  expect(out.split("\n").slice(0, 3)).toEqual(["Agents (this session runs as no agent):", "    reviewer  Reviews a change for correctness and risk", "              without editing anything."])
 })
