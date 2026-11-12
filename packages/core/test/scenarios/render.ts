@@ -76,6 +76,8 @@ function describeFeatures(features: NonNullable<Scenario["features"]>): string {
     ...(features.skills === true ? ["skills (the `skill` tool; the project has skill files)"] : []),
     ...(features.mcp === true ? ["MCP (`mcp_search` and `mcp_call`; the user's configuration names one server, `fx`)"] : []),
     ...(features.wake === true ? ["wake-ups (`wake_create`, `wake_list`, `wake_cancel`)"] : []),
+    ...(features.hooks === undefined ? [] : [`hooks (the user's configuration: \`${JSON.stringify(features.hooks)}\`)`]),
+    ...(features.lsp === true ? ["language-server diagnostics (the user's configuration names one server, `fixture`, for `*.txt` files)"] : []),
   ]
   return `*Engine:* offers ${offered.join("; ")}.`
 }

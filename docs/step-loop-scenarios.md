@@ -3410,9 +3410,143 @@ The same situation from the child's side. The child is created as the agent: `ag
 
 *Model sees next:* u1, a1, a2.
 
+### Hooks and diagnostics
+
+#### 98. A before hook refuses a call, and the model reads why
+
+The user's configuration has a hook that runs before every `shell` call and refuses `git push`. The hook is asked after the call's arguments were accepted and before anything else is decided about it: no approval is looked at, no question is asked, nothing starts. The call settles from `pending` as an error whose text is the hook's reason, word for word, and the hook's record (`hook.ran`: which hook, how it ran, what it answered, the text that reached the model) is written right before that result, in the same append. A hook that does not object would have left the call to the approval layer unchanged: it approves nothing. Nothing about hooks is in the request's prefix: the model learns of the hook from the result of the call it refused.
+
+*Provider:* step 1 finishes with a shell call `git push origin main`; the hook exits 2 with its reason on stdout; step 2 answers.
+
+*Engine:* offers hooks (the user's configuration: `{"beforeTool":[{"name":"no-push","tools":["shell"],"command":"./hooks/no-push.sh"}]}`).
+
+```
+-- the model asks to push
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 shell {"command":"git push origin main"}
+-- the hook refuses: its record and the call's result are one append, and the call never starts
+  8  hook.ran beforeTool a1/call_1 no-push (user) no "Pushing is not allowed here. Commit locally and tell the ..."
+  9  tool.settled a1/call_1 error "This call was not run: the hook \"no-push\" refused it.\nPus..."
+ 10  step.ended a1 finish=tool_calls
+-- the model tells the user
+ 11  step.started a2 attempt=1
+ 12  text.ended a2 "I committed locally. Pushing is not allowed here."
+ 13  step.ended a2 finish=stop
+ 14  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [shell error] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the model asks to push": `hook.ran afterTool a1/call_1 no-push (user) no "A note."` (invalid_transition). An after hook applies to a call that ran, and this one never started.
+- after "the model asks to push": `hook.ran beforeTool a1/call_9 no-push (user) yes` (not_found). A hook's record names a call of the open step.
+- after "the model asks to push": `hook.ran beforeTool no-push (user) no "Pushing is not allowed here. Commit locally and tell the ..."` (invalid_transition). A hook that applies to a tool call names it.
+- after "the model asks to push": `hook.ran stop a1/call_1 no-push (user) yes` (invalid_transition). A stop hook applies to the end of a turn, not to a call.
+- after "the model asks to push": `hook.ran beforeTool a1/call_1 no-push (user) yes "Looks fine."` (invalid_transition). Only a hook that answered no has text that reached the model.
+- after "the hook refuses: its record and the call's result are one append, and the call never starts": `hook.ran beforeTool a1/call_1 no-push (user) yes` (invalid_transition). A hook's record comes before the result of its call, in the step that made the call.
+
+#### 99. An after hook adds a note to a result, stored once with it
+
+The user's configuration has a hook that runs after every `write` of a TypeScript file. The tool runs as always (`tool.started`, then the tool). After it returned and before its result is capped and stored, the hook is run with the result and answers with a note. The note is appended after the tool's own output, which stays first, byte for byte; the whole text is then capped once and stored once in `tool.settled`, and replayed as stored from then on. The hook's record is written right before the result, in the same append. A hook can only add: it cannot change the call's arguments, the tool's output, or a result that is already in the log.
+
+*Provider:* step 1 finishes with a write call; the hook exits 2 with its note on stdout; step 2 answers.
+
+*Engine:* offers hooks (the user's configuration: `{"afterTool":[{"name":"prettier","tools":["write"],"paths":["**/*.ts"],"command":"./hooks/format.sh"}]}`).
+
+```
+-- the tool runs, then the hook: the result carries the tool's output and the note
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 write {"path":"src/a.ts","content":"export const a = "}
+  8  tool.started a1/call_1 effect=write
+  9  hook.ran afterTool a1/call_1 prettier (user) no "prettier could not format this file; run it to see why."
+ 10  tool.settled a1/call_1 success "Wrote src/a.ts (1 line).\n\n[Note from the hook \"prettier\"]..."
+ 11  step.ended a1 finish=tool_calls
+-- the model reads the note in the result and answers
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "Written; the file does not parse yet."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [write success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+#### 100. A stop hook sends the model back, and at its bound the turn ends with the hook unsatisfied
+
+The user's configuration has a stop hook and allows it one round per turn (`maxStopRounds: 1`). When the model has answered and the verification gate says the turn may end, the stop hooks are asked. The hook objects: its message is appended as a harness message (origin `stop_hook`), with the hook's record, in one append, and the model is sent back, exactly as a check report sends it back. The message must be answered: the execution cannot end on it. When the model stops again the hook is asked again and still objects, but the turn has been sent back as often as it may be (the rounds are counted from the stop messages in the log, so a restart counts the same): the turn ends, and its ending says which hooks were not satisfied (`hooks.unsatisfied`), next to what the gate found. The hook's second answer sent nobody back, so it reached the user and not the model. A stop hook never loops, and one that cannot answer lets the turn end.
+
+*Provider:* step 1 answers; the hook exits 2 with its message; step 2 answers; the hook exits 2 again.
+
+*Engine:* offers hooks (the user's configuration: `{"stop":[{"name":"no-scratch","command":"./hooks/no-scratch.sh"}],"maxStopRounds":1}`).
+
+```
+-- the model answers; the hook objects, and its message sends the model back
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "Done."
+  8  step.ended a1 finish=stop
+  9  hook.ran stop no-scratch (user) no "SCRATCH.md still exists. Delete it before you finish."
+ 10  synthetic.appended s1 origin=stop_hook "[Stop hook 1 of at most 1] The turn cannot end yet. This ..."
+-- the model stops again
+ 11  step.started a2 attempt=1
+ 12  text.ended a2 "I cannot delete SCRATCH.md: it is not mine to remove."
+ 13  step.ended a2 finish=stop
+-- the hook still objects, at its bound: the turn ends and says so
+ 14  hook.ran stop no-scratch (user) no
+ 15  execution.succeeded exe_1 hooks unsatisfied=no-scratch
+```
+
+*UI:* u1 user · a1 completed · s1 synthetic · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, s1, a2.
+
+*The reducer rejects:*
+- after "the model answers; the hook objects, and its message sends the model back": `execution.succeeded exe_1` (invalid_transition). The stop hook's message is unanswered: the model was sent back with it.
+- after "the model stops again": `execution.succeeded exe_1 hooks unsatisfied=` (invalid_transition). An ending names the stop hooks that were not satisfied only when there is one.
+- after "the model stops again": `execution.succeeded exe_1 hooks unsatisfied=no-scratch,no-scratch` (invalid_transition). An ending names each unsatisfied stop hook once.
+- after "the hook still objects, at its bound: the turn ends and says so": `hook.ran stop no-scratch (user) yes` (invalid_transition). A hook runs under an execution: there is none.
+
+#### 101. A language server's diagnostics follow the result of the edit that made something worse
+
+The user's configuration names a language server for the files the model works on. When the model reads such a file the server is started in the background and shown the file; nothing waits for it. When the model then writes the file, the tool runs as always, and after it returned the server is asked what the edit made worse, for at most the configured wait. The edit adds a call to a name that does not exist: the server's one new error is appended to the tool's own output as a short note (the error the file already had is counted, not listed), before the result is capped and stored. What the server said is recorded with the result as fields (`diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts), never read back out of the text. The note gates nothing: the project's checks remain the authority, and a server that is slow, starting or gone adds nothing and costs at most the wait. Nothing about the server is in the request's prefix.
+
+*Provider:* step 1 finishes with a read of `src/a.txt`; step 2 with a write of it that adds a call to an undefined name; step 3 answers.
+
+*Engine:* offers language-server diagnostics (the user's configuration names one server, `fixture`, for `*.txt` files).
+
+```
+-- the model reads the file: its result is the file, and the server is shown it in the background
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"src/a.txt"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "let unused = WARN(unused)\ncall(ERROR(old))\nend"
+ 10  step.ended a1 finish=tool_calls
+-- the model writes the file: the note follows the tool's own output, and the result records what the server said
+ 11  step.started a2 attempt=1
+ 12  tool.called a2/call_1 write {"path":"src/a.txt","content":"// a line added above\nlet unused = WARN(unused)\ncall(ERROR(old))\nfresh(ERROR(fetchUser))\nend"}
+ 13  tool.started a2/call_1 effect=write
+ 14  tool.settled a2/call_1 success "Wrote src/a.txt.\n\n[Diagnostics from the language server \"..." diagnostics=fixture:compared(+1) note
+ 15  step.ended a2 finish=tool_calls
+-- the model reads the note and answers
+ 16  step.started a3 attempt=1
+ 17  text.ended a3 "Added the call; fetchUser is not defined yet."
+ 18  step.ended a3 finish=stop
+ 19  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed [write success] · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, a3.
+
 ### Forks
 
-#### 98. A fork continues from its parent's history
+#### 102. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 

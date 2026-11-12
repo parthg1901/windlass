@@ -22,6 +22,7 @@ import { currentTodos, renderTodos } from "../../src/tools/todo.ts"
 import { type SummaryProblem, describeProblem, summaryPrompt, summaryRepairPrompt } from "../../src/context/summary.ts"
 import {
   type CompactionMode,
+  type DiagnosticsRecord,
   type NewEvent,
   type RestoreRecord,
   type SnapshotPoint,
@@ -31,6 +32,8 @@ import {
   HARNESS_ORIGIN,
   event,
 } from "../../src/event/durable.ts"
+import type { HookAnswer } from "../../src/hooks/answer.ts"
+import type { Hook, HooksConfigSection } from "../../src/hooks/config.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../../src/id.ts"
 import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import type { InterruptReason } from "../../src/interrupt.ts"
@@ -94,6 +97,10 @@ export interface FeatureSetting {
   readonly todo?: boolean
   /** The project has agent definitions (`.claude/agents/`), and the engine offers agents. */
   readonly agents?: boolean
+  /** The `hooks` section of the user's own configuration file: the engine runs these hooks, which answer as the scenario says. */
+  readonly hooks?: HooksConfigSection
+  /** The user's configuration names one language server, which serves `*.txt` files (the scripted server), and the workspace is a real directory. */
+  readonly lsp?: boolean
 }
 
 export interface SpawnSetting {
@@ -393,6 +400,42 @@ export const settled = (id: string, callId: string, outcome: ToolOutcome, output
     attachments: [],
     display: null,
   })
+
+/** The result of an edit a language server was asked about: the output with the note in it, and what the servers said. */
+export const settledDiagnosed = (id: string, callId: string, output: string, diagnostics: DiagnosticsRecord) =>
+  event("tool.settled", { messageId: m(id), callId: c(callId), outcome: "success", output, truncation: null, attachments: [], display: null, diagnostics })
+
+/**
+ * A hook applied. `call` is the call it applied to (`[message, call]`), or
+ * `null` for a stop hook. The scenarios' hooks are the user's own and run
+ * with the approval layer off, so unsandboxed. `toModel` is the hook's text
+ * that reached the model: the reason, the note or the message; `null` when
+ * its answer sent nothing to the model. The duration is a stand-in.
+ */
+export function hookRan(hook: Hook, call: readonly [string, string] | null, answer: HookAnswer["kind"], toModel: string | null = null) {
+  return event("hook.ran", {
+    point: hook.point,
+    messageId: call === null ? null : m(call[0]),
+    callId: call === null ? null : c(call[1]),
+    hookId: hook.id,
+    name: hook.name,
+    origin: hook.origin,
+    fingerprint: hook.fingerprint,
+    run: { kind: "ran", sandbox: null },
+    answer,
+    failure: null,
+    detail: null,
+    exitCode: answer === "yes" ? 0 : answer === "no" ? 2 : null,
+    durationMs: 0,
+    toModel,
+    forUser: "",
+    taint: null,
+  })
+}
+
+/** The execution ends as done although stop hooks still objected: the turn had been sent back as often as it may be. */
+export const succeededUnsatisfied = (unsatisfied: readonly string[], id = "exe_1") =>
+  event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" }, hooks: { unsatisfied: [...unsatisfied] } })
 
 /** A result with the structured data its tool reported for a client to show (a command's exit code). */
 export const settledWith = (id: string, callId: string, outcome: ToolOutcome, output: string, display: { readonly [key: string]: number | string | null }) =>
@@ -794,22 +837,32 @@ export function describeEvent(item: NewEvent): string {
       return `approval.denied ${d.messageId}/${d.callId} ${d.reason}${item.data.needs.length === 0 ? "" : ` needs=${item.data.needs.map((need) => need.kind).join(",")}`}${d.stop ? " stop" : ""}`
     case "taint.noticed":
       return `taint.noticed ${item.data.source.kind} from ${item.data.source.tool} at seq ${item.data.source.at}`
-    case "tool.settled":
-      return `tool.settled ${d.messageId}/${d.callId} ${d.outcome} ${quote(d.output)}`
+    case "tool.settled": {
+      const noted = item.data.diagnostics
+      const servers = noted === undefined ? "" : ` diagnostics=${noted.servers.map((server) => `${server.name}:${server.outcome}${server.outcome === "compared" ? `(+${server.new})` : ""}`).join(",")}${noted.noteAdded ? " note" : ""}`
+      return `tool.settled ${d.messageId}/${d.callId} ${d.outcome} ${quote(d.output)}${servers}`
+    }
+    case "hook.ran": {
+      const record = item.data
+      const where = record.callId === null ? "" : ` ${record.messageId}/${record.callId}`
+      return `hook.ran ${record.point}${where} ${record.name} (${record.origin}) ${record.run.kind === "ran" ? record.answer : record.run.kind}${record.toModel === null ? "" : ` ${quote(record.toModel)}`}`
+    }
     case "execution.failed":
       return `execution.failed ${d.executionId}${d.cause === undefined ? "" : ` cause=${d.cause}`} ${quote(d.message)}`
     case "execution.succeeded": {
       const outcome = item.data.verification
+      const hooks = item.data.hooks === undefined ? "" : ` hooks unsatisfied=${item.data.hooks.unsatisfied.join(",")}`
       // Nothing verified is the plain case and is not spelled out with every scenario.
-      if (outcome.status === "not_configured") return `execution.succeeded ${d.executionId}`
+      if (outcome.status === "not_configured") return `execution.succeeded ${d.executionId}${hooks}`
       const detail = outcome.status === "unresolved" ? ` ${outcome.reason} failing=${outcome.failing.join(",")}` : ""
-      return `execution.succeeded ${d.executionId} verification=${outcome.status}${detail}`
+      return `execution.succeeded ${d.executionId} verification=${outcome.status}${detail}${hooks}`
     }
     case "turn.ended": {
       const outcome = item.data.verification
-      if (outcome.status === "not_configured") return "turn.ended"
+      const hooks = item.data.hooks === undefined ? "" : ` hooks unsatisfied=${item.data.hooks.unsatisfied.join(",")}`
+      if (outcome.status === "not_configured") return `turn.ended${hooks}`
       const detail = outcome.status === "unresolved" ? ` ${outcome.reason} failing=${outcome.failing.join(",")}` : ""
-      return `turn.ended verification=${outcome.status}${detail}`
+      return `turn.ended verification=${outcome.status}${detail}${hooks}`
     }
     case "snapshot.taken":
       return `snapshot.taken ${d.id} ${d.point}${d.messageId === null ? "" : ` ${d.messageId}`}`

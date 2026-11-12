@@ -10,6 +10,7 @@ import { compactionScenarios } from "./compaction.ts"
 import { crashScenarios } from "./crash.ts"
 import { featureScenarios } from "./features.ts"
 import { happyPaths } from "./happy.ts"
+import { hookScenarios } from "./hooks.ts"
 import { forkScenarios, lineageScenarios } from "./lineage.ts"
 import { refusalScenarios } from "./refusal.ts"
 import { retryScenarios } from "./retry.ts"
@@ -36,6 +37,7 @@ export const families: Record<string, readonly Scenario[]> = {
   "Replays, subagents and background work": lineageScenarios,
   "Skills, MCP servers and wake-ups": featureScenarios,
   Agents: agentScenarios,
+  "Hooks and diagnostics": hookScenarios,
 }
 
 /**

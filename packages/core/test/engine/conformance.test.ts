@@ -13,7 +13,7 @@
  * exactly that difference applied, never a looser comparison.
  */
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type NewEvent, event } from "../../src/event/durable.ts"
@@ -56,6 +56,11 @@ import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
 import { TODO_INPUT } from "../scenarios/compaction.ts"
 import { CAPTAIN_FILE, DELEGATE_AS, REVIEWER_FILE, WRITE_FIX } from "../scenarios/agents.ts"
+import { DOCUMENT_BEFORE, FORMAT_NOTE, PUSH_INPUT, PUSH_REASON, READ_DOCUMENT, SCRATCH_REASON, WRITE_DOCUMENT, WRITE_HELPER, WROTE_DOCUMENT, WROTE_HELPER } from "../scenarios/hooks.ts"
+import type { HookProcessResult } from "../../src/hooks/answer.ts"
+import type { HookRunner } from "../../src/hooks/run.ts"
+import { exited } from "../hooks/helpers.ts"
+import { fixture as languageServer } from "../lsp/helpers.ts"
 import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import { HARNESS_ORIGIN } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
@@ -93,6 +98,18 @@ function writeAgent(cwd: string, name: string, text: string): void {
   const path = join(cwd, ".claude", "agents", `${name}.md`)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, text)
+}
+
+/**
+ * What the hooks of the scenario being played answer, by hook name: a play
+ * says it before it sends the prompt. The scenarios' hooks are not commands
+ * that exist; the engine's runner is this script.
+ */
+let hookAnswers: Record<string, HookProcessResult> = {}
+const scriptedHooks: HookRunner = async (request) => {
+  const answer = hookAnswers[request.hook.name]
+  if (answer === undefined) throw new Error(`the play scripted no answer for the hook ${request.hook.name}`)
+  return answer
 }
 
 /** The log with the scenario's stand-in for the working directory. */
@@ -1442,6 +1459,62 @@ Object.assign(PLAYS, {
   },
 } satisfies Record<string, Play>)
 
+Object.assign(PLAYS, {
+  // ---------------------------------------------------------------- hooks and diagnostics
+
+  "A before hook refuses a call, and the model reads why": async (h, say) => {
+    hookAnswers = { "no-push": exited(2, `${PUSH_REASON}\n`) }
+    h.provider.enqueue([call("call_1", "shell", JSON.parse(PUSH_INPUT) as Json), U], answer("I committed locally. Pushing is not allowed here."))
+    h.create().send(say[0]!)
+    await h.settled()
+    // The command never ran, and the hook is nowhere in the prefix: the model read of it in the call's result.
+    expect(h.tools.ran).toEqual([])
+    expect(h.provider.prefixBreaks()).toEqual([])
+    expect(JSON.stringify(h.provider.requests[0])).not.toContain("no-push")
+    expect(JSON.stringify(h.provider.requests[1]!.input)).toContain(PUSH_REASON)
+  },
+
+  "An after hook adds a note to a result, stored once with it": async (h, say) => {
+    hookAnswers = { prettier: exited(2, `${FORMAT_NOTE}\n`) }
+    h.provider.enqueue([call("call_1", "write", JSON.parse(WRITE_HELPER) as Json), U], answer("Written; the file does not parse yet."))
+    h.tools.on("write", WROTE_HELPER)
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.provider.prefixBreaks()).toEqual([])
+    expect(JSON.stringify(h.provider.requests[1]!.input)).toContain(FORMAT_NOTE)
+  },
+
+  "A stop hook sends the model back, and at its bound the turn ends with the hook unsatisfied": async (h, say) => {
+    hookAnswers = { "no-scratch": exited(2, `${SCRATCH_REASON}\n`) }
+    h.provider.enqueue(answer("Done."), answer("I cannot delete SCRATCH.md: it is not mine to remove."))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.provider.prefixBreaks()).toEqual([])
+    // The user is told how the turn ended; the model is not sent back a second time.
+    expect(h.diagnostics.map((diagnostic) => [diagnostic.kind, diagnostic.message])).toEqual([["hooks", 'The turn ended although the stop hook "no-scratch" still objected: the agent was sent back 1 time already, the most a turn allows.']])
+  },
+
+  "A language server's diagnostics follow the result of the edit that made something worse": async (h, say) => {
+    const file = (input: Record<string, unknown>) => join(h.cwd, String(input.path))
+    mkdirSync(join(h.cwd, "src"), { recursive: true })
+    writeFileSync(join(h.cwd, "src", "a.txt"), DOCUMENT_BEFORE)
+    h.provider.enqueue([call("call_1", "read", JSON.parse(READ_DOCUMENT) as Json), U], [call("call_1", "write", JSON.parse(WRITE_DOCUMENT) as Json), U], answer("Added the call; fetchUser is not defined yet."))
+    h.tools.on("read", (input) => readFileSync(file(input), "utf8"))
+    h.tools.on("write", async (input) => {
+      // The read started the server; the model's next step comes seconds later, when it is up.
+      await waitFor(() => h.session.lsp()?.servers.some((server) => server.state === "ready") ?? false, 15_000, "the language server to start")
+      writeFileSync(file(input), String(input.content))
+      return WROTE_DOCUMENT
+    })
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.provider.prefixBreaks()).toEqual([])
+    for (const request of h.provider.requests) expect(request.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(JSON.stringify(h.provider.requests[0])).not.toContain("fixture")
+    expect(JSON.stringify(h.provider.requests[2]!.input)).toContain("cannot find name 'fetchUser'")
+  },
+} satisfies Record<string, Play>)
+
 const scenarios = Object.entries(families).flatMap(([family, list]) => list.map((scenario) => ({ family, scenario })))
 
 describe("the loop writes each scenario's events", () => {
@@ -1455,7 +1528,8 @@ describe("the loop writes each scenario's events", () => {
       const setup = scenario.setup
       const features = scenario.features
       // Skills and MCP servers are read from a real directory, which then stands for the scenarios' `/repo`.
-      const cwd = features?.skills === true || features?.mcp === true || features?.agents === true ? projectDirectory() : undefined
+      const cwd = features?.skills === true || features?.mcp === true || features?.agents === true || features?.lsp === true ? projectDirectory() : undefined
+      hookAnswers = {}
       const h = new Harness({
         ...(cwd === undefined ? {} : { cwd }),
         ...(features?.skills === true ? { skills: { configDir: join(dirname(cwd!), "config") } } : {}),
@@ -1464,6 +1538,18 @@ describe("the loop writes each scenario's events", () => {
           ? { mcp: { startWaitMs: 0, probeMs: 300, graceMs: 500, dropAfterMs: 200 }, userConfig: { verify: { mode: "off" as const }, mcp: { servers: { fx: fixtureServer(["--only", "echo", "--startup-delay", "300"]) } } } }
           : {}),
         ...(features?.wake === true ? { wake: {} } : {}),
+        // Hooks of the user's own configuration, answered by the play's script; one scripted language server of the user's own.
+        ...(features?.hooks === undefined ? {} : { hooks: { runner: scriptedHooks } }),
+        ...(features?.lsp === true ? { lsp: { graceMs: 300, backoff: { initialMs: 100, maxMs: 400, stableMs: 60_000 } } } : {}),
+        ...(features?.hooks !== undefined || features?.lsp === true
+          ? {
+              userConfig: {
+                verify: { mode: "off" as const },
+                ...(features.hooks === undefined ? {} : { hooks: features.hooks }),
+                ...(features.lsp === true ? { lsp: { waitMs: 5000, servers: { fixture: languageServer() } } } : {}),
+              },
+            }
+          : {}),
         ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
         ...(features?.agents === true ? { agents: { configDir: join(dirname(cwd!), "config") } } : {}),
         tools,
@@ -1496,7 +1582,8 @@ describe("the loop writes each scenario's events", () => {
         expect(h.tools.unused).toBe(0)
         expect(h.checks.unused).toBe(0)
         // Only a simulated kill may make the engine report anything.
-        expect(h.diagnostics.filter((diagnostic) => !/killed|Database has closed/.test(diagnostic.message))).toEqual([])
+        // (And what a hook's own play expects the user to be told about it.)
+        expect(h.diagnostics.filter((diagnostic) => diagnostic.kind !== "hooks" && !/killed|Database has closed/.test(diagnostic.message))).toEqual([])
         h.verify()
       } finally {
         await h.dispose()
@@ -1506,7 +1593,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(98)
+    expect(scenarios).toHaveLength(102)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

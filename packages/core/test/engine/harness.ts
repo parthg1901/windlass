@@ -695,6 +695,10 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  *   divergence report). The outcome and the reason are compared.
  * - a subagent's result: the structured `display` data a client is given
  *   beside the text (the child's session, its steps and tool calls).
+ * - a hook's record: how long it ran (`durationMs`).
+ * - what a language server said about an edit: how long the result waited
+ *   (`waitedMs`) and the fingerprint of the server's definition, which
+ *   holds a path of this machine. The outcome and the counts are compared.
  */
 export function comparable(events: readonly NewEvent[]): Plain[] {
   return others(events.map((item) => plain(item, events)).map(copies))
@@ -766,6 +770,9 @@ function label(events: readonly NewEvent[]): Plain[] {
       data.verification = { ...item.data.verification, evidence: plainEvidence(item.data.verification.evidence) }
     // When an approval was given is the loop's clock; a scenario writes a stand-in.
     if (item.type === "approval.answered") data.grants = item.data.grants.map((grant) => ({ ...grant, grantedAt: 0 }))
+    if (item.type === "hook.ran") data.durationMs = 0
+    if (item.type === "tool.settled" && item.data.diagnostics !== undefined)
+      data.diagnostics = { ...item.data.diagnostics, waitedMs: 0, servers: item.data.diagnostics.servers.map((server) => ({ ...server, fingerprint: "" })) }
     if (item.type === "compaction.started") data.tokensBefore = 0
     if (item.type === "compaction.ended") data.tokensAfter = 0
     // The agent's instructions name the file that defines it, which is a real path in the loop and `/repo/...` in a
