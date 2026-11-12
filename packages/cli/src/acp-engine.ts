@@ -408,7 +408,7 @@ function turnList(turns: ReturnType<typeof turnsOf>): string {
 }
 
 /** Refusals that say the command line asked for something wrong: an exit with the usage code. */
-const USAGE_REASONS = new Set(["unknown_model", "ambiguous_session", "invalid_request"])
+const USAGE_REASONS = new Set(["unknown_model", "unknown_effort", "ambiguous_session", "invalid_request"])
 
 /** The error the CLI prints for something the server refused, or for the server being gone. */
 function unavailable(error: unknown): EngineUnavailable {

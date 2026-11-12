@@ -270,6 +270,9 @@ class ConnectionState {
   private readonly views = new Map<string, SessionView>()
   private closing: Promise<void> | null = null
   private readonly snapshotStores = new Map<string, Promise<Snapshots | { readonly message: string }>>()
+  /** Listings whose later pages a client may still ask for, by the token in their cursors: one listing serves all its pages. */
+  private readonly listings = new Map<string, readonly SessionSummary[]>()
+  private nextListing = 1
 
   readonly catalog: ModelCatalog
 
@@ -329,8 +332,8 @@ class ConnectionState {
     await this.requireSignIn()
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
     const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
-    // A model the client names is checked before a session is created with it, as the command line does.
-    if (asked.model !== null) await this.validate(cwd, asked)
+    // A model or an effort the client names is checked before a session is created with it, as the command line does.
+    if (asked.model !== null || asked.effort !== null) await this.validate(cwd, asked)
     const settings = await this.harness.settingsFor(cwd, asked)
     // As the agent the client names; without one, as the default of the user's configuration, if any.
     const agent = meta?.agent ?? null
@@ -408,14 +411,24 @@ class ConnectionState {
 
   async listSessions(cwd: string | null, cursor: string | null, archived = false): Promise<ListSessionsResponse> {
     if (cwd !== null && !isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
-    const offset = cursor === null ? 0 : Number(cursor)
-    if (!Number.isInteger(offset) || offset < 0) throw RequestError.invalidParams({ cursor }, "unknown cursor")
-    const all = this.engineErrors(() => this.harness.engine.listSessions({ ...(cwd === null ? {} : { cwd }), ...(archived ? { includeArchived: true } : {}) }))
+    // A cursor is `<listing>:<offset>`: the listing made for the first page serves the pages after it.
+    const [token = "", position = ""] = cursor === null ? ["", "0"] : cursor.split(":")
+    const offset = Number(position)
+    if (!Number.isInteger(offset) || offset < 0 || (cursor !== null && (token === "" || position === ""))) throw RequestError.invalidParams({ cursor }, "unknown cursor")
+    const list = () => this.engineErrors(() => this.harness.engine.listSessions({ ...(cwd === null ? {} : { cwd }), ...(archived ? { includeArchived: true } : {}) }))
+    // A listing that is no longer kept (many were started meanwhile) is made again for the same request.
+    const all = (cursor === null ? undefined : this.listings.get(token)) ?? list()
+    const key = cursor === null ? String(this.nextListing++) : token
     const page = all.slice(offset, offset + LIST_PAGE)
+    const more = offset + LIST_PAGE < all.length
+    if (more) {
+      this.listings.set(key, all)
+      for (const old of [...this.listings.keys()].slice(0, -KEPT_LISTINGS)) this.listings.delete(old)
+    } else this.listings.delete(key)
     const sessions: SessionInfo[] = page.map((summary) => ({
       sessionId: summary.session.id,
       cwd: summary.session.cwd,
-      title: this.titleOf(summary.session.id, summary.session.title),
+      title: sessionTitle(summary.session.title, summary.firstPrompt),
       updatedAt: new Date(summary.updatedAt).toISOString(),
       _meta: {
         [META.capabilities]: {
@@ -427,7 +440,7 @@ class ConnectionState {
         },
       },
     }))
-    return offset + LIST_PAGE < all.length ? { sessions, nextCursor: String(offset + LIST_PAGE) } : { sessions }
+    return more ? { sessions, nextCursor: `${key}:${offset + LIST_PAGE}` } : { sessions }
   }
 
   async closeSession(sessionId: string, shutdown = false): Promise<Record<string, never>> {
@@ -480,11 +493,13 @@ class ConnectionState {
       next = { model: value, reasoningEffort: keeps ? current.reasoningEffort : null }
     } else if (configId === CONFIG.effort) {
       const efforts = models.find((model) => model.id === current.model)?.efforts ?? []
-      if (value !== DEFAULT_EFFORT_VALUE && !efforts.includes(value) && value !== current.reasoningEffort)
-        throw RequestError.invalidParams({ configId, value }, `${current.model} does not take the reasoning effort ${value}`)
+      if (value !== DEFAULT_EFFORT_VALUE && !efforts.includes(value) && value !== current.reasoningEffort) {
+        const message = `model ${current.model} does not offer the reasoning effort "${value}"; it accepts: ${efforts.length === 0 ? "none (it has no reasoning efforts)" : efforts.join(", ")}`
+        throw new RequestError(-32602, message, { configId, value, ...errorData({ reason: "unknown_effort", message }) })
+      }
       next = { model: current.model, reasoningEffort: value === DEFAULT_EFFORT_VALUE ? null : value }
     } else throw RequestError.invalidParams({ configId }, `unknown config option ${configId}`)
-    view.session.setSettings(next)
+    this.engineErrors(() => view.session.setSettings(next))
     view.requested = next
     return { configOptions: await this.configOptions(next, view.session) }
   }
@@ -844,8 +859,9 @@ class ConnectionState {
 
   /**
    * A session's title: its own (`session.renamed`, or given at creation), or
-   * else the first line of its first message, shortened (`deriveTitle`).
-   * Deterministic and without a model call; remembered once found.
+   * else the first line of the first thing the user said in it, shortened
+   * (`sessionTitle`). The engine keeps the beginning of that with the
+   * session's summary (`firstPrompt`), so no log is read for a title.
    */
   titleOf(sessionId: string, own: string | null): string | null {
     if (own !== null && own.trim() !== "") return own
@@ -1072,7 +1088,7 @@ class ConnectionState {
         throw new RequestError(-32603, error.message, errorData({ reason: "session_in_use", holderPid: error.holderPid, message: error.message }))
       if (error instanceof EngineError && error.code === "session_not_found")
         throw new RequestError(-32002, "Resource not found", { sessionId: sessionId ?? "", ...errorData({ reason: "session_not_found", message: error.message }) })
-      if (error instanceof EngineError && (error.code === "ambiguous_session" || error.code === "unknown_model" || error.code === "invalid_request"))
+      if (error instanceof EngineError && (error.code === "ambiguous_session" || error.code === "unknown_model" || error.code === "unknown_effort" || error.code === "invalid_request"))
         throw new RequestError(-32602, error.message, errorData({ reason: error.code, message: error.message }))
       if (error instanceof EngineError) throw new RequestError(-32603, error.message, { reason: error.message, ...errorData({ reason: "closed", message: error.message }) })
       if (error instanceof StoreError && error.code === "schema_mismatch") {

@@ -160,8 +160,8 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
 async function sessionFor(harness: Harness, request: OpenRequest): Promise<EngineSession> {
   const engine = harness.engine
   const asked = { model: request.model, effort: request.effort }
-  // A model named on the command line is checked before a session is created with it or switched to it.
-  if (request.model !== null) await engine.validateSettings(await harness.settingsFor(request.cwd, asked))
+  // A model or an effort named on the command line is checked before a session is created with it or switched to it.
+  if (request.model !== null || (request.effort !== null && request.session.kind === "new")) await engine.validateSettings(await harness.settingsFor(request.cwd, asked))
   const target = request.session
   const agent = request.agent ?? null
   if (target.kind === "new") return engine.createSession({ cwd: request.cwd, settings: await harness.settingsFor(request.cwd, asked), ...(agent === null ? {} : { agent }) })
@@ -185,7 +185,7 @@ async function unavailable<T>(work: () => Promise<T>): Promise<T> {
   } catch (error) {
     // Each of these messages is written for the user: which session, who holds it and what to do, or which models exist.
     if (error instanceof EngineError && error.code !== "closed")
-      throw new EngineUnavailable(error.message, error.code === "unknown_model" || error.code === "ambiguous_session" || error.code === "invalid_request" ? "usage" : null)
+      throw new EngineUnavailable(error.message, error.code === "unknown_model" || error.code === "unknown_effort" || error.code === "ambiguous_session" || error.code === "invalid_request" ? "usage" : null)
     if (error instanceof StoreError && error.code === "schema_mismatch")
       throw new EngineUnavailable(`that session was written by another version of ${brand.name} and cannot be opened by this one (${error.message})`)
     throw error
