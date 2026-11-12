@@ -208,6 +208,7 @@ export class Translator {
         break
       case "step.started":
         this.model = item.data.model
+        this.turn.steps += 1
         this.turn.providerError = null
         // A retry before any durable output streams the response again: what the client already has of the
         // abandoned attempt stays, and the new attempt goes to a new ACP message instead of being appended to it.
@@ -276,6 +277,7 @@ export class Translator {
         break
       }
       case "compaction.started":
+        if (item.data.trigger === "manual") this.turn.compactionAsked = true
         if (this.options.compaction) update({ sessionUpdate: "compaction_update", compactionId: item.data.messageId, status: "in_progress" })
         break
       case "compaction.ended":
@@ -397,7 +399,9 @@ export class Translator {
       changedFiles: replay ? (this.options.replayedChanges?.(details.executionId) ?? null) : this.turn.changedFiles,
       ...(replay ? { replay: true } : {}),
     }
-    const out: Output[] = [{ type: "ext", method: EXT.turn, params: { ...turn } }]
+    // An execution that only compacted because the user asked is no turn: it has no ending to report.
+    const compactionOnly = this.turn.compactionAsked && this.turn.steps === 0
+    const out: Output[] = compactionOnly ? [] : [{ type: "ext", method: EXT.turn, params: { ...turn } }]
     if (!replay)
       out.push(
         this.state({
@@ -489,6 +493,9 @@ function freshTurn() {
     executionId: null as string | null,
     changedFiles: null as string[] | null,
     stepLimit: false,
+    /** Model calls for steps so far, and whether the user asked this execution to compact (`compaction.started`, `manual`). */
+    steps: 0,
+    compactionAsked: false,
     refused: false,
     lastFinish: null as EventData<"step.ended">["finish"] | null,
     providerError: null as ProviderError | null,

@@ -1298,6 +1298,8 @@ class SessionView {
       if (pending !== undefined) pending.enqueuedSeq = item.seq
     }
     if (item.type === "settings.changed") this.requested = null
+    // A title the user gave: the first message no longer names the session.
+    if (item.type === "session.renamed") this.titled = true
     if (item.type === "inbox.enqueued" && item.data.origin === null && !this.titled) {
       const title = this.connection.titleOf(this.session.id, this.session.projection().session.title)
       if (title !== null) {

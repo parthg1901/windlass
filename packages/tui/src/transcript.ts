@@ -216,6 +216,9 @@ export interface SessionInfo {
 interface Turn {
   readonly start: number
   steps: number
+  summaryCalls: number
+  /** The user asked for a compaction in it (`/compact`): with no step, it is that compaction and no turn. */
+  compactionAsked: boolean
   usage: Usage | null
   lastError: string | null
   requestId: string | null
@@ -640,6 +643,7 @@ export class Transcript {
       }
       case "compaction.started": {
         this.activity.compacting = { since: this.now(), repairing: false }
+        if (event.data.trigger === "manual" && this.turn !== null) this.turn.compactionAsked = true
         const row = this.notice(SYMBOL.compact, "accent", [span("compacting the conversation…"), span(event.data.trigger === "manual" ? " · asked for" : event.data.trigger === "overflow" ? " · the request was too large" : "", "dim")], [], replay, "work")
         this.compactions.set(event.data.messageId, { row, tokensBefore: event.data.tokensBefore, model: this.session.model })
         return
@@ -750,12 +754,16 @@ export class Transcript {
       }
       case "execution.succeeded": {
         const turn = this.endTurn()
+        // A compaction the user asked for while idle runs under an execution of its own: no turn ended here.
+        if (compactionOnly(turn)) return
         const unresolved = event.data.verification.status === "unresolved"
         this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification, executionId: event.data.executionId }, replay)
         return
       }
       case "execution.failed": {
         const turn = this.endTurn()
+        // The compaction's own row said that it failed and why.
+        if (compactionOnly(turn)) return
         // Ended because a call needed approval and nobody could give it (`unattended: stop`): not an error of the work.
         if (event.data.cause === "approval" && turn !== null) turn.lastError = "approval needed"
         this.outcome("failed", turn, event.time, { message: sanitize(event.data.message), executionId: event.data.executionId }, replay)
@@ -763,6 +771,7 @@ export class Transcript {
       }
       case "execution.interrupted": {
         const turn = this.endTurn()
+        if (compactionOnly(turn) && event.data.reason !== "shutdown") return
         if (event.data.reason === "shutdown") this.cutOff = "shutdown"
         this.outcome(event.data.reason === "shutdown" ? "shutdown" : "interrupted", turn, event.time, { executionId: event.data.executionId }, replay)
         return
@@ -1005,7 +1014,7 @@ export class Transcript {
   // ---------------------------------------------------------------- turns
 
   private beginTurn(time: number): void {
-    this.turn = { start: time, steps: 0, usage: null, lastError: null, requestId: null, changedFiles: null, diffs: new Map(), written: new Set() }
+    this.turn = { start: time, steps: 0, summaryCalls: 0, compactionAsked: false, usage: null, lastError: null, requestId: null, changedFiles: null, diffs: new Map(), written: new Set() }
     Object.assign(this.activity, blankActivity(), { executing: true, turnStartedAt: this.now() })
   }
 
@@ -1171,6 +1180,11 @@ export function turnsLabel(turns: readonly TurnInfo[]): string | null {
 
 export function expandable(row: Row): boolean {
   return row.kind === "tool" || row.kind === "reasoning" || row.kind === "outcome" || (row.kind === "notice" && row.detail.length > 2)
+}
+
+/** Whether an execution was only a compaction the user asked for: no step, so no turn to draw an ending for. */
+function compactionOnly(turn: Turn | null): boolean {
+  return turn !== null && turn.compactionAsked && turn.steps === 0
 }
 
 function blankActivity(): Activity {

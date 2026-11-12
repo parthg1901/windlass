@@ -1229,7 +1229,7 @@ export class App {
   /** `/rename <title>`. */
   private async rename(title: string): Promise<void> {
     const session = this.session
-    if (session?.rename === undefined) return this.say("/rename is not available: the engine has no operation to rename a session (EngineSession.rename, appending session.renamed); titles are derived from the first message", "warn")
+    if (session?.rename === undefined) return this.say(`/rename is not available with this engine (${this.options.backend.label})`, "warn")
     if (title.trim() === "") return this.say("/rename needs a title, e.g. /rename fix the login test", "warn")
     try {
       this.transcript.session.title = await session.rename(title.trim())

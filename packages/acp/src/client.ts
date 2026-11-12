@@ -682,7 +682,7 @@ export class ClientSession {
     return this.link.request<DiffResult>(EXT.diff, { sessionId: this.id, ...params })
   }
 
-  /** `<prefix>/rename`, when the server offers it (`offers(EXT.rename)`). */
+  /** `<prefix>/rename`: resolves with the title as stored. */
   async rename(title: string): Promise<string> {
     return (await this.link.request<{ title: string }>(EXT.rename, { sessionId: this.id, title })).title
   }

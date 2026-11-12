@@ -343,6 +343,15 @@ class AcpSession implements Session {
   setAgent(name: string): Promise<void> {
     return this.feature(EXT.agents, () => this.session.setAgent(name))
   }
+
+  rename(title: string): Promise<string> {
+    return this.feature(EXT.rename, () => this.session.rename(title))
+  }
+
+  compact(): Promise<CompactResult> {
+    return this.feature(EXT.compact, () => this.session.compact())
+  }
+
   /** A feature request, refused in one sentence by a server that does not offer it. */
   private async feature<T>(method: string, work: () => Promise<T>): Promise<T> {
     if (!this.session.offers(method)) throw new Error(`this engine does not offer ${method.replace(/^.*\//, "/")} (it may be another version)`)

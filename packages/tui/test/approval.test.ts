@@ -376,13 +376,13 @@ describe("commands", () => {
     expect(frame).toContain("+hello")
   })
 
-  test("/rename says it is not available, and which engine operation it waits for", async () => {
+  test("/rename with an engine that cannot rename says so in one sentence", async () => {
     const backend = new ScriptBackend()
     mounted = await mount({ width: 100, height: 30, backend })
     await keys().typeText("/rename the parser")
     keys().pressEnter()
     await mounted.settle()
     const said = mounted.app.transcript.rows.flatMap((row) => (row.kind === "notice" ? [row.text.map((part) => part.text).join("")] : []))
-    expect(said.at(-1)).toStartWith("/rename is not available: the engine has no operation to rename a session (EngineSession.rename")
+    expect(said.at(-1)).toBe("/rename is not available with this engine (script)")
   })
 })

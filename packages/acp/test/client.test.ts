@@ -175,7 +175,7 @@ describe("in memory", () => {
     const { link, workspace } = await memory([[script.toolCall("c1", "write", { path: "a.txt", content: "a\n" })], [script.text("Done.")]])
     const session = await link.newSession(workspace)
     expect(session.offers(EXT.diff)).toBe(true)
-    expect(session.offers(EXT.rename)).toBe(false)
+    expect(session.offers(EXT.rename)).toBe(true)
     await session.send("write a")
     await collect(session, turnEnded)
     const diff = await session.diff()

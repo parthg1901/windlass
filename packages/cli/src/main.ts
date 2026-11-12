@@ -413,6 +413,11 @@ async function interactiveLoop(context: Interactive): Promise<number> {
             return void showDiff(session, renderer)
           case "agent":
             return void agentCommand(session, renderer, found.rest)
+          case "rename":
+            return void renameSession(session, renderer, found.rest)
+          case "compact":
+            if (found.rest !== "") return renderer.notice("/compact takes nothing after it", "warn")
+            return void compactNow(session, renderer)
           case "mcp":
           case "skills":
           case "wakeups":
@@ -563,6 +568,29 @@ async function agentCommand(session: Session, renderer: PrettyRenderer, name: st
     if (before === now) renderer.notice(now === null ? "this session runs as no agent already" : `this session runs as the ${now} agent already`)
   } catch (error) {
     renderer.notice(`/agent: ${error instanceof Error ? error.message : String(error)}`, "warn")
+  }
+}
+
+/** `/rename <title>`. */
+async function renameSession(session: Session, renderer: PrettyRenderer, title: string): Promise<void> {
+  if (session.rename === undefined) return renderer.notice("/rename is not available with this engine", "warn")
+  if (title.trim() === "") return renderer.notice("/rename needs a title, e.g. /rename fix the login test", "warn")
+  try {
+    renderer.notice(`renamed: ${await session.rename(title)}`)
+  } catch (error) {
+    renderer.notice(`/rename failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+  }
+}
+
+/** `/compact`: asks for a compaction now and says what came of it: the sizes (from its events), or why nothing was compacted, or why it failed. */
+async function compactNow(session: Session, renderer: PrettyRenderer): Promise<void> {
+  if (session.compact === undefined) return renderer.notice("/compact is not available with this engine", "warn")
+  try {
+    // A compaction that was made is drawn from its events, with the sizes; what is said here is why there was none.
+    const said = compactText(await session.compact())
+    if (said !== null) renderer.notice(said.text, said.tone)
+  } catch (error) {
+    renderer.notice(`/compact failed: ${error instanceof Error ? error.message : String(error)}`, "error")
   }
 }
 

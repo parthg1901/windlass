@@ -10,7 +10,9 @@
  * terminal event; a message queued behind it (`turn.ended`, then its
  * delivery) starts the next turn inside the same execution. A steer is part
  * of the turn it was sent into. A turn cut off by a shutdown and resumed
- * (`execution.resumed`) is one turn.
+ * (`execution.resumed`) is one turn. An execution that only compacted the
+ * conversation because the user asked (`/compact` while idle: no message, no
+ * step) is no turn, and is not counted.
  *
  * Pure: it takes events in log order and touches nothing.
  */
@@ -51,6 +53,9 @@ export class TurnTracker {
   private current: TurnInfo | null = null
   /** A queued message ended the previous turn: its delivery starts the next one. */
   private queuedNext: string | null = null
+  /** Whether the execution in progress has made a model call for a step, and whether the user asked it to compact. */
+  private stepped = false
+  private compactionAsked = false
 
   add(event: TurnEvent): void {
     const data = (event.data ?? {}) as Record<string, unknown>
@@ -63,6 +68,14 @@ export class TurnTracker {
       }
       case "execution.started":
         this.current = this.start(event.seq, typeof data.executionId === "string" ? data.executionId : null)
+        this.stepped = false
+        this.compactionAsked = false
+        return
+      case "step.started":
+        this.stepped = true
+        return
+      case "compaction.started":
+        if (data.trigger === "manual") this.compactionAsked = true
         return
       case "execution.resumed": {
         // The same turn, taken up again after a shutdown or a crash.
@@ -103,8 +116,11 @@ export class TurnTracker {
       case "execution.interrupted": {
         const turn = this.current
         if (turn !== null) turn.endSeq = event.seq
+        // Only a compaction the user asked for: not a turn.
+        if (turn !== null && this.compactionAsked && !this.stepped && !this.delivered.has(turn) && this.turns.at(-1) === turn) this.turns.pop()
         this.current = null
         this.queuedNext = null
+        this.compactionAsked = false
         return
       }
       case "history.reverted": {

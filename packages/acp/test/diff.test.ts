@@ -117,14 +117,14 @@ describe("per-file diffs", () => {
     expect(replayed).toEqual(live)
   })
 
-  test("advertised: the diff; not rename or compaction, which the engine has no operation for", async () => {
+  test("advertised: the diff, and the rename and the compaction the engine now has operations for", async () => {
     const h = await startHarness()
     harnesses.push(h)
     const init = (await h.initialize()) as { agentCapabilities: { _meta: Record<string, { methods: string[] }> } }
     const offered = init.agentCapabilities._meta[NS]!.methods
     expect(offered).toContain(EXT.diff)
-    expect(offered).not.toContain(EXT.rename)
-    expect(offered).not.toContain(EXT.compact)
+    expect(offered).toContain(EXT.rename)
+    expect(offered).toContain(EXT.compact)
   })
 })
 

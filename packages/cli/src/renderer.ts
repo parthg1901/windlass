@@ -89,6 +89,10 @@ interface Turn {
   childUsage?: Usage | null
   /** Calls refused because they needed approval and nobody was there (`--unattended deny`). */
   refused?: number
+  /** Summary requests its compactions sent: model requests that are no steps. */
+  summaryCalls?: number
+  /** The user asked for a compaction in it (`/compact`): with no step, it is that compaction and no turn. */
+  compactionAsked?: boolean
 }
 
 interface InboxItem {
@@ -467,6 +471,7 @@ export class PrettyRenderer implements Sink {
       }
       case "compaction.started":
         this.compacting = { tokensBefore: event.data.tokensBefore, repairing: false }
+        if (event.data.trigger === "manual" && this.turn !== null) this.turn.compactionAsked = true
         return
       case "compaction.repair_requested":
         if (this.compacting !== null) this.compacting.repairing = true
@@ -581,11 +586,15 @@ export class PrettyRenderer implements Sink {
       }
       case "execution.succeeded": {
         const turn = this.endTurn()
-        const parts = [turn === null ? null : plural(turn.steps, "step"), turn === null ? null : formatDuration(event.time - turn.start)]
+        // A compaction the user asked for while idle runs under an execution of its own: no turn ended here.
+        if (compactionOnly(turn)) return
+        const parts = [turn === null ? null : requestsOf(turn), turn === null ? null : formatDuration(event.time - turn.start)]
         return this.succeeded(event.data.verification, parts, turn)
       }
       case "execution.failed": {
         const turn = this.endTurn()
+        // The compaction's own line said that it failed and why.
+        if (compactionOnly(turn)) return
         // Not a failure of the work: a call needed an approval nobody could give, and the run was not to go on without it.
         if (event.data.cause === "approval") {
           const time = turn === null ? null : formatDuration(event.time - turn.start)
@@ -607,6 +616,7 @@ export class PrettyRenderer implements Sink {
       }
       case "execution.interrupted": {
         const turn = this.endTurn()
+        if (compactionOnly(turn) && event.data.reason !== "shutdown") return
         if (event.data.reason === "shutdown") {
           this.cutOff = "shutdown"
           this.summary([seg(`${SYMBOL.stop} `, "yellow"), seg("stopped for shutdown", ["yellow", "bold"]), seg(" · the turn resumes at the next start", "dim")], turn)
@@ -1438,6 +1448,16 @@ function describeOutcome(name: string, data: EventData<"tool.settled">): { symbo
     case "effect_unknown":
       return { symbol: SYMBOL.unknown, tone: "yellow", text: "outcome unknown · it may have taken effect", short: "outcome unknown" }
   }
+}
+
+/** A turn's model requests as its ending says them: its steps, and the summary calls of its compactions when it made any. */
+function requestsOf(turn: Turn): string {
+  return requestsText(turn.steps, turn.summaryCalls ?? 0)
+}
+
+/** Whether an execution was only a compaction the user asked for: no step, so no turn to draw an ending for. */
+function compactionOnly(turn: Turn | null): boolean {
+  return turn !== null && turn.compactionAsked === true && turn.steps === 0
 }
 
 /**
