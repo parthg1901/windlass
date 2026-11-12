@@ -7,7 +7,7 @@
  *
  *   bun evals/replay-suite.ts <results-dir> [--system-prompt <file>] [--tool-description <tool>=<file>]...
  *                             [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute] [--strict]
- *                             [--repeat N] [--noise N] [--json] [--out <file>] [--data-dir <dir>]
+ *                             [--repeat N] [--noise N] [--noise-policy stop|execute] [--json] [--out <file>] [--data-dir <dir>]
  *
  * The noise floor. A model is not deterministic: a replay with NO change
  * still leaves the recording sometimes. So every run is also replayed
@@ -30,6 +30,8 @@ import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { type Engine, EngineError, type ReplayOutcome, type ReplayRequest, createHarness } from "../packages/core/src/index.ts"
 import type { SessionId } from "../packages/core/src/id.ts"
+import { DEFAULT_NORMALISERS } from "../packages/core/src/engine/replay.ts"
+import { compareReplay } from "../packages/core/src/replay/effects.ts"
 import type { Divergence } from "../packages/core/src/replay/match.ts"
 import { REPLAY_FLAGS, replayRequest } from "../scripts/replay.ts"
 import { type GradeResult, grade } from "./run-check.ts"
@@ -61,6 +63,21 @@ export interface ReplayRow {
   readonly inputTokens: number
   readonly cachedTokens: number
   readonly outputTokens: number
+  /**
+   * Compared on what it did rather than how it looked around
+   * (`replay/effects.ts`): the calls with side effects, in order. `null` when
+   * the replay did not reach an answer of its own (it stopped where it left
+   * the recording, or failed), so there is nothing whole to compare.
+   */
+  readonly effects: { readonly same: boolean; readonly matched: number; readonly recordedActs: number; readonly replayedActs: number; readonly first: string | null } | null
+  /**
+   * A lenient matcher without a copy of the workspace: where it would have
+   * ended (the first look it could not soundly answer from the recording, or
+   * the first act that differs). `null` when not comparable, as `effects`.
+   */
+  readonly lenient: { readonly served: number; readonly mustRun: number; readonly left: string | null } | null
+  /** Whether it ended with the recording's workspace (equal snapshot IDs); `null` when that is not known (it left without a copy). */
+  readonly sameWorkspace: boolean | null
   /** The grade of the copy a diverged replay ended in (`--policy execute`). */
   readonly graded: GradeResult | null
   readonly recordedPass: boolean
@@ -75,23 +92,47 @@ export interface TaskSummary {
    * model that explores differently every time leaves most recordings
    * anyway; where it leaves them is what a change shows in.
    */
-  readonly change: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly where: readonly string[]; readonly novel: number }
-  readonly noise: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly where: readonly string[] }
+  readonly change: Tally & { readonly where: readonly string[]; readonly effectsWhere: readonly string[]; readonly novel: number }
+  readonly noise: Tally & { readonly where: readonly string[]; readonly effectsWhere: readonly string[] }
   /** With grading: of the diverged replays, how many passed the task's grader; and how many of the recorded runs had. */
   readonly graded: { readonly diverged: number; readonly passed: number; readonly recordedPassed: number } | null
+}
+
+/** A count out of the replays it could be measured on. */
+export interface Measure {
+  readonly yes: number
+  readonly of: number
+}
+
+/** The old measure (left the recording) and the new ones, for one set of replays. */
+export interface Tally {
+  readonly replays: number
+  readonly onTape: number
+  readonly left: number
+  readonly other: number
+  /** Made other side effects than the recording (of the replays that reached an answer). */
+  readonly effectsDiffer: Measure
+  /** A lenient matcher without a copy would have left the recording (same replays). */
+  readonly lenientLeft: Measure
+  /** Ended with another workspace than the recording (of the replays where it is known). */
+  readonly workspaceDiffers: Measure
+  /** Passed the task's grader (of the replays that were graded). */
+  readonly passed: Measure
 }
 
 export interface SuiteReport {
   readonly results: string
   readonly policy: string
+  /** The policy the unchanged replays ran under. */
+  readonly noisePolicy: string
   readonly change: string
   readonly rows: readonly ReplayRow[]
   readonly tasks: readonly TaskSummary[]
   readonly totals: {
     readonly runs: number
     readonly skipped: number
-    readonly change: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly novel: number }
-    readonly noise: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number }
+    readonly change: Tally & { readonly novel: number }
+    readonly noise: Tally
     readonly requests: number
     readonly inputTokens: number
     readonly cachedTokens: number
@@ -100,13 +141,19 @@ export interface SuiteReport {
 }
 
 export interface SuiteOptions {
-  readonly engine: Pick<Engine, "replaySession" | "resolveSession">
+  readonly engine: Pick<Engine, "replaySession" | "resolveSession" | "readEvents">
   readonly runs: readonly RecordedRun[]
   readonly request: ReplayRequest
   /** Replays per run with the change. Default 1. */
   readonly repeat?: number
   /** Replays per run with nothing changed. Default 2; 0 measures no noise floor (and the report says so). */
   readonly noise?: number
+  /**
+   * The policy of the unchanged replays. Default: `execute` when the change
+   * runs under `execute` (the side effects and the workspace are compared
+   * like with like, and graded), otherwise `stop`.
+   */
+  readonly noisePolicy?: "stop" | "execute"
   /** Grades a diverged replay's copy. Default: the task's own grader. */
   readonly grade?: (task: string, workspace: string) => Promise<GradeResult>
   /** Whether the copies are deleted after grading. Default true. */
@@ -149,13 +196,16 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
   const noise = options.noise ?? 2
   const grader = options.grade ?? grade
   const rows: ReplayRow[] = []
-  // The noise floor is measured under `stop`, whatever the change runs under: it asks only where the model leaves, and costs nothing else.
-  const unchanged: ReplayRequest = { policy: "stop", ...(options.request.strict === true ? { strict: true } : {}) }
+  const changePolicy = options.request.policy ?? "stop"
+  // Under `stop` the noise floor asks only where the model leaves, and costs nothing else. Under `execute` the
+  // unchanged replays run to their end too, so their side effects and workspaces are compared like with like.
+  const noisePolicy = options.noisePolicy ?? (changePolicy === "execute" ? "execute" : "stop")
+  const unchanged: ReplayRequest = { policy: noisePolicy, ...(options.request.strict === true ? { strict: true } : {}) }
   const replayable = options.runs.filter((run) => run.sessionId !== null)
 
   const one = async (run: RecordedRun, kind: ReplayRow["kind"], request: ReplayRequest): Promise<ReplayRow> => {
     const base = { task: run.task, attempt: run.attempt, sessionId: run.sessionId!, kind, recordedPass: run.pass }
-    const failed = (reason: string): ReplayRow => ({ ...base, replaySessionId: null, status: "error", reason, left: null, matchedSteps: 0, recordedSteps: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, graded: null })
+    const failed = (reason: string): ReplayRow => ({ ...base, replaySessionId: null, status: "error", reason, left: null, matchedSteps: 0, recordedSteps: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, effects: null, lenient: null, sameWorkspace: null, graded: null })
     let outcome: ReplayOutcome
     try {
       const started = await options.engine.replaySession(options.engine.resolveSession(run.sessionId!) as SessionId, request)
@@ -166,10 +216,11 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
       return failed(error instanceof EngineError || error instanceof Error ? error.message : String(error))
     }
     const report = outcome.report
+    const compared = compareReplay(options.engine.readEvents(outcome.sourceSessionId), options.engine.readEvents(outcome.sessionId), report, { normalisers: DEFAULT_NORMALISERS })
     let graded: GradeResult | null = null
     if (outcome.workspace !== null) {
       // Only a replay that left the recording has a workspace of its own to grade.
-      if (kind === "change") graded = await grader(run.task, outcome.workspace).catch((error: unknown) => ({ pass: false, message: `the grader failed: ${error instanceof Error ? error.message : String(error)}` }))
+      graded = await grader(run.task, outcome.workspace).catch((error: unknown) => ({ pass: false, message: `the grader failed: ${error instanceof Error ? error.message : String(error)}` }))
       if (options.cleanup !== false) await rm(outcome.workspace, { recursive: true, force: true })
     }
     return {
@@ -184,6 +235,7 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
       inputTokens: outcome.usage?.inputTokens ?? 0,
       cachedTokens: outcome.usage?.cachedInputTokens ?? 0,
       outputTokens: outcome.usage?.outputTokens ?? 0,
+      ...compared,
       graded,
     }
   }
@@ -197,17 +249,12 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
     }
   }
 
-  const tally = (list: readonly ReplayRow[]) => ({
-    replays: list.length,
-    onTape: list.filter((row) => row.status === "identical").length,
-    left: list.filter((row) => row.status === "diverged").length,
-    other: list.filter((row) => row.status !== "identical" && row.status !== "diverged").length,
-  })
-  const places = (list: readonly ReplayRow[]) => {
+  const places = (list: readonly (string | null)[]) => {
     const counted = new Map<string, number>()
-    for (const row of list) if (row.left !== null) counted.set(place(row.left), (counted.get(place(row.left)) ?? 0) + 1)
+    for (const text of list) if (text !== null) counted.set(text, (counted.get(text) ?? 0) + 1)
     return [...counted].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([text, count]) => (count === 1 ? text : `${count}x ${text}`))
   }
+  const placeOf = (row: ReplayRow) => (row.left === null ? null : place(row.left))
   const tasks = [...new Set(replayable.map((run) => run.task))].map((task): TaskSummary => {
     const mine = rows.filter((row) => row.task === task)
     const change = mine.filter((row) => row.kind === "change")
@@ -217,15 +264,16 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
     return {
       task,
       runs: replayable.filter((run) => run.task === task).length,
-      change: { ...tally(change), where: places(change), novel: change.filter((row) => row.left !== null && !usual.has(place(row.left))).length },
-      noise: { ...tally(floor), where: places(floor) },
+      change: { ...tally(change), where: places(change.map(placeOf)), effectsWhere: places(change.map((row) => row.effects?.first ?? null)), novel: change.filter((row) => row.left !== null && !usual.has(place(row.left))).length },
+      noise: { ...tally(floor), where: places(floor.map(placeOf)), effectsWhere: places(floor.map((row) => row.effects?.first ?? null)) },
       graded: graded.length === 0 ? null : { diverged: graded.length, passed: graded.filter((row) => row.graded!.pass).length, recordedPassed: graded.filter((row) => row.recordedPass).length },
     }
   })
   const sum = (pick: (row: ReplayRow) => number) => rows.reduce((total, row) => total + pick(row), 0)
   return {
     results: options.results ?? "",
-    policy: options.request.policy ?? "stop",
+    policy: changePolicy,
+    noisePolicy,
     change: describeChange(options.request),
     rows,
     tasks,
@@ -242,61 +290,153 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
   }
 }
 
-const share = (part: number, whole: number) => (whole === 0 ? "-" : `${Math.round((100 * part) / whole)}%`)
+const measure = (list: readonly ReplayRow[], pick: (row: ReplayRow) => boolean | null): Measure => {
+  const known = list.map(pick).filter((value): value is boolean => value !== null)
+  return { yes: known.filter(Boolean).length, of: known.length }
+}
 
-/** The table: per task, the change's replays next to the noise floor. */
+function tally(list: readonly ReplayRow[]): Tally {
+  return {
+    replays: list.length,
+    onTape: list.filter((row) => row.status === "identical").length,
+    left: list.filter((row) => row.status === "diverged").length,
+    other: list.filter((row) => row.status !== "identical" && row.status !== "diverged").length,
+    effectsDiffer: measure(list, (row) => (row.effects === null ? null : !row.effects.same)),
+    lenientLeft: measure(list, (row) => (row.lenient === null ? null : row.lenient.left !== null)),
+    workspaceDiffers: measure(list, (row) => (row.sameWorkspace === null ? null : !row.sameWorkspace)),
+    // A replay that stayed on the recording made the recorded calls, so its result is the recorded one.
+    passed: measure(list, (row) => (row.graded !== null ? row.graded.pass : row.status === "identical" ? row.recordedPass : null)),
+  }
+}
+
+/**
+ * Two-sided Fisher exact test: how likely a split at least as uneven as
+ * `a` of `n1` against `c` of `n2` is when both sets have the same rate.
+ */
+export function fisherExact(a: number, n1: number, c: number, n2: number): number {
+  const logFactorial = (n: number) => {
+    let total = 0
+    for (let k = 2; k <= n; k += 1) total += Math.log(k)
+    return total
+  }
+  const yes = a + c
+  const total = n1 + n2
+  const probability = (x: number) => Math.exp(logFactorial(yes) + logFactorial(total - yes) + logFactorial(n1) + logFactorial(n2) - logFactorial(total) - logFactorial(x) - logFactorial(yes - x) - logFactorial(n1 - x) - logFactorial(n2 - yes + x))
+  const observed = probability(a)
+  let p = 0
+  for (let x = Math.max(0, yes - n2); x <= Math.min(yes, n1); x += 1) {
+    const value = probability(x)
+    if (value <= observed * (1 + 1e-9)) p += value
+  }
+  return Math.min(1, p)
+}
+
+const share = (part: number, whole: number) => (whole === 0 ? "-" : `${Math.round((100 * part) / whole)}%`)
+const ratio = (value: Measure) => (value.of === 0 ? "-" : `${value.yes}/${value.of}`)
+
+/** The measures, in the order the table and the verdict show them. */
+const MEASURES = [
+  { key: "left", title: "left", words: "left the recording (the strict matcher: the old measure)" },
+  { key: "lenientLeft", title: "lenient", words: "would have left it under a lenient matcher without a copy" },
+  { key: "effectsDiffer", title: "effects", words: "made other side effects than the recording" },
+  { key: "workspaceDiffers", title: "files", words: "ended with other files than the recording" },
+  { key: "passed", title: "pass", words: "passed the task's grader" },
+] as const
+
+function measureOf(tallied: Tally, key: (typeof MEASURES)[number]["key"]): Measure {
+  return key === "left" ? { yes: tallied.left, of: tallied.onTape + tallied.left } : tallied[key]
+}
+
+/** The table: per task, the old count and the new measures, for the unchanged replays next to the changed ones. */
 export function formatSuite(report: SuiteReport): string {
-  const head = ["task", "runs", "on tape", "left", "new place", "where the change left it", "noise: left", "where no change left it", ...(report.tasks.some((task) => task.graded !== null) ? ["diverged: pass", "recorded: pass"] : [])]
-  const body = report.tasks.map((task) => [
-    task.task,
-    String(task.runs),
-    `${task.change.onTape}/${task.change.replays}`,
-    `${task.change.left}/${task.change.replays}${task.change.other > 0 ? ` (+${task.change.other} n/a)` : ""}`,
-    task.noise.replays === 0 ? "-" : `${task.change.novel}/${task.change.left}`,
-    task.change.where.join("; ") || "-",
-    task.noise.replays === 0 ? "not measured" : `${task.noise.left}/${task.noise.replays}${task.noise.other > 0 ? ` (+${task.noise.other} n/a)` : ""}`,
-    task.noise.where.join("; ") || "-",
-    ...(head.length > 8 ? [task.graded === null ? "-" : `${task.graded.passed}/${task.graded.diverged}`, task.graded === null ? "-" : `${task.graded.recordedPassed}/${task.graded.diverged}`] : []),
-  ])
+  const unchangedOnly = report.change.startsWith("nothing")
+  const head = ["task", "runs", ...MEASURES.map((item) => `noise ${item.title}`), ...(unchangedOnly ? [] : [...MEASURES.map((item) => `change ${item.title}`), "new place"])]
+  const cells = (task: Pick<TaskSummary, "noise" | "change">, novel: string) => [
+    ...MEASURES.map((item) => (task.noise.replays === 0 ? "-" : ratio(measureOf(task.noise, item.key)))),
+    ...(unchangedOnly ? [] : [...MEASURES.map((item) => ratio(measureOf(task.change, item.key))), novel]),
+  ]
+  const body = report.tasks.map((task) => [task.task, String(task.runs), ...cells(task, task.noise.replays === 0 ? "-" : `${task.change.novel}/${task.change.left}`)])
+  const totals = report.totals
+  body.push(["all", String(totals.runs), ...cells({ noise: { ...totals.noise, where: [], effectsWhere: [] }, change: { ...totals.change, where: [], effectsWhere: [] } }, totals.noise.replays === 0 ? "-" : `${totals.change.novel}/${totals.change.left}`)])
   const widths = head.map((title, column) => Math.max(title.length, ...body.map((row) => row[column]!.length)))
-  const line = (cells: readonly string[]) => cells.map((cell, column) => cell.padEnd(widths[column]!)).join("  ").trimEnd()
-  const { change, noise } = report.totals
-  const floor = noise.replays === 0 ? null : noise.left / noise.replays
-  const rate = change.replays === 0 ? 0 : change.left / change.replays
-  const verdict =
-    floor === null
-      ? "The noise floor was not measured (--noise 0), so nothing can be read into the change yet."
-      : report.change.startsWith("nothing")
-        ? `Unchanged, a replay left the recording in ${noise.left + change.left} of ${noise.replays + change.replays} replays (${share(noise.left + change.left, noise.replays + change.replays)}). That is the noise floor of these recordings on this model.`
-        : `The change left the recording in ${change.left} of ${change.replays} replays (${share(change.left, change.replays)}); with nothing changed, ${noise.left} of ${noise.replays} did (${share(noise.left, noise.replays)}). ${
-            rate > floor ? "By count the change is above the noise floor." : "By count that is within the noise floor: how often a replay leaves its recording says nothing here."
-          } ${
-            change.left === 0
-              ? ""
-              : change.novel === 0
-                ? "And every place the change left a recording is a place where no change left it too: these replays do not show that the change alters behaviour."
-                : `But ${change.novel} of the ${change.left} left it at a place where no unchanged replay of the same task did (${[...new Set(report.tasks.flatMap((task) => (task.change.novel > 0 ? task.change.where : [])))].slice(0, 4).join("; ")}): that is where the change shows, and the more unchanged replays there are to compare with, the more that means.`
-          }`.trimEnd()
+  const line = (row: readonly string[]) => row.map((cell, column) => cell.padEnd(widths[column]!)).join("  ").trimEnd()
+  const wheres = report.tasks.flatMap((task) => [
+    `${task.task}`,
+    `  no change left it at   ${task.noise.where.join("; ") || "-"}`,
+    `  no change acted first  ${task.noise.effectsWhere.join("; ") || "-"}`,
+    ...(unchangedOnly ? [] : [`  the change left it at  ${task.change.where.join("; ") || "-"}`, `  the change acted first ${task.change.effectsWhere.join("; ") || "-"}`]),
+  ])
   return [
     `replay suite: ${report.results}`,
-    `change: ${report.change}   policy: ${report.policy}`,
+    `change: ${report.change}   policy: ${report.policy}   unchanged replays: ${report.noisePolicy}`,
     "",
     line(head),
     line(widths.map((width) => "-".repeat(width))),
     ...body.map(line),
     "",
-    `totals: ${report.totals.runs} recorded run${report.totals.runs === 1 ? "" : "s"}${report.totals.skipped > 0 ? ` (${report.totals.skipped} without a session, skipped)` : ""}; change ${change.onTape} on tape, ${change.left} left, ${change.other} not comparable; no change ${noise.onTape} on tape, ${noise.left} left, ${noise.other} not comparable`,
-    `cost: ${report.totals.requests} model calls, ${report.totals.inputTokens} tokens in (${report.totals.cachedTokens} cached), ${report.totals.outputTokens} out`,
+    "left: replays that left the recording at all (strict matcher). lenient: that a matcher ignoring reads it could not",
+    "answer would still have left. effects: that made other writes, edits or non-reading commands, in order. files: that",
+    "ended with another workspace. pass: that passed the grader. Each is counted of the replays it could be measured on.",
     "",
-    verdict,
+    ...wheres,
+    "",
+    `totals: ${totals.runs} recorded run${totals.runs === 1 ? "" : "s"}${totals.skipped > 0 ? ` (${totals.skipped} without a session, skipped)` : ""}; change ${totals.change.onTape} on tape, ${totals.change.left} left, ${totals.change.other} not comparable; no change ${totals.noise.onTape} on tape, ${totals.noise.left} left, ${totals.noise.other} not comparable`,
+    `cost: ${totals.requests} model calls, ${totals.inputTokens} tokens in (${totals.cachedTokens} cached), ${totals.outputTokens} out`,
+    "",
+    ...verdict(report),
   ].join("\n")
 }
 
+/** What can and cannot be concluded, in plain words. */
+export function verdict(report: SuiteReport): string[] {
+  const { change, noise } = report.totals
+  if (noise.replays === 0) return ["The noise floor was not measured (--noise 0), so nothing can be read into the change yet."]
+  const unchangedOnly = report.change.startsWith("nothing")
+  const floor = (value: Measure) => (value.of === 0 ? "not measured" : value.yes === 0 ? `0 of ${value.of} (the true rate is probably below ${share(3, value.of)}: with ${value.of} replays nothing rarer can be seen)` : `${value.yes} of ${value.of} (${share(value.yes, value.of)})`)
+  if (unchangedOnly) {
+    const all = (key: (typeof MEASURES)[number]["key"]): Measure => {
+      const a = measureOf(noise, key)
+      const b = measureOf(change, key)
+      return { yes: a.yes + b.yes, of: a.of + b.of }
+    }
+    return [
+      "Nothing was changed, so every replay measures the noise floor of these recordings on this model:",
+      ...MEASURES.filter((item) => item.key !== "passed").map((item) => `- ${item.words}: ${floor(all(item.key))}`),
+      "A change is visible on a measure only where it moves that measure clearly above these rates.",
+    ]
+  }
+  const lines = [`With the change (${change.replays} replays) against no change (${noise.replays} replays):`]
+  for (const item of MEASURES) {
+    const a = measureOf(change, item.key)
+    const b = measureOf(noise, item.key)
+    if (a.of === 0 || b.of === 0) {
+      lines.push(`- ${item.words}: not measured on ${a.of === 0 ? "the changed" : "the unchanged"} replays${report.policy !== "execute" && item.key !== "left" ? " (it needs --policy execute: a replay must reach its end)" : ""}.`)
+      continue
+    }
+    const p = fisherExact(a.yes, a.of, b.yes, b.of)
+    const reading = p < 0.05 ? `a difference chance alone makes this large only ${share(Math.round(p * 1000), 1000)} of the time` : `within what chance gives at these numbers (p = ${p.toFixed(2)})`
+    lines.push(`- ${item.words}: ${a.yes} of ${a.of} with the change, ${b.yes} of ${b.of} without; ${reading}.`)
+  }
+  if (change.left > 0)
+    lines.push(
+      change.novel === 0
+        ? "Every place the change left a recording is a place where no change left it too."
+        : `${change.novel} of the ${change.left} changed replays that left did so at a place no unchanged replay of the same task did (${[...new Set(report.tasks.flatMap((task) => (task.change.novel > 0 ? task.change.where : [])))].slice(0, 4).join("; ")}). With ${noise.replays} unchanged replays that is a hint, not a measurement: a place is "new" only against the few places the floor happened to show.`,
+    )
+  const smallest = Math.min(change.replays, noise.replays)
+  lines.push(
+    smallest < 20
+      ? `At ${change.replays} and ${noise.replays} replays only a large difference can be told from chance; "within chance" here does not mean the change does nothing.`
+      : `At ${change.replays} and ${noise.replays} replays two rates must differ by roughly a quarter to a third of the replays (more near 50%) before chance can be ruled out; smaller differences cannot be read.`,
+  )
+  return lines
+}
+
 async function main(argv: readonly string[]): Promise<number> {
-  const usage = "usage: bun evals/replay-suite.ts <results-dir> [--system-prompt <file>] [--tool-description <tool>=<file>]... [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute] [--strict] [--repeat N] [--noise N] [--json] [--out <file>] [--data-dir <dir>]"
+  const usage = "usage: bun evals/replay-suite.ts <results-dir> [--system-prompt <file>] [--tool-description <tool>=<file>]... [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute] [--strict] [--repeat N] [--noise N] [--noise-policy stop|execute] [--json] [--out <file>] [--data-dir <dir>]"
   const parsed = (() => {
     try {
-      return parseArgs({ args: [...argv], allowPositionals: true, options: { ...REPLAY_FLAGS, repeat: { type: "string" }, noise: { type: "string" }, json: { type: "boolean" }, out: { type: "string" }, "data-dir": { type: "string" }, keep: { type: "boolean" } } })
+      return parseArgs({ args: [...argv], allowPositionals: true, options: { ...REPLAY_FLAGS, repeat: { type: "string" }, noise: { type: "string" }, "noise-policy": { type: "string" }, json: { type: "boolean" }, out: { type: "string" }, "data-dir": { type: "string" }, keep: { type: "boolean" } } })
     } catch (error) {
       return error instanceof Error ? error.message : String(error)
     }
@@ -309,8 +449,9 @@ async function main(argv: readonly string[]): Promise<number> {
   const count = (value: string | undefined, fallback: number) => (value === undefined ? fallback : /^\d+$/.test(value) ? Number(value) : null)
   const repeat = count(parsed.values.repeat, 1)
   const noise = count(parsed.values.noise, 2)
-  if (typeof request === "string" || repeat === null || noise === null) {
-    console.error(`${typeof request === "string" ? request : "--repeat and --noise take a number"}\n${usage}`)
+  const noisePolicy = parsed.values["noise-policy"]
+  if (typeof request === "string" || repeat === null || noise === null || (noisePolicy !== undefined && noisePolicy !== "stop" && noisePolicy !== "execute")) {
+    console.error(`${typeof request === "string" ? request : repeat === null || noise === null ? "--repeat and --noise take a number" : "--noise-policy is stop or execute"}\n${usage}`)
     return 2
   }
   const directory = resolve(parsed.positionals[0]!)
@@ -328,9 +469,10 @@ async function main(argv: readonly string[]): Promise<number> {
       request,
       repeat,
       noise,
+      ...(noisePolicy === undefined ? {} : { noisePolicy: noisePolicy as "stop" | "execute" }),
       results: directory,
       cleanup: parsed.values.keep !== true,
-      onRow: (row) => console.error(`  ${row.kind === "noise" ? "no change" : "change   "}  ${row.task}#${row.attempt}  ${row.status}${row.left === null ? "" : `  ${place(row.left)}`}${row.graded === null ? "" : `  graded ${row.graded.pass ? "pass" : "fail"}`}  (${row.requests} calls)`),
+      onRow: (row) => console.error(`  ${row.kind === "noise" ? "no change" : "change   "}  ${row.task}#${row.attempt}  ${row.status}${row.left === null ? "" : `  ${place(row.left)}`}${row.effects === null ? "" : `  effects ${row.effects.same ? "same" : "differ"}`}${row.sameWorkspace === null ? "" : `  files ${row.sameWorkspace ? "same" : "differ"}`}${row.graded === null ? "" : `  graded ${row.graded.pass ? "pass" : "fail"}`}  (${row.requests} calls)`),
     })
     if (parsed.values.out !== undefined) await Bun.write(parsed.values.out, `${JSON.stringify(report, null, 2)}\n`)
     console.log(parsed.values.json === true ? JSON.stringify(report, null, 2) : formatSuite(report))

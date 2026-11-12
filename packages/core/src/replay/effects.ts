@@ -71,7 +71,8 @@ import type { Json } from "../json.ts"
 import { canonicalJson } from "../request/canonical.ts"
 import { parseArguments } from "../tool/args.ts"
 import type { Normaliser } from "./match.ts"
-import type { Tape, TapeCall, TapeStep } from "./tape.ts"
+import type { ReplayReport } from "./report.ts"
+import { type Tape, type TapeCall, type TapeStep, tapeFromEvents } from "./tape.ts"
 
 export type CallClass = "look" | "act" | "none"
 
@@ -461,4 +462,66 @@ export function finalSnapshot(replayEvents: readonly { readonly type: string; re
 
 function isRecord(value: Json | undefined): value is { readonly [key: string]: Json } {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** What `compareReplay` says about one finished replay. */
+export interface ReplayComparison {
+  /** The acts compared (rule E4). `null` when the replay did not reach an answer of its own, so there is nothing whole to compare. */
+  readonly effects: { readonly same: boolean; readonly matched: number; readonly recordedActs: number; readonly replayedActs: number; readonly first: string | null } | null
+  /** Where a lenient matcher without a copy would have ended (L1, L2), `null` when it would not have; with how many looks it could serve. `null` as `effects`. */
+  readonly lenient: { readonly served: number; readonly mustRun: number; readonly left: string | null } | null
+  /** Whether it ended with the recording's files (equal snapshot IDs); `null` when not known (it left without a copy, or no snapshot was taken). */
+  readonly sameWorkspace: boolean | null
+}
+
+type AnyEvent = Parameters<typeof tapeFromEvents>[0][number]
+
+/** The comparison on side effects, lenient matching and outcome of a replay session with its recording, from both logs. */
+export function compareReplay(recordedEvents: readonly AnyEvent[], replayEvents: readonly AnyEvent[], report: Pick<ReplayReport, "status" | "comparison">, options: EffectOptions = {}): ReplayComparison {
+  const recordedFinal = lastSnapshot(recordedEvents)
+  const final = finalSnapshot(replayEvents, recordedFinal)
+  const sameWorkspace = final === null || recordedFinal === null ? null : final === recordedFinal
+  // Only a replay that reached an answer of its own made everything it was going to make.
+  const whole = (report.status === "identical" || report.status === "diverged") && report.comparison.finalAnswer.replayed !== null
+  if (!whole) return { effects: null, lenient: null, sameWorkspace }
+  const walk = lenientWalk(tapeFromEvents(recordedEvents), tapeFromEvents(replayEvents), options)
+  const effects = walk.effects
+  const look = walk.firstMustRun
+  return {
+    effects: { same: effects.same, matched: effects.matched, recordedActs: effects.recorded.acts, replayedActs: effects.replayed.acts, first: effectPlace(effects) },
+    lenient: { served: walk.looks.served, mustRun: walk.looks.mustRun, left: look !== null ? `step ${look.step + 1} ${callLabel(look)} (a look not on the recording)` : effectPlace(effects) },
+    sameWorkspace,
+  }
+}
+
+/** A call in a few words: its tool and its command, path or pattern. */
+export function callLabel(call: { readonly name: string; readonly argumentsText: string }): string {
+  const parsed = parseArguments(call.argumentsText)
+  const args = parsed.ok && isRecord(parsed.value) ? parsed.value : {}
+  const value = call.name === "shell" ? args.command : (args.path ?? args.pattern)
+  return typeof value === "string" ? `${call.name} ${JSON.stringify(value.length > 40 ? `${value.slice(0, 39)}…` : value)}` : call.name
+}
+
+/** Where the acts first differ, in a few words; `null` when they do not. */
+export function effectPlace(effects: EffectComparison): string | null {
+  const first = effects.first
+  if (first === null) return null
+  const call = first.replayed ?? first.recorded!
+  return `act ${effects.matched + 1}: ${first.replayed === null ? "recorded " : ""}${callLabel(call)} (${first.kind.replaceAll("_", " ")})`
+}
+
+/** The comparison as text, for the end of a replay report. */
+export function renderComparison(comparison: ReplayComparison): string {
+  const lines = ["compared on what it did (reads ignored)"]
+  lines.push(
+    comparison.effects === null
+      ? "  side effects   not compared: the replay stopped before an answer of its own (use --policy execute)"
+      : comparison.effects.same
+        ? `  side effects   the same ${comparison.effects.recordedActs} act${comparison.effects.recordedActs === 1 ? "" : "s"} as the recording`
+        : `  side effects   differ at ${comparison.effects.first} (recorded ${comparison.effects.recordedActs}, replayed ${comparison.effects.replayedActs})`,
+  )
+  if (comparison.lenient !== null)
+    lines.push(`  lenient        ${comparison.lenient.left === null ? "would have stayed on the recording" : `would have left at ${comparison.lenient.left}`} (${comparison.lenient.served} reads answerable from the recording, ${comparison.lenient.mustRun} not)`)
+  lines.push(`  files          ${comparison.sameWorkspace === null ? "not known (no copy, or no snapshot)" : comparison.sameWorkspace ? "the same as the recording's at its end" : "differ from the recording's at its end"}`)
+  return lines.join("\n")
 }

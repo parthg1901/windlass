@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import type { NewEvent } from "../../src/event/durable.ts"
 import type { ToolOutcome } from "../../src/event/durable.ts"
-import { classifyCall, compareEffects, finalSnapshot, lenientWalk, readOnlyCommand } from "../../src/replay/effects.ts"
+import { classifyCall, compareEffects, finalSnapshot, lenientWalk, readOnlyCommand, renderComparison } from "../../src/replay/effects.ts"
 import { normalise } from "../../src/replay/match.ts"
 import type { TapeCall } from "../../src/replay/tape.ts"
 import type { ToolEffect } from "../../src/tool/tool.ts"
@@ -265,5 +265,25 @@ describe("the workspace a replay ended with", () => {
     expect(finalSnapshot([taken("early"), replayDiverged("arguments_differ", "restored"), taken("s1"), taken("s2"), replayEnded("diverged", "")], "abc")).toBe("s2")
     expect(finalSnapshot([replayDiverged("arguments_differ", "restored"), replayEnded("diverged", "")], "abc")).toBe("restored")
     expect(finalSnapshot([replayEnded("diverged", "")], "abc")).toBeNull()
+  })
+})
+
+describe("the comparison as the replay report prints it", () => {
+  test("says what was compared and what could not be", () => {
+    expect(renderComparison({ effects: null, lenient: null, sameWorkspace: null })).toBe(
+      [
+        "compared on what it did (reads ignored)",
+        "  side effects   not compared: the replay stopped before an answer of its own (use --policy execute)",
+        "  files          not known (no copy, or no snapshot)",
+      ].join("\n"),
+    )
+    expect(renderComparison({ effects: { same: false, matched: 1, recordedActs: 2, replayedActs: 3, first: 'act 2: shell "bun test" (extra act)' }, lenient: { served: 3, mustRun: 1, left: 'step 2 read "b.ts" (a look not on the recording)' }, sameWorkspace: true })).toBe(
+      [
+        "compared on what it did (reads ignored)",
+        '  side effects   differ at act 2: shell "bun test" (extra act) (recorded 2, replayed 3)',
+        '  lenient        would have left at step 2 read "b.ts" (a look not on the recording) (3 reads answerable from the recording, 1 not)',
+        "  files          the same as the recording's at its end",
+      ].join("\n"),
+    )
   })
 })

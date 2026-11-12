@@ -20,6 +20,8 @@ import { createHarness } from "../packages/core/src/assembly.ts"
 import { brand } from "../packages/core/src/brand.ts"
 import { EngineError } from "../packages/core/src/engine/engine.ts"
 import type { ReplayRequest } from "../packages/core/src/engine/replay.ts"
+import { DEFAULT_NORMALISERS } from "../packages/core/src/engine/replay.ts"
+import { compareReplay, renderComparison } from "../packages/core/src/replay/effects.ts"
 import { renderReport } from "../packages/core/src/replay/report.ts"
 
 const USAGE = `usage: bun scripts/replay.ts <session-id> [--system-prompt <file>] [--tool-description <tool>=<file>]... [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute] [--strict] [--json] [--through <seq>] [--workspace <dir>] [--data-dir <dir>]`
@@ -106,10 +108,14 @@ async function main(argv: readonly string[]): Promise<number> {
     process.once("SIGINT", () => run.session.interrupt())
     const outcome = await run.done
     await run.session.settled()
+    // Reads ignored: the side effects and the files it ended with, which is what the noise floor leaves readable.
+    const compared = compareReplay(harness.engine.readEvents(sourceId), harness.engine.readEvents(outcome.sessionId), outcome.report, { normalisers: DEFAULT_NORMALISERS })
     if (parsed.values.json === true)
-      console.log(JSON.stringify({ sourceSessionId: sourceId, replaySessionId: outcome.sessionId, policy: request.policy, workspace: outcome.workspace, requests: outcome.requests, usage: outcome.usage, report: outcome.report }, null, 2))
+      console.log(JSON.stringify({ sourceSessionId: sourceId, replaySessionId: outcome.sessionId, policy: request.policy, workspace: outcome.workspace, requests: outcome.requests, usage: outcome.usage, report: outcome.report, compared }, null, 2))
     else {
       console.log(renderReport(outcome.report))
+      console.log("")
+      console.log(renderComparison(compared))
       console.log("")
       console.log(`  replay session  ${outcome.sessionId}  (${outcome.requests} model call${outcome.requests === 1 ? "" : "s"}${outcome.usage === null ? "" : `, ${outcome.usage.inputTokens} tokens in of which ${outcome.usage.cachedInputTokens} cached, ${outcome.usage.outputTokens} out`})`)
       if (outcome.workspace !== null) console.log(`  workspace       ${outcome.workspace}  (the copy the replay carried on in; delete it when you are done)`)
