@@ -1,0 +1,9 @@
+{
+  "cart.heading": "Ihr Warenkorb",
+  "cart.line": "{quantity} × {name}",
+  "cart.total": "Summe: {amount}",
+  "checkout.heading": "Kasse",
+  "checkout.pay": "{amount} bezahlen",
+  "orders.heading": "Ihre Bestellungen",
+  "orders.none": "Sie haben noch nichts bestellt."
+}

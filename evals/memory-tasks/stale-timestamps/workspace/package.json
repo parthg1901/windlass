@@ -1,0 +1,6 @@
+{
+  "name": "delivery-api",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

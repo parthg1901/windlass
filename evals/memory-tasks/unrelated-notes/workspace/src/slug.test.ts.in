@@ -1,0 +1,10 @@
+import { expect, test } from "bun:test"
+import { slugify } from "./slug.ts"
+
+test("words are joined by dashes", () => {
+  expect(slugify("Shipping the new editor")).toBe("shipping-the-new-editor")
+})
+
+test("accents are dropped", () => {
+  expect(slugify("Café déjà vu")).toBe("cafe-deja-vu")
+})

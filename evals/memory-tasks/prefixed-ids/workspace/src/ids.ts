@@ -1,11 +1,14 @@
-// IDs look like `cmt_0lx3k2a9f1q8`: a prefix naming the kind of record, then the time and some randomness, so they
-// sort by creation. The support console and the log search read the prefix to know what an ID points at.
+// IDs look like `thr_0lx3k2a9f1q8`: a prefix naming the kind of record, then the time and some randomness, so they
+// sort by creation. The support console and the log search read the prefix to know what an ID points at, so every
+// new kind of record registers its prefix here and takes its ids from newId(). Comments, attachments and mentions are
+// older than this file and still use bare UUIDs until their rows are migrated.
 
 export const PREFIXES = {
   usr: "user",
   thr: "thread",
   cmt: "comment",
   att: "attachment",
+  pol: "poll",
 } as const
 
 export type Prefix = keyof typeof PREFIXES

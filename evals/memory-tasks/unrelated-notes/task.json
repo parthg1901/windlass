@@ -1,0 +1,8 @@
+{
+  "id": "unrelated-notes",
+  "title": "Fix a small bug, with seeded notes that are all about other parts of the project",
+  "prompt": "slugify(\"Hello, world!\") returns \"hello-world-\" with a dash at the end. A title that ends in punctuation shouldn't leave a trailing dash in its slug.",
+  "tags": ["memory", "cost", "irrelevant-notes"],
+  "timeoutSeconds": 240,
+  "maxSteps": 12
+}

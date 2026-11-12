@@ -1,3 +1,3 @@
 # discussions
 
-Threads, comments and attachments for the community pages. `bun test` runs the tests.
+Threads, comments, attachments, mentions and polls for the community pages. `bun test` runs the tests.

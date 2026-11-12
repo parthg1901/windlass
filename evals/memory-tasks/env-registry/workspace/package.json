@@ -1,0 +1,6 @@
+{
+  "name": "notifier",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "bun test", "env:docs": "bun scripts/env-docs.ts" }
+}

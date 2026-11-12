@@ -15,5 +15,6 @@ error takes the next free number in its range, in `src/errors/codes.ts` and in t
 | E4005 | card has expired |
 | E4006 | amount must be positive |
 | E4007 | currency is not supported |
+| E4008 | email address is already registered |
 | E5001 | payment provider unavailable |
 | E5002 | storage unavailable |

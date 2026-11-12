@@ -1,0 +1,8 @@
+{
+  "id": "i18n-strings",
+  "title": "Add a message to a page, where shown text comes from translation keys and the file at hand has a hard-coded line",
+  "prompt": "An empty cart shows just the heading and a total of $0.00. Show a short message saying the cart is empty instead of the total.",
+  "tags": ["memory", "conventions", "i18n"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

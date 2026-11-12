@@ -51,8 +51,8 @@ test("read-chart-image: the committed chart is what make-chart.ts renders", asyn
 // The memory A/B tasks (evals/memory-tasks/) are held to the same rules, and their notes must be valid project notes
 // that the store finds where the runner's `--memory with` side puts them.
 const memoryIds = await memoryTaskSource.list()
-test("there are at least five memory tasks", () => {
-  expect(memoryIds.length).toBeGreaterThanOrEqual(5)
+test("there are at least eight memory tasks", () => {
+  expect(memoryIds.length).toBeGreaterThanOrEqual(8)
 })
 for (const id of memoryIds) {
   describe(`memory-tasks/${id}`, () => {

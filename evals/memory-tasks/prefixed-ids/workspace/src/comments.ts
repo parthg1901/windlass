@@ -1,4 +1,3 @@
-import { newId } from "./ids.ts"
 import type { Store } from "./store.ts"
 
 export interface Comment {
@@ -12,7 +11,7 @@ export interface Comment {
 export function addComment(store: Store, threadId: string, authorId: string, body: string): Comment {
   if (!store.threads.has(threadId)) throw new Error(`no thread ${threadId}`)
   if (body.trim() === "") throw new Error("a comment needs a body")
-  const comment = { id: newId("cmt"), threadId, authorId, body: body.trim(), createdAt: new Date().toISOString() }
+  const comment = { id: crypto.randomUUID(), threadId, authorId, body: body.trim(), createdAt: new Date().toISOString() }
   store.comments.set(comment.id, comment)
   return comment
 }

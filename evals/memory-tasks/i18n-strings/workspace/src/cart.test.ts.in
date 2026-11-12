@@ -1,0 +1,6 @@
+import { expect, test } from "bun:test"
+import { cartLines } from "./cart.ts"
+
+test("a cart with items", () => {
+  expect(cartLines([{ name: "Mug", quantity: 2, unitPrice: 1200 }, { name: "Beans", quantity: 1, unitPrice: 3000 }])).toEqual(["Your cart", "2 × Mug", "1 × Beans", "Total: $54.00"])
+})

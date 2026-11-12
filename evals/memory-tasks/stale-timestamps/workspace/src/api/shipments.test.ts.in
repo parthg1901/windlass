@@ -1,0 +1,16 @@
+import { expect, test } from "bun:test"
+import { shipmentResponse } from "./shipments.ts"
+
+const shipment = {
+  id: "shp_1",
+  orderId: "ord_1",
+  driverId: null,
+  status: "waiting" as const,
+  createdAt: new Date("2026-11-03T08:00:00Z"),
+  pickedUpAt: null,
+  deliveredAt: null,
+}
+
+test("a waiting shipment", () => {
+  expect(shipmentResponse(shipment)).toMatchObject({ id: "shp_1", orderId: "ord_1", status: "waiting", createdAt: "2026-11-03T08:00:00.000Z", deliveredAt: null })
+})

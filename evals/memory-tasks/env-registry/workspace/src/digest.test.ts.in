@@ -1,0 +1,11 @@
+import { expect, test } from "bun:test"
+import { sendDigests } from "./digest.ts"
+
+test("only subscribers with news get a digest", async () => {
+  const sent: string[] = []
+  const count = await sendDigests([{ email: "a@x.example", items: ["one"] }, { email: "b@x.example", items: [] }], async (batch) => {
+    sent.push(...batch.map((mail) => mail.to))
+  })
+  expect(count).toBe(1)
+  expect(sent).toEqual(["a@x.example"])
+})

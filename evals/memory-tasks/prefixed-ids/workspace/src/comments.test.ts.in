@@ -7,7 +7,7 @@ import { createThread } from "./threads.ts"
 test("comments belong to a thread", () => {
   const store = createStore()
   const thread = createThread(store, "Hello", "usr_1")
+  expect(kindOf(thread.id)).toBe("thread")
   const comment = addComment(store, thread.id, "usr_1", "First!")
-  expect(kindOf(comment.id)).toBe("comment")
   expect(commentsIn(store, thread.id)).toEqual([comment])
 })

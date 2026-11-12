@@ -1,0 +1,8 @@
+{
+  "id": "env-registry",
+  "title": "Make a setting configurable from the environment, where every variable is declared in one registry the ops page is generated from",
+  "prompt": "Ops want to change the digest batch size without a deploy. Make it configurable with DIGEST_BATCH_SIZE, keeping 50 as the default.",
+  "tags": ["memory", "conventions", "config"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

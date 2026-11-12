@@ -1,0 +1,8 @@
+{
+  "id": "stale-timestamps",
+  "title": "Add a timestamp to an API response, where the seeded note describes the timestamp format the API used before it changed",
+  "prompt": "Shipments now record when the driver picked them up (pickedUpAt on the Shipment model). Include it in the shipment API response.",
+  "tags": ["memory", "conventions", "stale-note"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}
