@@ -165,6 +165,9 @@ describe("subagents in git worktrees", () => {
       expect(child.worktree!.repository).toBe(directory)
       expect(harness.engine.getSession(child.sessionId)!.session.cwd).toBe(child.worktree!.path)
     }
+    // The children are the harness's own sessions: the default listing shows the parent only.
+    expect(harness.engine.listSessions().map((summary) => summary.session.id)).toEqual([session.id])
+    expect(harness.engine.listSessions({ includeSpawned: true })).toHaveLength(3)
     // The child worked in its worktree, not in the parent's directory, and started from the workspace as it stood.
     const fixedA = children.find((child) => harness.engine.getSession(child.sessionId)!.session.title === "Fix a")!
     expect(of(harness.engine.readEvents(fixedA.sessionId), "tool.settled")[0]!.data.output).toBe(`a1 edited by the user\nnew\n${fixedA.worktree!.path}\n`)

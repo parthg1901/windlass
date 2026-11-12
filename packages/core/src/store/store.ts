@@ -264,6 +264,13 @@ export interface SessionQuery {
   readonly cwd?: string
   readonly includeArchived?: boolean
   readonly limit?: number
+  /**
+   * Also the sessions the harness made for itself: subagents and replays.
+   * The engine's listing leaves them out unless asked, so that "the latest
+   * session of this directory" is one a person started (or forked). The
+   * stores themselves list every session.
+   */
+  readonly includeSpawned?: boolean
 }
 
 /**

@@ -331,7 +331,7 @@ is a new version with a decoder for the old one.
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
   other sessions carry on.
 - The engine offers `forkSession` (see "Forks"), `replaySession` (see "Replay" and `docs/replay.md`),
-  `createSession`, `openSession`, `listSessions` (by directory, without archived ones unless
+  `createSession`, `openSession`, `listSessions` (by directory, without archived ones and without the harness's own sessions, subagents and replays, unless
   asked), `latestSession`, `getSession`, `resolveSession` (an ID or a unique prefix), `readEvents` (of any session,
   open or not, held here or elsewhere), `archiveSession` and `unarchiveSession` (through the session's log, holding
   it only for that append), and `validateSettings`, which rejects a model the provider does not offer, naming the

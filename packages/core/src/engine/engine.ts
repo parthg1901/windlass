@@ -644,11 +644,12 @@ export interface Engine {
    * Rejects with `invalid_request` when the recording cannot be replayed at all.
    */
   readonly replaySession: (id: SessionId, request?: ReplayRequest) => Promise<ReplayRun>
-  /** The most recently updated session whose working directory is `cwd`. */
+  /** The most recently updated session whose working directory is `cwd`. Never a subagent or a replay. */
   readonly latestSession: (cwd: string) => SessionSummary | null
   /**
    * Sessions, most recently updated first, whoever has them open: by working
-   * directory when `cwd` is given, without archived ones unless asked.
+   * directory when `cwd` is given, without archived ones unless asked, and
+   * without subagents and replays unless asked (`includeSpawned`).
    * Reading only; nothing is opened, held or closed.
    */
   readonly listSessions: (query?: SessionQuery) => readonly SessionSummary[]
@@ -867,8 +868,8 @@ export function createEngine(options: EngineOptions): Engine {
       assertOpen()
       return replaySession(core, id, request)
     },
-    latestSession: (cwd) => core.stores.list({ cwd, limit: 1 })[0] ?? null,
-    listSessions: (query) => core.stores.list(query),
+    latestSession: (cwd) => listed(core, { cwd, limit: 1 })[0] ?? null,
+    listSessions: (query) => listed(core, query),
     getSession: (id) => core.stores.get(id),
     resolveSession: (idOrPrefix) => storeErrors(() => core.stores.resolve(idOrPrefix)),
     readEvents: (id, range) => storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, range))),
@@ -3930,6 +3931,19 @@ class LiveSession implements EngineSession {
     if (message?.kind !== "assistant") throw new Error(`step ${messageId} has no assistant message`)
     return message
   }
+}
+
+/**
+ * The sessions a listing shows. Subagents and replays are sessions the
+ * harness made for itself: they are left out unless asked for, so that the
+ * latest session of a directory is never one of them. (Each is reached from
+ * the session it comes from: a parent's `spawned.children`, a replay's own ID.)
+ */
+function listed(core: Core, query: SessionQuery = {}): readonly SessionSummary[] {
+  if (query.includeSpawned === true) return core.stores.list(query)
+  const { limit, ...rest } = query
+  const own = core.stores.list(rest).filter((summary) => summary.session.lineage?.kind !== "spawn" && summary.session.lineage?.kind !== "replay")
+  return limit === undefined ? own : own.slice(0, limit)
 }
 
 /** What `replay.call` records for one call of a replayed step. */

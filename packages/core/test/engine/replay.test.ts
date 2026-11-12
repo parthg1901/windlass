@@ -132,6 +132,11 @@ describe("a replay that stays on the recording", () => {
     expect(types(log).filter((type) => type.startsWith("snapshot.") || type.startsWith("checks.") || type.startsWith("approval."))).toEqual([])
     expect(types(log).slice(-2)).toEqual(["execution.succeeded", "replay.ended"])
     check(recording, session)
+    // It is the harness's own session: the listing of the directory, and "the latest session", leave it out unless asked.
+    const engine = recording.harness.engine
+    expect(engine.listSessions().map((summary) => summary.session.id)).toEqual([recording.session.id])
+    expect(engine.latestSession(recording.directory)?.session.id).toBe(recording.session.id)
+    expect(engine.listSessions({ includeSpawned: true }).map((summary) => summary.session.id)).toContain(session.id)
     // A replay session replays and ends: it takes no prompt, is not reverted and is not forked.
     expect(() => session.send("And now?")).toThrow(REPLAY_TEXT.noPrompts)
     expect((await session.revert()).kind).toBe("refused")
