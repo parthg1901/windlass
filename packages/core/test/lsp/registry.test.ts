@@ -286,9 +286,27 @@ describe("approval", () => {
     expect((await edited.registry.diagnose({ path: "a.txt", before: "x", after: "ERROR(y)" })).servers[0]!.outcome).toBe("not_approved")
     expect(await Bun.file(pidFile).exists()).toBe(false)
   })
+
+  test("approved while the registry runs, it starts at the next use", async () => {
+    const made = make(undefined, { project: { servers: { repo: fixture() } } })
+    const [question] = made.registry.awaitingApproval()
+    made.registry.approve("lsp-server:repo:not-this-one")
+    expect(made.registry.awaitingApproval()).toHaveLength(1)
+    made.registry.approve(question!.key)
+    expect(made.registry.awaitingApproval()).toEqual([])
+    await ready(made)
+    expect((await made.registry.diagnose({ path: "src/a.txt", before: BEFORE, after: AFTER })).listed).toBe(1)
+  })
 })
 
 describe("what is skipped", () => {
+  test("a file too large or not text", async () => {
+    const made = make({ servers: { fixture: fixture() } })
+    expect((await made.registry.diagnose({ path: "a.txt", before: "a", after: "x".repeat(3 * 1024 * 1024) })).skipped).toBe("too_large")
+    expect((await made.registry.diagnose({ path: "a.txt", before: "a", after: "a\u0000b" })).skipped).toBe("too_large")
+    expect(made.registry.status()).toEqual([])
+  })
+
   test("a file outside the working directory starts nothing", async () => {
     const made = make({ servers: { fixture: fixture() } })
     expect(await made.registry.diagnose({ path: "/etc/elsewhere.txt", before: "a", after: "ERROR(b)" })).toMatchObject({ skipped: "outside_workspace", note: null })

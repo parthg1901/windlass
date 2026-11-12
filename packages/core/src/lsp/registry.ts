@@ -23,7 +23,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
 import { serverEnvironment } from "../mcp/config.ts"
 import { type LspSession, type OpenDocument, startSession } from "./client.ts"
-import { type LspPlan, type LspServerPlan, type LspServerQuestion, lspServerQuestion } from "./config.ts"
+import { type LspPlan, type LspServerPlan, type LspServerQuestion, lspApprovalKey, lspServerQuestion } from "./config.ts"
 import { type Comparison, type DiagnosticSet, type Severity, compareDiagnostics } from "./diagnostics.ts"
 import { renderNote } from "./note.ts"
 import { type Connection, LspError, openConnection } from "./transport.ts"
@@ -92,7 +92,7 @@ export interface DiagnoseResult {
   readonly note: string | null
   /** One per server that serves the file. Empty when none does (`skipped` says why). */
   readonly servers: readonly ServerReport[]
-  readonly skipped: "off" | "outside_workspace" | "no_server" | null
+  readonly skipped: "off" | "outside_workspace" | "no_server" | "too_large" | null
   /** Diagnostics shown in the note and new ones left out of it. */
   readonly listed: number
   readonly omitted: number
@@ -123,6 +123,8 @@ export interface LspRegistry {
   status(): LspServerStatus[]
   /** The project's servers that wait for the user's approval. */
   awaitingApproval(): LspServerQuestion[]
+  /** The user approved a project's server (by `lspApprovalKey`): it may start from the next use. Unknown keys are ignored. */
+  approve(key: string): void
   stop(): Promise<void>
 }
 
@@ -157,6 +159,8 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
   const stableMs = options.backoff?.stableMs ?? 30_000
   const maxOpen = options.maxOpenDocuments ?? 200
   const severities = new Set<Severity>(config.warnings ? [1, 2] : [1])
+  const approvedKeys = new Set<string>()
+  const isApproved = (plan: LspServerPlan) => plan.approved || approvedKeys.has(lspApprovalKey(plan))
   const servers = options.plan.servers.filter((plan) => plan.config.enabled)
   const globs = new Map(servers.map((plan) => [plan.config.name, plan.config.languages.map((language) => ({ languageId: language.languageId, globs: language.patterns.map((pattern) => new Bun.Glob(pattern)) }))]))
   const managed = new Map<string, Managed>()
@@ -312,7 +316,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     deadline: number,
   ): Promise<ServerReport> => {
     const name = plan.config.name
-    if (!plan.approved) {
+    if (!isApproved(plan)) {
       notice(name, "not_approved", `${name}:not_approved`, `The language server "${name}" from this project's configuration is not started: it waits for your approval.`)
       return { server: name, root: null, outcome: "not_approved", comparison: null, detail: "waits for the user's approval" }
     }
@@ -367,9 +371,9 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     observe(path, text) {
       if (stopped || !config.enabled || config.waitMs === 0) return
       const file = relativeTo(path)
-      if (file === null) return
+      if (file === null || tooLarge(text)) return
       for (const { plan, languageId } of serving(file.relative)) {
-        if (!plan.approved) continue
+        if (!isApproved(plan)) continue
         const m = managedFor(plan, rootOf(plan, file.absolute))
         const ready = ensure(m)
         void Promise.resolve(ready).then((session) => {
@@ -386,6 +390,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
         if (stopped || !config.enabled || config.waitMs === 0) return done({ ...nothing, skipped: "off" })
         const file = relativeTo(request.path)
         if (file === null) return done({ ...nothing, skipped: "outside_workspace" })
+        if (tooLarge(request.after) || (request.before !== null && tooLarge(request.before))) return done({ ...nothing, skipped: "too_large" })
         const matches = serving(file.relative)
         if (matches.length === 0) {
           if (servers.length > 0) {
@@ -418,7 +423,11 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
         }))
         .sort((a, b) => (a.server < b.server ? -1 : a.server > b.server ? 1 : a.root < b.root ? -1 : a.root > b.root ? 1 : 0)),
 
-    awaitingApproval: () => options.plan.servers.filter((plan) => plan.config.enabled && !plan.approved).map(lspServerQuestion),
+    awaitingApproval: () => servers.filter((plan) => !isApproved(plan)).map(lspServerQuestion),
+
+    approve(key) {
+      if (servers.some((plan) => lspApprovalKey(plan) === key)) approvedKeys.add(key)
+    },
 
     async stop() {
       stopped = true
@@ -436,6 +445,13 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
       )
     },
   }
+}
+
+/** Larger files, and files with NUL characters (not text), are not sent to a server. */
+export const MAX_DOCUMENT_CHARS = 2 * 1024 * 1024
+
+function tooLarge(text: string): boolean {
+  return text.length > MAX_DOCUMENT_CHARS || text.includes("\u0000")
 }
 
 /** The value, or `TIMEOUT` at the deadline, or `ABORTED` when the signal fires. Never waits past the deadline. */
