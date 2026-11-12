@@ -1,114 +1,159 @@
 {
-  "note": "SINGLE-REPEAT SEED: one run per task from the first real run (2026-11-11), so every statistical comparison reports not enough data until this is regenerated from at least 3 repeats (bun evals/gate.ts <dirs> --update-baseline). add-feature failed here because of a grader bug fixed in b8ab434; retry-after-error fails on model caution (it will not remove a stale lock without confirmation).",
+  "note": "3 repeats per task.",
   "configuration": {
     "model": "gpt-6-luna",
     "effort": "low"
   },
-  "date": "2026-11-11",
-  "commit": "a1b9d1f",
-  "repeats": 1,
+  "date": "2026-11-12",
+  "commit": "d17af59855ab3cddd1227c9ed61d4d7f76b038ad",
+  "repeats": 3,
   "sources": [
-    "eval-run-1"
+    "eval-run-3"
   ],
   "summary": {
-    "runs": 10,
-    "passes": 8,
-    "passRate": 0.8,
-    "medianSteps": 6.5,
-    "medianWallMs": 18623,
-    "medianInputTokens": 15862.5,
-    "cachedShare": 0.7460464916087703
+    "runs": 45,
+    "passes": 39,
+    "passRate": 0.8666666666666667,
+    "medianSteps": 7,
+    "medianWallMs": 25804,
+    "medianInputTokens": 24512,
+    "cachedShare": 0.771879644244679
   },
   "tasks": {
     "add-feature": {
-      "runs": 1,
-      "passes": 0,
-      "passRate": 0,
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
       "medianSteps": 8,
-      "medianWallMs": 25168,
-      "medianInputTokens": 19530,
-      "cachedShare": 0.6554019457245264
+      "medianWallMs": 31160,
+      "medianInputTokens": 24674,
+      "cachedShare": 0.6366205106567961
     },
     "agents-md-rule": {
-      "runs": 1,
-      "passes": 1,
+      "runs": 3,
+      "passes": 3,
       "passRate": 1,
-      "medianSteps": 9,
-      "medianWallMs": 30981,
-      "medianInputTokens": 23675,
-      "cachedShare": 0.8163885955649419
+      "medianSteps": 8,
+      "medianWallMs": 29911,
+      "medianInputTokens": 27800,
+      "cachedShare": 0.7044438446825239
     },
     "answer-question": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 4,
-      "medianWallMs": 10959,
-      "medianInputTokens": 10065,
-      "cachedShare": 0.6613015399900646
-    },
-    "config-edits": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 6,
-      "medianWallMs": 17884,
-      "medianInputTokens": 13595,
-      "cachedShare": 0.6025744759102611
-    },
-    "crashing-script": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 6,
-      "medianWallMs": 15714,
-      "medianInputTokens": 14171,
-      "cachedShare": 0.5780819984475337
-    },
-    "fix-failing-test": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 7,
-      "medianWallMs": 19362,
-      "medianInputTokens": 17554,
-      "cachedShare": 0.7802210322433634
-    },
-    "large-log": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 4,
-      "medianWallMs": 9148,
-      "medianInputTokens": 8590,
-      "cachedShare": 0.4470314318975553
-    },
-    "noisy-test-suite": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 9,
-      "medianWallMs": 34548,
-      "medianInputTokens": 143352,
-      "cachedShare": 0.7982588314080027
-    },
-    "rename-function": {
-      "runs": 1,
-      "passes": 1,
-      "passRate": 1,
-      "medianSteps": 7,
-      "medianWallMs": 19812,
-      "medianInputTokens": 19373,
-      "cachedShare": 0.7796417694729778
-    },
-    "retry-after-error": {
-      "runs": 1,
+      "runs": 3,
       "passes": 0,
       "passRate": 0,
       "medianSteps": 4,
-      "medianWallMs": 10314,
-      "medianInputTokens": 8898,
-      "cachedShare": 0.6473364801078895
+      "medianWallMs": 12093,
+      "medianInputTokens": 11193,
+      "cachedShare": 0.6090706319702602
+    },
+    "config-edits": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 6,
+      "medianWallMs": 25804,
+      "medianInputTokens": 17249,
+      "cachedShare": 0.6414121625801662
+    },
+    "crashing-script": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 7,
+      "medianWallMs": 21060,
+      "medianInputTokens": 21190,
+      "cachedShare": 0.7040461340771618
+    },
+    "fix-failing-test": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 6,
+      "medianWallMs": 17613,
+      "medianInputTokens": 18525,
+      "cachedShare": 0.6656230319388214
+    },
+    "follow-up-change": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 14,
+      "medianWallMs": 48481,
+      "medianInputTokens": 49629,
+      "cachedShare": 0.7607483329638283
+    },
+    "frozen-api": {
+      "runs": 3,
+      "passes": 1,
+      "passRate": 0.3333333333333333,
+      "medianSteps": 3,
+      "medianWallMs": 10895,
+      "medianInputTokens": 8925,
+      "cachedShare": 0.6869409660107334
+    },
+    "large-log": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 2,
+      "medianWallMs": 8693,
+      "medianInputTokens": 4904,
+      "cachedShare": 0.6161131275286527
+    },
+    "long-file-search": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 7,
+      "medianWallMs": 20625,
+      "medianInputTokens": 108688,
+      "cachedShare": 0.807286706667991
+    },
+    "noisy-test-suite": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 8,
+      "medianWallMs": 32680,
+      "medianInputTokens": 141780,
+      "cachedShare": 0.8417420281924819
+    },
+    "options-refactor": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 15,
+      "medianWallMs": 46113,
+      "medianInputTokens": 75092,
+      "cachedShare": 0.820762825556066
+    },
+    "project-checks": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 8,
+      "medianWallMs": 24882,
+      "medianInputTokens": 27837,
+      "cachedShare": 0.7607061702499563
+    },
+    "rename-function": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 9,
+      "medianWallMs": 28711,
+      "medianInputTokens": 31641,
+      "cachedShare": 0.8042922728026992
+    },
+    "retry-after-error": {
+      "runs": 3,
+      "passes": 2,
+      "passRate": 0.6666666666666666,
+      "medianSteps": 7,
+      "medianWallMs": 28692,
+      "medianInputTokens": 23182,
+      "cachedShare": 0.7930427788669381
     }
   }
 }
