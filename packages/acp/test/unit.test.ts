@@ -115,6 +115,23 @@ test("a retry after streamed text starts a new ACP message instead of appending 
   expect(ended).toEqual([{ sessionUpdate: "agent_message_chunk", messageId: `${M}:t1`, content: { type: "text", text: " world" } }])
 })
 
+test("what the engine says about the user's agent definitions or a fork's missing history has a plain title, not Internal problem", () => {
+  const titled = (kind: string) => {
+    const notices = translator({ notices: true })
+      .translate({ type: "diagnostic", sessionId: "ses_1", kind, message: "what the engine said" } as never)
+      .flatMap((output) => (output.type === "update" && output.update.sessionUpdate === "notice" ? [output.update] : []))
+    expect(notices).toHaveLength(1)
+    expect(notices[0]!.description).toBe("what the engine said")
+    return [notices[0]!.severity, notices[0]!.title]
+  }
+  expect(titled("agents")).toEqual(["warning", "Agent definitions"])
+  expect(titled("history")).toEqual(["warning", "Earlier history not shown"])
+  expect(titled("hooks")).toEqual(["warning", "Hooks"])
+  expect(titled("lsp")).toEqual(["info", "Language servers"])
+  // Something wrong with the harness itself still says so.
+  expect(titled("internal_error")).toEqual(["error", "Internal problem (internal error)"])
+})
+
 test("unknown event types are ignored", () => {
   expect(translator().translate(durable("something.new", { x: 1 }))).toEqual([])
 })

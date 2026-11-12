@@ -316,9 +316,9 @@ export class Translator {
         break
       case "diagnostic": {
         out.push({ type: "ext", method: EXT.diagnostic, params: { sessionId: this.options.sessionId, kind: item.kind, message: item.message } })
-        // What the engine says about a hook or a language server is for the user to read, and is no failure of the harness.
-        const feature = item.kind === "hooks" ? { severity: "warning" as const, title: "Hooks" } : item.kind === "lsp" ? { severity: "info" as const, title: "Language servers" } : null
-        if (this.options.notices) update({ sessionUpdate: "notice", ...(feature ?? { severity: "error", title: `Internal problem (${item.kind.replace(/_/g, " ")})` }), description: item.message })
+        // What the engine says about a hook, a language server, an agent definition or a fork's missing history is
+        // for the user to read, and is no failure of the harness: each has a title of its own.
+        if (this.options.notices) update({ sessionUpdate: "notice", ...(USER_DIAGNOSTICS[item.kind] ?? { severity: "error", title: `Internal problem (${item.kind.replace(/_/g, " ")})` }), description: item.message })
         break
       }
       // One hook that applied. What it did to a call goes out with the call's result (which follows in the same
@@ -531,6 +531,20 @@ export class Translator {
     }
     return tool
   }
+}
+
+/**
+ * The diagnostics that are about the user's own files or sessions rather
+ * than about the harness: how the `notice` a client gets for one is titled.
+ * `agents`: a definition that was skipped or is hidden by another, an agent
+ * that asks for more than the user allows. `history`: a fork whose parent's
+ * file is gone, so the part of the conversation it inherited is not shown.
+ */
+const USER_DIAGNOSTICS: Partial<Record<string, { readonly severity: "info" | "warning"; readonly title: string }>> = {
+  hooks: { severity: "warning", title: "Hooks" },
+  lsp: { severity: "info", title: "Language servers" },
+  agents: { severity: "warning", title: "Agent definitions" },
+  history: { severity: "warning", title: "Earlier history not shown" },
 }
 
 function freshTurn() {

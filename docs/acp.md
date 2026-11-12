@@ -520,9 +520,11 @@ default agent that was not followed, a model the session keeps when it leaves th
 a session's own history (`history`: a fork whose parent's file is missing, said once), or about a hook or a language
 server (`hooks`: a project's hook that is skipped until the user approves it, a hook that could not answer and what
 that means for the call, a turn that ended with a stop hook unsatisfied; `lsp`: a project's server that is not
-started until approved, and why an edit got no diagnostics, said once per server and reason). The last two kinds are
-for the user to read and are no failure of the harness: the `notice` a client that shows notices gets for them is
-titled `Hooks` (severity `warning`) and `Language servers` (severity `info`), not `Internal problem`.
+started until approved, and why an edit got no diagnostics, said once per server and reason), or about a fork whose
+parent's file is gone (`history`: the conversation it inherited is not shown, and which file is missing). Four kinds
+are for the user to read and are no failure of the harness: the `notice` a client that shows notices gets for them is
+titled `Hooks` (severity `warning`), `Language servers` (`info`), `Agent definitions` (`warning`) and `Earlier
+history not shown` (`warning`), not `Internal problem`.
 
 **`_windlass/approval`** (request) `{ sessionId, mode?, unattended?, attended? }` → `{ sessionId, enabled, mode,
 unattended, attended, sandboxUnavailable: { reason, remedy } | null, tainted, taint, ignored }`: how the session's
