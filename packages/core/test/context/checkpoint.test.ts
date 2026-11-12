@@ -39,6 +39,24 @@ describe("extractIdentifiers", () => {
     expect(index.tests).toEqual(["importer > parses the March export"])
   })
 
+  test("catches a bare Error: line and records 'path line N' as path:N", () => {
+    const script = new Script()
+      .step({ calls: [shell("bun run sync.ts", "starting\nError: ENOENT: no such file or directory, open '/var/lib/x/rates.json'\ndone", 1)] })
+      .step({ text: "Found it: src/refunds/calc/partial-refund.ts line 133, where the discount is applied twice." })
+    const index = extractIdentifiers(script.messages)
+    expect(index.errors).toEqual(["Error: ENOENT: no such file or directory, open '/var/lib/x/rates.json'"])
+    expect(index.files).toContain("src/refunds/calc/partial-refund.ts:133")
+  })
+
+  test("over the cap, what the user or the model named wins over paths seen only in tool output", () => {
+    const script = new Script().step({ text: "The bug is in src/early/named.ts." })
+    for (let batch = 0; batch < 10; batch += 1)
+      script.step({ calls: [{ name: "grep", input: { pattern: "x" }, output: Array.from({ length: 10 }, (_, line) => `src/noise-${batch}/f${line}.ts:${line + 1}: x`).join("\n") }] })
+    const index = extractIdentifiers(script.messages)
+    expect(index.files).toContain("src/early/named.ts")
+    expect(index.files.length).toBe(DEFAULT_CHECKPOINT_LIMITS.perCategory.files)
+  })
+
   test("collapses repeated outcomes and ignores URLs", () => {
     const script = new Script()
     for (let run = 0; run < 3; run += 1) script.step({ calls: [shell("make check", "boom", 2)] })
@@ -73,6 +91,11 @@ describe("buildCheckpoint", () => {
     expect(checkpoint.text).toContain("history_search")
     expect(checkpoint.text).toContain("history_read")
     expect(checkpoint.tokens).toBe(estimateTokens(checkpoint.text))
+  })
+
+  test("leaves out the history sentence when the session has no history tools", () => {
+    const checkpoint = buildCheckpoint({ summary: "s", earlier: session().messages, historyTools: false })
+    expect(checkpoint.text).not.toContain(HISTORY_SENTENCE)
   })
 
   test("is byte-identical for the same input", () => {

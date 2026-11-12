@@ -69,6 +69,8 @@ export interface CheckpointInput {
   /** Every non-excluded message before the cut, in `seq` order. Compaction messages are ignored. */
   readonly earlier: readonly Message[]
   readonly limits?: CheckpointLimits
+  /** Whether the session offers `history_search` and `history_read`, so the last sentence may name them. Default `true`. */
+  readonly historyTools?: boolean
 }
 
 export const CHECKPOINT_HEADER = "Checkpoint of the earlier conversation, which was compacted to save space."
@@ -80,13 +82,13 @@ export function buildCheckpoint(input: CheckpointInput): Checkpoint {
   const limits = input.limits ?? DEFAULT_CHECKPOINT_LIMITS
   const messages = input.earlier.filter((message) => message.kind !== "compaction")
   const index = extractIdentifiers(messages, limits)
-  const quotes = quoteUserMessages(messages, limits)
+  const quotes = quoteUserMessages(messages, limits, input.historyTools !== false)
   const text = [
     CHECKPOINT_HEADER,
     input.summary.trim(),
     renderIndex(index),
     quotes.text,
-    HISTORY_SENTENCE,
+    input.historyTools === false ? "" : HISTORY_SENTENCE,
   ]
     .filter((part) => part !== "")
     .join("\n\n")
@@ -98,26 +100,32 @@ export function buildCheckpoint(input: CheckpointInput): Checkpoint {
 interface Seen {
   readonly first: number
   last: number
+  /** Seen where the user or the model named it (a tool's arguments, a message), not only in tool output. */
+  strong: boolean
   /** For commands: the outcome of each run, in order. */
   readonly outcomes: string[]
 }
 
 /**
- * Extracts identifiers from messages, deterministically. Within each kind the
- * most recently seen entries win when there are too many; the result lists
- * them in order of first appearance, and the whole index fits `indexTokens`.
+ * Extracts identifiers from messages, deterministically. Within each kind,
+ * when there are too many, entries the user or the model named themselves
+ * (in a message or in a tool's arguments) win over entries seen only in tool
+ * output, which is mostly noise such as search results; within each group the
+ * most recently seen win. The result lists them in order of first appearance,
+ * and the whole index fits `indexTokens`.
  */
 export function extractIdentifiers(messages: readonly Message[], limits: CheckpointLimits = DEFAULT_CHECKPOINT_LIMITS): IdentifierIndex {
   const found = Object.fromEntries(IDENTIFIER_KINDS.map((kind) => [kind, new Map<string, Seen>()])) as Record<IdentifierKind, Map<string, Seen>>
   let clock = 0
-  const note = (kind: IdentifierKind, raw: string, outcome?: string) => {
+  const note = (kind: IdentifierKind, raw: string, strong: boolean, outcome?: string) => {
     const value = clip(raw.trim(), limits.entryChars)
     if (value === "") return
     clock += 1
     const seen = found[kind].get(value)
-    if (seen === undefined) found[kind].set(value, { first: clock, last: clock, outcomes: outcome === undefined ? [] : [outcome] })
+    if (seen === undefined) found[kind].set(value, { first: clock, last: clock, strong, outcomes: outcome === undefined ? [] : [outcome] })
     else {
       seen.last = clock
+      seen.strong ||= strong
       if (outcome !== undefined) seen.outcomes.push(outcome)
     }
   }
@@ -130,22 +138,23 @@ export function extractIdentifiers(messages: readonly Message[], limits: Checkpo
         const fields = args.ok && args.value !== null && typeof args.value === "object" && !Array.isArray(args.value) ? args.value : {}
         for (const [key, value] of Object.entries(fields)) {
           if (typeof value !== "string") continue
-          if (PATH_KEYS.has(key)) note("files", value)
-          if (COMMAND_KEYS.has(key) && part.state.status === "settled") note("commands", value, commandOutcome(part.state.outcome, part.state.output))
+          if (PATH_KEYS.has(key)) note("files", value, true)
+          if (COMMAND_KEYS.has(key) && part.state.status === "settled") note("commands", value, true, commandOutcome(part.state.outcome, part.state.output))
         }
       }
     }
-    for (const piece of messagePieces(message)) scanText(piece.text, piece.role === "tool" || piece.role === "user", note)
+    for (const piece of messagePieces(message))
+      scanText(piece.text, piece.role === "tool" || piece.role === "user", (kind, value) => note(kind, value, piece.role !== "tool"))
   }
 
   const chosen = IDENTIFIER_KINDS.map((kind) => {
     const entries = [...found[kind].entries()]
-      .sort((a, b) => b[1].last - a[1].last)
+      .sort((a, b) => Number(b[1].strong) - Number(a[1].strong) || b[1].last - a[1].last)
       .slice(0, limits.perCategory[kind])
     return entries.map(([value, seen]) => ({ kind, value: kind === "commands" ? renderCommand(value, seen.outcomes) : value, seen }))
   }).flat()
-  // Drop the least recently seen entries until the index fits its budget.
-  const byRecency = [...chosen].sort((a, b) => a.seen.last - b.seen.last)
+  // Drop entries until the index fits its budget: tool-output-only ones first, the least recently seen first.
+  const byRecency = [...chosen].sort((a, b) => Number(a.seen.strong) - Number(b.seen.strong) || a.seen.last - b.seen.last)
   const kept = new Set(chosen)
   for (const entry of byRecency) {
     if (estimateTokens(renderIndex(group(kept))) <= limits.indexTokens) break
@@ -211,12 +220,16 @@ function renderCommand(command: string, outcomes: readonly string[]): string {
 const URL = /\bhttps?:\/\/\S+/g
 const PATH = /(?<![\w./:@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@+-][\w.@+-]*\/)+[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+(?::\d+)?)?(?![\w/])/g
 const COMMIT = /(?<![\w-])(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}(?![\w-])/g
-const ERROR_LINE = /\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|\berror(?:\[[\w-]+\])?:|\berror TS\d+|\bpanicked\b|^\s*(?:FATAL|fatal|ERROR)\b/
+const ERROR_LINE = /\b(?:[A-Z][A-Za-z]*)?(?:Error|Exception)\b:|\berror(?:\[[\w-]+\])?:|\berror TS\d+|\bpanicked\b|^\s*(?:FATAL|fatal|ERROR)\b/
 const FAILING_TEST = /^\s*(?:\(fail\)|✗|×|✕|--- FAIL:|FAILED|not ok \d+)\s+(.+?)(?:\s+\[[\d.]+\s*m?s\])?\s*$/
 
 function scanText(text: string, outputLike: boolean, note: (kind: IdentifierKind, value: string) => void) {
   const plain = text.replace(URL, " ")
-  for (const match of plain.matchAll(PATH)) note("files", match[0])
+  for (const match of plain.matchAll(PATH)) {
+    // "src/a.ts line 42" and "src/a.ts, line 42" are recorded as "src/a.ts:42".
+    const line = /^,?\s+(?:at\s+|on\s+)?line\s+(\d+)\b/.exec(plain.slice(match.index + match[0].length))
+    note("files", line === null || match[0].includes(":") ? match[0] : `${match[0]}:${line[1]}`)
+  }
   for (const match of plain.matchAll(COMMIT)) note("commits", match[0])
   if (!outputLike) return
   for (const line of plain.split("\n")) {
@@ -232,14 +245,14 @@ function clip(value: string, chars: number) {
 
 // ---- the user's messages ----
 
-function quoteUserMessages(messages: readonly Message[], limits: CheckpointLimits) {
+function quoteUserMessages(messages: readonly Message[], limits: CheckpointLimits, tools: boolean) {
   const users = messages.flatMap((message) => {
     if (message.kind !== "user") return []
     const text = messagePieces(message)
       .map((piece) => piece.text)
       .join("")
       .trim()
-    return text === "" ? [] : [{ seq: message.seq, text: shorten(text, message.seq, limits.perUserMessageTokens) }]
+    return text === "" ? [] : [{ seq: message.seq, text: shorten(text, message.seq, limits.perUserMessageTokens, tools) }]
   })
   const chosen: typeof users = []
   let spent = estimateTokens(QUOTES_HEADING)
@@ -253,7 +266,9 @@ function quoteUserMessages(messages: readonly Message[], limits: CheckpointLimit
   const unquoted = users.length - chosen.length
   if (chosen.length === 0) return { text: "", quoted: [], unquoted }
   const note =
-    unquoted === 0 ? [] : [`(${unquoted} earlier user message${unquoted === 1 ? " is" : "s are"} not quoted here; ${HISTORY_SEARCH} finds ${unquoted === 1 ? "it" : "them"}.)`]
+    unquoted === 0 ? [] : [
+          `(${unquoted} earlier user message${unquoted === 1 ? " is" : "s are"} not quoted here${tools ? `; ${HISTORY_SEARCH} finds ${unquoted === 1 ? "it" : "them"}` : ""}.)`,
+        ]
   return { text: [QUOTES_HEADING, ...note, ...chosen.map(quote)].join("\n"), quoted: chosen.map((user) => user.seq), unquoted }
 }
 
@@ -265,10 +280,11 @@ function quote(user: { seq: number; text: string }) {
 }
 
 /** Cuts the middle of a long message, saying how much was left out and where the whole is. */
-function shorten(text: string, seq: number, maxTokens: number) {
+function shorten(text: string, seq: number, maxTokens: number, tools: boolean) {
   if (estimateTokens(text) <= maxTokens) return text
   const chars = Math.max(200, Math.floor(maxTokens * 3.2))
   const head = text.slice(0, Math.floor(chars * 0.6))
   const tail = text.slice(text.length - Math.floor(chars * 0.4))
-  return `${head}\n[… ${text.length - head.length - tail.length} characters left out; ${HISTORY_READ} seq ${seq} has the whole message …]\n${tail}`
+  const where = tools ? `; ${HISTORY_READ} seq ${seq} has the whole message` : ""
+  return `${head}\n[… ${text.length - head.length - tail.length} characters left out${where} …]\n${tail}`
 }
