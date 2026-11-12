@@ -19,8 +19,3 @@
 ### Features
 
 - `paginate` returns the number of pages. (#449)
-
-<!--
-  This file is assembled by scripts/release.ts from the fragments in changes/ (one file per change, named
-  <issue>.<type>.md) and the fragments are deleted when a release is cut. Edits made here by hand are overwritten.
--->

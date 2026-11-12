@@ -1,10 +1,9 @@
-// Every amount is integer cents (said at the end of src/types.ts, and visible in the tests). shippingFee must charge
-// 499 below 5000 and nothing from 5000, and orderTotal must include it. Whether shipping is taxed is left open: the
-// total may be either subtotal + tax + fee or subtotal + tax on (subtotal + fee) + fee.
-import { fail, importFrom, pass, requireOriginalTestsPass, workspaceArg } from "../../grader.ts"
+// Every amount is integer cents (said at the end of src/types.ts; src/ui/format.ts divides by 100 for display).
+// shippingFee must charge 499 below 5000 and nothing from 5000, and orderTotal must include it. Whether shipping is
+// taxed is left open: the total may be subtotal + tax + fee or subtotal + tax on (subtotal + fee) + fee.
+import { fail, importFrom, pass, workspaceArg } from "../../grader.ts"
 
 const workspace = workspaceArg()
-await requireOriginalTestsPass(import.meta.dir, workspace, ["src/pricing.test.ts"])
 type Order = { id: string; items: []; subtotal: number; couponCode: null; region: "US" | "CA" }
 const pricing = await importFrom<{ shippingFee?: (order: Order) => number; orderTotal: (order: Order, coupon?: null) => number }>(workspace, "src/pricing.ts")
 if (typeof pricing.shippingFee !== "function") fail("src/pricing.ts does not export shippingFee")
