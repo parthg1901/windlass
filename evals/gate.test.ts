@@ -316,13 +316,16 @@ describe("the baseline", () => {
     expect(buildBaseline(await loadResults([await resultsDir(repeats(TASKS, 1), { sha: "a" }), await resultsDir(repeats(TASKS, 1), { sha: "b" })]), { commit: "c" }).commit).toBe("c")
   })
 
-  test("the committed baseline is a labelled single-repeat seed for gpt-6-luna/low", async () => {
-    const seed = (await Bun.file(BASELINE_FILE).json()) as Baseline
-    expect(seed.configuration).toEqual({ model: "gpt-6-luna", effort: "low" })
-    expect(seed.repeats).toBe(1)
-    expect(seed.note).toStartWith("SINGLE-REPEAT SEED")
-    expect(seed.commit).toMatch(/^[0-9a-f]{7,40}$/)
-    expect(Object.keys(seed.tasks).length).toBe(10)
+  // The committed baseline is refreshed from real runs, so this checks what the gate needs from it
+  // rather than one particular run: enough repeats for the statistical rules, and every task present.
+  test("the committed baseline has enough repeats for the gate and covers every task", async () => {
+    const committed = (await Bun.file(BASELINE_FILE).json()) as Baseline
+    expect(committed.configuration).toEqual({ model: "gpt-6-luna", effort: "low" })
+    expect(committed.repeats).toBeGreaterThanOrEqual(3)
+    expect(committed.note).not.toStartWith("SINGLE-REPEAT SEED")
+    expect(committed.commit).toMatch(/^[0-9a-f]{7,40}$/)
+    const tasks = (await Array.fromAsync(new Bun.Glob("*/task.json").scan({ cwd: join(import.meta.dir, "tasks") }))).map((path) => path.split("/")[0]!)
+    expect(Object.keys(committed.tasks).sort()).toEqual(tasks.sort())
   })
 })
 
