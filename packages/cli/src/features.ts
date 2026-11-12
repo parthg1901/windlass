@@ -155,9 +155,16 @@ export function mcpFailureText(server: McpServerInfo): string {
   return `MCP server "${server.name}" could not start: ${server.error ?? "no reason was given"}.${retry} /mcp shows its state, and ${server.file ?? "its configuration file"} defines it.`
 }
 
-/** In a run with nobody to ask: why a project's server did not start, and how to start it. */
-export function mcpUnattendedText(server: McpServerInfo): string {
-  return `MCP server "${server.name}" was not started: this project's configuration names it, and a project's server runs only after you approve it, which needs someone at the terminal. To approve it, run \`${brand.binary}\` in this directory and answer the question it asks (or type /mcp approve ${server.name}); the approval is remembered for this project.`
+/**
+ * In a run with nobody to ask: how many of the project's hooks, language servers and MCP servers were not run
+ * because nobody approved them, and the one way to approve them. One sentence for all of them.
+ */
+export function unapprovedText(waiting: { readonly hooks: number; readonly lsp: number; readonly mcp: number }): string {
+  const count = (n: number, one: string) => (n === 0 ? null : `${n} ${one}${n === 1 ? "" : "s"}`)
+  const parts = [count(waiting.hooks, "hook"), count(waiting.lsp, "language server"), count(waiting.mcp, "MCP server")].filter((part) => part !== null)
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`
+  const one = waiting.hooks + waiting.lsp + waiting.mcp === 1
+  return `not run: ${list} that this project's configuration names and you have not approved. To approve ${one ? "it" : "them"}, run \`${brand.binary}\` in this directory and answer the ${one ? "question" : "questions"} it asks; the approval is remembered for this project.`
 }
 
 // ---------------------------------------------------------------- skills

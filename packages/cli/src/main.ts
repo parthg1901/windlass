@@ -217,7 +217,7 @@ export async function run(io: Io): Promise<number> {
   // What the CLI says about MCP servers and wake-ups unasked. Not in `--json`: that stream is the engine's events only.
   let watching: FeatureWatch | null = null
   const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print, settle) => questions.patient(question, print, settle), working: () => watching?.working === true, keep: (note) => watching?.keep(note), secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) }
-  const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
+  const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY), draw: (item) => sink.event(item) })
   watching = watch
   watch?.start()
   // In `--json` the one thing of it a script has no event for is a line of the CLI's own.
@@ -918,7 +918,7 @@ class TurnWatcher {
   constructor(
     private readonly session: Session,
     private readonly sink: Sink,
-    private readonly watch: Pick<FeatureWatch, "event"> | null = null,
+    private readonly watch: (Pick<FeatureWatch, "event"> & Partial<Pick<FeatureWatch, "takes">>) | null = null,
     /** Called with each event once the sink has drawn it. */
     private readonly drawn: ((item: EngineEvent) => void) | null = null,
   ) {}
@@ -948,7 +948,8 @@ class TurnWatcher {
   }
 
   private observe(item: EngineEvent, sink: Sink): void {
-    sink.event(item)
+    // What the watch answers for itself (one sentence for everything of the project's that nobody approved) is not drawn here.
+    if (this.watch?.takes?.(item) !== true) sink.event(item)
     this.drawn?.(item)
     this.watch?.event(item)
     const outcome = turnOutcomeOf(item)

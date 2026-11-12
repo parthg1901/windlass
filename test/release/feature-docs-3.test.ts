@@ -657,7 +657,7 @@ describe("what the other pages say a run prints", () => {
     expect(page("docs/hooks.md")).toContain("`⚠ ended with the stop hook \"<name>\" unsatisfied · ...` in place of `✓ done · ...`")
   }, 120_000)
 
-  test("docs/hooks.md, mcp.md, diagnostics.md: a one-prompt run says a project's hook and servers wait, and how to approve each", async () => {
+  test("docs/hooks.md, mcp.md, diagnostics.md: a one-prompt run says in one sentence that a project's hook and servers were not run, and how to approve them", async () => {
     const at = home()
     at.projectConfig({
       mcp: { servers: { tracker: { command: "tracker-mcp", args: ["serve"] } } },
@@ -666,18 +666,19 @@ describe("what the other pages say a run prints", () => {
     })
     const run = await at.run(["hello"], [say("Hello.")])
     expect(run.code, run.err).toBe(0)
-    expect(run.flat).toContain(`⚠ mcp: This project's configuration names the MCP server "tracker" (tracker-mcp serve). It was not started: a server a project names runs only after you approve it.`)
-    expect(run.flat).toContain(`⚠ hook: This project's configuration asks to run the hook "no-push" before a tool call (exit 0). It is not run: a hook a project names runs only after you approve it.`)
-    expect(run.flat).toContain(`· language server: This project's configuration names the language server "notes" (notes-language-server). It was not started: a server a project names runs only after you approve it.`)
-    expect(run.flat).toContain('MCP server "tracker" was not started: ')
-    expect(run.flat).toContain("(or type /mcp approve tracker)")
-    expect(run.flat).toContain('Approving the hook "no-push" needs someone at the terminal: ')
-    expect(run.flat).toContain("(or type /hooks approve no-push)")
-    expect(run.flat).toContain('Approving the language server "notes" needs someone at the terminal: ')
-    expect(run.flat).toContain("(or type /lsp approve notes)")
-    // Before a session's first message (an interactive session, not run here): the sentences the pages quote are the clients'.
-    expect(page("docs/mcp.md")).toContain("**Before the first message a project's server cannot be approved.**")
-    expect(SOURCE_TEXT).toContain("cannot be approved yet: a session looks at its MCP servers when its first message is sent")
+    expect(run.flat).toContain(`not run: 1 hook, 1 language server and 1 MCP server that this project's configuration names and you have not approved. To approve them, run \`${brand.binary}\` in this directory and answer the questions it asks; the approval is remembered for this project.`)
+    // One sentence stands for the engine's own about each, which an interactive session shows and --json carries.
+    expect(run.flat).not.toContain("only after you approve it")
+    const json = await at.run(["--json", "-c", "again"], [say("Hello.")])
+    for (const sentence of [
+      `This project's configuration names the MCP server \\"tracker\\" (tracker-mcp serve). It was not started: a server a project names runs only after you approve it.`,
+      `This project's configuration asks to run the hook \\"no-push\\" before a tool call (exit 0). It is not run: a hook a project names runs only after you approve it.`,
+      `This project's configuration names the language server \\"notes\\" (notes-language-server). It was not started: a server a project names runs only after you approve it.`,
+    ])
+      expect(json.out).toContain(sentence)
+    // Before a session's first message (an interactive session, not run here): what the page says, in the client's words.
+    expect(page("docs/mcp.md")).toContain("**Before the first message.**")
+    expect(SOURCE_TEXT).toContain("waiting for your approval: not started")
     expect(page("docs/memory.md")).toContain("A `/remember` typed then is not lost")
     expect(SOURCE_TEXT).toContain("The note is kept and saved as soon as your first message is sent (it is not saved if you leave before sending one)")
   }, 60_000)

@@ -234,9 +234,11 @@ A project's file cannot take a hook out of the sandbox (`"sandbox": false` there
 - **Approving a project's hook.** An interactive `windlass` and `windlass tui` ask you about a hook a project's
   file names as soon as the session opens, before your first message. The question shows the whole command, the
   tools it applies to, where it runs and the file that defines it; `y` allows it for this project for 30 days,
-  and `/hooks approve <hook>` asks again after a no. A one-prompt run cannot ask: it says once that the hook is skipped and how to approve it
-  (`Approving the hook "<name>" needs someone at the terminal: ...`). An approval is for that exact definition; an
-  edited hook is asked about again.
+  and `/hooks approve <hook>` asks again after a no. A one-prompt run cannot ask: the hook is skipped, and one
+  sentence counts what of the project's was not run (its hooks, language servers and MCP servers together) and says
+  how to approve it (`not run: 1 hook that this project's configuration names and you have not approved. To approve
+  it, run \`windlass\` in this directory and answer the question it asks; ...`). The engine's sentence about each,
+  with its command, is in `--json`. An approval is for that exact definition; an edited hook is asked about again.
 - **Listing.** `/hooks` shows each hook, when it runs, its command, the file that defines it and its state
   (`in force`, `waiting for your approval: not run`, or that it failed the last time it ran, with why).
 - **Seeing what a hook did.** A call a hook refused is shown with the hook's name and its reason (above); a note

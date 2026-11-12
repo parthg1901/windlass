@@ -141,15 +141,16 @@ describe("a project's hook", () => {
     expect(run.seen).toContain("Secrets are not written here.")
   })
 
-  test("in a one-shot run nobody can approve it: it is skipped, said once, with how to approve it", async () => {
+  test("in a one-shot run nobody can approve it: it is skipped, and one sentence says so with how to approve it", async () => {
     const cwd = workspace(hook("exit 2"))
     const provider = new FakeProvider([[script.toolCall("call_1", "write", { path: "secret.txt", content: "x\n" })], [script.text("Written.")]])
     const run = await runCli(["--cwd", cwd, "write the secret"], { engine: engineFor(provider, join(root, `data-oneshot-${count}`)), env: { NO_COLOR: "1" } })
     const flat = (run.out + run.err).replace(/\s+/g, " ")
     expect(run.code).toBe(0)
-    expect(flat.match(/It is not run: a hook a project names runs only after you approve it\./g)).toHaveLength(1)
-    expect(flat.match(/Approving the hook "no-secrets" needs someone at the terminal/g)).toHaveLength(1)
-    expect(flat).toContain(`run \`${brand.binary}\` in this directory and answer the question it asks (or type /hooks approve no-secrets)`)
+    expect(flat.match(/not run: 1 hook that this project's configuration names and you have not approved\./g)).toHaveLength(1)
+    expect(flat).toContain(`To approve it, run \`${brand.binary}\` in this directory and answer the question it asks; the approval is remembered for this project.`)
+    // The engine's own line about the hook, with its command, is not printed as well: one sentence, not two.
+    expect(flat).not.toContain("It is not run: a hook a project names runs only after you approve it.")
     // Skipped: the call went through.
     expect(flat).not.toContain("refused by the hook")
     expect(flat).toContain("✓ done")
@@ -233,6 +234,31 @@ describe("what a hook did", () => {
   })
 })
 
+describe("a one-prompt run in a project with a hook, a language server and MCP servers nobody approved", () => {
+  test("says in one sentence how many of each were not run and how to approve them, in place of a paragraph each", async () => {
+    const lspServer = { command: process.execPath, args: [LSP_SERVER], languages: { plaintext: ["**/*.txt"] } }
+    const mcpServer = (flag: string) => ({ command: process.execPath, args: [LSP_SERVER, flag] })
+    const cwd = workspace({
+      hooks: { stop: [{ name: "tidy", command: "exit 0" }], afterTool: [{ name: "fmt", command: "exit 0" }] },
+      lsp: { servers: { fixture: lspServer } },
+      mcp: { servers: { issues: mcpServer("--a"), docs: mcpServer("--b") } },
+    })
+    const run = await runCli(["--cwd", cwd, "hello"], { engine: engineFor(new FakeProvider([[script.text("Done.")]]), join(root, `data-all-${count}`)), env: { NO_COLOR: "1" } })
+    expect(run.code).toBe(0)
+    const sentence = `not run: 2 hooks, 1 language server and 2 MCP servers that this project's configuration names and you have not approved. To approve them, run \`${brand.binary}\` in this directory and answer the questions it asks; the approval is remembered for this project.`
+    // The sentence (wrapped under itself), the answer and the ending: nothing else.
+    const [notice, ...rest] = run.out.split("\n\n")
+    expect(notice!.replace(/\n\s+/g, " ")).toBe(sentence)
+    expect(notice!.split("\n").length).toBeLessThanOrEqual(4)
+    expect(rest.join("|")).toMatch(/^Done\.\|✓ done · no checks configured · 1 step · \S+\n$/)
+    expect(run.err).toBe("")
+    // A script still gets every one of the engine's sentences, each with the whole command.
+    const json = await runCli(["--cwd", cwd, "--json", "-c", "again"], { engine: engineFor(new FakeProvider([[script.text("Done.")]]), join(root, `data-all-${count}`)), env: { NO_COLOR: "1" } })
+    const said = json.out.split("\n").filter((line) => line.includes('"type":"diagnostic"'))
+    expect(said.filter((line) => line.includes("only after you approve it")).length).toBe(5)
+  })
+})
+
 describe("language servers", () => {
   const server = (flags: readonly string[] = []) => ({ command: process.execPath, args: [LSP_SERVER, ...flags], languages: { plaintext: ["**/*.txt"] } })
 
@@ -286,14 +312,13 @@ describe("language servers", () => {
     expect(at('approved: the hook "tidy" runs from the next call it applies to')).toBeLessThan(at('? Start the language server "fixture"'))
   })
 
-  test("in a one-shot run a project's server is not started: said once, with how to approve it; /lsp with none says how to add one", async () => {
+  test("in a one-shot run a project's server is not started: one sentence, with how to approve it; /lsp with none says how to add one", async () => {
     const cwd = workspace({ lsp: { servers: { fixture: server() } } })
     const provider = new FakeProvider([[script.text("Done.")]])
     const run = await runCli(["--cwd", cwd, "hello"], { engine: engineFor(provider, join(root, `data-lsp-oneshot-${count}`)), env: { NO_COLOR: "1" } })
     const flat = (run.out + run.err).replace(/\s+/g, " ")
-    expect(flat.match(/It was not started: a server a project names runs only after you approve it\./g)).toHaveLength(1)
-    expect(flat.match(/Approving the language server "fixture" needs someone at the terminal/g)).toHaveLength(1)
-    expect(flat).toContain("(or type /lsp approve fixture)")
+    expect(flat.match(/not run: 1 language server that this project's configuration names and you have not approved\./g)).toHaveLength(1)
+    expect(flat).not.toContain("It was not started: a server a project names runs only after you approve it.")
 
     const none = await interactive(workspace(), new FakeProvider([]), async (type, waitFor) => {
       type("/lsp\r")

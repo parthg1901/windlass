@@ -4,7 +4,7 @@
  * `/forget`), and what it says about them unasked (`FeatureWatch`): an MCP
  * server, a hook or a language server the project's configuration names is
  * put to the user as a question at the prompt (or, in a run with nobody to
- * ask, said once with how to approve it), a server that fails to start is a
+ * ask, counted in one sentence with how to approve them), a server that fails to start is a
  * notice with why, and a webhook wake-up's URL and secret are shown once
  * when it is created, to the user only.
  *
@@ -16,15 +16,14 @@ import {
   type Line,
   mcpApprovedText,
   mcpFailureText,
-  mcpFirstMessageText,
   mcpLines,
   mcpNotWaitingText,
   mcpQuestionLines,
-  mcpUnattendedText,
   memoryAction,
   memoryLines,
   rememberArgs,
   skillsLines,
+  unapprovedText,
   WAKE_CHECK_ANSWERS,
   wakeAddEntry,
   wakeAddUsageLines,
@@ -37,7 +36,7 @@ import {
   watchLines,
   webhookSecretLines,
 } from "./features.ts"
-import { hookQuestionLines, hooksLines, hooksUnattendedText, lspLines, lspQuestionLines, lspUnattendedText } from "./hooks.ts"
+import { hookQuestionLines, hooksLines, lspLines, lspQuestionLines } from "./hooks.ts"
 
 export interface FeatureOutput {
   lines(lines: readonly Line[]): void
@@ -325,28 +324,45 @@ export interface JsonNotice {
   readonly message: string
 }
 
+/** The kinds of thing a project's configuration names that run only once the user approved them. */
+type Unapproved = "hooks" | "lsp" | "mcp"
+const isUnapprovedKind = (kind: string): kind is Unapproved => kind === "hooks" || kind === "lsp" || kind === "mcp"
+
 /**
  * What the CLI says about the features unasked, while a session is open.
  * `attended`: a person is at the prompt, so a project's server is asked
- * about; otherwise it is said once how to approve it. `secrets`: a webhook's
- * secret may be printed (the output is a terminal the user reads).
+ * about; otherwise what waits for an approval is said once, in one sentence:
+ * how many of each kind were not run and how to approve them (the engine's
+ * own sentence about each is then not printed: `takes`). `secrets`: a
+ * webhook's secret may be printed (the output is a terminal the user reads).
+ * `draw`: how an event the watch held back is drawn after all.
  */
 export class FeatureWatch {
   private readonly told = new Set<string>()
   private readonly asked = new Set<string>()
   private readonly work = new Set<Promise<unknown>>()
   private unsubscribe: (() => void) | null = null
-  /** A turn is running; and whether the session has had one (its servers are looked at when the first starts). */
+  /** A turn is running. */
   private executing = false
-  private started = false
   /** Notes written before the session's memory existed: saved once it has started. */
   private readonly notes: KeptNote[] = []
+  /** With nobody to ask: the names of what waits for an approval, by kind; and of those, the ones not said yet. */
+  private readonly skipped: Record<Unapproved, Set<string>> = { hooks: new Set(), lsp: new Set(), mcp: new Set() }
+  private readonly unsaid: Record<Unapproved, Set<string>> = { hooks: new Set(), lsp: new Set(), mcp: new Set() }
+  /** With nobody to ask: what the engine said about hooks and servers before the first look at them; `null` after it. */
+  private held: EngineEvent[] | null = []
+  private looks = 0
 
   constructor(
     private readonly session: Session,
     private readonly io: FeatureIo,
-    private readonly options: { readonly attended: boolean; readonly secrets: boolean },
+    private readonly options: { readonly attended: boolean; readonly secrets: boolean; readonly draw?: (event: EngineEvent) => void },
   ) {}
+
+  /** Whether someone is there to answer a question. */
+  private get attended(): boolean {
+    return this.options.attended && this.io.ask !== null
+  }
 
   start(): void {
     const off = [this.session.onMcp?.((state) => this.mcp(state)), this.session.onHooks?.((state) => this.hooks(state)), this.session.onLsp?.((state) => this.lsp(state))]
@@ -368,7 +384,13 @@ export class FeatureWatch {
    * expect.
    */
   async beforeMessage(): Promise<void> {
-    if (!this.options.attended || this.io.ask === null) return
+    if (!this.attended) return this.look()
+    await this.read()
+    await this.settled()
+  }
+
+  /** Reads the session's hooks, language servers and MCP servers as they are now, and takes note of each. */
+  private async read(): Promise<void> {
     const session = this.session
     const look = async <T>(read: (() => Promise<T>) | undefined, tell: (state: T) => void) => {
       const state = read === undefined ? undefined : await read.call(session).catch(() => undefined)
@@ -376,18 +398,64 @@ export class FeatureWatch {
     }
     await look(session.hooks, (state) => this.hooks(state))
     await look(session.lsp, (state) => this.lsp(state))
-    await look(session.mcp, (state) => {
-      this.mcp(state)
-      const first = this.started || this.told.has("first-message") ? null : mcpFirstMessageText(state.servers)
-      this.told.add("first-message")
-      if (first !== null) this.io.out.notice(first)
-    })
-    await this.settled()
+    await look(session.mcp, (state) => this.mcp(state))
+  }
+
+  /**
+   * With nobody to ask: looks at what the project's configuration names and nobody approved, says it in one
+   * sentence, and draws what the engine said meanwhile about anything else.
+   */
+  private async look(): Promise<void> {
+    this.looks += 1
+    try {
+      await this.read()
+    } finally {
+      this.looks -= 1
+    }
+    const held = this.held ?? []
+    this.held = null
+    this.sayUnapproved()
+    for (const event of held) if (!this.aboutSkipped(event)) this.options.draw?.(event)
+  }
+
+  /** The one sentence about what was not run for want of an approval; nothing before the first look is done. */
+  private sayUnapproved(): void {
+    if (this.looks > 0 || this.held !== null) return
+    const counts = { hooks: this.unsaid.hooks.size, lsp: this.unsaid.lsp.size, mcp: this.unsaid.mcp.size }
+    if (counts.hooks + counts.lsp + counts.mcp === 0) return
+    for (const names of Object.values(this.unsaid)) names.clear()
+    this.io.out.notice(unapprovedText(counts), "warn")
+  }
+
+  private skip(kind: Unapproved, names: readonly string[]): void {
+    for (const name of names) {
+      this.skipped[kind].add(name)
+      this.unsaid[kind].add(name)
+    }
+    this.sayUnapproved()
+  }
+
+  /** Whether `event` is the engine's sentence about a hook or a server that the one sentence here covers. */
+  private aboutSkipped(event: EngineEvent): boolean {
+    if (event.type !== "diagnostic" || !isUnapprovedKind(event.kind)) return false
+    return [...this.skipped[event.kind]].some((name) => event.message.includes(`"${name}"`))
+  }
+
+  /**
+   * Whether the watch answers for `event` itself, so that it is not drawn as it comes. With nobody to ask, what
+   * the engine says about a project's hook or server that waits for an approval is one line each, with its whole
+   * command: the one sentence of `look` stands for them all. What it says about anything else is drawn.
+   */
+  takes(event: EngineEvent): boolean {
+    if (this.attended || event.type !== "diagnostic" || !isUnapprovedKind(event.kind)) return false
+    if (this.held === null) return this.aboutSkipped(event)
+    this.held.push(event)
+    return true
   }
 
   /** Every event of the session, after the renderer has shown it. */
   event(event: EngineEvent): void {
-    if (event.type === "execution.started" || event.type === "execution.resumed") this.executing = this.started = true
+    if (event.type === "execution.started" || event.type === "execution.resumed") this.executing = true
     // The session has started: its memory exists from here on, and what `/remember` kept is saved.
     if (event.type === "baseline.set" && this.notes.length > 0) this.track(this.saveKept())
     if (turnOutcomeOf(event) !== null) this.executing = false
@@ -419,9 +487,7 @@ export class FeatureWatch {
   async finish(): Promise<void> {
     // A note that waited for a first message that never came was not saved: said, never dropped silently.
     for (const note of this.notes.splice(0)) this.io.out.notice(`not saved: no message was sent in this session, and its memory starts with the first one. Your note was: ${note.text}`, "warn")
-    if (!this.options.attended && this.session.mcp !== undefined) await this.track(this.session.mcp().then((state) => this.mcp(state)))
-    if (!this.options.attended && this.session.hooks !== undefined) await this.track(this.session.hooks().then((state) => this.hooks(state)))
-    if (!this.options.attended && this.session.lsp !== undefined) await this.track(this.session.lsp().then((state) => this.lsp(state)))
+    if (!this.attended) await this.track(this.look())
     await this.settled()
   }
 
@@ -460,18 +526,18 @@ export class FeatureWatch {
         const key = `${server.name}:${server.question.fingerprint}`
         if (this.asked.has(key)) continue
         this.asked.add(key)
-        if (this.options.attended && this.io.ask !== null) this.track(askMcpServer(server, this.session, this.io))
-        else this.io.out.notice(mcpUnattendedText(server), "warn")
+        if (this.attended) this.track(askMcpServer(server, this.session, this.io))
+        else this.skip("mcp", [server.name])
       }
     }
   }
 
-  /** The project's hooks that wait: each is a question at the prompt, one after another; with nobody to ask, how to approve them, once. */
+  /** The project's hooks that wait: each is a question at the prompt, one after another; with nobody to ask, they are counted (`look`). */
   private hooks(state: HooksStateResult): void {
     const fresh = state.hooks.filter((hook) => hook.state === "awaiting_approval" && hook.question !== null && !this.asked.has(`hook:${hook.fingerprint}`))
     if (fresh.length === 0) return
     for (const hook of fresh) this.asked.add(`hook:${hook.fingerprint}`)
-    if (!this.options.attended || this.io.ask === null) return this.io.out.notice(hooksUnattendedText(fresh), "warn")
+    if (!this.attended) return this.skip("hooks", fresh.map((hook) => hook.name))
     this.track(
       (async () => {
         for (const hook of fresh) await askHook(hook, this.session, this.io)
@@ -484,7 +550,7 @@ export class FeatureWatch {
     const fresh = state.servers.filter((server) => server.state === "awaiting_approval" && server.question !== null && !this.asked.has(`lsp:${server.name}:${server.question.fingerprint}`))
     if (fresh.length === 0) return
     for (const server of fresh) this.asked.add(`lsp:${server.name}:${server.question!.fingerprint}`)
-    if (!this.options.attended || this.io.ask === null) return this.io.out.notice(lspUnattendedText(fresh), "warn")
+    if (!this.attended) return this.skip("lsp", fresh.map((server) => server.name))
     this.track(
       (async () => {
         for (const server of fresh) await askLspServer(server, this.session, this.io)

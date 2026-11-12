@@ -16,7 +16,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type CallId, type MessageId, brand, event } from "@windlass/core"
 import { FakeProvider, script } from "@windlass/core/testing"
-import { loadConfig } from "../../core/src/config/load.ts"
+import { loadConfig, loadConfigSync } from "../../core/src/config/load.ts"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { Session } from "../src/engine.ts"
@@ -56,10 +56,11 @@ function workspace(project?: unknown, user?: unknown): string {
   return dir
 }
 
-const engineFor = (provider: FakeProvider, data: string) => () =>
-  createAcpEngine({ transport: "memory", harness: { dataDir: data, provider, log: () => {}, engine: { discover: () => [], mcp: QUICK, loadConfig: (cwd: string) => loadConfig({ cwd }) } }, stderr: () => {} })
+/** `early`: the engine can read the configuration before a session's first turn, as the product's does (its MCP servers are known before the first message). */
+const engineFor = (provider: FakeProvider, data: string, early = false) => () =>
+  createAcpEngine({ transport: "memory", harness: { dataDir: data, provider, log: () => {}, engine: { discover: () => [], mcp: QUICK, loadConfig: (cwd: string) => loadConfig({ cwd }), ...(early ? { loadConfigSync: (cwd: string) => loadConfigSync({ cwd }) } : {}) } }, stderr: () => {} })
 
-async function interactive(cwd: string, provider: FakeProvider, drive: (type: (keys: string) => void, waitFor: (needle: string | RegExp, ms?: number) => Promise<void>) => Promise<void>) {
+async function interactive(cwd: string, provider: FakeProvider, drive: (type: (keys: string) => void, waitFor: (needle: string | RegExp, ms?: number) => Promise<void>) => Promise<void>, early = false) {
   const vt = new VirtualTerminal(120)
   let seen = ""
   let typer: ((data: string) => void) | null = null
@@ -71,7 +72,7 @@ async function interactive(cwd: string, provider: FakeProvider, drive: (type: (k
     }
   }
   const running = runCli(["--cwd", cwd], {
-    engine: engineFor(provider, join(cwd, "..", `data-${count}`)),
+    engine: engineFor(provider, join(cwd, "..", `data-${count}`), early),
     stdinTTY: true,
     stdoutTTY: true,
     columns: 120,
@@ -95,19 +96,14 @@ describe("MCP servers", () => {
     const cwd = workspace({ mcp: { servers: { theirs: { command: process.execPath, args: [SERVER, "--only", "echo"] } } } })
     const provider = new FakeProvider([[script.text("Hello.")]])
     const run = await interactive(cwd, provider, async (type, waitFor) => {
-      // Before the first message the engine has not looked at the servers: that is said, with what to do.
-      type("/mcp\r")
-      await waitFor("not looked at yet: a project's server is asked about once the first message is sent")
-      type("/mcp approve theirs\r")
-      await waitFor('The MCP server "theirs" cannot be approved yet: a session looks at its MCP servers when its first message is sent.')
+      // The engine reads the servers before the first message: the project's is asked about before the message goes,
+      // so the turn starts with what was allowed and no question interrupts it.
       type("hello\r")
-      await waitFor('This project\'s configuration names the MCP server "theirs". A project\'s server starts only once you have approved it')
       await waitFor('? Start the MCP server "theirs" that this project\'s configuration names?')
       await waitFor("[y] start it · [N] not now")
       type("y\r")
       // Said plainly: it starts now, and the agent has it from the next message.
-      await waitFor('approved: "theirs" starts now')
-      await waitFor(/the agent has its tools from your next message|ask again in your next message, when it has them/)
+      await waitFor('approved: "theirs" starts now; the agent has its tools from your next message. /mcp shows it.')
       // It starts in the background: asked again until it runs.
       for (let tries = 0; ; tries += 1) {
         type("/mcp\r")
@@ -115,10 +111,9 @@ describe("MCP servers", () => {
         if (running || tries > 30) break
       }
       await waitFor("theirs · running · 1 tool")
-      // Ctrl-D leaves at the prompt only: the turn, which the question did not hold up, has ended by then.
       await waitFor("✓ done")
       type("\x04")
-    })
+    }, true)
     expect(run.code).toBe(0)
     expect(run.screen).toContain("runs outside the sandbox, with your permissions")
     expect(run.screen).toContain("start it for this project and remember that")
@@ -139,14 +134,15 @@ describe("MCP servers", () => {
     expect(run.screen).toContain("/mcp shows its state")
   })
 
-  test("in a one-shot run nobody can approve it: it says so once, and how", async () => {
+  test("in a one-shot run nobody can approve it: one sentence says that it was not run and how to approve it", async () => {
     const cwd = workspace({ mcp: { servers: { theirs: { command: process.execPath, args: [SERVER] } } } })
     const provider = new FakeProvider([[script.text("Done.")]])
-    const run = await runCli(["--cwd", cwd, "hello"], { engine: engineFor(provider, join(root, `data-oneshot-${count}`)), env: { NO_COLOR: "1" } })
+    const run = await runCli(["--cwd", cwd, "hello"], { engine: engineFor(provider, join(root, `data-oneshot-${count}`), true), env: { NO_COLOR: "1" } })
     const flat = (run.out + run.err).replace(/\n\s+/g, " ")
-    expect(flat).toContain('MCP server "theirs" was not started')
-    expect(flat).toContain(`To approve it, run \`${brand.binary}\` in this directory and answer the question it asks`)
-    expect(flat.match(/was not started: this project's configuration names it/g)).toHaveLength(1)
+    expect(flat).toStartWith(`not run: 1 MCP server that this project's configuration names and you have not approved. To approve it, run \`${brand.binary}\` in this directory and answer the question it asks; the approval is remembered for this project.`)
+    // The engine's own sentence about the server, with its whole command, is in --json only.
+    expect(flat).not.toContain("It was not started")
+    expect(flat.match(/not run: /g)).toHaveLength(1)
   })
 })
 
@@ -393,10 +389,31 @@ describe("what the project's configuration asks for is settled before a message 
     said.length = 0
     await watch.beforeMessage()
     expect(said).toEqual([])
-    // With nobody to ask, nothing is put before a message.
-    const unattended = new FeatureWatch(session, { ...io, ask: null }, { attended: false, secrets: false })
-    await unattended.beforeMessage()
-    expect(said).toEqual([])
+  })
+
+  test("with nobody to ask, what waits is counted in one sentence before the message, and the engine's line about each is not drawn", async () => {
+    const said: string[] = []
+    const drawn: string[] = []
+    const hook = (name: string, point: "afterTool" | "stop", fingerprint: string) => ({ name, point, state: "awaiting_approval", command: "bun fmt", tools: null, paths: null, timeoutSeconds: 10, onError: "refuse", sandbox: true, origin: "project", file: "/w/config.json", fingerprint, error: null, question: "?" })
+    const hooks = { sessionId: "s", available: true, maxStopRounds: 2, ignored: [], hooks: [hook("fmt", "afterTool", "h1"), hook("tidy", "stop", "h2")] } as unknown as HooksStateResult
+    const lsp: LspStateResult = { sessionId: "s", available: true, off: null, waitMs: 1500, servers: [{ name: "pyright", state: "awaiting_approval", command: "pyright --stdio", argv: ["pyright", "--stdio"], languages: [], processes: [], error: null, origin: "project", file: "/w/config.json", question: { fingerprint: "l1", subject: "pyright --stdio", details: [] } }] }
+    const mcp: McpStateResult = { sessionId: "s", available: true, servers: [server("awaiting_approval", "project")] }
+    const session = { id: "ses_x", hooks: async () => hooks, lsp: async () => lsp, mcp: async () => mcp } as unknown as Session
+    const watch = new FeatureWatch(session, { out: { lines: () => {}, notice: (text) => void said.push(text) }, ask: null }, { attended: false, secrets: false, draw: (item) => void drawn.push(item.type === "diagnostic" ? item.message : item.type) })
+    const diagnostic = (kind: "hooks" | "lsp" | "mcp" | "skills", message: string) => ({ type: "diagnostic", sessionId: "ses_x", kind, message }) as never
+    // What the engine says before the first look is held: it may be about what the sentence covers.
+    expect(watch.takes(diagnostic("hooks", 'This project\'s configuration asks to run the hook "fmt" after a tool call (bun fmt). It is not run: a hook a project names runs only after you approve it.'))).toBe(true)
+    expect(watch.takes(diagnostic("hooks", 'The hook "mine" could not answer: it exited with code 7.'))).toBe(true)
+    expect(watch.takes(diagnostic("skills", "A skill could not be loaded."))).toBe(false)
+    await watch.beforeMessage()
+    expect(said).toEqual([`not run: 2 hooks, 1 language server and 1 MCP server that this project's configuration names and you have not approved. To approve them, run \`${brand.binary}\` in this directory and answer the questions it asks; the approval is remembered for this project.`])
+    // Only the line about something else is drawn after all.
+    expect(drawn).toEqual(['The hook "mine" could not answer: it exited with code 7.'])
+    // From here on each is decided as it comes, and nothing is said twice.
+    expect(watch.takes(diagnostic("mcp", 'This project\'s configuration names the MCP server "issues" (bun server.ts). It was not started: a server a project names runs only after you approve it.'))).toBe(true)
+    expect(watch.takes(diagnostic("lsp", 'The language server "gopls" crashed.'))).toBe(false)
+    await watch.finish()
+    expect(said).toHaveLength(1)
   })
 })
 

@@ -425,7 +425,11 @@ describe("quoted program messages", () => {
     { page: "docs/hooks.md", quote: 'refused: the hook "<name>" must allow it and could not answer (...)', pieces: ["refused: the hook ", " must allow it and could not answer ("] },
     { page: "docs/hooks.md", quote: 'The call went on without its answer, since the hook says `onError: "allow"`.', pieces: ['The call went on without its answer, since the hook says `onError: "allow"`.'] },
     { page: "docs/hooks.md", quote: '⚠ ended with the stop hook "<name>" unsatisfied', pieces: ["ended with ", "the stop hook ", " unsatisfied"] },
-    { page: "docs/hooks.md", quote: 'Approving the hook "<name>" needs someone at the terminal: ', pieces: ["Approving ", " needs someone at the terminal: "] },
+    {
+      page: "docs/hooks.md",
+      quote: "not run: 1 hook that this project's configuration names and you have not approved.",
+      pieces: ["not run: ", '"hook"', " that this project's configuration names and you have not approved. To approve "],
+    },
     { page: "docs/hooks.md", quote: 'note from the hook "no-todo", added to the result: ', pieces: ["note from the hook ", ", added to the result: "] },
     {
       page: "docs/hooks.md",
@@ -493,7 +497,11 @@ describe("quoted program messages", () => {
     },
     { page: "docs/diagnostics.md", quote: "... and 27 more new diagnostics not listed.", pieces: ["... and ", " more new ", "diagnostics", " not listed."] },
     { page: "docs/diagnostics.md", quote: "after this edit: 1 new error, 1 new warning]", pieces: ["after this edit: ", "new "] },
-    { page: "docs/diagnostics.md", quote: 'Approving the language server "<name>" needs someone at the terminal: ', pieces: ["Approving ", " needs someone at the terminal: "] },
+    {
+      page: "docs/diagnostics.md",
+      quote: "not run: 1 language server that this project's configuration names and you have not approved.",
+      pieces: ["not run: ", '"language server"', " that this project's configuration names and you have not approved. To approve "],
+    },
     {
       page: "docs/diagnostics.md",
       quote: '· language server: The language server "<name>" did not give diagnostics within 1500 ms of an edit, so the edit got none. This is said once; it may keep happening if the server is slow.',

@@ -497,13 +497,13 @@ describe("quoted program messages", () => {
       pieces: ["MCP servers connected to this session and their tools. Find a tool and its input schema with mcp_search, then call it with mcp_call (server and tool as shown here). The names and descriptions come from the servers."],
     },
     { page: "docs/mcp.md", quote: "Invalid arguments for <server>/<tool> (not sent):", pieces: ["Invalid arguments for ", " (not sent):"] },
+    { page: "docs/mcp.md", quote: "waiting for your approval: not started", pieces: ["waiting for your approval: not started"] },
+    { page: "docs/mcp.md", quote: 'approved: "tracker" starts now; the agent has its tools from your next message.', pieces: ["approved: ", " starts now; the agent has its tools from your next message."] },
     {
       page: "docs/mcp.md",
-      quote: "not looked at yet: a project's server is asked about once the first message is sent",
-      pieces: ["not looked at yet: a project's server is asked about once the first message is sent"],
+      quote: "not run: 1 MCP server that this project's configuration names and you have not approved.",
+      pieces: ["not run: ", "MCP server", " that this project's configuration names and you have not approved. To approve "],
     },
-    { page: "docs/mcp.md", quote: 'approved: "tracker" starts now; the agent has its tools from your next message.', pieces: ["approved: ", " starts now; the agent has its tools from your next message."] },
-    { page: "docs/mcp.md", quote: 'MCP server "<name>" was not started: ', pieces: ["MCP server ", " was not started: "] },
     {
       page: "docs/mcp.md",
       quote: "Approving it is remembered for this project for 30 days, for exactly this definition of the server.",

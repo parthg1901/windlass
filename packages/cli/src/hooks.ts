@@ -95,13 +95,6 @@ export function hookQuestionLines(hook: HookInfo): Line[] {
   ]
 }
 
-/** In a run with nobody to ask: how to approve the project's hooks that were skipped (the engine said that they were). */
-export function hooksUnattendedText(hooks: readonly HookInfo[]): string {
-  const names = [...new Set(hooks.map((hook) => hook.name))]
-  const one = names.length === 1
-  return `Approving ${one ? `the hook "${names[0]}"` : `these hooks (${names.join(", ")})`} needs someone at the terminal: run \`${brand.binary}\` in this directory and answer the ${one ? "question" : "questions"} it asks (or type /hooks approve ${one ? names[0] : "<name>"}). The approval is remembered for this project; until then ${one ? "the hook is" : "they are"} skipped.`
-}
-
 // ---------------------------------------------------------------- /lsp
 
 /** A language server's state in a few words. */
@@ -168,13 +161,6 @@ export function lspQuestionLines(server: LspServerInfo): Line[] {
     line(`y  ${LSP_ALLOW}`, "dim", 2),
     line(`n  ${lspNotNow(server)}`, "dim", 2),
   ]
-}
-
-/** In a run with nobody to ask: how to approve the project's language servers that were not started (the engine said that they were not). */
-export function lspUnattendedText(servers: readonly LspServerInfo[]): string {
-  const names = servers.map((server) => server.name)
-  const one = names.length === 1
-  return `Approving ${one ? `the language server "${names[0]}"` : `these language servers (${names.join(", ")})`} needs someone at the terminal: run \`${brand.binary}\` in this directory and answer the ${one ? "question" : "questions"} it asks (or type /lsp approve ${one ? names[0] : "<name>"}). The approval is remembered for this project; until then edits get no diagnostics from ${one ? "it" : "them"}.`
 }
 
 // ---------------------------------------------------------------- what a hook did
