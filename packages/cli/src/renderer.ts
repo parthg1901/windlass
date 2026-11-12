@@ -1428,7 +1428,7 @@ export interface JsonSummary {
   readonly cachedShare: number | null
 }
 
-/** Every event as one JSON line, then a `cli.summary` line after each turn, and nothing else on stdout. */
+/** Every event as one JSON line, then a `cli.summary` line after each turn, a `cli.notice` line where the CLI has one, and nothing else on stdout. */
 export class JsonSink implements Sink {
   private turn: { start: number; steps: number; summaryCalls: number; usage: Usage | null } | null = null
 
@@ -1510,6 +1510,11 @@ export class JsonSink implements Sink {
 
   notice(text: string): void {
     this.writeError(`${brand.binary}: ${text}\n`)
+  }
+
+  /** A line of the CLI's own on stdout (`cli.notice`): one JSON object, like the events. */
+  line(value: { readonly type: `cli.${string}` }): void {
+    this.write(`${JSON.stringify(value)}\n`)
   }
 
   interruptRequested(): void {

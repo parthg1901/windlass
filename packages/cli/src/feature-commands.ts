@@ -186,6 +186,77 @@ async function askLspServer(server: LspServerInfo, session: Session, io: Feature
   return approved
 }
 
+/** The wake-up a settled call created (`wake_create`'s `display.wake`), by its ID; `null` for any other event. */
+export function createdWake(event: EngineEvent): string | null {
+  if (event.type !== "tool.settled" || event.data.outcome !== "success") return null
+  const wake = (event.data.display as { wake?: { action?: unknown; id?: unknown } } | null)?.wake
+  return wake?.action === "create" && typeof wake.id === "string" ? wake.id : null
+}
+
+/**
+ * What to say about a wake-up that was created where nothing fires
+ * wake-ups (a one-prompt run ends with its turn): that it will not fire
+ * here, and where it will. `null` when this process fires them, or the
+ * engine cannot say.
+ */
+export async function wakeNotFiring(session: Session, id: string): Promise<string | null> {
+  if (session.wakeups === undefined) return null
+  const list = await session.wakeups().catch(() => null)
+  if (list === null || !list.available || list.running) return null
+  const wake = list.wakeups.find((candidate) => candidate.id === id)
+  return wakeNotFiringText({ id, description: wake?.description ?? null }, session.id)
+}
+
+/**
+ * `--json`: the one thing of what the CLI says unasked that a script has no
+ * event for. A wake-up created in a run that fires none gets a line of the
+ * CLI's own (`cli.notice`, kind `wake_not_firing`) after the call that
+ * created it, with the sentence the pretty output prints.
+ */
+export class JsonNotices {
+  private readonly work = new Set<Promise<unknown>>()
+
+  constructor(
+    private readonly session: Session,
+    private readonly write: (notice: JsonNotice) => void,
+  ) {}
+
+  event(event: EngineEvent): void {
+    const id = createdWake(event)
+    if (id === null) return
+    const told = wakeNotFiring(this.session, id).then(
+      (message) => {
+        if (message !== null) this.write({ type: "cli.notice", kind: "wake_not_firing", sessionId: this.session.id, wakeId: id, message })
+      },
+      () => {},
+    )
+    this.work.add(told)
+    void told.finally(() => this.work.delete(told))
+  }
+
+  /** Resolves once every notice owed has been written. */
+  async finish(): Promise<void> {
+    while (this.work.size > 0) await Promise.allSettled([...this.work])
+  }
+
+  stop(): void {}
+}
+
+/**
+ * The CLI's own line in `--json` mode about something a script should know
+ * and no engine event says. Not an engine event: its type is the CLI's, and
+ * it is never stored.
+ */
+export interface JsonNotice {
+  readonly type: "cli.notice"
+  /** `wake_not_firing`: a wake-up was created in a run that fires none; it fires in the next process that runs the scheduler. */
+  readonly kind: "wake_not_firing"
+  readonly sessionId: string
+  readonly wakeId: string
+  /** The sentence the pretty output prints. */
+  readonly message: string
+}
+
 /**
  * What the CLI says about the features unasked, while a session is open.
  * `attended`: a person is at the prompt, so a project's server is asked
@@ -257,10 +328,8 @@ export class FeatureWatch {
     // So for a hook or a language server it did not run: asked about at once, or said how to approve.
     if (event.type === "diagnostic" && event.kind === "hooks" && this.session.hooks !== undefined) this.track(this.session.hooks().then((state) => this.hooks(state)))
     if (event.type === "diagnostic" && event.kind === "lsp" && this.session.lsp !== undefined) this.track(this.session.lsp().then((state) => this.lsp(state)))
-    if (event.type === "tool.settled" && event.data.outcome === "success") {
-      const wake = (event.data.display as { wake?: { action?: unknown; id?: unknown } } | null)?.wake
-      if (wake?.action === "create" && typeof wake.id === "string") this.track(this.created(wake.id))
-    }
+    const wake = createdWake(event)
+    if (wake !== null) this.track(this.created(wake))
   }
 
   /** A note `/remember` could not save yet: kept until the session's first turn has started. */
@@ -307,11 +376,8 @@ export class FeatureWatch {
 
   /** A wake-up created where nothing fires wake-ups (a one-prompt run): said once, with where it will fire. */
   private async notFiring(id: string): Promise<void> {
-    if (this.session.wakeups === undefined) return
-    const list = await this.session.wakeups().catch(() => null)
-    if (list === null || !list.available || list.running) return
-    const wake = list.wakeups.find((candidate) => candidate.id === id)
-    this.io.out.notice(wakeNotFiringText({ id, description: wake?.description ?? null }, this.session.id), "warn")
+    const text = await wakeNotFiring(this.session, id)
+    if (text !== null) this.io.out.notice(text, "warn")
   }
 
   private mcp(state: McpStateResult): void {

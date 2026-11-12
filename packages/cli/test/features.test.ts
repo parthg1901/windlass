@@ -355,6 +355,24 @@ describe("a wake-up created where none fires", () => {
     )
   })
 
+  test("--json has a line of the CLI's own for it, after the call that created the wake-up", async () => {
+    const cwd = workspace()
+    const provider = new FakeProvider([[script.toolCall("call_1", "wake_create", { trigger: "after", seconds: 3600, message: "Look at the build again." })], [script.text("I will remind you in an hour.")]])
+    const run = await runCli(["--cwd", cwd, "--json", "remind me in an hour"], { engine: engineFor(provider, join(root, `data-json-${count}`)), env: { NO_COLOR: "1" } })
+    expect(run.code).toBe(0)
+    const lines = run.out.split("\n").filter((line) => line !== "").map((line) => JSON.parse(line) as { type: string; kind?: string; sessionId?: string; wakeId?: string; message?: string; data?: { name?: string; display?: { wake?: { id?: string } } } })
+    const notices = lines.filter((line) => line.type === "cli.notice")
+    expect(notices).toHaveLength(1)
+    const created = lines.find((line) => line.type === "tool.settled")!
+    const id = created.data!.display!.wake!.id!
+    expect(notices[0]).toMatchObject({ kind: "wake_not_firing", sessionId: lines[0]!.sessionId, wakeId: id })
+    expect(notices[0]!.message).toStartWith(`Wake-up ${id} (after 1h (at `)
+    expect(notices[0]!.message).toContain("was created, but this run does not fire wake-ups: it ends with its turn.")
+    // After the call that created it, and nothing of it on standard error: the stream alone tells a script.
+    expect(lines.findIndex((line) => line.type === "cli.notice")).toBeGreaterThan(lines.indexOf(created))
+    expect(run.err).toBe("")
+  })
+
   test("a run that fires wake-ups says nothing about it", async () => {
     const { watch, said } = watching(true)
     watch.event(created("w_1"))

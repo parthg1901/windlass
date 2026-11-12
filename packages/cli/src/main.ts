@@ -20,7 +20,7 @@ import { agentLines, compactText, taskLines, tasksProgress } from "./agents.ts"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
 import { type Line, recapLines } from "./features.ts"
-import { type FeatureCommand, type FeatureIo, FeatureWatch, runFeatureCommand } from "./feature-commands.ts"
+import { type FeatureCommand, type FeatureIo, FeatureWatch, JsonNotices, runFeatureCommand } from "./feature-commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
 import {
   type ApprovalRequest,
@@ -220,6 +220,8 @@ export async function run(io: Io): Promise<number> {
   const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
   watching = watch
   watch?.start()
+  // In `--json` the one thing of it a script has no event for is a line of the CLI's own.
+  const notices = sink instanceof JsonSink ? new JsonNotices(session, (notice) => sink.line(notice)) : null
   const terminal = early
   const leaving = new Deferred<number>()
   const control = { running: false, lastInterrupt: 0, leaving: false }
@@ -246,7 +248,7 @@ export async function run(io: Io): Promise<number> {
     sink.interruptRequested()
   }
 
-  const turns = new TurnWatcher(session, sink, watch)
+  const turns = new TurnWatcher(session, sink, watch ?? notices)
   const turn = async (entry: Entry): Promise<TurnOutcome | "closed" | "not_sent"> => {
     control.running = true
     // What the project's configuration asks for and the user has not answered yet is asked before the message goes.
@@ -312,6 +314,7 @@ export async function run(io: Io): Promise<number> {
     }
     // What was started for the user (a secret fetched, a server's state said) is finished first, briefly.
     if (watch !== null) await within(CLOSE_TIMEOUT_MS, watch.finish())
+    if (notices !== null) await within(CLOSE_TIMEOUT_MS, notices.finish())
     watch?.stop()
     const closed = await within(CLOSE_TIMEOUT_MS, Promise.all([session.close(), turns.ended]))
     for (const off of unsubscribe) off?.()
@@ -820,7 +823,7 @@ class TurnWatcher {
   constructor(
     session: Session,
     sink: Sink,
-    private readonly watch: FeatureWatch | null = null,
+    private readonly watch: Pick<FeatureWatch, "event"> | null = null,
   ) {
     this.ended = (async () => {
       for await (const item of session.events) this.observe(item, sink)

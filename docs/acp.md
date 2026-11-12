@@ -237,7 +237,7 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_windlass/wakeups`, `_windlass/wake_cancel`, `_windlass/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
 | `/memory`, `/remember`, `/forget`; a note written before the first message, kept and saved once the session has started | `_windlass/memory`, `_windlass/memory_change` (`deferred`), the `baseline.set` event |
 | A question about a project's hook, language server or MCP server put before a message is sent | `_windlass/hooks`, `_windlass/lsp`, `_windlass/mcp` read before `_windlass/steer`; the message goes after the answers |
-| The notice that a wake-up created in a one-prompt run will not fire there | `_windlass/wakeups` (`running: false`) after the `tool.settled` of `wake_create` |
+| The notice that a wake-up created in a one-prompt run will not fire there (in `--json`: a line of the CLI's own, `{ type: "cli.notice", kind: "wake_not_firing", sessionId, wakeId, message }`) | `_windlass/wakeups` (`running: false`) after the `tool.settled` of `wake_create` |
 | `/name args` of a command file, its line in the transcript, the command files in `/help` and the palette | `_windlass/commands` (with the client's own commands as `builtins`), `_windlass/send_command`; the `command.expanded` event |
 | `/approval [ask\|auto\|full]` | `session/set_config_option` `approval`, then `_windlass/approval` for the mode in force |
 | `/diff` | `_windlass/diff` for the latest turn |
