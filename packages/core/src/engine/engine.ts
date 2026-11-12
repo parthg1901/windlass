@@ -1473,6 +1473,10 @@ class LiveSession implements EngineSession {
         this.changeSettings(settings)
       }
 
+      // A replay that left its recording and then had to stop (a call its policy does not run) ends here.
+      const replayed = this.director?.replay
+      if (replayed !== undefined && (replayed.status === "stopped" || replayed.status === "incomplete")) return this.endReplayRun(run, replayed.report().reason)
+
       const before = this.projection()
       const latest = latestSpoken(before)
       if (latest?.kind === "assistant" && latest.status === "failed") {
