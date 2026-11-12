@@ -1,0 +1,6 @@
+function formatStat(2)
+function mean(1)
+function range(1)
+function stddev(1)
+function sum(1)
+function variance(1)

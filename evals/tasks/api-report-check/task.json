@@ -1,0 +1,8 @@
+{
+  "id": "api-report-check",
+  "title": "Add a function; the project's API-report check fails until the report is updated",
+  "prompt": "Add a median(values) function to the stats library, exported like the others. For an even number of values it's the mean of the two middle ones.",
+  "tags": ["feature", "project-config", "checks", "verification"],
+  "timeoutSeconds": 360,
+  "maxSteps": 18
+}

@@ -1,0 +1,22 @@
+import { expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
+import { join } from "node:path"
+import { dumpSchema, freshDatabase, migrateUp, readMigrations } from "./migrate.ts"
+
+const dir = join(import.meta.dir, "../migrations")
+
+test("schema.sql is what the migrations produce", async () => {
+  expect(dumpSchema(freshDatabase(dir))).toBe(await Bun.file(join(import.meta.dir, "../schema.sql")).text())
+})
+
+test("every migration's down undoes its up", () => {
+  const migrations = readMigrations(dir)
+  for (let index = 0; index < migrations.length; index += 1) {
+    const db = new Database(":memory:")
+    migrateUp(db, migrations.slice(0, index))
+    const before = dumpSchema(db)
+    db.exec(migrations[index]!.up)
+    db.exec(migrations[index]!.down)
+    expect(dumpSchema(db)).toBe(before)
+  }
+})

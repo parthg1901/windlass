@@ -1,0 +1,8 @@
+{
+  "id": "nested-agents-md",
+  "title": "The same helper in two packages, where a nested AGENTS.md makes the right shape different in one",
+  "prompt": "Both the server and the edge agent read a port from an env var and each does it slightly wrong. Add a parsePort(text) helper to each package's src/config.ts and use it there: it accepts a whole number from 1 to 65535 (surrounding whitespace is fine) and rejects anything else.",
+  "tags": ["agents-md", "conventions", "monorepo", "multi-file"],
+  "timeoutSeconds": 360,
+  "maxSteps": 18
+}

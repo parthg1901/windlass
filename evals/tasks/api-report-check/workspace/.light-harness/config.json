@@ -1,0 +1,6 @@
+{
+  "checks": [
+    { "name": "tests", "command": "bun test", "timeoutSeconds": 120 },
+    { "name": "api-report", "command": "bun scripts/api-check.ts", "timeoutSeconds": 60 }
+  ]
+}

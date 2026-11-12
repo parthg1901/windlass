@@ -1,0 +1,13 @@
+import { expect, test } from "bun:test"
+import { loadConfig, parseHeartbeat } from "./config.ts"
+
+test("defaults", () => {
+  expect(loadConfig({})).toEqual({ port: 7070, heartbeatSeconds: 30, warnings: [] })
+})
+
+test("a bad heartbeat falls back with a warning", () => {
+  const config = loadConfig({ EDGE_HEARTBEAT: "1" })
+  expect(config.heartbeatSeconds).toBe(30)
+  expect(config.warnings).toHaveLength(1)
+  expect(parseHeartbeat("60")).toEqual({ ok: true, value: 60 })
+})

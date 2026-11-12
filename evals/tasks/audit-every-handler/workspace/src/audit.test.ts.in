@@ -1,0 +1,29 @@
+import { beforeEach, expect, test } from "bun:test"
+import { auditLog, clearAuditLog } from "./audit.ts"
+import { createDb } from "./db.ts"
+import { archiveInvoice, createInvoice, getInvoice } from "./handlers/invoices.ts"
+
+beforeEach(clearAuditLog)
+
+test("creating an invoice is audited", () => {
+  const db = createDb()
+  const invoice = createInvoice(db, { number: "INV-1" })
+  expect(auditLog.map((entry) => [entry.action, entry.id])).toEqual([["invoice.create", invoice.id]])
+})
+
+test("reads are not audited", () => {
+  const db = createDb()
+  const invoice = createInvoice(db, { number: "INV-2" })
+  clearAuditLog()
+  getInvoice(db, invoice.id)
+  expect(auditLog).toEqual([])
+})
+
+test("archiving twice audits once", () => {
+  const db = createDb()
+  const invoice = createInvoice(db, { number: "INV-3" })
+  clearAuditLog()
+  archiveInvoice(db, invoice.id)
+  archiveInvoice(db, invoice.id)
+  expect(auditLog.map((entry) => entry.action)).toEqual(["invoice.archive"])
+})

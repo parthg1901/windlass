@@ -1,0 +1,9 @@
+{
+  "id": "audit-every-handler",
+  "title": "Apply a documented rule to every handler in six long files; run with a lowered context window so it compacts",
+  "prompt": "Compliance needs every change to stored data in the audit trail, docs/audit.md has the rule. A bunch of handlers in src/handlers/ still don't call audit, please go through all of them and fix that. Don't change anything else about how they behave.",
+  "tags": ["multi-file", "long", "compaction", "conventions"],
+  "timeoutSeconds": 900,
+  "maxSteps": 45,
+  "run": { "contextWindow": 20000 }
+}
