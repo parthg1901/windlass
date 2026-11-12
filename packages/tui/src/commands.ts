@@ -1,5 +1,8 @@
 /** The slash commands, and completion for a partly typed one: the interface's own, then the user's and the project's command files. */
 import type { CommandsResult } from "@windlass/acp/extensions"
+import { truncate, width } from "./layout.ts"
+import { shorten } from "./panel.ts"
+import { type Span, span } from "./theme.ts"
 
 export interface CommandSpec {
   readonly name: string
@@ -42,6 +45,33 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "help", args: "", description: "keys and commands" },
   { name: "quit", args: "", description: "leave (running work stops as a shutdown and resumes later)", aliases: ["exit"] },
 ]
+
+/** The most commands the palette lists at once; the rest scroll with the selection, and its last row counts them. */
+export const PALETTE_ROWS = 6
+
+/**
+ * The palette under the input: the commands around the chosen one, their names (with what follows a name) in one
+ * column and what each does in the next, cut at a word where the row ends; then one row with where the selection
+ * is among them all and what the keys do, so that a list longer than its rows does not look like the whole of it.
+ */
+export function paletteLines(palette: readonly CommandSpec[], index: number, columns: number): Span[][] {
+  const from = Math.max(0, Math.min(index - 2, palette.length - PALETTE_ROWS))
+  const shown = palette.slice(from, from + PALETTE_ROWS)
+  const head = (spec: CommandSpec) => `/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`
+  // A name with long arguments does not push every description to the right: it runs past the column by itself.
+  const column = Math.min(Math.max(...shown.map((spec) => width(head(spec)))), Math.max(12, Math.floor(columns / 4)))
+  const lines = shown.map((spec) => {
+    const chosen = spec === palette[index]
+    const pad = " ".repeat(Math.max(0, column - width(head(spec))))
+    const room = columns - 2 - Math.max(column, width(head(spec))) - 2
+    return [span(chosen ? "› " : "  ", "accent"), span(`/${spec.name}`, chosen ? "selected" : "accent"), span(spec.args === "" ? "" : ` ${spec.args}`, "dim"), span(`${pad}  ${room < 8 ? "" : shorten(spec.description, room)}`, "dim")]
+  })
+  const where = palette.length > shown.length ? `${index + 1} of ${palette.length} · ` : ""
+  const long = `  ${where}↑↓ choose · Tab completes · Enter runs it · Esc closes the list`
+  const short = `  ${where}↑↓ Tab Enter Esc`
+  lines.push([span(width(long) <= columns ? long : truncate(short, columns), "dim")])
+  return lines
+}
 
 export interface ParsedCommand {
   readonly spec: CommandSpec | null

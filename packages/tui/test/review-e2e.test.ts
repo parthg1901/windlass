@@ -85,7 +85,7 @@ test("a turn that edits two files is reviewed: a comment on a removed and on an 
 
   // /review: the latest turn, the cursor on its first changed line.
   term.type("/review")
-  await term.waitFor("/review  review the selected turn")
+  await term.waitFor(/\/review\s+review the selected turn/)
   term.keys("Enter")
   let frame = await term.waitFor("Review of turn 1 · no comments yet · 2 files · +3 -1")
   expect(frame).toContain("▸ README.md · +1 -1")

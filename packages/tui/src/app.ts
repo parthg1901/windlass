@@ -20,7 +20,7 @@ import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, Textare
 import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
-import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
+import { CLIENT_COMMANDS, COMMANDS, PALETTE_ROWS, type CommandSpec, complete, fileCommands, findFileCommand, paletteLines, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
 import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { CHANGED_DURING_COMMAND, hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
@@ -1927,7 +1927,7 @@ export class App {
     const maxRows = Math.max(1, Math.min(MAX_INPUT_ROWS, Math.floor(this.renderer.height / 3)))
     this.inputRow.height = Math.max(1, Math.min(maxRows, rows))
     const palette = this.palette()
-    this.hints.height = palette.length === 0 ? 1 : Math.min(palette.length, 6)
+    this.hints.height = palette.length === 0 ? 1 : Math.min(palette.length, PALETTE_ROWS) + 1
     const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock : null
     if (dock?.feature !== undefined) this.printWholeCommand(dock.feature.id, dock.state)
     this.dockView.visible = dock !== null
@@ -2008,14 +2008,7 @@ export class App {
 
   private hintLines(columns: number): Span[][] {
     const palette = this.palette()
-    if (palette.length > 0) {
-      const index = this.paletteIndex % palette.length
-      const shown = palette.slice(Math.max(0, Math.min(index - 2, palette.length - 6)), Math.max(0, Math.min(index - 2, palette.length - 6)) + 6)
-      return shown.map((spec) => {
-        const chosen = spec === palette[index]
-        return [span(chosen ? "› " : "  ", "accent"), span(`/${spec.name}`, chosen ? "selected" : "accent"), span(spec.args === "" ? "" : ` ${spec.args}`, "dim"), span(`  ${spec.description}`, "dim")]
-      })
-    }
+    if (palette.length > 0) return paletteLines(palette, this.paletteIndex % palette.length, columns)
     const running = this.transcript.activity.executing
     // A running tool call can be stopped by itself: said while there is one the key would act on.
     const stoppable = running && this.session?.cancelCall !== undefined ? this.stoppable() : null
