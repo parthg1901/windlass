@@ -1,0 +1,14 @@
+import { expect, test } from "bun:test"
+import { join } from "node:path"
+import { parseStatement } from "./csv.ts"
+import { largest, totalsLine } from "./report.ts"
+
+const january = parseStatement(await Bun.file(join(import.meta.dir, "../fixtures/january.csv")).text())
+
+test("the totals line for January", () => {
+  expect(totalsLine(january)).toBe("Total: 2,286.40 (5 transactions)")
+})
+
+test("the largest transaction in January", () => {
+  expect(largest(january)?.description).toBe("Office chairs, two")
+})

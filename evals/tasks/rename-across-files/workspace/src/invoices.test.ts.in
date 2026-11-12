@@ -1,0 +1,28 @@
+import { expect, test } from "bun:test"
+import { createInvoice, invoicesFor, totalByUser } from "./invoices.ts"
+import { remindersDue } from "./reminders.ts"
+import { invoiceLine } from "./report.ts"
+
+const a = createInvoice("usr_ada", [{ description: "Pro plan", amount: 2900 }], "2026-01-03")
+const b = createInvoice("usr_bob", [{ description: "Team plan", amount: 9900 }, { description: "Seats", amount: 1500 }], "2026-01-04")
+const c = createInvoice("usr_ada", [{ description: "Storage", amount: 500 }], "2026-02-01")
+
+test("invoices belong to a user", () => {
+  expect(a.userId).toBe("usr_ada")
+  expect(invoicesFor([a, b, c], "usr_ada").map((invoice) => invoice.id)).toEqual([a.id, c.id])
+})
+
+test("totals per user", () => {
+  expect(totalByUser([a, b, c])).toEqual({ usr_ada: 3400, usr_bob: 11400 })
+})
+
+test("reminders go to users with old unpaid invoices", () => {
+  expect(remindersDue([a, b, c], "2026-01-31")).toEqual([
+    { to: "usr_bob", invoices: [b.id], owed: 11400 },
+    { to: "usr_ada", invoices: [a.id], owed: 2900 },
+  ])
+})
+
+test("the report line names the user", () => {
+  expect(invoiceLine(a)).toContain("usr_ada")
+})

@@ -1,0 +1,10 @@
+# Nightly pipeline for the stock data repository.
+stages:
+  - name: lint
+    run: python3 -m pyflakes tools/
+    allow_failure: true
+  - name: validate
+    run: python3 tools/validate.py --profile ci data/
+  - name: publish
+    run: ./publish.sh data/
+    only: main

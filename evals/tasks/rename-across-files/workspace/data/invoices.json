@@ -1,0 +1,26 @@
+[
+  {
+    "id": "inv_0901",
+    "userId": "usr_kim",
+    "issuedAt": "2025-11-02",
+    "paid": true,
+    "lines": [{ "description": "Pro plan", "amount": 2900 }]
+  },
+  {
+    "id": "inv_0902",
+    "userId": "usr_lee",
+    "issuedAt": "2025-11-05",
+    "paid": false,
+    "lines": [
+      { "description": "Team plan", "amount": 9900 },
+      { "description": "Extra seats", "amount": 3000 }
+    ]
+  },
+  {
+    "id": "inv_0903",
+    "userId": "usr_kim",
+    "issuedAt": "2025-12-02",
+    "paid": false,
+    "lines": [{ "description": "Pro plan", "amount": 2900 }]
+  }
+]

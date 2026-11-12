@@ -1,0 +1,11 @@
+import { expect, test } from "bun:test"
+import { parseAmount, parseStatement } from "./csv.ts"
+
+test("amounts are read as cents", () => {
+  expect(parseAmount("12.50")).toBe(1250)
+  expect(parseAmount("-3.10")).toBe(-310)
+})
+
+test("a simple statement", () => {
+  expect(parseStatement("date,description,amount\n2026-01-02,Rent,-950.00\n")).toEqual([{ date: "2026-01-02", description: "Rent", amount: -95000 }])
+})

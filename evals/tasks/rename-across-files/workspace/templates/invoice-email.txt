@@ -1,0 +1,6 @@
+Subject: Invoice {{id}}
+
+Hello,
+
+invoice {{id}} for account {{userId}} was issued on {{issuedAt}}.
+You can pay it from the billing page.

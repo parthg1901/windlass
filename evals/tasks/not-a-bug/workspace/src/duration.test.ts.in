@@ -1,0 +1,16 @@
+import { expect, test } from "bun:test"
+import { formatDuration, parseDuration } from "./duration.ts"
+
+test("single units", () => {
+  expect(parseDuration("90s")).toBe(90)
+  expect(parseDuration("15m")).toBe(900)
+  expect(parseDuration("2d")).toBe(172_800)
+})
+
+test("bare numbers are seconds", () => {
+  expect(parseDuration("45")).toBe(45)
+})
+
+test("round trip", () => {
+  expect(formatDuration(parseDuration("2h5m"))).toBe("2h5m")
+})

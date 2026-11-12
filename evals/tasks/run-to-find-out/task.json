@@ -1,0 +1,9 @@
+{
+  "id": "run-to-find-out",
+  "title": "List every record CI rejects: the validator stops at the first, and the answer needs running it",
+  "prompt": "CI is red on the stock data. tools/validate.py stops at the first bad record and I need the full list. Write the IDs of every record CI would reject to rejected.txt, one per line. Don't fix or touch the data, I'll take that up with the warehouse.",
+  "tags": ["investigate", "python", "run-to-check", "data"],
+  "timeoutSeconds": 360,
+  "maxSteps": 18,
+  "setup": ["python3", "tools/gen_fixture.py"]
+}

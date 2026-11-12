@@ -1,0 +1,8 @@
+{
+  "id": "test-blames-wrong-file",
+  "title": "A failing report test whose cause is in the CSV parser, not the report or the money formatting",
+  "prompt": "bun test is failing in report.test.ts, the totals line for the January statement comes out wrong. The test and the statement file are right. Can you fix it?",
+  "tags": ["fix", "debugging", "misdirection", "unit-test"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

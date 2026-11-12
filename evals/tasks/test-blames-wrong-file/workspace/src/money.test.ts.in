@@ -1,0 +1,9 @@
+import { expect, test } from "bun:test"
+import { formatMoney } from "./money.ts"
+
+test("formats cents with thousands separators", () => {
+  expect(formatMoney(123450)).toBe("1,234.50")
+  expect(formatMoney(5)).toBe("0.05")
+  expect(formatMoney(-9900)).toBe("-99.00")
+  expect(formatMoney(100000000)).toBe("1,000,000.00")
+})

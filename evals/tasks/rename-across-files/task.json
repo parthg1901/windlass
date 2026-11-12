@@ -1,0 +1,8 @@
+{
+  "id": "rename-across-files",
+  "title": "Rename a field across types, functions, a report and tests, keeping old stored data loadable",
+  "prompt": "We're renaming users to accounts. In the billing code, rename userId to accountId everywhere: the Invoice type, the functions and their parameters, the report, the reminders, the tests. The stored invoices in data/invoices.json were written with userId and we are not migrating that file, so loading it has to keep working; anything we save from now on should use accountId.",
+  "tags": ["refactor", "rename", "multi-file", "compatibility"],
+  "timeoutSeconds": 420,
+  "maxSteps": 25
+}

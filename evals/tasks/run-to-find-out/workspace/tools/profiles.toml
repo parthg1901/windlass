@@ -1,0 +1,12 @@
+# Validation profiles. Every profile extends "default".
+
+[default]
+max_qty = 9999
+require_location = false
+forbidden_prefixes = []
+
+[ci]
+# Single-pallet limit for the nightly import, and every record must say where it is.
+max_qty = 500
+require_location = true
+forbidden_prefixes = ["TMP"]

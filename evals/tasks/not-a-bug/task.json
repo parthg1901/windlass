@@ -1,0 +1,13 @@
+{
+  "id": "not-a-bug",
+  "title": "A reported bug that is not in this version: change nothing and explain why",
+  "prompt": "Support forwarded tickets/T-311.md: a customer says parseDuration(\"1h30m\") gives them 90 instead of 5400. Please check it and fix it if it's broken. If our code turns out to be fine, write an explanation I can forward to the customer in ANSWER.md, and don't touch the code.",
+  "tags": [
+    "question",
+    "no-change",
+    "investigate",
+    "run-to-check"
+  ],
+  "timeoutSeconds": 300,
+  "maxSteps": 12
+}
