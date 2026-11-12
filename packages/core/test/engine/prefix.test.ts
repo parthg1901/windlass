@@ -9,7 +9,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
 import { script } from "../../src/testing/fake-provider.ts"
-import { Harness, removeHarnessDirectories } from "./harness.ts"
+import { FakeWorkspace, Harness, removeHarnessDirectories } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
 
@@ -140,6 +140,52 @@ describe("every step request extends the previous one except at a legitimate bre
       expect(comparePrefix(rows[0]!.blocks, rows[1]!.blocks)).toMatchObject({ extension: true })
       // The cache key is the session's root ID on every request.
       expect(h.provider.requests.map((request) => request.params.cacheKey)).toEqual([h.session.id, h.session.id])
+    } finally {
+      await h.dispose()
+    }
+  })
+})
+
+describe("verification and revert keep the prefix property", () => {
+  test("a check report is an appended message; a revert is a legitimate break; a revert that was undone is none", async () => {
+    const h = new Harness({ workspace: new FakeWorkspace({ "a.ts": "1\n" }), config: { checks: [{ name: "test", command: "bun test" }] } })
+    try {
+      const write = (content: string) => [script.toolCall("call_1", "write", { path: "a.ts", content }), usage]
+      const writes = (input: Record<string, unknown>) => {
+        h.workspace!.files.set(String(input.path), String(input.content))
+        return "Wrote a.ts"
+      }
+      h.tools.on("write", writes, writes)
+
+      // Turn 1: the checks fail, the report sends the model back, the second run passes. Four requests.
+      h.provider.enqueue(write("2\n"), answer("Done."), write("3\n"), answer("Fixed."))
+      h.checks.on("test", "failed", "passed")
+      h.create().send("Change a.ts.")
+      await h.settled()
+
+      // Turn 2 is reverted, and turn 3 is asked instead.
+      h.provider.enqueue(answer("Nothing more."), answer("Yes?"))
+      h.session.send("Anything else?")
+      await h.settled()
+      expect(await h.session.revert()).toMatchObject({ kind: "reverted" })
+      h.session.send("One question.")
+      await h.settled()
+
+      // Turn 3 is reverted and the revert undone: history is what it was, so turn 4's request extends turn 3's.
+      expect(await h.session.revert()).toMatchObject({ kind: "reverted" })
+      expect(await h.session.undoRevert()).toMatchObject({ kind: "reverted" })
+      h.provider.enqueue(answer("Go on."))
+      h.session.send("And another.")
+      await h.settled()
+
+      expect(verdicts(h)).toEqual(["first", "extension", "extension", "extension", "extension", "break:revert", "extension"])
+      // The report is where the third request grew: it is the last item, after the answer it responds to.
+      const third = h.provider.requests[2]!
+      expect(third.input.slice(0, h.provider.requests[1]!.input.length)).toEqual(h.provider.requests[1]!.input)
+      expect(JSON.stringify(third.input.at(-1))).toContain('<harness origin=\\"check_report\\">')
+      // The loop's own runtime check agreed: it reported nothing.
+      expect(h.diagnostics).toEqual([])
+      h.verify()
     } finally {
       await h.dispose()
     }
