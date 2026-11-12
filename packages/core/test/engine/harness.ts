@@ -19,6 +19,8 @@ import type { Clock } from "../../src/engine/clock.ts"
 import type { CompactionConfig } from "../../src/context/policy.ts"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { EngineLimits } from "../../src/engine/constants.ts"
+import type { HooksSetup } from "../../src/engine/hooks.ts"
+import type { LspSetup } from "../../src/engine/lsp.ts"
 import type { McpSetup } from "../../src/engine/mcp.ts"
 import type { MemorySetup } from "../../src/engine/memory.ts"
 import type { SkillsSetup } from "../../src/engine/skills.ts"
@@ -366,6 +368,10 @@ export interface HarnessOptions {
   readonly extraTools?: readonly AnyTool[]
   /** Agents. Without it the engine offers none, as in every scenario that is not about them. */
   readonly agents?: AgentsSetup
+  /** Hooks. Without it the engine runs none, whatever the configuration says. */
+  readonly hooks?: HooksSetup
+  /** Language-server diagnostics. Without it the engine starts no server. */
+  readonly lsp?: LspSetup
   /** The models the provider lists, with the efforts each accepts, for the tests about settings. Without it nothing is checked. */
   readonly models?: readonly (string | ModelOffer)[]
 }
@@ -477,6 +483,8 @@ export class Harness {
       ...(this.options.mcp === undefined ? {} : { mcp: this.options.mcp }),
       ...(this.options.wake === undefined ? {} : { wake: this.options.wake }),
       ...(this.options.memory === undefined ? {} : { memory: this.options.memory }),
+      ...(this.options.hooks === undefined ? {} : { commandHooks: this.options.hooks }),
+      ...(this.options.lsp === undefined ? {} : { lsp: this.options.lsp }),
       ...(this.options.exportSnapshot === undefined ? {} : { exportSnapshot: this.options.exportSnapshot }),
       ...(this.options.refreshAuth === undefined ? {} : { refreshAuth: this.options.refreshAuth }),
       hooks: { probe: (point) => [...this.probes].forEach((probe) => probe(point)) },

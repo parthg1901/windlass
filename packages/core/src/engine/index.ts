@@ -14,6 +14,8 @@ export {
 export { type ChildResult, type SpawnSettings, type SubagentInput, BACKGROUND_OUTPUT_TOOL, BACKGROUND_STOP_TOOL, SUBAGENT_TOOL, SUBAGENT_NOTE, childResult } from "./spawn.ts"
 export { type MergeOutcome } from "./worktree.ts"
 export { type McpServerPlan, type McpServerQuestion, type McpSetup, type McpState, MCP_START_WAIT_MS } from "./mcp.ts"
+export { type HookQuestion, type HooksSetup, type HooksState } from "./hooks.ts"
+export { type LspSetup, type LspState } from "./lsp.ts"
 export { type SkillsSetup } from "./skills.ts"
 export { type WakeApi, type WakeSetup } from "./wake.ts"
 export { type MemorySetup } from "./memory.ts"

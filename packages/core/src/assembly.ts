@@ -200,6 +200,10 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...(options.engine?.memory === undefined ? { memory: {} } : {}),
       // Agents: a session can start as one, switch to one, and run a subagent as one. `null` builds a harness without them.
       ...(options.engine?.agents === undefined ? { agents: {} } : {}),
+      // Hooks and language-server diagnostics: nothing of either exists for a session whose configuration names none
+      // (its requests are those of a harness without them). `null` builds a harness that never runs or starts any.
+      ...(options.engine?.commandHooks === undefined ? { commandHooks: {} } : {}),
+      ...(options.engine?.lsp === undefined ? { lsp: {} } : {}),
       store: sessions,
       provider,
       tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),

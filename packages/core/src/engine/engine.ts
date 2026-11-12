@@ -77,7 +77,9 @@ import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPro
 import { chooseTail } from "../context/tail.ts"
 import {
   type CompactionMode,
+  type DiagnosticsRecord,
   type EventData,
+  type HookEnding,
   type NewEvent,
   type ReplayPolicyKind,
   type WorktreeRecord,
@@ -94,11 +96,17 @@ import {
 } from "../event/durable.ts"
 import type { EphemeralEvent } from "../event/ephemeral.ts"
 import { type CallId, type ExecutionId, type MessageId, type RequestId, type SessionId, newId } from "../id.ts"
+import { NO_HOOKS, type HooksConfig } from "../hooks/config.ts"
+import { stopRoundsSent } from "../hooks/decide.ts"
+import { type HookPointContext, type HookRecord, type ToolCallInput, runAfterHooks, runBeforeHooks, runStopHooks } from "../hooks/points.ts"
+import { type HookRunner, createHookRunner } from "../hooks/run.ts"
 import { type DiscoveryInput, discoverSources } from "../instructions/discover.ts"
 import type { InstructionSource } from "../instructions/source.ts"
 import { type AppendedSource, detectAppendedChanges, instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
 import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonOf } from "../interrupt.ts"
 import type { Json } from "../json.ts"
+import type { LspPlan } from "../lsp/config.ts"
+import type { LspNotice } from "../lsp/registry.ts"
 import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
@@ -145,6 +153,8 @@ import {
   retryDelayMs,
 } from "./constants.ts"
 import { historyTools } from "./history.ts"
+import { type HooksSetup, type HooksState, approvedHooks, failedHookNotice, hasHooks, hookGrant, hookQuestions, hookRan, sessionHooks, skippedHookNotice } from "./hooks.ts"
+import { type HeldRegistry, LspHub, type LspSetup, type LspState, diagnosticsOf, lspGrant, offersDiagnostics, planLanguageServers, readDocument, servesFile } from "./lsp.ts"
 import { McpHub, type McpServerPlan, type McpSetup, type McpState, type SessionServers, catalogueAppended, engineMcpTools, planServers, serverGrant, serverQuestion, sessionServers } from "./mcp.ts"
 import { type MemorySetup, engineMemoryTools, memoryOutcome, memorySource, openSessionMemory, sessionMemoryConfig } from "./memory.ts"
 import type { MemoryConfig } from "../memory/config.ts"
@@ -177,6 +187,7 @@ import {
   atInputBoundary,
   claimOf,
   compactionOutcome,
+  currentTurn,
   completedStepSinceCompaction,
   latestSpoken,
   note,
@@ -282,11 +293,12 @@ export interface EngineHooks {
 /** Something the engine noticed that is not part of any session's log. Shown or logged, never stored. */
 export interface Diagnostic {
   /**
-   * `skills`, `mcp`, `wake`, `memory` and `agents` are about those features and are for the user to read, never the
-   * model: a skill that could not be loaded, a server of the project's that waits for approval, a note file that is
-   * invalid, an agent definition that was skipped or names a tool that does not exist.
+   * `skills`, `mcp`, `wake`, `memory`, `agents`, `hooks` and `lsp` are about those features and are for the user to
+   * read, never the model: a skill that could not be loaded, a server of the project's that waits for approval, a
+   * note file that is invalid, an agent definition that was skipped or names a tool that does not exist, a hook
+   * that was skipped, failed or was left unsatisfied, a language server that gave an edit no diagnostics and why.
    */
-  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents"
+  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp"
   readonly sessionId: SessionId | null
   readonly message: string
   readonly cause?: unknown
@@ -496,6 +508,22 @@ export interface EngineOptions {
    * that. `createHarness` switches it on.
    */
   readonly agents?: AgentsSetup | null
+  /**
+   * Hooks (`engine/hooks.ts`): the commands a session's configuration names
+   * under `hooks` are run before a tool call, after it and when a turn is
+   * about to end. Without it (or `null`) no hook is ever run, whatever the
+   * configuration says. `createHarness` switches it on. (`hooks`, above, is
+   * the engine's own probe for tests.)
+   */
+  readonly commandHooks?: HooksSetup | null
+  /**
+   * Language-server diagnostics (`engine/lsp.ts`): the servers a session's
+   * configuration names under `lsp` are started when the agent reads or
+   * edits a file they serve, and what an edit made worse is added to its
+   * result. Without it (or `null`) no server is ever started.
+   * `createHarness` switches it on.
+   */
+  readonly lsp?: LspSetup | null
 }
 
 /** How a session is forked. */
@@ -820,6 +848,36 @@ export interface EngineSession {
    */
   readonly approveMcpServer: (name: string, fingerprint?: string) => boolean
   /**
+   * The session's hooks: the ones in force (the user's, then the project's)
+   * and the project's hooks that wait for the user's approval, each with the
+   * question to put, word for word. As of the configuration the latest
+   * execution read, or, before the first one, as the files are now. `null`
+   * when the engine runs no hooks.
+   */
+  readonly hooks: () => HooksState | null
+  /**
+   * The user approves a hook the project's configuration names, by the
+   * fingerprint the question showed. The approval is remembered for the
+   * project, for exactly that definition of the hook, and the hook runs
+   * from the next call it applies to. Returns whether such a hook was waiting.
+   */
+  readonly approveHook: (fingerprint: string) => boolean
+  /**
+   * The session's language servers: the ones that were started, as their
+   * registry reports them, and the project's servers that wait for the
+   * user's approval. `null` when the engine offers no diagnostics, or the
+   * session's configuration names no server that could give any.
+   */
+  readonly lsp: () => LspState | null
+  /**
+   * The user approves a language server the project's configuration names,
+   * by its name (and, to be exact about which definition, the fingerprint
+   * the question showed). The approval is remembered for the project and
+   * the server starts at the next file it serves. Returns whether such a
+   * server was waiting.
+   */
+  readonly approveLspServer: (name: string, fingerprint?: string) => boolean
+  /**
    * The session's memory, for a client that shows the notes, what waits for
    * the user's confirmation and the review report, and lets the user save,
    * retract, confirm and renew notes (`memory/README.md`, "The user"):
@@ -1005,6 +1063,10 @@ interface Core {
   readonly skills: { readonly tool: AnyTool; readonly configDir: string; readonly home: string | undefined } | null
   /** MCP: the bridge tools and the registries of the configured servers. `null` when the build offers none. */
   readonly mcp: { readonly tools: readonly AnyTool[]; readonly hub: McpHub } | null
+  /** Hooks: what runs a hook's command. `null` when the build runs none. */
+  readonly hooks: { readonly runner: HookRunner } | null
+  /** Language servers: the registries of the working directories sessions work in. `null` when the build offers no diagnostics. */
+  readonly lsp: { readonly hub: LspHub } | null
   /** Where the approvals remembered for a project are kept, also with the approval layer off. */
   readonly grantsDir: string
   /**
@@ -1112,6 +1174,11 @@ export function createEngine(options: EngineOptions): Engine {
     return offered
   }
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
+  // What runs a hook's command: the caller's, or the module's runner with the engine's sandbox and redaction, made when
+  // the first hook runs (the sandbox probes the machine once, on first use).
+  let hookRunner: HookRunner | null = options.commandHooks?.runner ?? null
+  const runHook: HookRunner = (request) =>
+    (hookRunner ??= createHookRunner({ spillDir: join(spillDir, "hooks"), ...(core.approvals === null ? {} : { sandbox: core.approvals.sandbox() }), secrets: () => core.approvals?.secrets ?? [] }))(request)
   const core: Core = {
     stores,
     provider: options.provider,
@@ -1173,6 +1240,8 @@ export function createEngine(options: EngineOptions): Engine {
             tools: [bridge.search, bridge.call].map((tool) => runnable.find((other) => other.name === tool.name)!),
             hub: new McpHub(options.mcp, (server, message) => core.report({ kind: "mcp", sessionId: null, message: `${server}: ${message}` })),
           },
+    hooks: options.commandHooks == null ? null : { runner: runHook },
+    lsp: options.lsp == null ? null : { hub: new LspHub(options.lsp) },
     grantsDir: options.approval?.grantsDir ?? join(options.dataDir, "approvals"),
     wake: options.wake == null ? null : { tools: wakeToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), user: wakeUser, runtime: wakeOf },
     memory: options.memory == null ? null : { tools: memoryToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), setup: options.memory },
@@ -1344,6 +1413,8 @@ export function createEngine(options: EngineOptions): Engine {
         await Promise.all([...core.sessions.values()].map((session) => session.close()))
         // Every server the sessions had started is stopped once no session can call one any more.
         await core.mcp?.hub.stop()
+        // So is every language server, with its process group.
+        await core.lsp?.hub.stop()
         wakeRuntime?.close()
       })()
       return closing
@@ -1412,8 +1483,17 @@ type StepResult =
   /** The execution's terminal event was written. */
   | "done"
 
-/** What the gate found: as a step, or the turn may end with `verification` and a queued message is waiting to be delivered. */
-type GateResult = StepResult | { readonly verification: VerificationOutcome }
+/**
+ * What the gate found: as a step, or the turn may end with `verification` and a queued message is waiting to be
+ * delivered. `hooks`: the stop hooks that still objected when the turn had been sent back as often as it may be.
+ */
+type GateResult = StepResult | TurnEnding
+
+/** How a turn that may end ends: what the gate found, and the stop hooks that were left unsatisfied. */
+interface TurnEnding {
+  readonly verification: VerificationOutcome
+  readonly hooks?: HookEnding
+}
 
 const isSteer = (item: { readonly delivery: "steer" | "queue" }) => item.delivery === "steer"
 
@@ -1549,6 +1629,22 @@ class LiveSession implements EngineSession {
   private mcpPlan: readonly McpServerPlan[] = []
   /** The session's servers as its bridge tools and its catalogue read them. Rebuilt when the held servers change. */
   private mcpBackend: SessionServers | null = null
+  /** The hooks the configuration of the latest execution names: the user's, then the project's. */
+  private hookConfig: HooksConfig = NO_HOOKS
+  /** The fingerprints of the project's hooks the user approved, as the remembered approvals had them when the configuration was read. */
+  private hookApproved: ReadonlySet<string> = new Set()
+  /** Whether the hooks were read from a configuration in this process: an execution's, or the files as they were when a client first asked. */
+  private hooksRead = false
+  /** The records of the hooks that applied to calls of the step in progress and are not in the log yet, by call. */
+  private readonly hookRecords = new Map<string, NewEvent<"hook.ran">[]>()
+  /** The language servers the configuration of the latest execution names, and the registry this session holds for them. */
+  private lspPlan: LspPlan | null = null
+  private lspHeld: HeldRegistry | null = null
+  private lspRead = false
+  /** The text a file had before the write call that is about to change it, by call: what an edit's diagnostics are compared with. `null`: it did not exist. */
+  private readonly lspBefore = new Map<string, { readonly path: string; readonly text: string | null }>()
+  /** What the language servers said about the calls of the step in progress whose results are not recorded yet, by call. */
+  private readonly lspSaid = new Map<string, DiagnosticsRecord>()
   /**
    * Whether the agent this session starts as is decided: when it was
    * created here with its configuration readable, or once its first
@@ -2108,6 +2204,7 @@ class LiveSession implements EngineSession {
       await this.retaining?.catch(() => {})
       // Its servers are let go of: one that no other session uses is stopped.
       this.releaseMcp()
+      this.releaseLsp()
       this.channel.end()
       this.listeners.clear()
       this.core.sessions.delete(this.id)
@@ -2211,6 +2308,9 @@ class LiveSession implements EngineSession {
       this.config = null
       this.configRead = true
       this.announcePolicy()
+      // No configuration, no hooks and no language servers: what an earlier execution read is let go of.
+      this.attachHooks()
+      this.attachLsp()
       return asAgent()
     }
     // Only what reads the files is a configuration problem. Anything that fails after them (the store, a server
@@ -2228,6 +2328,9 @@ class LiveSession implements EngineSession {
     this.announcePolicy()
     // The servers this configuration names are started now, in the background: nothing waits for one here.
     this.attachMcp()
+    // Its hooks apply from this turn's first call, and its language servers start at the first file they serve.
+    this.attachHooks()
+    this.attachLsp()
     return run.interrupt.signal.aborted ? true : asAgent()
   }
 
@@ -2294,12 +2397,12 @@ class LiveSession implements EngineSession {
         await this.arrived(signal)
         continue
       }
-      let ended: VerificationOutcome | null = null
+      let ended: TurnEnding | null = null
       if (idle && !before.inbox.some(isSteer) && (before.inbox.length === 0 || latest !== undefined)) {
         const verdict = await this.gate(run)
         if (verdict === "done") return
         if (verdict === "continue") continue
-        ended = verdict.verification
+        ended = verdict
       }
 
       // A step follows. The workspace is recorded first when input is about to enter history, so that a later
@@ -2354,7 +2457,7 @@ class LiveSession implements EngineSession {
       else if (handover !== undefined)
         // The end of the turn and the delivery it makes room for are one decision, so one append.
         this.write([
-          ...(ended !== null && follows ? [event("turn.ended", { verification: ended })] : []),
+          ...(ended !== null && follows ? [event("turn.ended", { verification: ended.verification, ...(ended.hooks === undefined ? {} : { hooks: ended.hooks }) })] : []),
           event("inbox.delivered", { messageId: handover.messageId }),
         ])
 
@@ -2939,6 +3042,9 @@ class LiveSession implements EngineSession {
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output, truncation: null, attachments: [], display: null }),
       ])
     this.decided.clear()
+    this.hookRecords.clear()
+    this.lspBefore.clear()
+    this.lspSaid.clear()
     // The agent the session runs as, as of this step: a switch is made at a boundary, never between two calls.
     const runsAs = before.session.agent ?? null
     /** A call the agent may not make: refused before anything about it is decided, and recorded as the agent's refusal. */
@@ -2987,6 +3093,11 @@ class LiveSession implements EngineSession {
       return match?.kind === "matched" || match?.kind === "dropped"
     }
 
+    // Hooks and language servers have a say only where the session's configuration names some: without them a call
+    // is decided and run exactly as an engine without either would. (A replay runs as its recording did.)
+    const before$ = director === null && (this.hookConfig.beforeTool.length > 0 || this.lspHeld !== null)
+    const after$ = director === null && (this.hookConfig.afterTool.length > 0 || this.lspHeld !== null)
+
     /** One call, from its decision to its recorded result. */
     const launch = (call: ToolCallPart): Promise<void> => {
       const match = matchOf(call)
@@ -2998,7 +3109,14 @@ class LiveSession implements EngineSession {
         plan === null ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(calls.indexOf(call), request(call), hooks)
       return run$(
           {
-            ...(approvals === null ? {} : { authorize: (tool: AnyTool, input: Json) => this.authorize(run, messageId, call, tool, input) }),
+            // With before hooks or language servers the decision has more to it; without them it is the approval layer's alone, as ever.
+            ...(before$
+              ? { authorize: (tool: AnyTool, input: Json) => this.decideCall(run, messageId, call, tool, input) }
+              : approvals === null
+                ? {}
+                : { authorize: (tool: AnyTool, input: Json) => this.authorize(run, messageId, call, tool, input) }),
+            // After the tool ran and before its result is capped and stored: the after hooks' notes, then the diagnostics of an edit.
+            ...(after$ ? { afterExecute: (tool: AnyTool, input: Json, result: ToolResult) => this.afterTool(run, messageId, call, tool, input, result) } : {}),
             // Synchronous, right before the tool runs: the start is durable before any side effect.
             onStart: () => {
               if (effect === undefined) throw new Error(`tool ${call.name} started without an effect class`)
@@ -3021,7 +3139,18 @@ class LiveSession implements EngineSession {
           const settlement = this.settlement(result, effect, signal)
           // The note for a failure the sandbox causes, then the redaction: what is stored is what is replayed.
           const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets, place.temp) }
-          this.write([...(decided?.before ?? []), ...(match === undefined ? [] : [replayCall(messageId, call.callId, match, executed)]), event("tool.settled", { messageId, callId: call.callId, ...shown })])
+          // The hooks that applied to the call are recorded with what they decided, and what the language servers said with the result their note is in.
+          const hooks = this.hookRecords.get(key) ?? []
+          const diagnostics = this.lspSaid.get(key)
+          this.hookRecords.delete(key)
+          this.lspSaid.delete(key)
+          this.lspBefore.delete(key)
+          this.write([
+            ...(decided?.before ?? []),
+            ...hooks,
+            ...(match === undefined ? [] : [replayCall(messageId, call.callId, match, executed)]),
+            event("tool.settled", { messageId, callId: call.callId, ...shown, ...(diagnostics === undefined ? {} : { diagnostics }) }),
+          ])
           this.probe("tool.settled")
           if (decided?.stop != null) this.stopping ??= decided.stop
           this.noticeTaint()
@@ -4180,7 +4309,7 @@ class LiveSession implements EngineSession {
    * nothing short and leaves none. `usage` is what the provider reported for
    * the open step's model call, when it reported anything before the stop.
    */
-  private finishInterrupt(run: Run, partialText = "", usage: Usage | null = null): void {
+  private finishInterrupt(run: Run, partialText = "", usage: Usage | null = null, stopHooks: readonly NewEvent<"hook.ran">[] = []): void {
     const reason = interruptReasonOf(run.interrupt.signal)
     if (reason === null) throw new Error("the execution is not interrupted")
     const projection = this.projection()
@@ -4191,13 +4320,19 @@ class LiveSession implements EngineSession {
     const step = openStep(projection)
     if (step !== null) {
       if (partialText !== "") events.push(event("text.ended", { messageId: step.id, text: partialText, providerData: null }))
+      // The hooks that had finished for a call the interrupt reached first are still on record, before the call is settled.
+      const unsettled = new Set(step.parts.flatMap((part) => (part.type === "tool_call" && part.state.status !== "settled" ? [callKey(step.id, part.callId as CallId)] : [])))
+      for (const [key, records] of this.hookRecords) if (unsettled.has(key)) events.push(...records.filter((record) => record.data.point !== "afterTool" || this.callRunning(step, record.data.callId)))
       events.push(...settleUnsettled(step, STOPPED), event("step.failed", { messageId: step.id, error, usage }))
       cutShort = true
     }
+    this.hookRecords.clear()
     const open = projection.session.open
     if (open?.kind === "compaction") events.push(event("compaction.failed", { messageId: open.messageId, error, calls: this.summaryCalls(open.messageId) }))
     // A run of checks that was stopped says nothing about the code.
     if (open?.kind === "checks") events.push(event("checks.failed", { run: open.run, error }))
+    // The stop hooks that had answered when the interrupt came are on record too.
+    events.push(...stopHooks)
     if (cutShort || reason === "user")
       events.push(
         note(this.core.ids.message(), HARNESS_ORIGIN.interrupt, reason === "user" ? NOTE_TEXT.interruptedByUser : NOTE_TEXT.interruptedByRestart),
@@ -4335,7 +4470,7 @@ class LiveSession implements EngineSession {
   }
 
   /** Says something about a feature to the user, once per process. */
-  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents", message: string): void {
+  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp", message: string): void {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
@@ -4465,6 +4600,284 @@ class LiveSession implements EngineSession {
     for (const held of this.mcpHeld.values()) this.core.mcp?.hub.release(held.key)
     this.mcpHeld.clear()
     this.mcpBackend = null
+  }
+
+  // ---- hooks ----
+
+  hooks = (): HooksState | null => {
+    if (this.core.hooks === null) return null
+    if (!this.hooksRead) this.attachHooks()
+    return { config: this.hookConfig, awaiting: hookQuestions(this.hookConfig, this.hookApproved) }
+  }
+
+  approveHook = (fingerprint: string): boolean => {
+    this.assertOpen()
+    if (this.core.hooks === null) return false
+    if (!this.hooksRead) this.attachHooks()
+    if (!hookQuestions(this.hookConfig, this.hookApproved).some((question) => question.fingerprint === fingerprint)) return false
+    const now = this.core.clock.now()
+    addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [hookGrant(fingerprint, now)], now)
+    this.hookApproved = new Set([...this.hookApproved, fingerprint])
+    return true
+  }
+
+  /**
+   * Reads the hooks the configuration names and which of the project's the
+   * user approved. A project's hook nobody approved is not run: the user is
+   * told, once. A replay runs none: it runs as its recording did.
+   */
+  private attachHooks(): void {
+    this.hooksRead = true
+    this.hookConfig = NO_HOOKS
+    this.hookApproved = new Set()
+    if (this.core.hooks === null || this.director !== null) return
+    let config: HooksConfig
+    try {
+      config = sessionHooks(this.files())
+    } catch (error) {
+      this.say("hooks", `The hooks of the configuration could not be read: ${describe(error)}`)
+      return
+    }
+    this.hookConfig = config
+    for (const ignored of config.ignored) this.say("hooks", `The project's configuration asks for more than yours allows and was not followed: ${ignored}.`)
+    if (!hasHooks(config)) return
+    const now = this.core.clock.now()
+    this.hookApproved = approvedHooks(readProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), now), now)
+    for (const question of hookQuestions(config, this.hookApproved)) this.say("hooks", skippedHookNotice(question))
+  }
+
+  /** What a hook is run with at any of its points: how it may run under the policy in force, and where. */
+  private hookContext(run: Run): HookPointContext {
+    const approvals = this.core.approvals
+    const policy = approvals === null ? null : this.policy().policy
+    return {
+      runner: this.core.hooks!.runner,
+      trust: {
+        // With the approval layer off every call runs as it is, and so does a hook.
+        mode: policy?.mode ?? "full",
+        tainted: policy !== null && policy.taint === "enforce" && this.taint(policy).tainted,
+        sandboxAvailable: approvals !== null && approvals.sandbox().state.available,
+        isApproved: (hook) => this.hookApproved.has(hook.fingerprint),
+      },
+      cwd: this.projection().session.cwd,
+      sessionId: this.id,
+      signal: run.interrupt.signal,
+      untrustedRepository: this.untrustedProject(),
+    }
+  }
+
+  /** Whether the project's configuration file is content the user marked untrusted (`approval.untrustedPaths`): what it chose to run is then a taint source. */
+  private untrustedProject(): boolean {
+    const config = this.config
+    if (this.core.approvals === null || config === null || (config.files?.project ?? null) === null) return false
+    const patterns = this.policy().policy.untrustedPaths
+    if (patterns.length === 0) return false
+    const own = join(`.${brand.directory}`, "config.json")
+    const inside = relative(realWorkspace(this.projection().session.cwd), join(config.projectDir, own))
+    // A project file above the working directory is matched as the project names it.
+    const path = inside.startsWith("..") ? own : inside
+    return patterns.some((pattern) => new Bun.Glob(pattern).match(path))
+  }
+
+  /** A call as a hook is told about it: the validated arguments, and the paths the tool says it touches. */
+  private hookCall(call: ToolCallPart, tool: AnyTool, input: Json): ToolCallInput {
+    const touches = this.core.touches.get(tool.name)
+    let paths: readonly string[] | null = null
+    if (touches !== undefined) {
+      try {
+        paths = touches(input)
+      } catch {
+        // Arguments the tool itself will refuse name nothing.
+        paths = []
+      }
+    }
+    return { tool: tool.name, callId: call.callId, arguments: input, paths }
+  }
+
+  /** Keeps the records of the hooks that applied to a call until its result is written, and tells the user about the ones that failed. */
+  private keepHookRecords(messageId: MessageId, callId: CallId, records: readonly HookRecord[]): void {
+    if (records.length === 0) return
+    const key = callKey(messageId, callId)
+    this.hookRecords.set(key, [...(this.hookRecords.get(key) ?? []), ...records.map((record) => hookRan(record, { messageId, callId }))])
+    this.tellHookFailures(records)
+  }
+
+  private tellHookFailures(records: readonly HookRecord[]): void {
+    for (const record of records) {
+      const notice = failedHookNotice(record)
+      if (notice !== null) this.say("hooks", notice)
+    }
+  }
+
+  /** Whether a call of the step has started and has no result yet: the state an after hook's record is written in. */
+  private callRunning(step: AssistantMessage, callId: CallId | null): boolean {
+    return step.parts.some((part) => part.type === "tool_call" && part.callId === callId && part.state.status === "running")
+  }
+
+  /**
+   * Decides one call where hooks or language servers have a say: the before
+   * hooks first (one that objects settles the call with its reason, and no
+   * question is asked), then the approval layer, unchanged: a hook that
+   * does not object approves nothing. For a write the language servers will
+   * be asked about, the file's text is read once the call may run.
+   */
+  private async decideCall(run: Run, messageId: MessageId, call: ToolCallPart, tool: AnyTool, input: Json): Promise<Authorization> {
+    const hooks = this.hookConfig.beforeTool
+    if (hooks.length > 0) {
+      const outcome = await runBeforeHooks(this.hookContext(run), hooks, this.hookCall(call, tool, input))
+      this.keepHookRecords(messageId, call.callId, outcome.records)
+      // The interrupt reached it while a hook ran: the runtime sees the abort and reports the call as not started.
+      if (outcome.decision.kind === "interrupted" || run.interrupt.signal.aborted) return WITHDRAWN
+      if (outcome.decision.kind === "refuse") return { kind: "refuse", output: outcome.decision.output }
+    }
+    const decided: Authorization = this.core.approvals === null ? { kind: "run" } : await this.authorize(run, messageId, call, tool, input)
+    if (decided.kind === "run" && tool.effect === "write" && this.lspPlan !== null && this.lspHeld !== null) {
+      const path = this.servedPath(tool, input, this.lspPlan)
+      const document = path === null ? "unreadable" : readDocument(path)
+      if (path !== null && document !== "unreadable") this.lspBefore.set(callKey(messageId, call.callId), { path, text: document === "missing" ? null : document.text })
+    }
+    return decided
+  }
+
+  /**
+   * What follows a tool's result before it is capped and stored: the notes
+   * of the after hooks, then the diagnostics of an edit, which are about
+   * the file as the hooks left it. The tool's own output stays first, byte
+   * for byte. Nothing here may fail the call: whatever goes wrong, the
+   * result goes on as far as it got.
+   */
+  private async afterTool(run: Run, messageId: MessageId, call: ToolCallPart, tool: AnyTool, input: Json, result: ToolResult): Promise<ToolResult> {
+    let noted = result
+    try {
+      const hooks = this.hookConfig.afterTool
+      if (hooks.length > 0) {
+        // A hook is shown the result as the model will be shown it: redacted. What it adds goes after the tool's own text.
+        const secrets = this.core.approvals?.secrets
+        const shown = secrets === undefined ? result : { ...result, output: redact(result.output, secrets).text }
+        const outcome = await runAfterHooks(this.hookContext(run), hooks, this.hookCall(call, tool, input), shown)
+        this.keepHookRecords(messageId, call.callId, outcome.records)
+        const added = outcome.result.output.slice(shown.output.length)
+        if (added !== "") noted = { ...result, output: `${result.output}${added}` }
+        for (const hook of outcome.applied.dropped) this.say("hooks", `The note of the hook "${hook.name}" was left out: the notes on one result are bounded together.`)
+      }
+      noted = await this.diagnose(run, callKey(messageId, call.callId), tool, input, noted)
+    } catch (error) {
+      this.core.report({ kind: "internal_error", sessionId: this.id, message: `what follows a tool's result failed: ${describe(error)}`, cause: error })
+    }
+    return noted
+  }
+
+  // ---- language servers ----
+
+  lsp = (): LspState | null => {
+    if (this.core.lsp === null) return null
+    if (!this.lspRead) this.attachLsp()
+    const held = this.lspHeld
+    return held === null ? null : { servers: held.registry.status(), awaiting: held.registry.awaitingApproval() }
+  }
+
+  approveLspServer = (name: string, fingerprint?: string): boolean => {
+    this.assertOpen()
+    if (this.core.lsp === null) return false
+    if (!this.lspRead) this.attachLsp()
+    const held = this.lspHeld
+    const question = held?.registry.awaitingApproval().find((item) => item.name === name && (fingerprint === undefined || item.fingerprint === fingerprint))
+    if (held === null || question === undefined) return false
+    const now = this.core.clock.now()
+    addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [lspGrant(question.key, now)], now)
+    held.registry.approve(question.key)
+    return true
+  }
+
+  /**
+   * Takes hold of the registry of this working directory and
+   * configuration, and lets go of the one an earlier configuration named.
+   * Nothing starts here: a server starts at the first file it serves. A
+   * server the project's file names and the user has not approved is never
+   * started: the user is told, once. A replay starts none.
+   */
+  private attachLsp(): void {
+    this.lspRead = true
+    const lsp = this.core.lsp
+    const previous = this.lspHeld
+    const drop = () => {
+      previous?.release()
+      this.lspHeld = null
+      this.lspPlan = null
+    }
+    if (lsp === null || this.closing !== null || this.director !== null) return drop()
+    const cwd = this.projection().session.cwd
+    let plan: LspPlan | null
+    try {
+      const now = this.core.clock.now()
+      const files = this.files()
+      plan = files?.user?.lsp === undefined && files?.project?.lsp === undefined ? null : planLanguageServers(files, readProjectGrants(this.core.grantsDir, realWorkspace(cwd), now), now)
+    } catch (error) {
+      this.say("lsp", `The language servers of the configuration could not be read: ${describe(error)}`)
+      return drop()
+    }
+    if (!offersDiagnostics(plan)) return drop()
+    // Why an edit got no diagnostics is the user's to read, once per server and reason; the model is told nothing.
+    const held = lsp.hub.acquire(plan, cwd, (notice: LspNotice) => this.say("lsp", notice.message))
+    // Taken before the old one is let go of, so a registry both configurations name is never stopped in between.
+    previous?.release()
+    this.lspHeld = held
+    this.lspPlan = held === null ? null : plan
+    for (const question of held?.registry.awaitingApproval() ?? [])
+      this.say("lsp", `This project's configuration names the language server "${question.name}" (${question.subject}). It was not started: a server a project names runs only after you approve it.`)
+  }
+
+  private releaseLsp(): void {
+    this.lspHeld?.release()
+    this.lspHeld = null
+    this.lspPlan = null
+  }
+
+  /** The one file a call names, when a configured server serves it: absolute. `null` otherwise. */
+  private servedPath(tool: AnyTool, input: Json, plan: LspPlan): string | null {
+    const touches = this.core.touches.get(tool.name)
+    if (touches === undefined) return null
+    let paths: readonly string[]
+    try {
+      paths = touches(input)
+    } catch {
+      return null
+    }
+    const [given] = paths
+    if (paths.length !== 1 || typeof given !== "string" || given === "") return null
+    const cwd = this.projection().session.cwd
+    const absolute = resolvePath(cwd, given)
+    return servesFile(plan, cwd, absolute) ? absolute : null
+  }
+
+  /**
+   * The language servers' part of what follows a tool's result. A file that
+   * was read is shown to its servers, which never waits. For an edit that
+   * succeeded, the servers are asked what it made worse, within their
+   * bound, and the note they give is added after the result; what they
+   * said is kept for the result's record. An error result, a call that
+   * names no file a server serves and a shell command get nothing.
+   */
+  private async diagnose(run: Run, key: string, tool: AnyTool, input: Json, result: ToolResult): Promise<ToolResult> {
+    const held = this.lspHeld
+    const plan = this.lspPlan
+    const before = this.lspBefore.get(key)
+    this.lspBefore.delete(key)
+    if (held === null || plan === null || result.status !== "success") return result
+    if (tool.effect === "read") {
+      const path = this.servedPath(tool, input, plan)
+      const document = path === null ? "unreadable" : readDocument(path)
+      if (path !== null && typeof document !== "string") held.registry.observe(path, document.text)
+      return result
+    }
+    if (before === undefined) return result
+    // Read after the hooks ran: a formatter may have rewritten the file, and the note is about what the agent sees next.
+    const after = readDocument(before.path)
+    if (typeof after === "string") return result
+    const outcome = await held.registry.diagnose({ path: before.path, before: before.text, after: after.text, signal: run.interrupt.signal })
+    const record = diagnosticsOf(outcome, plan, this.untrustedProject())
+    if (record !== null) this.lspSaid.set(key, record)
+    return outcome.note === null ? result : { ...result, output: `${result.output}\n\n${outcome.note}` }
   }
 
   /** The execution whose first step already waited for the servers. */
@@ -4725,14 +5138,42 @@ class LiveSession implements EngineSession {
    * waiting for exactly this: the turn may end with `verification`, and the
    * loop writes that (`turn.ended`) together with the delivery.
    */
-  private finish(run: Run, verification: VerificationOutcome, before: readonly NewEvent[] = []): GateResult {
+  private async finish(run: Run, verification: VerificationOutcome, before: readonly NewEvent[] = []): Promise<GateResult> {
+    // The gate says the turn may end: the stop hooks are asked now, and only now. A steer redirects the model, so
+    // the turn is not ending; a subagent's turn is its parent's to hold; an execution without an answer has no turn.
+    const state = this.projection()
+    const answered = latestSpoken(state)
+    let records: NewEvent<"hook.ran">[] = []
+    let unsatisfied: HookEnding | undefined
+    if (this.hookConfig.stop.length > 0 && this.core.hooks !== null && !state.inbox.some(isSteer) && state.session.lineage?.kind !== "spawn" && answered?.kind === "assistant") {
+      const lastText = answered.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+      const outcome = await runStopHooks(this.hookContext(run), this.hookConfig.stop, { roundsSent: stopRoundsSent(currentTurn(state)), maxRounds: this.hookConfig.maxStopRounds, lastText })
+      records = outcome.records.map((record) => hookRan(record, null))
+      this.tellHookFailures(outcome.records)
+      const decision = outcome.decision
+      if (decision.kind === "interrupted" || run.interrupt.signal.aborted) {
+        // The hooks that had answered are on record; the turn winds down as after any interrupt.
+        if (!run.interrupt.signal.aborted) throw new Error("a stop hook reported an interrupt nobody asked for")
+        this.finishInterrupt(run, "", null, records)
+        return "done"
+      }
+      if (decision.kind === "continue") {
+        // The model is sent back: the message is frozen here, with the records of the hooks that said so.
+        this.write([...before, ...records, note(this.core.ids.message(), HARNESS_ORIGIN.stopHook, decision.message)])
+        return "continue"
+      }
+      if (decision.kind === "end_unsatisfied") {
+        unsatisfied = { unsatisfied: [...new Set(decision.hooks.map((hook) => hook.name))] }
+        this.core.report({ kind: "hooks", sessionId: this.id, message: decision.notice })
+      }
+    }
     const inbox = this.projection().inbox
     if (inbox.length > 0) {
-      if (before.length > 0) this.write(before)
-      return inbox.some(isSteer) ? "continue" : { verification }
+      if (before.length + records.length > 0) this.write([...before, ...records])
+      return inbox.some(isSteer) ? "continue" : { verification, ...(unsatisfied === undefined ? {} : { hooks: unsatisfied }) }
     }
     this.probe("execution.ending")
-    this.write([...before, event("execution.succeeded", { executionId: run.executionId, verification })])
+    this.write([...before, ...records, event("execution.succeeded", { executionId: run.executionId, verification, ...(unsatisfied === undefined ? {} : { hooks: unsatisfied }) })])
     return "done"
   }
 
