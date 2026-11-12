@@ -184,6 +184,27 @@ describe("the bound", () => {
   }, 60_000)
 })
 
+describe("what a client is told", () => {
+  test("an engine that offers no diagnostics says null; one that does says whether the session's configuration names a server", async () => {
+    const { cwd } = project()
+    const without = new Harness({ cwd, userConfig: { verify: { mode: "off" }, lsp: { servers: { fixture: fixture() } } } })
+    without.create()
+    expect(without.session.lsp()).toBeNull()
+    await without.dispose()
+    const nothing = harness(cwd, {})
+    const heard: string[] = []
+    nothing.create().onFeatureChange((feature) => heard.push(feature))
+    expect(nothing.session.lsp()).toEqual({ configured: false, servers: [], awaiting: [] })
+    await nothing.dispose()
+    const off = harness(cwd, { user: { lsp: { enabled: false, servers: { fixture: fixture() } } } })
+    off.create()
+    expect(off.session.lsp()).toEqual({ configured: false, servers: [], awaiting: [] })
+    await off.dispose()
+    // Nothing is configured, as a session is taken to be before its configuration is read: nothing changed.
+    expect(heard).toEqual([])
+  })
+})
+
 describe("a project's server", () => {
   const sandbox: CommandSandbox = {
     state: { available: true },
@@ -203,9 +224,13 @@ describe("a project's server", () => {
     const h = harness(cwd, { project: { lsp: { waitMs: 5000, servers: { fixture: fixture(["--pid-file", pidFile]) } } } }, { approval: approval({ user: { mode: "full", untrustedPaths: ["**"] } }) })
     h.provider.enqueue([call("write", { path: "src/a.txt", content: BEFORE }), U], answer("Unchanged."), [call("write", { path: "src/b.txt", content: "x" }), U], [call("write", { path: "src/b.txt", content: "ERROR(y)" }), U], answer("Added."))
     h.tools.on("write", writes(cwd), writes(cwd), writes(cwd, serverReady(h)))
-    h.create()
+    const heard: string[] = []
+    h.create().onFeatureChange((feature) => heard.push(feature))
     const waiting = h.session.lsp()!.awaiting
     expect(waiting).toMatchObject([{ name: "fixture" }])
+    expect(h.session.lsp()).toMatchObject({ configured: true, servers: [] })
+    // The configuration was read and names a server that waits: the listener is told, once.
+    expect(heard).toEqual(["lsp"])
     expect(waiting[0]!.details.join("\n")).toContain('This project\'s configuration names the language server "fixture"')
     h.session.send("Rewrite the file.")
     await h.settled()
@@ -214,10 +239,17 @@ describe("a project's server", () => {
     expect(of(h, "tool.settled")[0]!.data).toMatchObject({ output: "Wrote src/a.txt.", diagnostics: { noteAdded: false, servers: [{ name: "fixture", origin: "project", outcome: "not_approved" }] } })
     expect(said(h, "lsp").join("\n")).toContain('This project\'s configuration names the language server "fixture"')
     expect(h.session.approveLspServer("fixture", "0000000000000000")).toBe(false)
+    expect(heard).toEqual(["lsp"])
     expect(h.session.approveLspServer("fixture", waiting[0]!.fingerprint)).toBe(true)
+    expect(heard).toEqual(["lsp", "lsp"])
     expect(h.session.lsp()!.awaiting).toEqual([])
+    const states: string[] = []
+    h.session.onFeatureChange((feature) => feature === "lsp" && states.push(h.session.lsp()!.servers.map((server) => server.state).join()))
     h.session.send("Add an error to b.")
     await h.settled()
+    // The server started with the first file it serves: the listener heard it start and become ready.
+    expect(states).toContain("starting")
+    expect(states.at(-1)).toBe("ready")
     const last = of(h, "tool.settled").at(-1)!
     expect(last.data.output).toContain(`[Diagnostics from the language server "fixture" for src/b.txt after this edit: 1 new error]`)
     expect(last.data.diagnostics).toMatchObject({ noteAdded: true, untrusted: true, servers: [{ origin: "project", outcome: "compared", new: 1 }] })

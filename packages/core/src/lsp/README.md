@@ -318,6 +318,7 @@ network (downloading type stubs) is not detected, like unsandboxed commands.
 - **The record** is `tool.settled.diagnostics` as proposed, plus `untrusted: true` when the note holds a
   project server's messages in a repository the user marked untrusted; the taint fold reads that field
   (a `diagnostics_note` entry, source kind `lsp-untrusted-project`).
-- **Approval.** `EngineSession.lsp()` gives the started servers and the ones that wait;
+- **Approval.** `EngineSession.lsp()` gives the started servers and the ones that wait (`null`: the engine
+  offers no diagnostics; `configured: false`: the session's configuration names no server that could give any);
   `approveLspServer(name, fingerprint?)` writes the project grant and calls `approve(key)`. Until then the user
   is told once by a `diagnostic` of kind `lsp`, as for every notice of the registry.

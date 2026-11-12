@@ -738,6 +738,9 @@ export interface OutputWatchSet {
   readonly fired: number
 }
 
+/** One of the three things a session runs for the user besides the model's tools, as `EngineSession.onFeatureChange` names them. */
+export type SessionFeature = "mcp" | "hooks" | "lsp"
+
 export interface EngineSession {
   readonly id: SessionId
   /**
@@ -1037,8 +1040,10 @@ export interface EngineSession {
   /**
    * The session's language servers: the ones that were started, as their
    * registry reports them, and the project's servers that wait for the
-   * user's approval. `null` when the engine offers no diagnostics, or the
-   * session's configuration names no server that could give any.
+   * user's approval. `null` only when the engine offers no diagnostics. A
+   * session whose configuration names no server that could give any (none
+   * is named, diagnostics are off, or it is a replay) has a state with
+   * `configured: false` and both lists empty.
    */
   readonly lsp: () => LspState | null
   /**
@@ -1049,6 +1054,22 @@ export interface EngineSession {
    * server was waiting.
    */
   readonly approveLspServer: (name: string, fingerprint?: string) => boolean
+  /**
+   * One listener for the three: it is called with `mcp`, `hooks` or `lsp`
+   * when what `mcp()`, `hooks()` or `lsp()` would return has changed since
+   * the listener was added or last called (a server started, failed or
+   * stopped, one waits for approval or was approved, the configuration a
+   * turn read names other hooks or servers), so a client need not look
+   * again on a timer. Two things do not call it: the countdown to an MCP
+   * server's next attempt (`retryInMs`), which changes with the clock, and
+   * anything after the session was closed. A session whose configuration
+   * has not been read yet is taken to have no hooks and no language
+   * servers; reading it (a turn starts, or a client asks) calls the
+   * listener if it has some. The listener is called in the middle of the
+   * change: it should take note and return. Returns the function that
+   * removes it.
+   */
+  readonly onFeatureChange: (listener: (feature: SessionFeature) => void) => () => void
   /**
    * The session's memory, for a client that shows the notes, what waits for
    * the user's confirmation and the review report, and lets the user save,
@@ -1865,7 +1886,7 @@ class LiveSession implements EngineSession {
   /** The replay this session is, while it runs. */
   private director: Director | null = null
   /** The MCP servers this session holds in the engine's hub, by name, with the key each is let go of by. */
-  private readonly mcpHeld = new Map<string, { readonly key: string; readonly registry: McpRegistry }>()
+  private readonly mcpHeld = new Map<string, { readonly key: string; readonly registry: McpRegistry; readonly unwatch: () => void }>()
   /** The MCP servers the configuration of the latest execution names, and which of them may start. */
   private mcpPlan: readonly McpServerPlan[] = []
   /** The session's servers as its bridge tools and its catalogue read them. Rebuilt when the held servers change. */
@@ -1882,6 +1903,10 @@ class LiveSession implements EngineSession {
   private lspPlan: LspPlan | null = null
   private lspHeld: HeldRegistry | null = null
   private lspRead = false
+  /** Who hears that the MCP servers, the hooks or the language servers changed (`onFeatureChange`). */
+  private readonly featureListeners = new Set<(feature: SessionFeature) => void>()
+  /** Each of the three as the listeners last heard of it (`featureKey`); set when the first listener is added. */
+  private readonly featureSeen: Record<SessionFeature, string> = { mcp: "", hooks: "", lsp: "" }
   /** The text a file had before the write call that is about to change it, by call: what an edit's diagnostics are compared with. `null`: it did not exist. */
   private readonly lspBefore = new Map<string, { readonly path: string; readonly text: string | null }>()
   /** What the language servers said about the calls of the step in progress whose results are not recorded yet, by call. */
@@ -5118,6 +5143,52 @@ class LiveSession implements EngineSession {
     return { servers: this.mcpServers().status(), awaiting: this.mcpPlan.filter((plan) => plan.config.enabled && !plan.approved).map(serverQuestion) }
   }
 
+  // ---- what a client is told changed ----
+
+  onFeatureChange = (listener: (feature: SessionFeature) => void): (() => void) => {
+    const entry = (feature: SessionFeature) => listener(feature)
+    // Nothing is compared while nobody listens: the first listener starts from the state as it is now.
+    if (this.featureListeners.size === 0) for (const feature of ["mcp", "hooks", "lsp"] as const) this.featureSeen[feature] = this.featureKey(feature)
+    this.featureListeners.add(entry)
+    return () => {
+      this.featureListeners.delete(entry)
+    }
+  }
+
+  /**
+   * What `mcp()`, `hooks()` or `lsp()` would return, as a string to compare,
+   * without reading a configuration that was not read yet (a session is
+   * taken to have no hooks and no language servers until then), and without
+   * the countdown to a server's next attempt.
+   */
+  private featureKey(feature: SessionFeature): string {
+    switch (feature) {
+      case "mcp": {
+        const state = this.mcp()
+        return JSON.stringify(state === null ? null : { servers: state.servers.map(({ retryInMs: _countdown, ...server }) => server), awaiting: state.awaiting })
+      }
+      case "hooks":
+        return JSON.stringify(this.core.hooks === null ? null : { config: this.hookConfig, awaiting: hookQuestions(this.hookConfig, this.hookApproved) })
+      case "lsp":
+        return JSON.stringify(this.core.lsp === null ? null : this.lspNow())
+    }
+  }
+
+  /** Something that one of the three reads has changed: the listeners are told if what it returns did. */
+  private featureChanged(feature: SessionFeature): void {
+    if (this.featureListeners.size === 0 || this.closing !== null) return
+    const key = this.featureKey(feature)
+    if (key === this.featureSeen[feature]) return
+    this.featureSeen[feature] = key
+    for (const listener of [...this.featureListeners]) {
+      try {
+        listener(feature)
+      } catch (error) {
+        this.core.report({ kind: "listener_failed", sessionId: this.id, message: describe(error), cause: error })
+      }
+    }
+  }
+
   approveMcpServer = (name: string, fingerprint?: string): boolean => {
     this.assertOpen()
     if (this.core.mcp === null) return false
@@ -5148,16 +5219,20 @@ class LiveSession implements EngineSession {
     }
     this.mcpPlan = plans
     const wanted = new Map(plans.filter((plan) => plan.config.enabled && plan.approved).map((plan) => [plan.config.name, plan]))
-    const acquired = new Map<string, { readonly key: string; readonly registry: McpRegistry }>()
+    const acquired = new Map<string, { readonly key: string; readonly registry: McpRegistry; readonly unwatch: () => void }>()
     for (const [name, plan] of wanted) {
       const held = mcp.hub.acquire(plan.config, cwd)
-      if (held !== null) acquired.set(name, held)
+      if (held !== null) acquired.set(name, { ...held, unwatch: held.registry.onStatus(() => this.featureChanged("mcp")) })
     }
     // Taken before the old ones are let go of, so a server both configurations name is never stopped in between.
-    for (const held of this.mcpHeld.values()) mcp.hub.release(held.key)
+    for (const held of this.mcpHeld.values()) {
+      held.unwatch()
+      mcp.hub.release(held.key)
+    }
     this.mcpHeld.clear()
     for (const [name, held] of acquired) this.mcpHeld.set(name, held)
     this.mcpBackend = null
+    this.featureChanged("mcp")
     for (const plan of plans) {
       if (!plan.config.enabled || plan.approved) continue
       const question = serverQuestion(plan)
@@ -5166,7 +5241,10 @@ class LiveSession implements EngineSession {
   }
 
   private releaseMcp(): void {
-    for (const held of this.mcpHeld.values()) this.core.mcp?.hub.release(held.key)
+    for (const held of this.mcpHeld.values()) {
+      held.unwatch()
+      this.core.mcp?.hub.release(held.key)
+    }
     this.mcpHeld.clear()
     this.mcpBackend = null
   }
@@ -5187,6 +5265,7 @@ class LiveSession implements EngineSession {
     const now = this.core.clock.now()
     addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [hookGrant(fingerprint, now)], now)
     this.hookApproved = new Set([...this.hookApproved, fingerprint])
+    this.featureChanged("hooks")
     return true
   }
 
@@ -5196,6 +5275,14 @@ class LiveSession implements EngineSession {
    * told, once. A replay runs none: it runs as its recording did.
    */
   private attachHooks(): void {
+    try {
+      this.readHooks()
+    } finally {
+      this.featureChanged("hooks")
+    }
+  }
+
+  private readHooks(): void {
     this.hooksRead = true
     this.hookConfig = NO_HOOKS
     this.hookApproved = new Set()
@@ -5343,8 +5430,13 @@ class LiveSession implements EngineSession {
   lsp = (): LspState | null => {
     if (this.core.lsp === null) return null
     if (!this.lspRead) this.attachLsp()
+    return this.lspNow()
+  }
+
+  /** The language servers as the configuration that was read last has them: none before one was read. */
+  private lspNow(): LspState {
     const held = this.lspHeld
-    return held === null ? null : { servers: held.registry.status(), awaiting: held.registry.awaitingApproval() }
+    return held === null ? { configured: false, servers: [], awaiting: [] } : { configured: true, servers: held.registry.status(), awaiting: held.registry.awaitingApproval() }
   }
 
   approveLspServer = (name: string, fingerprint?: string): boolean => {
@@ -5417,6 +5509,14 @@ class LiveSession implements EngineSession {
   }
 
   private attachLsp(): void {
+    try {
+      this.readLsp()
+    } finally {
+      this.featureChanged("lsp")
+    }
+  }
+
+  private readLsp(): void {
     this.lspRead = true
     const lsp = this.core.lsp
     const previous = this.lspHeld
@@ -5438,7 +5538,7 @@ class LiveSession implements EngineSession {
     }
     if (!offersDiagnostics(plan)) return drop()
     // Why an edit got no diagnostics is the user's to read, once per server and reason; the model is told nothing.
-    const held = lsp.hub.acquire(plan, cwd, (notice: LspNotice) => this.say("lsp", notice.message))
+    const held = lsp.hub.acquire(plan, cwd, (notice: LspNotice) => this.say("lsp", notice.message), () => this.featureChanged("lsp"))
     // Taken before the old one is let go of, so a registry both configurations name is never stopped in between.
     previous?.release()
     this.lspHeld = held

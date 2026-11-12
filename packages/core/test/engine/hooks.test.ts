@@ -314,9 +314,12 @@ describe("a project's hook", () => {
     const { h, requests } = harness({ project }, { "repo-guard": exited(2, "Not in this repository.\n") })
     h.provider.enqueue([call("shell", { command: "ls" }), U], answer("Listed."), [call("shell", { command: "ls" }), U], answer("Refused."))
     h.tools.on("shell", "a.ts")
-    h.create()
+    const heard: string[] = []
+    h.create().onFeatureChange((feature) => heard.push(feature))
     // Before the first turn a client can already put the question.
     const waiting = h.session.hooks()!.awaiting
+    // A session is taken to have no hooks until its configuration is read; this one has one, so the listener is told.
+    expect(heard).toEqual(["hooks"])
     expect(waiting).toMatchObject([{ name: "repo-guard", point: "beforeTool", command: "guard" }])
     expect(waiting[0]!.question).toContain('This project\'s configuration asks to run a hook "repo-guard" before a tool call runs, and can refuse the call:')
     h.session.send("List the files.")
@@ -327,8 +330,12 @@ describe("a project's hook", () => {
     expect(of(h, "tool.settled")[0]!.data.outcome).toBe("success")
     expect(said(h, "hooks")).toEqual(['This project\'s configuration asks to run the hook "repo-guard" before a tool call (guard). It is not run: a hook a project names runs only after you approve it.'])
     // Approved by the fingerprint the question showed: remembered for the project, and in force from the next call.
+    // The turn read the same configuration again: nothing changed, nothing is said.
+    expect(heard).toEqual(["hooks"])
     expect(h.session.approveHook("hook-sha256:0000")).toBe(false)
+    expect(heard).toEqual(["hooks"])
     expect(h.session.approveHook(waiting[0]!.fingerprint)).toBe(true)
+    expect(heard).toEqual(["hooks", "hooks"])
     expect(h.session.hooks()!.awaiting).toEqual([])
     h.session.send("List them again.")
     await h.settled()

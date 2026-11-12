@@ -98,6 +98,13 @@ export interface McpRegistry {
   call(request: McpCallRequest): Promise<McpCallOutcome>
   /** Called whenever the published view changes. Returns the function that removes the listener. */
   onChange(listener: () => void): () => void
+  /**
+   * Called whenever what `status()` returns may have changed: a server's
+   * state, its tools, its error. Not for the countdown to a retry
+   * (`retryInMs`), which changes with the clock. Returns the function that
+   * removes the listener.
+   */
+  onStatus(listener: () => void): () => void
   /** Resolves once every enabled server has connected or failed at least once (for demos and tests), or after `timeoutMs`. */
   settled(timeoutMs?: number): Promise<void>
 }
@@ -158,6 +165,7 @@ export function createMcpRegistry(options: McpRegistryOptions): McpRegistry {
   if (managed.size !== options.servers.length) throw new Error("MCP server names must be unique")
   const published = new Map<string, CatalogueServer>()
   const listeners = new Set<() => void>()
+  const statusListeners = new Set<() => void>()
   const loops: Promise<void>[] = []
   const stopController = new AbortController()
   let started = false
@@ -166,9 +174,20 @@ export function createMcpRegistry(options: McpRegistryOptions): McpRegistry {
   const emit = () => {
     for (const listener of [...listeners]) listener()
   }
+  /** The status changed: a listener's failure is not the registry's. */
+  const touched = () => {
+    for (const listener of [...statusListeners]) {
+      try {
+        listener()
+      } catch {
+        // Whoever listens says what went wrong on its side.
+      }
+    }
+  }
   const setState = (m: Managed, state: ServerState) => {
     m.state = state
     for (const waiter of [...m.waiters]) waiter()
+    touched()
   }
   const publish = (m: Managed) => {
     if (m.dropTimer !== null) clearTimeout(m.dropTimer)
@@ -180,6 +199,7 @@ export function createMcpRegistry(options: McpRegistryOptions): McpRegistry {
       tools: m.tools.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema })),
     })
     emit()
+    touched()
   }
   const scheduleDrop = (m: Managed) => {
     if (!published.has(m.config.name) || m.dropTimer !== null) return
@@ -302,6 +322,7 @@ export function createMcpRegistry(options: McpRegistryOptions): McpRegistry {
       setState(m, "retrying")
       m.error = `${reason}${describeChannel(attempt.channel)}`
       m.channel = null
+      touched()
       await attempt.channel.close()
       if (performance.now() - connectedAt >= stableMs) m.failures = 0
       m.failures += 1
@@ -375,6 +396,11 @@ export function createMcpRegistry(options: McpRegistryOptions): McpRegistry {
     onChange: (listener) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+
+    onStatus: (listener) => {
+      statusListeners.add(listener)
+      return () => statusListeners.delete(listener)
     },
 
     settled: (timeoutMs = 60_000) =>

@@ -305,8 +305,13 @@ describe("a server the project's file names", () => {
     const h = new Harness({ cwd: files.cwd, mcp: { ...QUICK, startWaitMs: 8000 }, userConfig: {}, config: server() })
     try {
       h.provider.enqueue([call("mcp_call", { server: "theirs", tool: "echo", arguments: { text: "hi" } }), U], answer("It is waiting for you."))
-      h.create().send("Echo hi.")
+      // A client is told when the servers changed, and need not look on a timer.
+      const heard: string[] = []
+      h.create().onFeatureChange((feature) => heard.push(feature))
+      h.session.send("Echo hi.")
       await h.settled()
+      // The turn read the configuration: one server waits where there was none. Nothing else changed, and nothing else is said.
+      expect(heard).toEqual(["mcp"])
       // Nothing ran: no process, no catalogue, and the model was told why its call went nowhere.
       expect(existsSync(files.pidFile)).toBe(false)
       expect(catalogues(h)).toEqual([])
@@ -324,9 +329,22 @@ describe("a server the project's file names", () => {
       // A wrong name or another definition approves nothing.
       expect(h.session.approveMcpServer("other")).toBe(false)
       expect(h.session.approveMcpServer("theirs", "0000")).toBe(false)
+      expect(heard).toEqual(["mcp"])
       expect(h.session.approveMcpServer("theirs", state.awaiting[0]!.fingerprint)).toBe(true)
+      // Told at once that it no longer waits, and again as it starts and is ready: each time what `mcp()` returns differs.
+      expect(heard.length).toBeGreaterThan(1)
       expect(h.session.approveMcpServer("theirs")).toBe(false)
+      const states: (string | undefined)[] = []
+      const unlisten = h.session.onFeatureChange(() => states.push(h.session.mcp()!.servers[0]?.state))
       await waitFor(() => ready(h, "theirs"), 10_000, "the approved server to connect")
+      expect(states.at(-1)).toBe("ready")
+      expect(new Set(heard)).toEqual(new Set(["mcp"]))
+      // A listener that was removed hears nothing more; the countdown to a retry is not a change.
+      unlisten()
+      const told = states.length
+      h.session.mcp()
+      await new Promise((done) => setTimeout(done, 50))
+      expect(states).toHaveLength(told)
       expect(alive(Number(readFileSync(files.pidFile, "utf8")))).toBe(true)
       h.provider.enqueue(answer("Now it is there."))
       h.session.send("And now?")

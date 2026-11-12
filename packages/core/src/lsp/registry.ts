@@ -43,6 +43,12 @@ export interface LspRegistryOptions {
   readonly maxOpenDocuments?: number
   /** Told why diagnostics were not added, once per server and reason. For the user, never the model. */
   readonly onNotice?: (notice: LspNotice) => void
+  /**
+   * Told whenever what `status()` or `awaitingApproval()` returns may have
+   * changed: a server was started for a root, became ready, failed or
+   * stopped, a document was opened or closed, a server was approved.
+   */
+  readonly onStatus?: () => void
 }
 
 export type NoticeKind = "not_approved" | "start_failed" | "starting" | "timeout" | "crashed" | "no_server"
@@ -177,6 +183,14 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     }
   }
 
+  const touched = () => {
+    try {
+      options.onStatus?.()
+    } catch {
+      // A listener's failure is not the registry's.
+    }
+  }
+
   /** The file relative to the working directory with `/`, or `null` outside it. */
   const relativeTo = (path: string): { absolute: string; relative: string } | null => {
     const absolute = resolve(cwd, path)
@@ -216,6 +230,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     m.used.clear()
     if (stopped) {
       m.state = "stopped"
+      touched()
       return
     }
     if (kind === "crashed" && m.readyAt > 0 && performance.now() - m.readyAt >= stableMs) m.failures = 0
@@ -224,6 +239,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     m.state = "retrying"
     m.retryAt = performance.now() + delay
     m.error = reason
+    touched()
     const name = m.plan.config.name
     notice(
       name,
@@ -244,6 +260,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     if (m.state === "retrying") m.restarts += 1
     m.state = "starting"
     m.starting = start(m)
+    touched()
     return m.starting
   }
 
@@ -278,6 +295,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
       m.readyAt = performance.now()
       m.error = null
       m.starting = null
+      touched()
       void connection.closed.then((reason) => {
         if (m.session === session) fail(m, withStderr(reason, connection), "crashed")
       })
@@ -298,6 +316,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
       m.used.delete(oldest.uri)
       m.session.close(oldest)
     }
+    touched()
   }
 
   const sync = (m: Managed, session: LspSession, absolute: string, languageId: string, text: string): OpenDocument => {
@@ -426,7 +445,9 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
     awaitingApproval: () => servers.filter((plan) => !isApproved(plan)).map(lspServerQuestion),
 
     approve(key) {
-      if (servers.some((plan) => lspApprovalKey(plan) === key)) approvedKeys.add(key)
+      if (!servers.some((plan) => lspApprovalKey(plan) === key) || approvedKeys.has(key)) return
+      approvedKeys.add(key)
+      touched()
     },
 
     async stop() {
@@ -443,6 +464,7 @@ export function createLspRegistry(options: LspRegistryOptions): LspRegistry {
           m.connection = null
         }),
       )
+      touched()
     },
   }
 }

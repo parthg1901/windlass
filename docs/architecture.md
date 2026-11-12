@@ -459,7 +459,7 @@ is a new version with a decoder for the old one.
   boundary), `withdraw` (a prompt that was not delivered yet), `readEvents` (its stored log, for a client that
   replays history), `revert`, `undoRevert`, `rename` (`session.renamed`, at any time), `compact` (a compaction
   the user asks for, see "Compaction"), `setAgent`, `agent` and `agents` (see "Agents"), `hooks`, `approveHook`,
-  `lsp` and `approveLspServer` (see "Hooks and language-server diagnostics"), `commands`, `findCommand`,
+  `lsp`, `approveLspServer` and `onFeatureChange` (see "Hooks and language-server diagnostics"), `commands`, `findCommand`,
   `expandCommand` and `sendCommand` (see "Slash commands and live telemetry"), an event stream and
   `close`. Closing a session closes that session:
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
@@ -1089,6 +1089,16 @@ command whole: a hook's as it is written, every line of it (a line a shell reads
 server's with each argument quoted (`quotedCommand`), and a language server's question carries `argv` as an MCP
 server's does. `lsp()` gives the started servers and the ones that wait;
 `approveLspServer(name, fingerprint)` records the approval, and the server starts at the next file it serves.
+`lsp()` is `null` only for an engine that offers no diagnostics; a session whose configuration names no server
+that could give any has a state that says so (`configured: false`).
+
+**Being told of a change.** `EngineSession.onFeatureChange(listener)` is one listener for the MCP servers, the
+hooks and the language servers: it is called with `mcp`, `hooks` or `lsp` when what `mcp()`, `hooks()` or `lsp()`
+would return has changed, so a client does not look again on a timer. The registries say when a server's state
+moved (`McpRegistry.onStatus`, `LspRegistryOptions.onStatus`), the session says when it read a configuration or
+recorded an approval, and the session compares what the getter returns with what the listeners last heard, so a
+turn that reads the same configuration again says nothing. The countdown to an MCP server's next attempt is not
+a change. Until a session's configuration is read it is taken to have no hooks and no language servers.
 
 ## Slash commands and live telemetry
 

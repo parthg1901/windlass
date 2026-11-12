@@ -42,6 +42,14 @@ export type LspSetup = Pick<LspRegistryOptions, "env" | "settleMs" | "graceMs" |
 
 /** The language servers of a session, for a client to show. */
 export interface LspState {
+  /**
+   * Whether the session's configuration names a language server that could
+   * give diagnostics. `false`: none is named, diagnostics are off
+   * (`enabled: false`, `waitMs: 0`, every server disabled), the
+   * configuration could not be read, or the session is a replay; both lists
+   * are then empty.
+   */
+  readonly configured: boolean
   /** Every server that was started for a workspace root, as its registry reports it. */
   readonly servers: readonly LspServerStatus[]
   /** The project's servers that wait for the user's approval and are not started. */
@@ -137,6 +145,8 @@ interface Held {
   readonly registry: LspRegistry
   /** The sessions that hold it, each with where its notices go. */
   readonly listeners: Set<(notice: LspNotice) => void>
+  /** The sessions that hear when the registry's status changed. */
+  readonly watchers: Set<() => void>
 }
 
 /** What a session holds of the hub: the registry of its working directory and configuration, and how to let go of it. */
@@ -162,20 +172,25 @@ export class LspHub {
    * The registry for a session working in `cwd` under `plan`. The servers
    * the plan says are approved may start in it, also when the registry was
    * created before that approval was given. `onNotice` hears why an edit got
-   * no diagnostics, once per server and reason.
+   * no diagnostics, once per server and reason; `onStatus` hears that what
+   * the registry reports of its servers may have changed.
    */
-  acquire(plan: LspPlan, cwd: string, onNotice: (notice: LspNotice) => void): HeldRegistry | null {
+  acquire(plan: LspPlan, cwd: string, onNotice: (notice: LspNotice) => void, onStatus: () => void = () => {}): HeldRegistry | null {
     if (this.stopping !== null) return null
     // Who approved what is not part of what a registry is: an approval given later is told to the one that exists.
     const key = stableJson({ cwd: resolve(cwd), config: plan.config as unknown as Json, servers: plan.servers.map((server) => ({ name: server.config.name, origin: server.origin, fingerprint: server.fingerprint })) })
     let held = this.held.get(key)
     if (held === undefined) {
       const listeners = new Set<(notice: LspNotice) => void>()
-      const registry = createLspRegistry({ ...this.setup, plan, cwd, onNotice: (notice) => [...listeners].forEach((listener) => listener(notice)) })
-      held = { key, registry, listeners }
+      const watchers = new Set<() => void>()
+      const registry = createLspRegistry({ ...this.setup, plan, cwd, onNotice: (notice) => [...listeners].forEach((listener) => listener(notice)), onStatus: () => [...watchers].forEach((watcher) => watcher()) })
+      held = { key, registry, listeners, watchers }
       this.held.set(key, held)
     }
     const entry = held
+    // Each session is its own entry, also when two of them pass the same function.
+    const watcher = () => onStatus()
+    entry.watchers.add(watcher)
     for (const server of plan.servers) if (server.origin === "project" && server.approved) entry.registry.approve(lspApprovalKey(server))
     entry.listeners.add(onNotice)
     let released = false
@@ -186,6 +201,7 @@ export class LspHub {
         if (released) return
         released = true
         entry.listeners.delete(onNotice)
+        entry.watchers.delete(watcher)
         if (entry.listeners.size > 0 || this.held.get(key) !== entry) return
         this.held.delete(key)
         void entry.registry.stop().catch(() => {})
