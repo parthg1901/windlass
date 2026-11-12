@@ -582,16 +582,21 @@ export class PrettyRenderer implements Sink {
         this.addSummaryCalls(event.data.calls)
         // The sizes are the harness's estimates of the next request, before and after.
         const sizes = before > 0 && event.data.tokensAfter > 0 ? ` · about ${count(before)} → ${count(event.data.tokensAfter)} tokens` : ""
+        // The images of the results that are kept and no longer sent with them: the model is told with each result.
+        const images = (event.data.retired ?? []).reduce((sum, result) => sum + result.images, 0)
+        const retired = images === 0 ? [] : wrap(`${plural(images, "image")} the model had read ${images === 1 ? "is" : "are"} no longer sent to it; it is told where each was and can read the file again.`, this.width - 2)
         if (event.data.source === "fallback") {
           // No summary could be had. The session carries on; the user is told what the model now works from.
           this.line("info", [seg(`${SYMBOL.compact} `, "yellow"), seg("compacted the conversation without a summary", "yellow"), seg(sizes, "dim")])
           for (const line of wrap(`Why: ${event.data.detail ?? "the model produced no usable summary"}.`, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
           for (const line of wrap("The model continues from a list of the files, commands and errors so far and your own messages, and can search the full conversation.", this.width - 2))
             this.line("info", [seg(`  ${line}`, "dim")])
+          for (const line of retired) this.line("info", [seg(`  ${line}`, "dim")])
           return
         }
         this.line("info", [seg(`${SYMBOL.compact} `, "cyan"), seg("compacted the conversation"), seg(sizes, "dim")])
         for (const line of wrap("Earlier messages are now a checkpoint; the model can still search them.", this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        for (const line of retired) this.line("info", [seg(`  ${line}`, "dim")])
         if (event.data.detail !== null) for (const line of wrap(`Note: ${event.data.detail}.`, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
         return
       }

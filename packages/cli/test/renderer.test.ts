@@ -556,6 +556,21 @@ describe("compaction", () => {
     ])
   })
 
+  test("the images of kept results that are no longer sent to the model are counted under the line", () => {
+    const retired = [
+      { messageId: m("a1"), callId: c("c1"), images: 2, note: "[2 images were here; read the file again to see them]" },
+      { messageId: m("a2"), callId: c("c2"), images: 1, note: "[1 image was here; read the file again to see it]" },
+    ]
+    const withImages = (count: typeof retired) => event("compaction.ended", { messageId, summary: "Checkpoint.", source: "model", detail: null, tokensAfter: 48_250, usage: null, retired: count })
+    expect(lines(started, withImages(retired))).toEqual([
+      "⇣ compacted the conversation · about 191,400 → 48,250 tokens",
+      "  Earlier messages are now a checkpoint; the model can still search them.",
+      "  3 images the model had read are no longer sent to it; it is told where each",
+      "  was and can read the file again.",
+    ])
+    expect(lines(started, withImages(retired.slice(1))).slice(2).join(" ")).toBe("  1 image the model had read is no longer sent to it; it is told where each was   and can read the file again.")
+  })
+
   test("a summary that was used although something is off says what", () => {
     expect(lines(started, ended("repaired", "the model repeated its summary; its first copy is used")).at(-1)).toBe("  Note: the model repeated its summary; its first copy is used.")
   })

@@ -383,7 +383,9 @@ leaves it: the question waits under the view, and Tab answers it once you are ba
 A long session is compacted automatically: when the next request would fill most of the model's context window, the
 earlier part of the conversation is replaced by a checkpoint (a summary written by the model, plus your own
 messages and the files, commands and errors so far), and a short recent part is kept word for word. You see
-`⇣ compacted the conversation · about <before> → <after> tokens`.
+`⇣ compacted the conversation · about <before> → <after> tokens`, and under it in the line interface
+`<n> images the model had read are no longer sent to it; ...` when images are left out of what it is sent from
+then on.
 
 `/compact` does it now, when you want room before a long task. It says what happened: the same line with the sizes,
 or that there was nothing worth compacting (a short conversation, or one that is already a checkpoint and what
