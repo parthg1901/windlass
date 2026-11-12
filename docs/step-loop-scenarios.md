@@ -41,10 +41,11 @@ the two differ.
   other scenario runs with the layer off: each call runs as it is, `tool.started` carries no `run` facts, and the
   log holds no `approval.*` or `taint.*` event. With the layer on, `tool.started` shows the mode, `sandboxed` for a
   command that ran in the sandbox (`+network` when it had the network) and where each path argument lies.
-- The scenarios of the family "Forks, replays, subagents and background work" are each one session's log. A
-  fork's log holds its parent's events first (a scenario is one log, so they carry the scenario's session ID); a
-  replay's and a subagent's start at seq 1 and name the session they come from (`ses_other`). Subagents and
-  background work are switched on for the scenarios about them and off everywhere else.
+- The scenarios of the family "Replays, subagents and background work" are each one session's log: a replay's and
+  a subagent's start at seq 1 and name the session they come from (`ses_other`). Subagents and background work are
+  switched on for the scenarios about them and off everywhere else. The family "Forks" is listed last and apart
+  (`forkFamilies`): a fork's log begins with its parent's events (a scenario is one log, so they carry the
+  scenario's session ID), which makes it the one scenario that cannot be stored as a session under another ID.
 - *Model sees next* is `selectModelHistory` after the last event: what the next request is built from.
 - *The reducer rejects* lists events the loop must not write at the end of the named phase, with the error code.
 - Scenario constants: an attempt budget of 5 per logical step (1 + the spec's 4 retries), a crash-resume cap of 3,
@@ -2591,42 +2592,9 @@ Where commands cannot be sandboxed, `auto` does not quietly become `full`: each 
 
 *Model sees next:* u1, a1, a2.
 
-### Forks, replays, subagents and background work
+### Replays, subagents and background work
 
-#### 76. A fork continues from its parent's history
-
-A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
-
-*Provider:* the parent answers one prompt; the fork answers another.
-
-```
--- the parent's step is open
-1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
-  6  step.started a1 attempt=1
--- the parent's turn ends
-  7  text.ended a1 "It adds two numbers."
-  8  step.ended a1 finish=stop
-  9  execution.succeeded exe_1
--- the fork is created and takes a prompt of its own
- 10  session.created fork of ses_scenario through seq 9
- 11  inbox.enqueued u2 steer "And subtract?"
- 12  execution.started exe_2
- 13  inbox.delivered u2
- 14  step.started a2 attempt=1
- 15  text.ended a2 "There is no subtract."
- 16  step.ended a2 finish=stop
- 17  execution.succeeded exe_2
-```
-
-*UI:* u1 user · a1 completed · u2 user · a2 completed. *Claim:* released.
-
-*Model sees next:* u1, a1, u2, a2.
-
-*The reducer rejects:*
-- after "the parent's step is open": `session.created fork of ses_scenario through seq 6` (invalid_transition). A fork point is a step boundary: the history up to it must be whole.
-- after "the parent's turn ends": `session.created fork of ses_scenario through seq 4` (invalid_range). A fork is folded onto its parent at exactly the seq it names.
-
-#### 77. A replay that stays on its recording
+#### 76. A replay that stays on its recording
 
 A recorded session (a read, then an answer) is replayed against a changed system prompt. The replay is a session of its own, typed as a replay of the recording. Its baseline is the recording's with the new prompt; the recording's prompt is delivered where it arrived. The model makes the recorded call: it is answered from the recording (`replay.call matched`, then the recorded `tool.started` and the recorded result, byte for byte) and nothing runs. No snapshot is taken, no check runs, nobody is asked. When the recording's last step is replayed the execution ends, and `replay.ended` says the replay was identical.
 
@@ -2664,7 +2632,7 @@ A recorded session (a read, then an answer) is replayed against a changed system
 - after "the model makes the recorded call and is given the recorded result": `replay.call a1/call_1 diverged recorded step 1 call 1 (arguments_differ)` (invalid_transition). Only a matched call names a recorded call.
 - after "the recording's answer follows, and the replay ends as identical": `replay.ended identical "again"` (invalid_transition). A replay ends once.
 
-#### 78. A replay that leaves its recording stops there
+#### 77. A replay that leaves its recording stops there
 
 Under the `stop` policy. The replayed model reads another file than the recording did. That call is not on the recording: it is recorded as the divergence (`replay.call diverged`, with the kind), it is not run, and it settles as not started with a text that says the replay stopped. The step closes, and the execution ends without an answer, marked as ended by the replay (`execution.failed` with `cause: replay`: nothing failed, but there is no answer to end on). `replay.ended` carries the report: where the replay left and what the recording did there.
 
@@ -2691,7 +2659,7 @@ Under the `stop` policy. The replayed model reads another file than the recordin
 
 *Model sees next:* u1, a1.
 
-#### 79. A replay that leaves its recording carries on in a copy
+#### 78. A replay that leaves its recording carries on in a copy
 
 Under the `execute` policy. At the first call that is not on the recording, the recorded workspace as it was at that point is restored into a copy (`replay.diverged`: the directory and the snapshot it was restored from; here the recording has none, so the copy starts empty), and from there the replay is an ordinary turn in that copy: the call runs for real (`replay.call diverged executed`), with the sandbox and without the network where the approval layer is on, and the turn runs to its answer. The recording's workspace is never touched. `replay.ended` says the replay diverged; what the copy holds can be graded.
 
@@ -2726,7 +2694,7 @@ Under the `execute` policy. At the first call that is not on the recording, the 
 *The reducer rejects:*
 - after "the model leaves the recording; the copy is made and the call runs in it": `replay.diverged extra_call -> /data/replays/copy (no snapshot: the copy is empty)` (invalid_transition). A replay leaves its recording once.
 
-#### 80. A subagent runs a task and its answer is the call's result
+#### 79. A subagent runs a task and its answer is the call's result
 
 The model hands a task to a subagent. The call starts like any tool (its effect class says the step may change files); the child session is named in the parent's log (`spawn.started`) before it exists. The child runs its own loop in the same workspace with a fresh conversation. When it ends, `spawn.ended` records how, and what its model calls cost (rolled up into the parent's totals), and the call settles with the child's final answer and a reference to its session. Several such calls in one response run side by side. The subagent's turn is not verified; the parent's is.
 
@@ -2760,7 +2728,7 @@ The model hands a task to a subagent. The call starts like any tool (its effect 
 - after "the child is started and runs": `spawn.ended bg_2 completed usage=1000in/50out` (not_found). Only work that is running ends.
 - after "the child ends; its answer is the call's result": `spawn.ended bg_1 completed usage=1000in/50out` (not_found). Spawned work ends once.
 
-#### 81. The subagent's own log
+#### 80. The subagent's own log
 
 The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, without the verification gate. At the depth limit (one level by default) its tool list has no `subagent`.
 
@@ -2786,7 +2754,7 @@ The same situation from the child's side. A subagent is a real session, typed as
 *The reducer rejects:*
 - after "the child is created with its task and works": `spawn.ended bg_1 completed` (not_found). The end of the child's work is recorded in its parent's log, not its own.
 
-#### 82. A background subagent's answer arrives as a message
+#### 81. A background subagent's answer arrives as a message
 
 With `background: true` the call returns at once with the child's reference, and the model goes on. When the model has nothing more to do while the child still works, the turn does not end: the loop waits at the boundary (the checks would see the child's work half done). When the child ends, `spawn.ended` and the message that carries its answer are one append; the message is a harness message (`subagent_result`), delivered as a steer at the boundary, and the model answers it. Had the session been idle (its own turn failed, say), the message would have started a new execution.
 
@@ -2818,7 +2786,7 @@ With `background: true` the call returns at once with the child's reference, and
 
 *Model sees next:* u1, a1, a2, s1, a3.
 
-#### 83. A background command's exit wakes the idle session
+#### 82. A background command's exit wakes the idle session
 
 The shell tool's `background` argument starts a command and returns a handle at once. The command is spawned work of the session (`spawn.started`): it runs beside the steps, in the same sandbox a foreground command would, and is stopped when the session is interrupted or closed. The turn ends while it runs. When it exits, `spawn.ended` (with the exit code) and a harness message with the end of its output (`background_command`) are one append; the session is idle, so the message starts a new execution, is delivered, and the model answers.
 
@@ -2852,7 +2820,7 @@ The shell tool's `background` argument starts a command and returns a handle at 
 
 *Model sees next:* u1, a1, a2, s1, a3.
 
-#### 84. A background command is lost when the process dies
+#### 83. A background command is lost when the process dies
 
 A background command dies with the harness process: the guard that every command has kills its process group. The session's log still says it runs. When the session is opened again, the command is recorded as lost (`spawn.ended lost`) together with a harness message that says so (`spawn_lost`). Opening a session starts nothing, so the message waits in the inbox and is delivered, before the user's next prompt, when that prompt starts the next turn.
 
@@ -2887,6 +2855,41 @@ A background command dies with the harness process: the guard that every command
 *UI:* u1 user · a1 completed [shell success] · a2 completed · s1 synthetic · u2 user · a3 completed. *Claim:* released.
 
 *Model sees next:* u1, a1, a2, s1, u2, a3.
+
+### Forks
+
+#### 84. A fork continues from its parent's history
+
+A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
+
+*Provider:* the parent answers one prompt; the fork answers another.
+
+```
+-- the parent's step is open
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+-- the parent's turn ends
+  7  text.ended a1 "It adds two numbers."
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+-- the fork is created and takes a prompt of its own
+ 10  session.created fork of ses_scenario through seq 9
+ 11  inbox.enqueued u2 steer "And subtract?"
+ 12  execution.started exe_2
+ 13  inbox.delivered u2
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "There is no subtract."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed · u2 user · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, u2, a2.
+
+*The reducer rejects:*
+- after "the parent's step is open": `session.created fork of ses_scenario through seq 6` (invalid_transition). A fork point is a step boundary: the history up to it must be whole.
+- after "the parent's turn ends": `session.created fork of ses_scenario through seq 4` (invalid_range). A fork is folded onto its parent at exactly the seq it names.
 
 <!-- scenarios:end -->
 

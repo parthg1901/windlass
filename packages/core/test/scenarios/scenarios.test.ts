@@ -8,7 +8,7 @@ import { join } from "node:path"
 import type { NewEvent } from "../../src/event/durable.ts"
 import type { Projection } from "../../src/message/message.ts"
 import { ReduceError, reduce } from "../../src/message/reducer.ts"
-import { families } from "./index.ts"
+import { allFamilies as families } from "./index.ts"
 import { SCENARIOS_END, SCENARIOS_START, renderScenarios } from "./render.ts"
 import { type Expect, allEvents, fold, historyIds, openLabel, position, view } from "./script.ts"
 

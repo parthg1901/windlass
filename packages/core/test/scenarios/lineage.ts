@@ -356,5 +356,12 @@ export const backgroundCommandLost: Scenario = {
   ],
 }
 
-export const lineageScenarios = [forkContinues, replayIdentical, replayStops, replayExecutes, subagentReturns, subagentLog, subagentInBackground, backgroundCommandWakes, backgroundCommandLost]
+/**
+ * A fork's log spans two sessions' files: it begins with its parent's
+ * events. A scenario of it therefore cannot be stored as one session under
+ * another ID, which every other scenario can, so it is listed apart.
+ */
+export const forkScenarios = [forkContinues]
+
+export const lineageScenarios = [replayIdentical, replayStops, replayExecutes, subagentReturns, subagentLog, subagentInBackground, backgroundCommandWakes, backgroundCommandLost]
 

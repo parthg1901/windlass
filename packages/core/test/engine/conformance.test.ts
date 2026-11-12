@@ -22,7 +22,7 @@ import { script } from "../../src/testing/fake-provider.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
-import { families } from "../scenarios/index.ts"
+import { allFamilies as families } from "../scenarios/index.ts"
 import {
   ATTEMPT_BUDGET,
   CRASH_EFFECT_UNKNOWN,
