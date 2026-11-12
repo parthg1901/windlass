@@ -142,6 +142,35 @@ requests in total.
     `supports_reasoning_effort_updates`, `prefer_websockets: true`, `base_instructions` and many Codex-specific
     flags. `gpt-6-luna` is described as "Fast and affordable model for easier tasks" (GET /models, not counted above).
 
+Added on 2026-11-12, while compaction was built (one run each; `gpt-6-luna`, effort `low`, a stable `session-id`):
+
+30. An assistant message item sent without an `id` is never read from the prompt cache, and nothing after it is.
+    The same 7,631-token request, with one short assistant message near its start, was sent twice 12 s apart:
+    cached 0 both times. With an invented `id` on that item that stayed the same (`msg_` and 48 hex digits), the
+    second request cached 7,424; so did a request with no assistant item at all. The server gives an item without
+    an `id` a new one on every request (item 17), and the cache evidently covers it. Consequence: every assistant
+    item must be replayed with a stable `id`, also text the harness itself stored (a response cut short, history
+    shown to another model). The request builder derives one (`stableItemId`).
+31. A prefix written cold is not readable at once, and the wait grows with how much of it is new. Twelve requests
+    that shared a 37,860-token prefix (stable item ids, one `session-id`), 3 to 4 s apart over about 40 s: cached 0
+    every time. The same kind of request 45 s after the first: 38,656 of 38,806 cached, and again on the next. At
+    6,500 tokens of new prefix (the first requests after a compaction): cached only the 1,920 tokens of tools and
+    instructions at +2.5 s and +5.5 s, and 6,272 from about +8 s on. A step that appends a few hundred tokens to a
+    cached prefix reads it 2 to 3 s later (item 19a is this at 3,000 tokens). Sibling requests on a prefix that is
+    still cold do not help each other. This is what item 19a described; a harness cannot wait it out, but the first
+    requests after a compaction are cheaper the smaller the new prefix is.
+32. A summary request reads the cache like any step: its prefix is the step request of what it summarises. Three
+    live compactions read 4,224 of 4,397, 4,608 of 4,812 and 2,432 of 2,624 shared tokens; what was new in each was
+    a tool result that had never been sent.
+33. `gpt-6-luna` at effort `low`, asked for a summary with `tool_choice: "none"` after a developer message, once
+    answered the user instead ("I can't run the test suite right now..."). The summary prompt now opens by saying
+    that the task is paused and tools are off on purpose; in seven live summaries since, every first answer had
+    the required form. An earlier run met summaries repeated several times over and one call that wrote for 15
+    minutes; the loop bounds both (it stops reading at twice the summary's limit, and a summary call at 5 minutes).
+34. `context_window` in the model list is 272,000 for `gpt-6-luna` (500,000 for the 6.1 models), `max_context_window`
+    872,000; entries also carry `truncation_policy` and `auto_compact_token_limit` (`null`). The harness uses
+    `context_window`.
+
 ---
 
 ## 0. The flow in one screen

@@ -27,7 +27,8 @@ packages/core/src
   message/        message.ts (projection types), reducer.ts (state + event -> state), history.ts (model view, row diff)
   store/          store.ts (the Store and SessionStores interfaces), schema.ts (SQLite DDL), sqlite.ts (one
                   database on bun:sqlite), sqlite-lock.ts (its single writer), directory.ts (one database per
-                  session, the listing index), blobs.ts (media shared by all sessions)
+                  session, the listing index), blobs.ts (media shared by all sessions), history-index.ts (the
+                  full-text index the history tools search, built lazily in the session's own database)
   assembly.ts     createHarness: the real engine on the data directory, for the CLI and the ACP server alike
   request/        request.ts (ModelRequest and its blocks), canonical.ts, prefix.ts (hashing and the prefix check),
                   build.ts (the request builder), build-break.ts (which prefix breaks are legitimate)
@@ -35,7 +36,13 @@ packages/core/src
   provider/       provider.ts (stream events), error.ts (error taxonomy), usage.ts, openai-responses*.ts
   tool/           tool.ts (Tool, ToolContext, ToolResult), runtime.ts (one call to its terminal outcome), cap.ts
   tools/          the standard tools: read, write, edit, ls, glob, grep, shell
-  engine/         the step loop: engine.ts (sessions, the drain, cancel, retries, the verification gate, revert),
+  context/        conversations that outgrow the context window, without I/O: estimate.ts (the size of the next
+                  request), policy.ts (when to compact and how hard), tail.ts (what is kept word for word),
+                  summary.ts (the summary request, its check, its bounds), checkpoint.ts (the frozen text that
+                  replaces the removed history), history-tools.ts and history-search.ts (the history tools'
+                  shapes, texts and search)
+  engine/         the step loop: engine.ts (sessions, the drain, cancel, retries, compaction, the verification gate,
+                  revert), history.ts (the history tools as the loop offers them),
                   recovery.ts (start-up recovery), state.ts (what the loop reads off the projection),
                   workspace.ts (what it reads off the log about snapshots), constants.ts (limits and frozen texts),
                   channel.ts (the event stream), clock.ts
@@ -77,7 +84,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
 | Tools | `tool.called`, `tool.started` (with the effect class), `tool.settled` |
-| Compaction | `compaction.started`, `compaction.ended`, `compaction.failed` |
+| Compaction | `compaction.started` (the trigger, the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after), `compaction.failed` |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
 | Verification | `checks.started`, `checks.finished` (the evidence), `checks.failed`; the gate's outcome is on `execution.succeeded` |
 | History ranges | `revert.started`, `history.reverted` (with the record of the restore), `revert.undo_started`, `history.restored`, `revert.failed` |
@@ -97,7 +104,10 @@ is a new version with a decoder for the old one.
   each instruction source, the effect class of a started tool, the model and effort of the session.
 - An interruption always has a reason (`user` or `shutdown`). There is no default, in the schema or in the abort token.
 - Nothing is deleted. Revert and refusal are ranges of `seq` that set a flag; compaction is a marker; a fork is
-  "the parent's events up to `throughSeq`, then my own, starting at `throughSeq + 1`".
+  "the parent's events up to `throughSeq`, then my own, starting at `throughSeq + 1`". A range may hold a
+  compaction, which is then excluded like any message: reverting to before a compaction undoes it for the model.
+- A model call can be rebuilt from the log alone, a compaction's summary calls included: the cut, the prompt and the
+  one repair of a compaction are fields of its events, written before the request they shape is sent.
 - What happened to the workspace is recorded as snapshot IDs, never as file lists. From `snapshot.taken` events
   alone: a step changed what differs between its `step_start` and `step_end` snapshots (a step without them could
   not change files; one that was cut short has no `step_end`, and the next snapshot bounds it); a turn changed what
@@ -139,7 +149,12 @@ is a new version with a decoder for the old one.
   - *Resumes.* `execution.resumed` counts toward `crashResumes` only when the claim was still `running`, which means
     the previous process died. A resume after a clean shutdown is not counted.
   - *Settings.* A step calls the model `session.settings` names. Settings change only at a step boundary.
-  - *Ranges.* Revert and refusal ranges never reach back past the latest compaction.
+  - *Compaction.* A compaction starts at a boundary under a running claim and records its cut, which never lies
+    before the cut of the compaction in force. It asks for one repair at most, and ends as `repaired` only after it
+    did. Nothing else starts while it is open.
+  - *Ranges.* A revert or refusal range starts no later than the event that makes it. It may hold a compaction; the
+    compaction model history starts from is always the latest completed one that is not excluded, so an undo of the
+    revert brings the checkpoint back.
   - *Checks.* A run starts only when the model has answered and no steer waits (a queued item waits for the
     run), has one terminal event, and nothing else happens while it is open. `execution.succeeded` is rejected
     while a run is open, and a check report may stay unanswered only when the execution, or the turn before a
@@ -152,7 +167,8 @@ is a new version with a decoder for the old one.
   workspace state checks are selected against (`verification.verified`: the first snapshot, then the state at each
   verification that passed) and the latest run of checks; and the reverts that can still be undone.
 - `selectModelHistory` defines what the model sees: non-excluded messages, starting at the latest completed
-  compaction (its summary first, then the messages it kept), together with the settings and the root session ID the
+  compaction that is not excluded (its checkpoint first, then the messages it kept, which may be the last steps of
+  the turn in progress), together with the settings and the root session ID the
   request's parameters come from. Because every call is settled before its step ends, history is rendered as stored,
   with no repair at read time.
 
@@ -166,6 +182,14 @@ is a new version with a decoder for the old one.
   the session's own file.
 - Media lives in a blob store keyed by SHA-256 that all sessions share, so a reload shows the same image and a
   block that refers to it hashes the same.
+- `searchMessages` and `readMessageAt` are what the history tools use: every message that is not excluded, also the
+  ones a compaction took out of the model's view, never a checkpoint. The SQLite store answers from a full-text
+  index (FTS5) in the session's own database. The index is derived data, like the listing cache: nothing is written
+  for it when an event is appended; a search first indexes, in one transaction, the messages that ended since the
+  last search (the first search of a session indexes all of it: about 0.6 s for 16 MB of text on the development
+  machine). Exclusions are not in the index: the search joins the message rows and leaves out what is excluded at
+  that moment, so a revert, its undo and a refusal need no index update. Where SQLite has no FTS5, on a read-only
+  connection, and when the index finds nothing (a term inside a longer word), the messages are scanned instead.
 - Every failure the contract names is a `StoreError` with a code, never a raw SQLite error: `session_not_found`,
   `seq_conflict`, `request_not_pending`, `duplicate_request`, `locked` (another writer has the file open, or held the
   write lock longer than the store waits; for a session, a `SessionInUseError` that names the process),
@@ -186,6 +210,14 @@ is a new version with a decoder for the old one.
 - A request may fail to extend the previous one only after `compaction.ended`, `history.reverted`, `step.refused` or
   `settings.changed`. `checkPrefix` takes the events appended since the previous request and reports any other
   break as a violation. A check report is an appended message and breaks nothing; a revert is one of the four.
+- `buildCompactionRequest(projection)` is the summary request of the open compaction: the step request of the part
+  before the cut plus the frozen prompt and, after a repair was asked for, the rejected answer and the follow-up.
+  It reads what it summarises from the provider's cache, and it is a function of stored state like every request.
+- An assistant part that has no provider data to replay (text flushed from a response that was cut short, a part
+  shown to another model than the one that wrote it, the rejected answer in a repair request) is sent with an item
+  ID derived from the stored message and the part's position. The provider gives an assistant item without an ID a
+  new one on every request, and never reads such an item, or anything after it, from its prompt cache (measured:
+  0 of 7,631 tokens cached without the ID, 7,424 with it).
 
 **Instructions** (`instructions/`)
 - The baseline is the base system prompt followed by one section per source (AGENTS.md files, the environment, the
@@ -326,7 +358,68 @@ is a new version with a decoder for the old one.
   message with its fingerprint. The baseline is never rewritten for it: the next request is the previous one plus
   appended items. The directories are derived from the log, so a restart finds the same ones.
 - One model call has a wall-clock limit (`modelCallTimeoutMs`, 30 minutes by default, `0` for none). A call still
-  running then fails as a `transport` error with reason `timeout` and is retried within the attempt budget.
+  running then fails as a `transport` error with reason `timeout` and is retried within the attempt budget. A
+  compaction's summary call has a shorter one (`compactionCallTimeoutMs`, 5 minutes) and is not tried again.
+- *Compaction.* Before every step the loop builds the request it would send, estimates its size from the request
+  ledger (the provider's count for the last step call plus an estimate of what was appended since, with a margin)
+  and asks the policy (`context/policy.ts`) with the model's context window, which the engine is told per model
+  (`contextWindow`; `createHarness` takes it from the provider's model list). Below 65% of the usable window nothing
+  happens; from 65% the conversation is compacted at the next user-message boundary; from 80% before the next step,
+  also in the middle of a turn. Nothing of this is kept in memory: the decision is made again from stored state at
+  every boundary, so "due at the next user message" needs no flag and survives a restart. Without a known window
+  nothing is compacted ahead of time; a request the provider rejects as too large is compacted aggressively.
+- *The cut.* `chooseTail` keeps the recent history that fits the policy's budget word for word and never splits a
+  step. What the next call answers is kept by a normal compaction even over budget: the input that arrived since
+  the model last spoke, or, in the middle of a turn, the last step with its results. So one very long turn keeps
+  its most recent steps, and the checkpoint carries the turn's request (quoted verbatim) and a sentence telling the
+  model that the work was in progress. An aggressive compaction keeps only what fits; with nothing kept, the model
+  continues from the checkpoint alone. A normal compaction that could take out less than a quarter of what is in
+  view (one huge tool result is the last step) is not made: the request is sent while it fits, and compacted
+  aggressively at once when it does not.
+- *The summary.* The summary request is the step request of the part before the cut plus one prompt, so it reads
+  that part from the cache; the cut and the prompt are durable (`compaction.started`) before it is sent. This
+  provider rejects `max_output_tokens`, so the answer is bounded by the loop: it stops reading at twice the
+  summary's token limit and takes what arrived. A summary the model repeated is cut at its first repeated heading.
+  An answer that is still not of the required form is asked for once more, with the rejected answer and what is
+  wrong appended (`compaction.repair_requested`). After that, and after a call that reached its time limit, a part
+  too large to summarise, a refusal or an empty answer, the compaction completes without the model: the checkpoint
+  then says plainly that there is no summary and carries the identifier index, the user's messages verbatim and
+  the assistant's last words. A summary that only lacks a detail or is too long within the bound is used and says
+  so. Only a provider that cannot be used at all (signed out, the plan's limit, failing again and again) fails the
+  execution, as it would fail a step; history is then unchanged. `compaction.ended` records which of these happened
+  (`source`, `detail`) and the size after, so a client can tell the user: the CLI prints the sizes before and
+  after, and for a fallback why there is no summary and what the model continues from.
+- *The checkpoint* (`context/checkpoint.ts`) is rendered once, from every non-excluded message before the cut in
+  the whole log, and frozen in `compaction.ended`: the summary, an index of exact identifiers (files with lines,
+  commands with the outcome of each run, errors, commits, failing tests), the user's messages verbatim up to a
+  budget, and the pointer to the history tools. It is never rendered again, whatever the checkpoint code becomes.
+- *After a compaction* the baseline is set again (instruction updates are folded in, the tool list is the same), and
+  the next request is the checkpoint and the kept messages, which render exactly as before. The request after that
+  extends it. The anti-thrash rules are the policy's: a compaction that freed less than a quarter blocks the next
+  until the context has grown; if the request then does not fit there is one aggressive compaction; then nothing
+  more is tried.
+- *What else a compaction meets.* An interrupt during the summary call closes the compaction as interrupted and
+  leaves history as it was. A process that dies inside one leaves it open; recovery closes it as crashed and the
+  loop decides again (the checkpoint a dead process did freeze is used, not made twice). Input that arrives during
+  the summary call waits in the inbox: a steer is in the first request after the compaction, a queued message waits
+  for the turn; a model or effort change is applied at the boundary after it. The verification gate is unaffected:
+  it reads the whole log, not the model's view. A fork inherits the compaction with the history. A revert may go
+  back before a compaction: the range excludes the compaction, model history is again what it was before that
+  message (which fit the window when the message was sent), and undoing the revert brings the checkpoint back. The
+  snapshot a user message goes back to is therefore kept also when the message is behind a compaction.
+- *The history tools* (`history_search`, `history_read`; `engine/history.ts`) are read tools over the session's
+  stored messages. They are in every session's tool list from its first baseline rather than added at the first
+  compaction: the list never changes (one frozen prefix for the whole session, and the request after a compaction
+  shares the tools with the ones before it), and a long session can look up an early result before anything was
+  compacted. The cost is two tool descriptions in every request, cached with the rest of the prefix. A search
+  finds an identifier as written, a quoted phrase, or a rough description (messages holding more of the words rank
+  higher; plain words match as prefixes), names each hit's `seq` and where in the message the match is, and a read
+  names the messages before and after. Reverted and refused messages are never returned, and a checkpoint is not
+  searched. Their output goes through the tool runtime's one cap like any tool's. They see what the model was
+  shown: a tool output that was capped when it ran is stored capped, with the path of the full output.
+- *The context window in tests.* `LIGHT_HARNESS_TEST_CONTEXT_WINDOW` (the name is built from `brand`) lowers the
+  window `createHarness` hands the engine, so an evaluation run compacts after tens of thousands of tokens. It can
+  only lower it, the harness says so on its log, and no configuration file has a key for it.
 - A diagnostic about a session (a prefix violation, an internal error, a tool that threw) is said once: as an
   ephemeral `diagnostic` event of that session's stream, which a client shows. It goes to the engine's log instead
   only when no open session can carry it. `onDiagnostic` hears every one.
@@ -347,6 +440,10 @@ These are the shapes the scenarios spell out event by event.
 - **A model or effort change.** `settings.changed` at a step boundary; the next `step.started` names the new model.
 - **A queued message.** The turn's answer · the gate (a run of checks, when one applies) · `snapshot.taken
   delivery` · in one append `turn.ended` with the verdict and `inbox.delivered` · the next turn's steps.
+- **A compaction.** At a boundary under the claim: `compaction.started` (trigger, mode, cut, prompt, size) · the
+  summary call, and for an unusable answer `compaction.repair_requested` and a second call · `compaction.ended`
+  (the checkpoint, `source`, the size after) · `baseline.set` · the next `step.started`. After a rejected request:
+  `step.failed` with the overflow first, then the same.
 - **A withdrawn prompt.** `inbox.enqueued` · `inbox.cancelled`. It never becomes a message.
 - **Archiving.** `session.archived`, appended while the session is held only for that; `session.unarchived` undoes it.
 - **Instructions found on the way.** A step whose calls touch a new directory ends · `instruction.appended` for the
@@ -434,3 +531,10 @@ that finds `sessions.db` in the data directory moves it, with its lock and log f
 
 The model layer talks to OpenAI's Responses API through "Sign in with ChatGPT". That flow keeps no conversation state
 on the server, so the full history is sent on every call and an unchanged prefix is what makes the call cheap.
+
+Two things about its prompt cache shape what the harness does, both measured (`docs/reference/responses-api.md`,
+"Verified live"): an assistant item is read from the cache only under the item ID it was written with, which is why
+the request builder derives one for parts that have none; and a prefix that was written cold is not readable at
+once, for longer the more of it is new (a few seconds for a few thousand tokens, more than half a minute for
+38,000). The second one means the first requests after a compaction pay for the new prefix in full; a smaller kept
+tail shortens that.

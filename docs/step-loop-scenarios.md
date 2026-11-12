@@ -13,9 +13,9 @@ The scenarios live in `packages/core/test/scenarios/`, one module per family, an
 after each phase, and checks, one test per entry, that the reducer rejects every wrong move listed with a phase.
 
 `packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario with the scripted provider
-and compares the events it wrote with the scenario's. Two scenarios differ from what the loop writes, each by one
-stated detail (the `baseline.set` after a compaction in 31, the runtime's wording for malformed arguments in 26); the
-test lists them with the reason.
+and compares the events it wrote with the scenario's. One scenario differs from what the loop writes, by one stated
+detail (the runtime's wording for malformed arguments, in "Malformed tool arguments"); the test lists it with the
+reason. Every other scenario, the eight of the Compaction family included, is reproduced event for event.
 
 Every ordering rule on this page is enforced by the reducer, which runs inside the append transaction: an event that
 breaks one is never written. A loop test therefore needs no separate checker. It folds the events its loop wrote; a
@@ -2308,16 +2308,52 @@ What the reducer enforces for snapshots, checks and reverts, each with a scenari
 | `revert.started`, `history.reverted`, `revert.undo_started` and `history.restored` are accepted only while idle. A restore that changes files is announced first, and its record must name the announced target and undo point. Nothing starts while one is open. | 53 |
 | Only the latest revert can be undone, by the `seq` of its `history.reverted`, restoring the snapshot taken before it; `execution.started` empties the list. Undoing puts back exactly the messages that revert excluded. | 54 |
 
+What the reducer enforces for compaction, each with a scenario of the Compaction family or a test in
+`test/message/reducer.test.ts`:
+
+| Rule | Where |
+| --- | --- |
+| `compaction.started` needs a running claim at a boundary and a baseline. It records the cut (`keepFromSeq`), which may not lie before the cut of the compaction in force (what a checkpoint replaced stays replaced) nor after the event's own `seq` (nothing kept). The cut may lie inside the turn in progress, and inside the tail the previous compaction kept. | "A compaction in the middle of a long turn"; the reducer test "the cut is decided when a compaction starts" |
+| While a compaction is open nothing else starts: no step, no delivery, no baseline, no settings change. It has one terminal event, `compaction.ended` or `compaction.failed`. | "A compaction that is due waits for the next user message" |
+| `compaction.repair_requested` needs the open compaction and is accepted once. `compaction.ended` with `source: repaired` is rejected unless a repair was asked for. | "An invalid summary is repaired" |
+| A compaction ends as interrupted only after `execution.interrupt_requested`, for its reason; recovery closes one a dead process left as crashed. Either way model history is unchanged. | "Cancel while the summary is being written", "The process dies during a compaction" |
+| `baseline.set` is accepted again only after a compaction has completed. | "A compaction that is due waits for the next user message" |
+| A revert or refusal range may hold a compaction. The compaction is then excluded like any message, and model history starts from the latest completed compaction that is not excluded; undoing the revert brings it back. | the reducer tests under "revert"; `test/engine/workspace.test.ts`, `test/engine/prefix.test.ts` |
+
+How the loop decides (the policy is `packages/core/src/context/policy.ts`; the numbers are shares of the usable
+window, which is the model's context window minus what is kept free for the answer):
+
+1. Before every step the loop builds the request it would send and estimates its size: the provider's own count for
+   the last step call when the request extends it, plus an estimate of what was appended since, plus a margin.
+2. Below 65% nothing happens. From 65% a compaction is due at the next user-message boundary and not before: in the
+   middle of a turn it would cost the model the thread of its work. From 80% it happens before the next step,
+   wherever that is. Nobody knows the window (the provider did not say): nothing is compacted ahead of time.
+3. The cut keeps the recent history that fits the tail budget word for word and never splits a step. What the next
+   call answers is always kept by a normal compaction: the input that arrived since the model last spoke, or the
+   last step with its results. An aggressive one keeps it only if it fits.
+4. A normal compaction that would take out less than a quarter of what is in view is not made: while the request
+   fits it is sent, and when it does not the compaction is aggressive at once. A compaction that did free less than
+   a quarter of what it started from blocks the next one until the context has grown (the hold); if the request then
+   no longer fits there is one aggressive compaction; if that frees too little as well, nothing more is tried.
+5. A request the provider rejects as too large is compacted aggressively, whatever the estimate said. A second
+   rejection right after such a compaction fails the execution.
+6. The summary request is the step request of the part before the cut plus one prompt, both from the log. Its answer
+   is bounded: the loop stops reading at twice the summary's limit, and a call is stopped at
+   `compactionCallTimeoutMs` and not tried again. An unusable answer is asked for once more. After that the
+   checkpoint is built without the model. Only a provider that cannot be used at all (signed out, the plan's limit,
+   failing again and again) fails the execution, and history is then unchanged.
+
 Two notes stay open on purpose:
 
 ### G13 (note). Recovering from context overflow leaves a failed row
 
-- Rule: retry rules 2 and 5. Before output a retry is transparent, and overflow means "compact once and rebuild, only
+- Rule: retry rules 2 and 5. Before output a retry is transparent, and overflow means "compact and rebuild, only
   if no output started".
-- Sequence (scenario 31): `step.started a2` · `step.failed a2 provider:context_overflow` · `compaction.started c1
-  overflow` · `compaction.ended` · `step.started a3`. It is legal, but `compaction.started` needs a boundary, so `a2`
-  must be closed. It is left as an empty failed message inside the kept range, and "once" is enforced only by the
-  loop.
+- Sequence ("The provider rejects a request as too large"): `step.started a2` · `step.failed a2
+  provider:context_overflow` · `compaction.started c1 overflow aggressive` · `compaction.ended` · `baseline.set` ·
+  `step.started a3`. It is legal, but `compaction.started` needs a boundary, so `a2` must be closed. It is left as
+  an empty failed message, and "not twice in a row" is enforced only by the loop (the policy's
+  `decideAfterOverflow`).
 - Not changed. The request builder already renders an assistant message with no parts as nothing, because a budget
   that runs out before output and a cancel before output leave the same row. Letting a compaction open inside an
   output-free step would cost more than it saves.
@@ -2441,3 +2477,16 @@ a durable write and a side effect, which no log can show; they are the loop's al
     execution holds the claim *(reducer)*, or overwrite a file that was edited by hand since the target without the
     user having decided. A change that falls between two snapshots that do not bracket the harness's own work (a
     step's tools, a run of checks, a restore) was made by hand; so was one made while no snapshot could be taken.
+23. Send a summary request built from anything that is not in the log: the cut and the prompt are durable
+    (`compaction.started`) before the request is sent, and the rejected answer with the follow-up prompt
+    (`compaction.repair_requested`) before the repair is. Render a checkpoint again: its text is frozen in
+    `compaction.ended`, whatever the checkpoint code says later.
+24. Ask for a summary more than twice in one compaction, wait for a summary without a bound on its length and its
+    time, or fail an execution because the model could not summarise: the checkpoint is then built without it.
+25. Compact while a step is open *(reducer)*, compact twice in a row because the first freed too little (the hold),
+    or keep a tool result without the call it answers (a cut falls only between messages, and never inside a step
+    that continued under a new message).
+26. Change the tool list at a compaction. The history tools are in the list from the session's first baseline, so
+    the list before a compaction, in its summary request and after it is the same.
+27. Return excluded content through the history tools: a reverted or refused message can be neither found nor read,
+    and a checkpoint, which is derived text, is not searched.

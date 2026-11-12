@@ -89,7 +89,7 @@ export interface CheckpointInput {
 export const CHECKPOINT_HEADER = "Checkpoint of the earlier conversation, which was compacted to save space."
 export const INDEX_HEADING = "## Exact identifiers from the earlier conversation (extracted mechanically)"
 export const QUOTES_HEADING = "## The user's messages, verbatim (oldest first)"
-export const HISTORY_SENTENCE = `The full earlier conversation is still stored: ${HISTORY_SEARCH} finds exact text in it, and ${HISTORY_READ} reads a message in full by its seq.`
+export const HISTORY_SENTENCE = `The full earlier conversation is still stored: ${HISTORY_SEARCH} finds text in it, and ${HISTORY_READ} reads a message in full by its seq. When you need a detail or a reason from before this checkpoint that is not written here, look it up with them rather than guessing or saying that you cannot tell.`
 export const NO_SUMMARY_STATEMENT =
   "No summary of the earlier conversation could be produced, so nothing here says what the work means or where it stands. What follows was extracted mechanically from it."
 export const NO_SUMMARY_ADVICE = `Before you rely on anything from the earlier conversation, look it up with ${HISTORY_SEARCH} and ${HISTORY_READ}.`

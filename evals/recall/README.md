@@ -2,7 +2,8 @@
 
 How much does a compaction make the model forget? This evaluation plants checkable facts in a long synthetic
 session, compacts it the way the harness would (`packages/core/src/context/`), and asks one question per fact in a
-fresh request under four strategies:
+fresh request under five strategies. Four build their context here and tell what each part of a checkpoint is
+worth; the fifth is the product itself:
 
 | Strategy | What stands in for the removed history |
 | --- | --- |
@@ -10,22 +11,37 @@ fresh request under four strategies:
 | `summary` | the model-written summary only |
 | `checkpoint` | Part A's checkpoint: the summary, the mechanically extracted identifier index and the user's messages verbatim |
 | `checkpoint+tools` | the same checkpoint plus `history_search` and `history_read` over the original messages (one round of calls per question, then it must answer) |
+| `engine` | the real thing: the session is loaded into a real session store, the engine compacts it, and each question goes through the engine's loop with the real history tools |
 
-All four see the same verbatim tail (`chooseTail` with a 1,500-token budget, which keeps the final turn) and, apart
-from `full`, the same summary, produced once by the model from the normal request plus `summaryPrompt()` and checked
-by `validateSummary` (one repair request when it fails).
+The first four see the same verbatim tail (`chooseTail` with a 1,500-token budget, which keeps the final turn) and,
+apart from `full`, the same summary, produced once by the model from the normal request plus `summaryPrompt()` and
+checked by `validateSummary` (one repair request when it fails).
+
+`engine` (`engine.ts`) simulates nothing. The generated messages are written as a valid event log into a store file
+(`sessionEvents`); a short user message is sent through the engine, which is told a context window of 30,600 tokens,
+so its policy compacts at that user-message boundary and keeps about 1,500 tokens word for word, as the others do.
+The engine chooses the cut, asks the model for the summary (with its bound, its one repair and its fallback),
+freezes the checkpoint and sets the baseline again; the reply to that short message is canned, so the only model
+calls of this step are the summary's. Each question is then asked in a fork of the compacted session: every
+question starts from the same state, shares one prompt-cache prefix, and runs through the loop with the product's
+system prompt and tool list. `history_search` and `history_read` are the engine's, on the fork's stored messages
+(the full-text index); the other tools are listed and refuse to run, because the session's workspace does not exist.
+A question gets two steps with tools and then a last call without (`ENGINE_MAX_STEPS`).
 
 ```
 evals/recall/
   generate.ts     seeded generator: filler turns plus planted facts, deterministic from the seed
   session.ts      builds stored Message values (user, steps with read/grep/shell/edit and their results)
   grade.ts        grading: exact identifiers without a model, a batched model judge where meaning matters
-  history.ts      history_search / history_read over the generated session (simple deterministic text search)
-  strategies.ts   the compaction and each strategy's context
+  history.ts      history_search / history_read over the generated session in memory, with the engine's own
+                  search without an index, read and renderers (for `checkpoint+tools`)
+  strategies.ts   the simulated compaction and each context strategy's context
+  engine.ts       the `engine` strategy: load into a store, compact with the engine, a fork per question
   evaluate.ts     the loop and the report
   model.ts        the injected model function; liveModel() is the real provider
   fake.ts         the scripted "oracle reader" used by tests and by runs without --live
-  run.ts          bun evals/recall/run.ts [--live] [--seed N] [--tokens N] [--questions N] [--out FILE]
+  run.ts          bun evals/recall/run.ts [--live] [--strategies full,engine] [--seed N] [--tokens N]
+                  [--questions N] [--pause MS] [--keep DIR] [--max-requests N] [--out FILE]
 ```
 
 ## What is planted
@@ -49,9 +65,54 @@ although it had the text.
 
 `bun test evals/recall` runs everything with the scripted model. `bun evals/recall/run.ts` runs the pipeline with
 the oracle reader (it answers correctly exactly when the gold identifiers are in its context, so its "recall" is
-availability, not understanding). `--live` uses the ChatGPT sign-in with `gpt-6-luna` at low effort; the default
-run plans at most 63 requests (plus one retry per failed call, which counts too) and refuses to go past
-`--max-requests` (66). Progress goes to stderr as counts only.
+availability, not understanding). `--live` uses the ChatGPT sign-in with `gpt-6-luna` at low effort. The four
+context strategies plan at most 63 requests; `engine` adds one or two for the summary and up to three per question;
+a failed call is retried once, which counts too. A run refuses to go past `--max-requests` (110). `--strategies
+full,engine` compares the ceiling with the product and makes no simulated compaction. `--pause MS` waits between
+the questions of a context strategy (see the cache finding below), and `--keep DIR` keeps the engine strategy's
+store file there, for `scripts/export-trace.ts --db DIR/recall.db`. Progress goes to stderr as counts only.
+
+## The product: full history against the engine
+
+2026-11-12, `gpt-6-luna` at effort `low`, ChatGPT sign-in, the same generated session as below (seed 7, 143
+messages, about 39,600 tokens, 12 questions). `bun evals/recall/run.ts --live --strategies full,engine`.
+
+| Strategy | Recall | Early | Middle | Late | Gold present in what the model saw | Input tokens per question (measured) | Questions that read from the cache | Tool calls | Requests |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| full | 100% (12/12) | 4/4 | 3/3 | 5/5 | 100% | 37,864 | 0/12 | 0 | 12 |
+| engine, first run | 83% (10/12) | 3/4 | 3/3 | 4/5 | 100% | 6,481 | 12/12 | 2 | 15 |
+| engine, second run | 100% (12/12) | 4/4 | 3/3 | 5/5 | 100% | 6,680 | 11/12 | 2 | 15 |
+
+The engine's compaction in both runs: trigger `auto`, mode `normal`, 137 of 143 messages removed, the request
+estimated at about 41,700 tokens before and 6,700 to 6,950 after, one summary call of about 32 s whose first answer
+was valid (`source: model`).
+
+- **First run.** Both misses were the two `decision` facts: the model named the choice, said it could not tell the
+  reason from what it had, and did not search, although the reason was one `history_search` away. The question
+  itself invites that ("If you cannot tell from what you have, say so").
+- **Between the runs** the checkpoint's last sentence and the system prompt's line about checkpoints were changed
+  to say what to do in that case: look the detail up with the history tools before saying you cannot tell.
+- **Second run.** 12 of 12. One summary differs from the other, and the model still called the tools for one
+  question only, so the difference between 10 and 12 is as likely the summary as the wording: with one session and
+  one run each, a question is 8 points.
+- The model answers almost everything from the checkpoint alone: the identifier index carries the exact paths,
+  commands, exit codes and errors. The history tools were used for one question per run (two calls each time, a
+  search and a read), and got it right both times; in the first run that was the distractor, which no strategy of
+  the earlier run below recovered after compaction.
+- Every fork read the shared prefix from the cache from about 8 s after the first one wrote it.
+- **The cache misses of `full` are explained** (they were the open question of the first live result). Two causes,
+  both measured: an assistant item replayed without an item ID is never read from the cache, and the generated
+  history had none (the request builder now derives one); and a 38,000-token prefix written cold is not readable
+  for more than half a minute, while the twelve questions took about 40 s. With `--pause 45000` the second and
+  third question read 38,656 of 38,806 tokens from the cache. Details: `docs/reference/responses-api.md`, "Verified
+  live", items 30 and 31.
+
+Requests: 28 for the first comparison (12 `full`, 1 summary, 14 questions, 1 judge), 16 for the second engine run,
+4 for the pause check.
+
+What this does and does not show: as below, one synthetic session, one seed, twelve questions. It shows that the
+engine's own compaction and history tools, end to end on a real store, keep what the simulated strategies kept, at
+about a sixth of the input per question. It does not show how the checkpoint does on real long sessions.
 
 ## First live result
 

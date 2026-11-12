@@ -121,7 +121,18 @@ export async function evaluate(options: EvaluateOptions): Promise<Report> {
   for (const name of options.strategies ?? STRATEGIES) {
     if (name === "engine") {
       // The product: a real store, the engine's compaction, the real history tools.
-      const run = await runEngine({ session, model: options.model, question: questionText, ...(options.engineDirectory === undefined ? {} : { directory: options.engineDirectory }) })
+      const run = await runEngine({
+        session,
+        model: options.model,
+        question: questionText,
+        ...(options.engineDirectory === undefined ? {} : { directory: options.engineDirectory }),
+        // Progress, as counts and the ungraded verdict only: a run that is stopped early still says how far it got.
+        onAnswer: (answer) => {
+          if (!options.live) return
+          const verdict = gradeAnswer(session.facts.find((fact) => fact.id === answer.factId)!, answer.answer).kind
+          process.stderr.write(`engine ${answer.factId}: ${verdict}, ${answer.requests} request(s), ${answer.toolCalls} tool call(s)\n`)
+        },
+      })
       engine = run.compaction
       const answers = run.answers.map((answer) => record(name, session.facts.find((fact) => fact.id === answer.factId)!, answer))
       run.dispose()
