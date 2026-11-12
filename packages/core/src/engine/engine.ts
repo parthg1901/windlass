@@ -1066,13 +1066,24 @@ export function createEngine(options: EngineOptions): Engine {
         if (core.approvals === null) return null
         const live = core.sessions.get(wake.sessionId as SessionId)
         if (live !== undefined) return runAllowedNow(wake, live.commandsNow())
-        // Not open here: what its log says about untrusted content, under the user's own mode.
+        // Not open here (closed, open in another process, or not opened since a restart): decided as it would be
+        // if it were, from what is stored. The policy is the one an execution of the session would run under: the
+        // user's file and the project's for its working directory, the process's own settings, and the mode of the
+        // agent it runs as. Only a choice a client made for the open session (`setApproval`) is not known here.
         try {
-          const history = core.stores.read(wake.sessionId as SessionId, (store) => taintHistoryOf(store, wake.sessionId as SessionId))
-          const policy = effectivePolicy({ file: null, process: core.approvals.user, session: null, project: null }).policy
-          return runAllowedNow(wake, { mode: policy.mode, tainted: policy.taint === "enforce" && deriveTaint(history.entries, { untrustedPaths: policy.untrustedPaths }).tainted })
+          const id = wake.sessionId as SessionId
+          const { summary, history } = core.stores.read(id, (store) => ({ summary: store.getSession(id), history: taintHistoryOf(store, id) }))
+          if (summary === null) return { refused: "its session no longer exists" }
+          const config = core.loadConfigSync === null ? null : core.loadConfigSync(summary.session.cwd)
+          const resolved = effectivePolicy({ file: config?.approval?.user ?? null, process: core.approvals.user, session: null, project: config?.approval?.project ?? null }).policy
+          const agent = summary.session.agent ?? null
+          const mode = agent === null || agent.restrictions.approval === null ? resolved.mode : effectiveApprovalMode(resolved.mode, agent).mode
+          // Untrusted content the session itself told the user about counts too: where this process cannot read the
+          // configuration the session ran under, the record of the notice is what is left of it.
+          const tainted = resolved.taint === "enforce" && (deriveTaint(history.entries, { untrustedPaths: resolved.untrustedPaths }).tainted || summary.session.approval?.taint != null)
+          return runAllowedNow(wake, { mode, tainted })
         } catch (error) {
-          return { refused: `its session could not be read: ${describe(error)}` }
+          return { refused: `its session or its configuration could not be read: ${describe(error)}` }
         }
       },
       warn: (message) => core.report({ kind: "wake", sessionId: null, message }),
