@@ -336,7 +336,7 @@ export async function run(io: Io): Promise<number> {
     const lost = session.lost?.() ?? null
     if (lost !== null) io.stderr.write(`${brand.binary}: ${lost}\n`)
     // How to come back to it, as the TUI says on leaving; a one-shot run's output stays only the run's.
-    else if (terminal !== null && demo === null) io.stdout.write(`${brand.binary}: session ${session.id} · resume with: ${brand.binary} --session ${session.id}\n`)
+    else if (terminal !== null && demo === null) io.stdout.write(resumeLine(session.id, io.stdout.columns()))
   }
 }
 
@@ -596,6 +596,13 @@ async function interactiveLoop(context: Interactive): Promise<number> {
     if ((await context.turn(entry)) === "closed") return 1
   }
   return 0
+}
+
+/** How to come back to a session, said on leaving: one line when it fits, else the command on a line of its own, so the ID is never split. */
+export function resumeLine(id: string, columns: number): string {
+  const command = `${brand.binary} --session ${id}`
+  const one = `${brand.binary}: session ${id} · resume with: ${command}`
+  return one.length < columns ? `${one}\n` : `${brand.binary}: session ${id}\n  resume with: ${command}\n`
 }
 
 /** The line the interactive mode starts with: which session, the model it runs on, and for a resumed one its title and its turns. */

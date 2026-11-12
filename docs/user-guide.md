@@ -67,7 +67,7 @@ windlass --session ses_9acf "and run it"
   for one it resumed `resumed session ses_… "<title>" · 3 turns (1 undone) · model <name>` (with `· effort <level>`
   when one is set). A session resumed with another `--model` or `--effort` says the change under that line
   (`⇄ model <old> → <new> · from the next step`). Leaving it prints `session ses_… · resume with: windlass --session
-  ses_…`, as the full-screen interface does. A one-shot run prints neither.
+  ses_…`, as the full-screen interface does (on a narrow terminal the command is on a line of its own). A one-shot run prints neither.
 - `windlass fork` starts a new session with another's conversation, to try another way without changing the original:
   after its latest step, or after a turn with `--turn <n>` (1 is the session's first prompt; the full-screen interface
   shows each turn's number on its ending row, and `/fork <n>` does the same there). `windlass fork --help` has the precise
