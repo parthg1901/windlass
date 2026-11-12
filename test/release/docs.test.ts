@@ -147,6 +147,13 @@ describe("the user guide against the code", () => {
     expect(tableKeys("Key in `approval`")).toEqual(validatorKeys('{ "approval": { "zzz": 1 } }'))
   })
 
+  test("the configuration error in the troubleshooting page lists the validator's keys", () => {
+    const page = text["docs/troubleshooting.md"]
+    const shown = /```\n {2}✗ failed\n([\s\S]*?)```/.exec(page)![1]!.replace(/\s+/g, " ")
+    expect(shown).toContain(`unknown key "chekcs" (did you mean "checks"?); known keys: ${validatorKeys('{ "chekcs": [] }').join(", ")} `)
+    expect(tableKeys("Key")).toEqual(validatorKeys('{ "chekcs": [] }'))
+  })
+
   test("the example configuration is valid", () => {
     const example = /```json\n([\s\S]*?)```/.exec(guide)![1]!
     expect(() => parseConfigFile(example, "example")).not.toThrow()
