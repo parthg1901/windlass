@@ -498,6 +498,8 @@ export class ClientSession {
   private readonly queue = new EventQueue<SessionItem>()
   private readonly listeners = new Set<(signal: SessionSignal) => void>()
   private readonly pendingAsks = new Set<AbortController>()
+  /** The approval question being put to the approver: the next waits for it (several subagents can ask at once). */
+  private approvalLine: Promise<void> = Promise.resolve()
   private closing: Promise<void> | null = null
   /** Answers the pending questions `cancelled`, once the cancel has reached the engine. */
   private interrupted: (() => void) | null = null
@@ -654,6 +656,19 @@ export class ClientSession {
     return this.link.lost
   }
 
+  private async putApproval(
+    approver: NonNullable<ClientSession["approver"]>,
+    approval: ApprovalAsk,
+    controller: AbortController,
+    cancelled: Promise<null>,
+  ): Promise<RequestPermissionResponse> {
+    const reply = await Promise.race([approver(approval, controller.signal).catch(() => null), cancelled])
+    // Backed out of with a cancel on its way (Ctrl-C): answered once the server has withdrawn the question.
+    if (reply === null && this.interrupted !== null) await cancelled
+    if (reply === null || controller.signal.aborted) return { outcome: { outcome: "cancelled" } }
+    return { outcome: { outcome: "selected", optionId: reply.choice }, ...(reply.note === undefined || reply.note === "" ? {} : { _meta: { [NS]: { note: reply.note } } }) }
+  }
+
   /** A permission request the server sent about this session: an approval, a hand-edit question, or one this client does not know (declined). */
   async answerPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const meta = params._meta?.[NS] as Record<string, unknown> | undefined
@@ -665,11 +680,17 @@ export class ClientSession {
       if (approval !== null) {
         const approver = this.approver
         if (approver === null) return { outcome: { outcome: "cancelled" } }
-        const reply = await Promise.race([approver(approval, controller.signal).catch(() => null), cancelled])
-        // Backed out of with a cancel on its way (Ctrl-C): answered once the server has withdrawn the question.
-        if (reply === null && this.interrupted !== null) await cancelled
-        if (reply === null || controller.signal.aborted) return { outcome: { outcome: "cancelled" } }
-        return { outcome: { outcome: "selected", optionId: reply.choice }, ...(reply.note === undefined || reply.note === "" ? {} : { _meta: { [NS]: { note: reply.note } } }) }
+        // One question at a time: the session's own and its subagents' can be pending together, and a front end shows one.
+        const before = this.approvalLine
+        let done = () => {}
+        this.approvalLine = new Promise<void>((resolve) => (done = resolve))
+        try {
+          await Promise.race([before, cancelled])
+          if (controller.signal.aborted) return { outcome: { outcome: "cancelled" } }
+          return await this.putApproval(approver, approval, controller, cancelled)
+        } finally {
+          done()
+        }
       }
       const plan = meta?.plan as RevertPlan | undefined
       const answerer = this.handEdits

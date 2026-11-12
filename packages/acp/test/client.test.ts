@@ -264,6 +264,44 @@ describe("in memory", () => {
     expect(child.map((item) => item.event.type)).toContain("approval.answered")
     expect(readFileSync(join(elsewhere, "c3.txt"), "utf8")).toBe("outside\n")
   })
+
+  test("two subagents asking at once: their questions are put one at a time, and both are answered", async () => {
+    // Each subagent's model calls are told apart by its task, whatever order they come in.
+    const steps = new Map<string, number>()
+    const child = (request: { input: unknown }): ReturnType<typeof script.text>[] => {
+      const input = JSON.stringify(request.input)
+      const which = input.includes("Write file A") ? "a" : "b"
+      const step = steps.get(which) ?? 0
+      steps.set(which, step + 1)
+      return step === 0 ? [writeOutside(`par-${which}`)] : [script.text(`Wrote ${which}.`)]
+    }
+    const { link, workspace } = await memory([
+      [script.toolCall("p1", "subagent", { task: "Write file A" }), script.toolCall("p2", "subagent", { task: "Write file B" })],
+      child as never,
+      child as never,
+      child as never,
+      child as never,
+      [script.text("Both done.")],
+    ])
+    const session = await link.newSession(workspace)
+    let open = 0
+    let most = 0
+    const asked: string[] = []
+    session.approver = async (ask) => {
+      open += 1
+      most = Math.max(most, open)
+      asked.push(ask.subagent ?? "")
+      await Bun.sleep(50)
+      open -= 1
+      return { choice: "once" }
+    }
+    await session.send("do both")
+    await collect(session, turnEnded, 20_000)
+    expect(asked.sort()).toEqual(["Write file A", "Write file B"])
+    expect(most).toBe(1)
+    expect(readFileSync(join(elsewhere, "par-a.txt"), "utf8")).toBe("outside\n")
+    expect(readFileSync(join(elsewhere, "par-b.txt"), "utf8")).toBe("outside\n")
+  })
 })
 
 describe("as a child process", () => {
