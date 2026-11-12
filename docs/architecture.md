@@ -1,7 +1,9 @@
 # Architecture
 
 light-harness is a coding-agent harness built around one idea: a session is an append-only log of events in SQLite,
-and everything else (the messages a UI shows, the request sent to the model) is computed from that log.
+and everything else (the messages a UI shows, the request sent to the model) is computed from that log. Every
+session has a database file of its own, so the unit of the single-writer rule is the session, not the machine:
+two terminals, an editor and the eval runner each work in their own sessions at once.
 
 This page describes the contracts in `packages/core`: the event schema, the reducer that folds it, and what the
 store, the request builder, the provider and the tools promise each other. The step loop (`engine/`) is built on
@@ -23,7 +25,10 @@ packages/core/src
   interrupt.ts    the abort token with an explicit InterruptReason
   event/          durable.ts (the event schema), ephemeral.ts (streaming deltas), decode.ts (the SQLite boundary)
   message/        message.ts (projection types), reducer.ts (state + event -> state), history.ts (model view, row diff)
-  store/          store.ts (the Store interface), schema.ts (SQLite DDL), sqlite.ts (the store on bun:sqlite)
+  store/          store.ts (the Store and SessionStores interfaces), schema.ts (SQLite DDL), sqlite.ts (one
+                  database on bun:sqlite), sqlite-lock.ts (its single writer), directory.ts (one database per
+                  session, the listing index), blobs.ts (media shared by all sessions)
+  assembly.ts     createHarness: the real engine on the data directory, for the CLI and the ACP server alike
   request/        request.ts (ModelRequest and its blocks), canonical.ts, prefix.ts (hashing and the prefix check),
                   build.ts (the request builder), build-break.ts (which prefix breaks are legitimate)
   instructions/   sources, the baseline, discovery of AGENTS.md files, change detection
@@ -67,7 +72,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | --- | --- |
 | Session | `session.created` (cwd, title, lineage, settings), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint) |
-| Inbox | `inbox.enqueued`, `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `synthetic.appended` |
+| Inbox | `inbox.enqueued`, `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
@@ -124,16 +129,21 @@ is a new version with a decoder for the old one.
     or compaction as interrupted for that reason, the interrupt marker, and `execution.interrupted` for that reason.
     A step that ended `interrupted` or `crashed` must be followed at once by the interrupt marker.
   - *Inbox.* Items are delivered oldest first within their mode. A steer is delivered at any step boundary. A
-    queued item waits until no steer waits and the session would otherwise go idle.
+    queued item waits until no steer waits and the turn before it has ended: `turn.ended`, with what the gate
+    found, comes right before its delivery and nothing may come between them. Only as the first input under a claim
+    does a queued item follow no turn. A waiting item can be withdrawn (`inbox.cancelled`); a delivered one cannot.
+  - *Archiving.* `session.archived` is rejected for an archived session and `session.unarchived` for one that is
+    not: each event records a change.
   - *Going idle.* `execution.succeeded` is rejected while input waits, or while a user, harness or assistant message
     added under the claim has no answer (the last step failed, asked for tools, or was followed by a new message).
   - *Resumes.* `execution.resumed` counts toward `crashResumes` only when the claim was still `running`, which means
     the previous process died. A resume after a clean shutdown is not counted.
   - *Settings.* A step calls the model `session.settings` names. Settings change only at a step boundary.
   - *Ranges.* Revert and refusal ranges never reach back past the latest compaction.
-  - *Checks.* A run starts only when the session would otherwise go idle, has one terminal event, and nothing else
-    happens while it is open. `execution.succeeded` is rejected while a run is open, and a check report may stay
-    unanswered only when the execution ends as `unresolved`.
+  - *Checks.* A run starts only when the model has answered and no steer waits (a queued item waits for the
+    run), has one terminal event, and nothing else happens while it is open. `execution.succeeded` is rejected
+    while a run is open, and a check report may stay unanswered only when the execution, or the turn before a
+    queued message, ends as `unresolved`.
   - *Reverts.* A revert and its undo happen only while no execution holds the claim. One that restores files is
     announced first (`revert.started`), nothing starts while it is open, and its record must be of the announced
     restore. Only the latest revert can be undone, until an execution starts; the undo puts back exactly the
@@ -150,12 +160,17 @@ is a new version with a decoder for the old one.
 - `append` is the only way state changes: validate, assign the next `seq`, reduce, write the changed rows, insert the
   event, all in one transaction. The interface is synchronous, so "the tool call is durable before the tool runs" is
   the order of two statements.
-- One writer process. `seq` is dense per session and is the only ordering; IDs and timestamps never order anything.
-- The request ledger stores, for each model call, the ordered block hashes of the request and the usage.
-- Media lives in a blob table keyed by SHA-256, so a reload shows the same image and a block that refers to it hashes the same.
+- One writer per database file, and the harness keeps one file per session (see "Where sessions live"). `seq` is
+  dense per session and is the only ordering; IDs and timestamps never order anything.
+- The request ledger stores, for each model call, the ordered block hashes of the request and the usage. It is in
+  the session's own file.
+- Media lives in a blob store keyed by SHA-256 that all sessions share, so a reload shows the same image and a
+  block that refers to it hashes the same.
 - Every failure the contract names is a `StoreError` with a code, never a raw SQLite error: `session_not_found`,
   `seq_conflict`, `request_not_pending`, `duplicate_request`, `locked` (another writer has the file open, or held the
-  write lock longer than the store waits) and `schema_mismatch` (the file is from another schema version).
+  write lock longer than the store waits; for a session, a `SessionInUseError` that names the process),
+  `schema_mismatch` (the file is from another schema version), `parent_missing` (a fork's inherited events were
+  asked for and its parent's file is gone), `read_only` and `ambiguous_session`.
 
 **Request** (`request/`)
 - A request is an ordered list of blocks: parameters, each tool, the instructions, each input item. Everything in a
@@ -212,11 +227,21 @@ is a new version with a decoder for the old one.
   named by its name or by the label the report shows it with.
 
 **Engine** (`engine/`)
-- `createEngine` takes everything it touches as a dependency (store, provider, tools, clock, ID generators, the
-  jitter source, limits, the data directory, the snapshot opener, the configuration loader, the check runner), so
-  tests inject fakes. A session offers `send` (steer or queue), `start`, `interrupt`, `setSettings`, `revert`,
-  `undoRevert`, an event stream and `close`. `validateSettings` rejects a model the provider does not offer, naming
-  the ones it does.
+- `createEngine` takes everything it touches as a dependency (the stores, provider, tools, clock, ID generators,
+  the jitter source, limits, the data directory, the snapshot opener, the configuration loader, the check runner),
+  so tests inject fakes. `createHarness` (`assembly.ts`) is the one place the real ones are put together; the CLI
+  and the ACP server both call it and write nothing to a store themselves.
+- A session offers `send` (steer or queue), `start`, `interrupt`, `setSettings` (model and effort, at the next step
+  boundary), `withdraw` (a prompt that was not delivered yet), `readEvents` (its stored log, for a client that
+  replays history), `revert`, `undoRevert`, an event stream and `close`. Closing a session closes that session:
+  its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
+  other sessions carry on.
+- The engine offers `createSession`, `openSession`, `listSessions` (by directory, without archived ones unless
+  asked), `latestSession`, `getSession`, `resolveSession` (an ID or a unique prefix), `readEvents` (of any session,
+  open or not, held here or elsewhere), `archiveSession` and `unarchiveSession` (through the session's log, holding
+  it only for that append), and `validateSettings`, which rejects a model the provider does not offer, naming the
+  ones it does. Listing and reading open nothing and close nothing. Opening a session another process holds fails
+  with `EngineError` `session_in_use`, which carries the holder's process ID and a message that says what to do.
 - One step is one model call. Before every step the loop re-reads the projection and decides from stored state alone;
   it keeps no conversation state in memory. Events that are decided together are appended in one transaction.
 - `tool.called` is durable when the call finishes streaming and `tool.started` right before the tool runs, both
@@ -227,8 +252,13 @@ is a new version with a decoder for the old one.
 - The event stream never slows the loop down: durable events are queued in order, and deltas a reader has not taken
   yet are merged per item.
 - `Engine.close()` is the hook a process calls before it exits: every session is stopped as a shutdown, which leaves
-  its execution suspended and resumable. If the process dies without it, a guard process kills the process group of
-  every running shell command (`tools/shell.ts`).
+  its execution suspended and resumable, and is let go of. If the process dies without it, a guard process kills
+  the process group of every running shell command (`tools/shell.ts`), the operating system drops the session's
+  lock, and whoever opens the session next recovers it.
+- *Usage of a step that was cut short.* `step.failed` for an interrupted step carries the usage the provider had
+  reported for its model call: always when the call had finished and its tools were stopped, and for a call
+  stopped in mid-stream when the provider had sent it by then (the Responses API sends it with the final event, so
+  there it is usually absent). The ledger row has the same.
 - *Snapshots.* One is taken, and recorded, where the workspace can have changed: before input is delivered (always:
   it is what a revert to before that input restores, and it captures what the user changed by hand in between);
   right before the tools of a step run and right after them, when at least one of its calls has a side-effecting
@@ -244,6 +274,21 @@ is a new version with a decoder for the old one.
   where the model is shown the failure and not sent back. Without snapshots nobody knows which files changed, so
   every check runs after a turn in which a side-effecting call ran. A configuration that cannot be loaded fails the
   execution before anything is sent.
+- *The gate and a queued message.* A queued message means "after this turn", and a turn is over when the gate says
+  so. The gate therefore runs before a queued message is delivered, exactly as before the execution ends: failing
+  checks send the model back while the message keeps waiting. When the turn may end (passed, nothing to check,
+  nothing configured, or unresolved), the loop appends `turn.ended` with that verdict together with the delivery,
+  and carries on under the same claim. A steer is the opposite request (change course now) and is delivered at the
+  next boundary with no checks in between. The alternative, delivering first and checking once at the very end,
+  would let a turn's failures surface mixed with the next turn's changes and reported against the wrong request.
+- *A check whose last pass still stands is not run again.* Each result records a fingerprint: the command, the
+  timeout, the `when` patterns and the content hash of every changed file they select (`verify/fingerprint.ts`).
+  A selected check is carried over instead of run when it names what it depends on (`when`), the changed files are
+  known from a snapshot diff, its latest recorded result is a pass measured from the same verified state, and the
+  fingerprint is the same. The carried result is in the run's evidence with `reusedFromSeq`. In doubt the check
+  runs: a check without `when`, a session without snapshots, a file that cannot be read, a failed or interrupted
+  result all run it. What a `when` list does not name (dependencies, ignored files, the environment) is the
+  project's statement that the check does not depend on it.
 - *The acknowledgement tool* is in a session's frozen tool list when verification was not off as its first baseline
   was set, whether or not a check is configured, and the list keeps it or lacks it from then on (also across a
   compaction), so a configuration change never changes the list. The tool runtime always has it.
@@ -254,10 +299,37 @@ is a new version with a decoder for the old one.
   chooses to overwrite (the undo point keeps them) or to keep them. A target with no snapshot rewinds the
   conversation only, and says so. `undoRevert()` restores the snapshot taken before the latest revert and puts its
   messages back. Both work only while idle; a session opened with a restore still open finishes it.
+- *Two sessions in one working directory.* Nothing prevents it; it is the user's choice. Each session records its
+  own snapshots (its own refs in the workspace's private git directory), and neither's undo overwrites the other's
+  work without asking. What the other session changed between this session's steps or after its turn is a change
+  outside its own work, like a hand edit. What it changed while this session's own tools ran would look like this
+  session's work, so when the snapshot store shows that another session recorded the directory since the point the
+  undo goes back to, a step's changes count as its own only for the paths its write calls name; everything a
+  command, a run of checks or a restore spans is asked about. A session that is alone in its directory is never
+  asked about what its own commands changed.
+- *Snapshot retention.* After each execution, and when a session is archived, the loop drops snapshots of that
+  session, never one a revert or an undo could still need (`neededSnapshots` in `engine/workspace.ts`): the
+  snapshot every revertable user message goes back to, everything recorded since the latest of them (an undo of
+  the last turn stays exact), both ends of every undoable revert and what was recorded since, an open restore's
+  ends, the latest snapshot and the ones the gate compares with. Of the rest (the snapshots around the steps and
+  checks of older turns, those of history that was compacted away or reverted for good, refs a crash left
+  unrecorded) a session in use keeps the newest `snapshotKeepLast` (100) and none older than `snapshotMaxAgeMs`
+  (30 days); an archived session keeps none. A workspace that did not change is the same snapshot again, and one
+  ref is kept for it. Only the session's own refs are touched, so sessions that share a workspace never remove
+  each other's snapshots; what is needed is read after the refs are listed, so a snapshot recorded while this runs
+  is safe. A revert across dropped in-between snapshots still restores; if it cannot tell its own changes from
+  others' any more, it asks about every file.
+- *Instruction files in directories the agent starts working in.* A tool says which paths a call touches
+  (`Tool.touches`; the file tools do, a shell command does not). The directories of the calls in the session's
+  history that are not reverted or refused are handed to discovery at every step boundary, so an `AGENTS.md` in a
+  directory the agent has just read or written in is found there and appended once, as an `instruction.appended`
+  message with its fingerprint. The baseline is never rewritten for it: the next request is the previous one plus
+  appended items. The directories are derived from the log, so a restart finds the same ones.
 - One model call has a wall-clock limit (`modelCallTimeoutMs`, 30 minutes by default, `0` for none). A call still
   running then fails as a `transport` error with reason `timeout` and is retried within the attempt budget.
-- A diagnostic about a session (a prefix violation, an internal error, a tool that threw) is also an ephemeral
-  `diagnostic` event of that session's stream, so a client can show it.
+- A diagnostic about a session (a prefix violation, an internal error, a tool that threw) is said once: as an
+  ephemeral `diagnostic` event of that session's stream, which a client shows. It goes to the engine's log instead
+  only when no open session can carry it. `onDiagnostic` hears every one.
 
 ## How the loop writes the common sequences
 
@@ -273,6 +345,12 @@ These are the shapes the scenarios spell out event by event.
   After output: `step.failed` · `retry.scheduled` · a `continuation` note asking the model to carry on where it
   stopped · `step.started` under a new message with the scheduled attempt.
 - **A model or effort change.** `settings.changed` at a step boundary; the next `step.started` names the new model.
+- **A queued message.** The turn's answer · the gate (a run of checks, when one applies) · `snapshot.taken
+  delivery` · in one append `turn.ended` with the verdict and `inbox.delivered` · the next turn's steps.
+- **A withdrawn prompt.** `inbox.enqueued` · `inbox.cancelled`. It never becomes a message.
+- **Archiving.** `session.archived`, appended while the session is held only for that; `session.unarchived` undoes it.
+- **Instructions found on the way.** A step whose calls touch a new directory ends · `instruction.appended` for the
+  `AGENTS.md` found there · the next `step.started`.
 - **Recovery at start-up.** For each claimed session: finish a requested interrupt, or close the crashed step (and
   an open run of checks) and write `execution.resumed`, or resume a suspended claim. Recovery never ends an
   execution as done; the loop does, through the gate. A revert whose restore was announced and not recorded is
@@ -285,6 +363,72 @@ These are the shapes the scenarios spell out event by event.
 - **A revert.** While idle: `snapshot.taken restore_start` · `revert.started` (target, undo point) · the restore ·
   `snapshot.taken restore_end` · `history.reverted` with the record. Its undo is the same shape with
   `revert.undo_started` and `history.restored`.
+
+## Where sessions live
+
+Everything is under the harness data directory (`$XDG_DATA_HOME/<brand.directory>`, by default
+`~/.local/share/<brand.directory>`), which several processes share:
+
+```
+sessions/<session id>.db          one SQLite database per session (WAL, with its -wal and -shm)
+sessions/<session id>.db-lock     that session's writer lock; never deleted
+sessions/<session id>.db-holder   the process holding the lock, for the error message only
+index.db                          the listing cache; can be deleted at any time
+blobs/<aa>/<sha256>               media, content-addressed
+spill/                            tool output too long for the model, named by content or by call
+snapshots/<workspace hash>/       one private git directory per working directory
+auth.json                         the sign-in
+```
+
+**Why one file per session.** The store's guarantees are per database: one writer, dense `seq`, the reducer inside
+the append transaction, rebuild-from-log equals the live rows. A session is the natural unit of all four, and one
+file each makes "one writer" mean "one process works in this session", which is what users expect. Nothing in the
+schema changed for it; the tables are keyed by session as before.
+
+**Who holds a session.** Creating or opening a session takes its lock (`sqlite-lock.ts`: an exclusively locked
+SQLite database next to the session's) until the session is closed. The lock is the operating system's: a process
+that dies holds nothing, so its sessions open normally and are recovered as after any crash. A session a live
+process holds is refused with `SessionInUseError` (`EngineError` `session_in_use` from the engine), which names the
+holder's process ID and says what to do: wait, stop that process, or start a new session. The ID comes from the
+small `-holder` file the holder writes after taking the lock; it is information, and the lock decides. Reading a
+session (listing, a client replaying history, a trace export) never takes the lock: it uses a read-only
+connection, which WAL mode lets run next to the writer and which sees committed transactions only.
+
+**Listing without opening every file.** The session files are the truth. `index.db` caches each session's summary
+row, and a listing never trusts it unchecked: it reads the directory, stats each session's database and
+write-ahead log, and uses a cached row only if the recorded signature (size and modification time in nanoseconds
+of both files) still matches and was taken well after the files last changed. Every other session is read from
+its own file, one row through a read-only connection, and the cache is updated. Writers do nothing for the index,
+so there is no update a dying writer could leave undone. The signature is taken before the file is read, so a
+write in between leaves the cache older than the file, never newer; a file changed within the last two seconds is
+read again whatever its signature says (the rule git's index uses against coarse timestamps); several processes
+refreshing at once each write rows they read themselves, with the signature they were read under, so a lost update
+costs a re-read and nothing else; a process killed inside the cache's transaction leaves nothing; and a cache that
+is missing, corrupt or from another version is deleted and rebuilt from the files. If it cannot be rebuilt the
+listing is computed from the files alone. "The most recent session for this directory", "list by directory" and
+"resolve an ID or a unique prefix" are all this listing (the prefix needs only the file names). The cost of a
+listing is one `readdir` and two `stat` calls per session, plus one small read per session that changed.
+
+**Forks.** A fork's log is its parent's events through the fork point followed by its own, and the parent is another
+file, possibly open for writing in another process. The fork reads it through a read-only connection, and only
+events at or before the fork point. That is safe because those events are committed, and the log is append-only
+(the schema's triggers refuse updates and deletes): whoever writes to the parent meanwhile only adds events after
+them. When a fork is created, its inherited messages, baseline and compaction are copied into its own rows, so a
+fork whose parent file is later missing still opens, runs and is listed; reading its inherited events then fails
+with `parent_missing`, which names the parent. Creating a fork of a session that cannot be found fails the same
+way. (The engine offers no fork operation yet; this is the store's contract.)
+
+**What sessions share.** Media is one file per blob, named by its SHA-256, written to a temporary file and then
+hard-linked into place: a reader never sees half a blob, two writers of the same bytes agree, and the first media
+type wins for everyone. Spill files are named by their content and written aside before a rename, or named by the
+call that produced them; a run of checks writes under a directory of its session. Snapshots are per workspace, in
+a git directory several sessions and processes use at once: every `take` writes objects and a ref of its own name
+and never changes another session's; pruning looks only at one session's refs, waits out a lock another process
+holds for a moment, and treats another process's `git gc` as the collection it wanted.
+
+**The database of the layout before this one.** Nothing was released with it, so nothing is migrated. A harness
+that finds `sessions.db` in the data directory moves it, with its lock and log files, into
+`backup-single-database-<time>/` once and says so on standard error; its sessions are no longer listed.
 
 ## The only provider
 

@@ -57,9 +57,11 @@ Choices these scenarios make where the blueprint leaves room (see also "Ambiguou
 - A snapshot is taken where the workspace can have changed, and nowhere else: before input is delivered, around
   the tools of a step that has a call with a side effect, around a run of checks, around a restore. A step whose
   calls all read takes none.
-- The verification gate runs when the execution would otherwise succeed (the model has answered and nothing waits),
-  not between a turn and a queued follow-up. The results of a run and what the gate decides from them (the report
-  that sends the model back, or the terminal event) are one append.
+- The verification gate runs when the model has answered and no steer waits: before the execution ends, and
+  before a queued follow-up is delivered, because "after this turn" means after the turn is done and done is what
+  the gate says. When a queued message waits, the gate's verdict is recorded as `turn.ended`, appended together
+  with that message's delivery. A steer never waits for the gate. The results of a run and what the gate decides
+  from them (the report that sends the model back, or the terminal event) are one append.
 - The check report is a `synthetic.appended` with origin `check_report`, appended at the end of history like any
   other message. The acknowledgement is a call to the `report_check_failure` tool; nothing is read from prose.
 
@@ -1994,7 +1996,7 @@ was proposed, if it does.
 | G8 | `tool.started` carries the tool's effect class. A `read` call cannot settle as `effect_unknown`, and recovery settles orphans from the recorded class. | 12, 34, 36 |
 | G9 | `execution.interrupt_requested` is a durable event. Recovery that finds one finishes the interrupt and never resumes. | 38, 45 |
 | G10 | `step.started` and `compaction.started` are rejected while there is no baseline. | 1 |
-| G11 | An inbox item is delivered only when it is the oldest waiting item of its mode. A queued item also needs no steer waiting and a session that would otherwise go idle. | 16, 18 |
+| G11 | An inbox item is delivered only when it is the oldest waiting item of its mode. A queued item also needs no steer waiting and a turn that has ended: `turn.ended` right before it, or nothing said under the claim yet. | 16, 18 |
 | G12 | `synthetic.appended` and `instruction.appended` need a running claim. | 1 |
 
 Where the fix is not the one proposed:
@@ -2020,9 +2022,12 @@ What the reducer enforces for snapshots, checks and reverts, each with a scenari
 
 | Rule | Scenario |
 | --- | --- |
-| `checks.started` needs a running claim at a boundary, a model that has answered and an empty inbox. A run has one terminal event, `checks.finished` or `checks.failed`, and nothing else is accepted while it is open: no step, no delivery, no `execution.succeeded`. | 46, 51 |
+| `checks.started` needs a running claim at a boundary, a model that has answered and no steer waiting (a queued item waits for the run). A run has one terminal event, `checks.finished` or `checks.failed`, and nothing else is accepted while it is open: no step, no delivery, no `execution.succeeded`. | 46, 51 |
+| `turn.ended` needs a running claim at a boundary, a queued item waiting, no steer waiting, and a turn whose model has answered everything (an unanswered check report only when the verdict is `unresolved`). After it nothing is accepted but the delivery of that queued item. | 18, the queued-message scenario under Verification |
+| `inbox.cancelled` needs an item that is waiting: a delivered prompt, or one withdrawn before, is rejected. | the withdrawn-prompt scenario under Steering |
+| `session.archived` is rejected for an archived session, `session.unarchived` for one that is not. | the archive scenario under Happy paths |
 | After `execution.interrupt_requested` an open run can only be closed as interrupted for that reason (`checks.failed`), before the execution is. | 51 |
-| `execution.succeeded` carries what the gate found. A check report may be left unanswered only by an execution that ends as `unresolved`. | 47, 48 |
+| `execution.succeeded` carries what the gate found. A check report may be left unanswered only by an execution, or a turn before a queued message, that ends as `unresolved`. | 47, 48 |
 | A `step_start` or `step_end` snapshot names the open step; any other snapshot names none. | 46 |
 | `revert.started`, `history.reverted`, `revert.undo_started` and `history.restored` are accepted only while idle. A restore that changes files is announced first, and its record must name the announced target and undo point. Nothing starts while one is open. | 53 |
 | Only the latest revert can be undone, by the `seq` of its `history.reverted`, restoring the snapshot taken before it; `execution.started` empties the list. Undoing puts back exactly the messages that revert excluded. | 54 |
@@ -2126,8 +2131,8 @@ a durable write and a side effect, which no log can show; they are the loop's al
 4. End a step while a call is unsettled, or give a step a second terminal event *(reducer)*.
 5. Settle a call twice, including settling a finished call again on cancel. Settle a started call as `not_started`,
    or a call that started with effect `read` as `effect_unknown` *(reducer)*.
-6. Deliver input in the middle of a step. Deliver a queued item before the session would go idle, or any item out
-   of the order of its mode *(reducer)*.
+6. Deliver input in the middle of a step. Deliver a queued item before the turn in front of it has ended
+   (`turn.ended`, which is the gate's verdict), or any item out of the order of its mode *(reducer)*.
 7. Edit a stored row to steer. There is no edit event; a steer is always a new message.
 8. Stop anything for a cancel or a shutdown before `execution.interrupt_requested` is durable. Keep working after
    it, start a tool after it, or end the execution with another reason or another terminal event *(reducer)*.

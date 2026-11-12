@@ -104,10 +104,25 @@ period.
 ## Retention
 
 Each `take` (and each restore's `before`) is a ref `refs/snapshots/<hex(session)>/<ms>-…` pointing at the tree.
-`prune({ session?, olderThanMs?, keepLast?, graceSeconds? })` deletes refs (one session's, or the workspace's), then
-runs `git gc`. An object stays while any ref of any session reaches it, so dropping one session never affects
-another. Unreferenced objects younger than `graceSeconds` (default an hour) survive, so a snapshot being taken
-concurrently is never cut.
+`prune({ session?, olderThanMs?, keepLast?, graceSeconds?, protect?, dedupe?, gc? })` deletes refs (one session's,
+or the workspace's), then runs `git gc`. An object stays while any ref of any session reaches it, so dropping one
+session never affects another. Unreferenced objects younger than `graceSeconds` (default an hour) survive, so a
+snapshot being taken concurrently is never cut.
+
+- `protect` names snapshots that are never removed and do not count toward `keepLast`. It may be a function, called
+  after the refs were listed, so that a snapshot recorded while the prune runs is either not among them or named.
+- `dedupe` also removes a ref when a newer kept ref names the same snapshot: an unchanged workspace is the same
+  tree again and again.
+- `gc: "auto"` leaves collection to git's own thresholds, for a prune that runs often.
+
+The step loop calls it after every execution and when a session is archived, with the snapshots a revert or an undo
+of the session could still need as `protect` (`docs/architecture.md`, "Snapshot retention").
+
+Several processes use one workspace's directory at once (two sessions in the same working directory). A `take`
+writes objects and a ref of its own unique name; a prune touches only refs of the sessions it is asked about,
+tries again when another process holds the lock on the packed refs for a moment, and takes another process's
+running `git gc` as the collection it wanted. `test/engine/process.test.ts` runs four processes taking and pruning
+in one workspace.
 
 ## What the step loop needs to record per step
 

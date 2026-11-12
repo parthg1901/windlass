@@ -27,9 +27,14 @@ Before the first session, sign in with your ChatGPT plan on the same machine (`b
 checkout, then finish the sign-in it prints). When you are not signed in, creating or loading a session fails with
 ACP's auth-required error (`-32000`) and a message that says this; the client's "authenticate" button only re-checks.
 
-Only one process can use the session database at a time: while `lh acp` runs, an `lh` in another terminal reports that
-the database is in use, and the other way round. Sessions are shared, so a session started in the editor can be resumed
-with `lh --session <id>` later.
+Sessions are stored one file each, and a process holds only the sessions it is working in. While `lh acp` runs, an
+`lh` in another terminal works in its own sessions, and so does a second editor. A session is open in one place at a
+time: loading one that another process is working in fails with an error that names that process (`data` carries
+`reason: "session_in_use"` and `holderPid` under the extension key), and it loads once that process has closed it
+or exited. Sessions are shared otherwise, so a session started in the editor can be resumed with
+`lh --session <id>` later. The server is built from the same assembly as the command line (`createHarness` in
+`@light-harness/core`) and does everything through the engine: `session/close` closes that one session,
+`session/delete` archives it, `session/cancel` withdraws prompts that were not delivered yet.
 
 Logs go to stderr (editors keep them as the agent's log); nothing but protocol messages is written to stdout. Set
 `LH_ACP_LOG=debug` for more. Closing the connection, or SIGTERM, SIGINT or SIGHUP, stops running work as a shutdown:
