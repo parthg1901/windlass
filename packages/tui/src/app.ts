@@ -35,6 +35,8 @@ export const CLOSE_TIMEOUT_MS = 3000
 /** Below this width the panel hides itself unless asked for. */
 export const PANEL_AUTO_WIDTH = 100
 const MAX_INPUT_ROWS = 8
+/** The width of the key column in the help: the longest key and a space. */
+const KEY_COLUMN = 33
 /** The approval dock takes at most this share of the screen's rows. */
 const DOCK_SHARE = 0.6
 const HISTORY_LIMIT = 200
@@ -720,21 +722,21 @@ export class App {
     await this.dialog.show({
       title: "Help",
       detail: [
-        ...keys.map(([key, what]) => [span(key.padEnd(26), "accent"), span(what)]),
+        ...keys.map(([key, what]) => [span(key.padEnd(KEY_COLUMN), "accent"), span(what)]),
         [],
-        [span("⊡".padEnd(26), "accent"), span("on a command: it ran in the sandbox (+network, +write <dir>: the extra access it was given)")],
-        [span("⊘".padEnd(26), "accent"), span("a call that was not allowed (by you, or by the approval policy)")],
-        [span("Tab".padEnd(26), "accent"), span("while a question waits: move between it and your message")],
+        [span("⊡".padEnd(KEY_COLUMN), "accent"), span("on a command: it ran in the sandbox (+network, +write <dir>: the extra access it was given)")],
+        [span("⊘".padEnd(KEY_COLUMN), "accent"), span("a call that was not allowed (by you, or by the approval policy)")],
+        [span("Tab".padEnd(KEY_COLUMN), "accent"), span("while a question waits: move between it and your message")],
         [],
         ...COMMANDS.filter((spec) => this.available(spec) || ["undo", "redo", "compact", "queue", "rename"].includes(spec.name)).map((spec) => [
-          span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(26), "accent"),
+          span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(KEY_COLUMN), "accent"),
           span(spec.description),
           span(this.available(spec) ? "" : " (not available now)", "dim"),
         ]),
       ],
       items: [],
       filterable: false,
-      footer: "Esc close",
+      footer: "↑↓ scroll · Esc close",
       cancel: null,
     })
   }
@@ -1131,18 +1133,13 @@ export class App {
       })
     }
     const running = this.transcript.activity.executing
-    const narrow = columns < 80
-    const hint = running
+    // The long form when it fits whole, else the short one: a hint is never cut in the middle of a key.
+    const [long, short] = running
       ? this.mode === "steer"
-        ? narrow
-          ? "Enter steers · Ctrl-T queue · Ctrl-C stop"
-          : "Enter steers the running turn (seen after the current step) · Ctrl-T: queue instead · Ctrl-C stop"
-        : narrow
-          ? "Enter queues · Ctrl-T steer · Ctrl-C stop"
-          : "Enter queues for after this turn · Ctrl-T: steer instead · Ctrl-C stop"
-      : narrow
-        ? "Enter send · / commands · Ctrl-P panel"
-        : "Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
+        ? ["Enter steers the running turn (seen after the current step) · Ctrl-T: queue instead · Ctrl-C stop", "Enter steers · Ctrl-T queue · Ctrl-C stop"]
+        : ["Enter queues for after this turn · Ctrl-T: steer instead · Ctrl-C stop", "Enter queues · Ctrl-T steer · Ctrl-C stop"]
+      : ["Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit", "Enter send · / commands · Ctrl-O expand · Ctrl-P panel"]
+    const hint = textWidth(long) <= columns ? long : short
     return [[span(truncate(hint, columns), "dim")]]
   }
 

@@ -20,7 +20,7 @@ exports[`the showcase turn 60x20 1`] = `
     tokens · 44,746 in · 78% cached · 396 out
 ● ready
 ›
-Enter send · / commands · Ctrl-P panel"
+Enter send · / commands · Ctrl-O expand · Ctrl-P panel"
 `;
 
 exports[`the showcase turn 100x30 1`] = `
@@ -30,7 +30,7 @@ exports[`the showcase turn 100x30 1`] = `
                                                                 │ model  gpt-test
   I'll find the code and run the failing test.                  │ effort medium
                                                                 │ state  idle
-  ✓ grep add\\( in src · 4 matches in 3 files · 220ms            │ title  The add test is failing.…
+  ✓ grep add\\( in src · 4 matches in 3 files · 220ms            │ title  The add test is failing…
   ✗ shell bun test src/add.test.ts · exit 1 · 3.5s              │
         Received: -1                                            │ Tokens         session      last
        0 pass                                                   │ input           44,746     9,410
@@ -63,7 +63,7 @@ exports[`the showcase turn 200x50 1`] = `
                                                                                                                                                                     │ model  gpt-test
   I'll find the code and run the failing test.                                                                                                                      │ effort medium
                                                                                                                                                                     │ state  idle
-  ✓ grep add\\( in src · 4 matches in 3 files · 220ms                                                                                                                │ title  The add test is failing.…
+  ✓ grep add\\( in src · 4 matches in 3 files · 220ms                                                                                                                │ title  The add test is failing…
   ✗ shell bun test src/add.test.ts · exit 1 · 3.5s                                                                                                                  │
         Received: -1                                                                                                                                                │ Tokens         session      last
        0 pass                                                                                                                                                       │ input           44,746     9,410

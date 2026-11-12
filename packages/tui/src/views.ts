@@ -9,7 +9,7 @@
  * reaching the bottom again, or Esc, follows again.
  */
 import { type OptimizedBuffer, Renderable, type RenderContext } from "@opentui/core"
-import { truncate, width as textWidth, wrapText } from "./layout.ts"
+import { truncate, width as textWidth, wrapLine, wrapText } from "./layout.ts"
 import { type LayoutContext, gapBefore, isLive, layoutRow, pendingLines } from "./rows.ts"
 import { type Line, type Span, type Theme, span } from "./theme.ts"
 import { type Row, type Transcript, expandable } from "./transcript.ts"
@@ -292,6 +292,9 @@ export class Dialog extends Renderable {
   spec: DialogSpec | null = null
   index = 0
   filter = ""
+  /** First detail line shown, when the detail is taller than the screen (the help). */
+  detailFirst = 0
+  private detailMax = 0
   private resolve: ((id: string | null) => void) | null = null
 
   constructor(
@@ -310,6 +313,7 @@ export class Dialog extends Renderable {
     this.close(null)
     this.spec = spec
     this.filter = ""
+    this.detailFirst = 0
     const current = spec.items.findIndex((item) => item.current === true)
     this.index = Math.max(0, current)
     this.visible = true
@@ -343,6 +347,13 @@ export class Dialog extends Renderable {
     const items = this.items()
     if (name === "escape" || (ctrl && name === "c")) {
       this.close(spec.cancel)
+      return true
+    }
+    // With nothing to choose, the keys scroll the detail.
+    if (items.length === 0 && ["up", "down", "pageup", "pagedown", "home", "end"].includes(name)) {
+      const step = name === "pageup" || name === "pagedown" ? 10 : name === "home" || name === "end" ? 100_000 : 1
+      this.detailFirst = Math.max(0, Math.min(this.detailMax, this.detailFirst + (name === "up" || name === "pageup" || name === "home" ? -step : step)))
+      this.requestRender()
       return true
     }
     if (name === "up" || (ctrl && name === "p")) this.index = Math.max(0, this.index - 1)
@@ -380,11 +391,20 @@ export class Dialog extends Renderable {
     const w = Math.max(20, Math.min(screenWidth - 2, 76))
     const items = this.items()
     const inner = w - 4
-    const detail = spec.detail.flatMap((line) => wrapSpans(line, inner))
+    const wrapped = spec.detail.flatMap((line) => wrapSpans(line, inner))
+    // The detail is cut to the screen and scrolls (the help is taller than a small terminal); the choices always show.
+    const detailRoom = Math.max(1, screenHeight - 2 - (items.length === 0 ? 0 : Math.min(items.length, 3) + 2) - (spec.filterable ? 1 : 0))
+    this.detailMax = Math.max(0, wrapped.length - detailRoom)
+    this.detailFirst = Math.min(this.detailFirst, this.detailMax)
+    const detail = wrapped.length <= detailRoom ? wrapped : wrapped.slice(this.detailFirst, this.detailFirst + detailRoom)
+    if (wrapped.length > detailRoom) {
+      const below = wrapped.length - this.detailFirst - detailRoom
+      detail[detail.length - 1] = [span(below > 0 ? `↓ ${below} more (↑↓ PgUp PgDn)` : "↑ PgUp for the start", "dim")]
+    }
     const room = Math.max(3, screenHeight - 4 - detail.length - 4)
     const visible = Math.min(items.length, room)
     const first = Math.max(0, Math.min(this.index - Math.floor(visible / 2), items.length - visible))
-    const h = Math.min(screenHeight, detail.length + Math.max(1, visible) + 4 + (spec.filterable ? 1 : 0) + (detail.length > 0 ? 1 : 0))
+    const h = items.length === 0 && !spec.filterable && detail.length > 0 ? Math.min(screenHeight, detail.length + 2) : Math.min(screenHeight, detail.length + Math.max(1, visible) + 4 + (spec.filterable ? 1 : 0) + (detail.length > 0 ? 1 : 0))
     const x = Math.max(0, Math.floor((screenWidth - w) / 2))
     const y = Math.max(0, Math.floor((screenHeight - h) / 3))
     clearRect(buffer, this.theme, x, y, w, h)
@@ -402,7 +422,7 @@ export class Dialog extends Renderable {
     for (const line of detail) drawLine(buffer, this.theme, x + 2, y + row++, inner, line)
     if (detail.length > 0) row += 1
     if (spec.filterable) drawLine(buffer, this.theme, x + 2, y + row++, inner, [span("filter: ", "dim"), span(this.filter), span("▏", "dim")])
-    if (items.length === 0) drawLine(buffer, this.theme, x + 2, y + row, inner, [span(spec.filterable && this.filter !== "" ? "nothing matches" : "nothing to choose", "dim")])
+    if (items.length === 0 && (spec.filterable || detail.length === 0)) drawLine(buffer, this.theme, x + 2, y + row, inner, [span(spec.filterable && this.filter !== "" ? "nothing matches" : "nothing to choose", "dim")])
     for (let index = first; index < first + visible; index += 1) {
       const item = items[index]!
       const chosen = index === this.index
@@ -420,23 +440,10 @@ export class Dialog extends Renderable {
 }
 
 function wrapSpans(line: Span[], columns: number): Span[][] {
-  // Dialog detail is short prose; wrapping it word by word is enough.
-  const text = line.map((part) => part.text).join("")
-  if (textWidth(text) <= columns) return [line]
-  const role = line.find((part) => part.role !== undefined)?.role
-  const words = text.split(" ")
-  const out: Span[][] = []
-  let current = ""
-  for (const word of words) {
-    const next = current === "" ? word : `${current} ${word}`
-    if (textWidth(next) <= columns) current = next
-    else {
-      if (current !== "") out.push([span(current, role)])
-      current = truncate(word, columns)
-    }
-  }
-  if (current !== "") out.push([span(current, role)])
-  return out
+  // A line that starts with a label (a key in the help) wraps under the text after it, with its colours kept.
+  const label = line.length > 1 ? textWidth(line[0]!.text) : 0
+  const indent = label > 0 && label <= columns / 2 && line[0]!.text.endsWith(" ") ? [span(" ".repeat(label))] : []
+  return wrapLine(line, columns, indent)
 }
 
 export interface PagerSpec {

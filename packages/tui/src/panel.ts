@@ -66,7 +66,8 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   field("model", session.model ?? "—")
   field("effort", session.effort ?? "default")
   field("state", stateText(input))
-  if (session.title !== null && session.title !== "") field("title", session.title)
+  // Cut at a word where it can, without a stray full stop before the ellipsis.
+  if (session.title !== null && session.title !== "") field("title", shorten(session.title, inner - 7))
   const approval = input.approval ?? null
   if (approval !== null) field("mode", `approval: ${approval.mode ?? "?"}${approval.sandbox ? " · sandbox ⊡" : " · no sandbox"}`, approval.sandbox ? undefined : "warn")
   if (session.taint !== null) field("trust", "untrusted · /clear-taint", "warn")
@@ -143,6 +144,15 @@ function percent(value: number | null): string {
 
 function tilde(path: string, home: string | null): string {
   return home !== null && home !== "" && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
+/** Shortens at the last word boundary that fits (or at a character when none does), with `…`. */
+function shorten(text: string, max: number): string {
+  if (width(text) <= max) return text
+  const cut = truncate(text, max).slice(0, -1)
+  // A cut that ends a word keeps it; otherwise back to the last space.
+  const space = text[cut.length] === " " ? cut.length : cut.lastIndexOf(" ")
+  return `${(space >= max / 2 ? cut.slice(0, space) : cut).replace(/[\s.,;:–-]+$/, "")}…`
 }
 
 /** Shortens in the middle, keeping the start and the end (the parts of an ID or path a person compares). */

@@ -7,7 +7,7 @@ exports[`the approval dock shows the tool, the command, why, how it runs, and ea
       curl: (6) Could not resolve host: example.com             │ model  gpt-test
       [sandbox] This command ran in the sandbox (no network, a… │ effort medium
   ? shell curl -s https://example.… · waiting for your approval │ state  working · 1s · 2 steps
-                                                                │ title  Summarise the release no…
+                                                                │ title  Summarise the release…
                                                                 │
                                                                 │ Tokens         session      last
                                                                 │ input            1,000     1,000
