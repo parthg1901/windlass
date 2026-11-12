@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 10 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 11 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -275,6 +275,7 @@ The message admitted by the event right before this one was produced by a slash 
 | `fingerprint` | string, not empty | yes |
 | `arguments` | string | yes |
 | `missing` | list of integer ≥ 1 | yes |
+| `unused` | list of integer ≥ 1 | yes |
 | `unsupported` | list of objects | yes |
 | `unsupported[].kind` | one of `"shell"`, `"include"` | yes |
 | `unsupported[].text` | string, not empty | yes |

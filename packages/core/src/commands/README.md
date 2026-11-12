@@ -135,15 +135,18 @@ prompt text, and the server, before admitting the prompt:
 The expanded text is what the model sees and what the log keeps as the user's content (`inbox.enqueued.content`,
 unchanged). Which command produced it is a field, never parsed back: a new event `command.expanded`, in the same
 transaction as that `inbox.enqueued`, data `{ messageId, name, path, scope, fingerprint, arguments: raw string,
-missing: number[], unsupported: [{ kind, text, line }] }`. `fingerprint` is `CommandDefinition.fingerprint`, the
+missing: number[], unused: number[], unsupported: [{ kind, text, line }] }` (`unused`: the positions of the arguments
+that were typed and are not in the message, because the template names other positions and has no `$ARGUMENTS`;
+the record has it so that a transcript, also a replayed one, can say what was left out). `fingerprint` is `CommandDefinition.fingerprint`, the
 SHA-256 of the file's text, so the version that was used is known after the file changes. `inbox.enqueued.origin`
 stays `null`: it is the user's message. The reducer can fold the event onto the message for the transcript.
 
 ### What clients show
 
 - In the transcript: the line as typed (`/release-notes 1.4`), with the source path, and the expanded text folded
-  under it; from the `command.expanded` event, so a replayed session shows the same. `missing` and `unsupported` as
-  one dim line each ("argument 2 was not given", "`` !`git status` `` was left as text").
+  under it; from the `command.expanded` event, so a replayed session shows the same. `missing`, `unused` and `unsupported` as
+  one dim line each ("argument 2 was not given", "argument 3 (`extra`) is not used by the command and was not sent",
+  "`` !`git status` `` was left as text").
 - An extension request `<prefix>/commands` → `listCommands(set, clientBuiltins)` (`commands` and `problems`,
   hidden and shadowed entries included) for a `/commands` listing, and `<prefix>/expand_command { sessionId,
   name, args }` → the `Expansion`, without sending, for a palette preview that warns about `missing` before Enter.

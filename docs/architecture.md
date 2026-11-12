@@ -110,7 +110,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | --- | --- |
 | Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
-| Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `command.expanded` (the message admitted right before it was produced by a slash command: the command's name and file, the fingerprint of the file as it was read, the arguments, the positions that were not given, what was left as text), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
+| Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `command.expanded` (the message admitted right before it was produced by a slash command: the command's name and file, the fingerprint of the file as it was read, the arguments, the positions that were not given, the positions of the arguments the template has no place for, what was left as text), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` with `hooks.objections`, their last words, when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
@@ -1192,7 +1192,9 @@ message, and the model sees that message and nothing else.
   `inbox.enqueued` (the expanded text, origin `null`: it is the user's message) and `command.expanded` in one
   append. The expanded text is stored once, as the message's content, and is what every request renders; where
   it came from is fields (the name, the file, the fingerprint of the file as it was read, the arguments, the
-  positions that became empty text, what was left as text), never parsed back out of the text. The reducer puts
+  positions that became empty text, the positions of the arguments the template has no place for (`unused`: they
+  are not in the message, and the record says so for the user), what was left as text), never parsed back out
+  of the text. The reducer puts
   the record on the inbox item and on the user message, so a transcript shows the line as typed.
 - *Nothing in a command file runs or reads anything.* Expansion is a pure function of the template and the
   arguments. A command in backticks after `!` and an `@path`, which other harnesses run and read when the slash

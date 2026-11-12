@@ -55,8 +55,11 @@
  *    how many files it wrote and how many it removed (`written`, `removed`),
  *    and a watch may end because its regular expression was too slow on a
  *    line (`watch.ended` with the reason `too_slow`).
+ * 11: the record of a slash command (`command.expanded`, and with it an inbox
+ *    item and a user message) says which typed arguments the template had no
+ *    place for (`unused`).
  */
-export const SCHEMA_VERSION = 10
+export const SCHEMA_VERSION = 11
 
 /**
  * Run on every connection, before anything else.

@@ -89,7 +89,7 @@ describe("looking a typed entry up", () => {
 })
 
 describe("what the transcript says", () => {
-  const use = { messageId: m("i1"), name: "release-notes", path: "/w/.claude/commands/release-notes.md", scope: "project" as const, fingerprint: "f".repeat(64), arguments: "1.4", missing: [2], unsupported: [{ kind: "shell" as const, text: "!`git status`", line: 3 }, { kind: "include" as const, text: "@src/app.ts", line: 4 }] }
+  const use = { messageId: m("i1"), name: "release-notes", path: "/w/.claude/commands/release-notes.md", scope: "project" as const, fingerprint: "f".repeat(64), arguments: "1.4", missing: [2], unused: [], unsupported: [{ kind: "shell" as const, text: "!`git status`", line: 3 }, { kind: "include" as const, text: "@src/app.ts", line: 4 }] }
 
   test("a message a command file produced is named as typed, with the file, what was not given and what was left as text", () => {
     expect(commandSent(use, "a\nb\nc")).toEqual({

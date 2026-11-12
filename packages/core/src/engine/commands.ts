@@ -12,8 +12,8 @@
  *   reported to the user: with the expansion, and in the record.
  * - The message a command produced is admitted like any prompt, and
  *   `command.expanded` is written in the same append: which file, which
- *   version of it (its fingerprint), the arguments, what was missing and
- *   what was left as text. The expanded text is stored once, as the
+ *   version of it (its fingerprint), the arguments, what was missing, which
+ *   arguments the template had no place for, and what was left as text. The expanded text is stored once, as the
  *   message's content.
  *
  * The session's configuration decides where command files are looked for
@@ -92,6 +92,7 @@ export function commandUseOf(command: CommandDefinition, expansion: Expansion): 
     fingerprint: command.fingerprint,
     arguments: expansion.raw,
     missing: [...expansion.missing],
+    unused: [...expansion.unused],
     unsupported: expansion.unsupported.map((construct) => ({ kind: construct.kind, text: construct.text, line: construct.line })),
   }
 }

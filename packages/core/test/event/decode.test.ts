@@ -78,6 +78,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
     fingerprint: "c".repeat(64),
     arguments: "--watch",
     missing: [2],
+    unused: [],
     unsupported: [{ kind: "shell", text: "!`git status`", line: 3 }],
   }),
   "inbox.delivery_changed": event("inbox.delivery_changed", { messageId, delivery: "queue" }),

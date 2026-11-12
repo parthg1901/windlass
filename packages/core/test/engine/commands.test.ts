@@ -162,6 +162,27 @@ describe("sending a command", () => {
     await h.dispose()
   })
 
+  test("an argument the template has no place for is reported with the expansion and kept in the record", async () => {
+    const files = project({ deploy: DEPLOY, review: REVIEW })
+    const h = harness(files, { agents: { configDir: files.configDir } })
+    h.provider.enqueue(answer("Deployed api."), answer("Deployed web."))
+    const session = h.create()
+    // `$1` and `$2` are used; the third and fourth argument are in no placeholder, so they are not in the message.
+    const sent = session.sendCommand("deploy", 'api "eu west" extra --force')
+    await h.settled()
+    expect(sent.expansion).toMatchObject({ text: "Deploy api to eu west and watch the logs.", unused: [3, 4] })
+    expect(of(h, "command.expanded")[0]!.data).toMatchObject({ arguments: 'api "eu west" extra --force', missing: [], unused: [3, 4] })
+    // The record is on the user's message too, so a transcript drawn from the state says the same.
+    expect(session.projection().messages.find((message) => message.kind === "user")).toMatchObject({ command: { name: "deploy", unused: [3, 4] } })
+    expect(JSON.stringify(h.provider.requests[0]!.input)).not.toContain("extra")
+    // Every argument used: nothing to report.
+    session.sendCommand("deploy", "web staging")
+    await h.settled()
+    expect(of(h, "command.expanded")[1]!.data).toMatchObject({ missing: [], unused: [] })
+    h.verify()
+    await h.dispose()
+  })
+
   test("the record names the version of the file that was used; no tool is added and the prefix only grows", async () => {
     const files = project({ deploy: DEPLOY })
     const h = harness(files)

@@ -74,7 +74,7 @@ describe("in the app", () => {
     expect(backend.sent).toEqual([])
     session.emit(
       event("inbox.enqueued", { messageId: m("i1"), origin: null, delivery: "steer", content: [{ type: "text", text: "Draft the release notes for version 1.4.\nLook at the commits since ." }] }),
-      event("command.expanded", { messageId: m("i1"), name: "release-notes", path: "/work/.claude/commands/release-notes.md", scope: "project", fingerprint: "f".repeat(64), arguments: "1.4", missing: [2], unsupported: [{ kind: "shell", text: "!`git status`", line: 3 }] }),
+      event("command.expanded", { messageId: m("i1"), name: "release-notes", path: "/work/.claude/commands/release-notes.md", scope: "project", fingerprint: "f".repeat(64), arguments: "1.4", missing: [2], unused: [], unsupported: [{ kind: "shell", text: "!`git status`", line: 3 }] }),
       started(),
       event("inbox.delivered", { messageId: m("i1") }),
       ...step("a1"),

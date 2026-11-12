@@ -47,6 +47,7 @@ function use(name: string, file: string, typed: string, agent?: AgentRecord) {
         fingerprint: fingerprintOf(file),
         arguments: expansion.raw,
         missing: [...expansion.missing],
+        unused: [...expansion.unused],
         unsupported: expansion.unsupported.map((construct) => ({ kind: construct.kind, text: construct.text, line: construct.line })),
         // The agent the command names, as its definition was when the command was sent: it waits with the message.
         ...(agent === undefined ? {} : { agent }),

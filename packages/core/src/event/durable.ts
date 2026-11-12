@@ -189,6 +189,8 @@ export type InstructionDetail = Infer<typeof instructionDetail>
  *   file changes.
  * - `arguments`: what was typed after the name, trimmed.
  * - `missing`: the positions (`$2`) the template uses that were not given; they became empty text.
+ * - `unused`: the positions of the arguments that were typed and that the template has no place for, so they are
+ *   not in the message: the template names positions, not these, and has no `$ARGUMENTS`. Empty otherwise.
  * - `unsupported`: what the file holds that other harnesses would run or read at this moment (a command in
  *   backticks after `!`, an `@path`), with its line. Here it is left in the text as written, and never run.
  */
@@ -199,6 +201,7 @@ const commandUseFields = {
   fingerprint: nonEmptyString,
   arguments: string,
   missing: array(integer(1)),
+  unused: array(integer(1)),
   unsupported: array(object({ kind: oneOf(["shell", "include"]), text: nonEmptyString, line: integer(1) })),
 }
 export const commandUse = object(commandUseFields)
