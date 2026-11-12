@@ -420,6 +420,18 @@ describe("quoted program messages", () => {
     },
     // hooks
     { page: "docs/hooks.md", quote: 'This call was not run: the hook "no-push" refused it.', pieces: ["This call was not run: the hook ", " refused it"] },
+    { page: "docs/hooks.md", quote: '⊘ refused by the hook "no-push"', pieces: ['refused by the hook "'] },
+    { page: "docs/hooks.md", quote: 'refused: the hook "<name>" must allow it and could not answer (...)', pieces: ["refused: the hook ", " must allow it and could not answer ("] },
+    { page: "docs/hooks.md", quote: 'The call went on without its answer, since the hook says `onError: "allow"`.', pieces: ['The call went on without its answer, since the hook says `onError: "allow"`.'] },
+    { page: "docs/hooks.md", quote: '⚠ ended with the stop hook "<name>" unsatisfied', pieces: ["ended with ", "the stop hook ", " unsatisfied"] },
+    { page: "docs/hooks.md", quote: 'Approving the hook "<name>" needs someone at the terminal: ', pieces: ["Approving ", " needs someone at the terminal: "] },
+    { page: "docs/hooks.md", quote: 'note from the hook "no-todo", added to the result: ', pieces: ["note from the hook ", ", added to the result: "] },
+    {
+      page: "docs/hooks.md",
+      quote: '↻ the stop hook "no-scratch" did not let the turn end · the agent is sent back with what it said',
+      pieces: ["the stop hook ", " did not let the turn end", "the agent is sent back with what it said"],
+    },
+    { page: "docs/hooks.md", quote: "waiting for your approval: not run", pieces: ["waiting for your approval: not run"] },
     { page: "docs/hooks.md", quote: 'This call was not run: the hook "no-env-files" refused it.', pieces: ["This call was not run: the hook ", " refused it"] },
     { page: "docs/hooks.md", quote: '[Note from the hook "no-todo"]', pieces: ["[Note from the hook "] },
     { page: "docs/hooks.md", quote: "[Stop hook 1 of at most 3] The turn cannot end yet.", pieces: ["[Stop hook ", " of at most ", "] The turn cannot end yet."] },
@@ -427,7 +439,7 @@ describe("quoted program messages", () => {
     { page: "docs/hooks.md", quote: 'This call was not run: the hook "<name>" refused it and gave no reason.', pieces: ["This call was not run: the hook ", " refused it", " and gave no reason"] },
     {
       page: "docs/hooks.md",
-      quote: '⚠ hooks: The hook "<name>" (before a tool call) could not answer: it exited with code 1; a hook answers with 0 or 2. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.',
+      quote: '⚠ hook: The hook "<name>" (before a tool call) could not answer: it exited with code 1; a hook answers with 0 or 2. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.',
       pieces: ["before a tool call", " could not answer: ", "it exited with code ", "; a hook answers with 0 or ", 'A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.'],
     },
     { page: "docs/hooks.md", quote: "could not answer: it did not answer within 1 second.", pieces: ["could not answer: ", "it did not answer within "] },
@@ -449,17 +461,17 @@ describe("quoted program messages", () => {
     },
     {
       page: "docs/hooks.md",
-      quote: '⚠ hooks: The turn ended although the stop hook "<name>" still objected: the agent was sent back 2 times already, the most a turn allows.',
+      quote: '⚠ hook: The turn ended although the stop hook "<name>" still objected: the agent was sent back 2 times already, the most a turn allows.',
       pieces: ["The turn ended although ", "the stop hook", " still objected: the agent was sent back ", " already, the most a turn allows."],
     },
     {
       page: "docs/hooks.md",
-      quote: '⚠ hooks: This project\'s configuration asks to run the hook "<name>" before a tool call (<command>). It is not run: a hook a project names runs only after you approve it.',
+      quote: '⚠ hook: This project\'s configuration asks to run the hook "<name>" before a tool call (<command>). It is not run: a hook a project names runs only after you approve it.',
       pieces: ["This project's configuration asks to run the hook ", "before a tool call", "It is not run: a hook a project names runs only after you approve it."],
     },
     {
       page: "docs/hooks.md",
-      quote: "⚠ hooks: The project's configuration asks for more than yours allows and was not followed: hooks.maxStopRounds: the project's 9 is above the user's 3.",
+      quote: "⚠ hook: The project's configuration asks for more than yours allows and was not followed: hooks.maxStopRounds: the project's 9 is above the user's 3.",
       pieces: ["The project's configuration asks for more than yours allows and was not followed: ", "hooks.maxStopRounds: the project's ", " is above the user's "],
     },
     // diagnostics

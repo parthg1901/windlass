@@ -26,14 +26,20 @@ In your own configuration file, `~/.config/windlass/config.json`:
 }
 ```
 
-Then work as usual. When the model runs `git push origin main` you see the call fail with the hook's words, and
-the model is given the same two lines as the call's result:
+Then work as usual. When the model runs `git push origin main` you see the call refused, by which hook, and
+the hook's words:
 
 ```text
 ▸ shell git push origin main
-  ✗ failed
-    This call was not run: the hook "no-push" refused it.
+  ⊘ refused by the hook "no-push"
     Pushing is not allowed here. Commit locally and tell the user.
+```
+
+The model is given this as the call's result:
+
+```text
+This call was not run: the hook "no-push" refused it.
+Pushing is not allowed here. Commit locally and tell the user.
 ```
 
 The real model answered that the push was blocked by the hook, and did not try another way.
@@ -169,16 +175,18 @@ A hook fails when it exits with a code other than 0 or 2, or does not answer wit
 told each time:
 
 ```text
-⚠ hooks: The hook "<name>" (before a tool call) could not answer: it exited with code 1; a hook answers with 0 or 2. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.
-⚠ hooks: The hook "<name>" (before a tool call) could not answer: it did not answer within 1 second. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.
-⚠ hooks: The hook "<name>" (after a tool call) could not answer: it exited with code 3; a hook answers with 0 or 2. Nothing was added to the result.
-⚠ hooks: The hook "<name>" (when a turn is about to end) could not answer: it exited with code 9; a hook answers with 0 or 2. The turn ended as it would have without it.
+⚠ hook: The hook "<name>" (before a tool call) could not answer: it exited with code 1; a hook answers with 0 or 2. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.
+⚠ hook: The hook "<name>" (before a tool call) could not answer: it did not answer within 1 second. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.
+⚠ hook: The hook "<name>" (after a tool call) could not answer: it exited with code 3; a hook answers with 0 or 2. Nothing was added to the result.
+⚠ hook: The hook "<name>" (when a turn is about to end) could not answer: it exited with code 9; a hook answers with 0 or 2. The turn ended as it would have without it.
 ```
 
 - **A failing before hook refuses the call.** A hook that is there to stop something must not stop working
   unnoticed. The agent reads
   `This call was not run: the hook "<name>" (from the user's configuration) must allow it and could not answer: it exited with code 1; a hook answers with 0 or 2. Do not try to work around the hook; tell the user it is failing.`
-  With `"onError": "allow"` (for a hook that only watches) the call goes on; you get the same warning.
+  and the call's row says `refused: the hook "<name>" must allow it and could not answer (...)`.
+  With `"onError": "allow"` (for a hook that only watches) the call goes on, and the warning ends
+  ``The call went on without its answer, since the hook says `onError: "allow"`.`` instead.
 - **A failing after or stop hook changes nothing**: no note, and the turn ends as it would have.
 - **A mistake in the file** fails the turn before anything is sent, naming the file and the key:
   `hooks.beforeTool[0].comand: unknown key "comand"; known keys: name, tools, paths, command, timeoutSeconds, onError, sandbox`.
@@ -191,36 +199,43 @@ Stop hooks send the agent back at most `maxStopRounds` times in one turn. The la
 and if the hook still objects after that, the turn ends anyway:
 
 ```text
-⚠ hooks: The turn ended although the stop hook "<name>" still objected: the agent was sent back 2 times already, the most a turn allows.
+⚠ hook: The turn ended although the stop hook "<name>" still objected: the agent was sent back 2 times already, the most a turn allows.
 ```
 
-The ending is still `✓ done` with exit code 0; in `--json` the turn's last event has
-`"hooks": { "unsatisfied": ["<name>"] }`.
+The turn has still ended, with exit code 0, and its ending row says how:
+`⚠ ended with the stop hook "<name>" unsatisfied · ...` in place of `✓ done · ...`. In `--json` the turn's ending
+event (`execution.succeeded`) has `"hooks": { "unsatisfied": ["<name>"] }`.
 
 ## A project's hooks
 
 A hook in a project's file, `.windlass/config.json`, is a command the repository wants to run on your machine. It
-is not run until you approve it, and the work goes on as if it were not there. You are told at the first turn:
+is not run until you approve it, and the work goes on as if it were not there. You are told when the session
+opens:
 
 ```text
-⚠ hooks: This project's configuration asks to run the hook "<name>" before a tool call (<command>). It is not run: a hook a project names runs only after you approve it.
+⚠ hook: This project's configuration asks to run the hook "<name>" before a tool call (<command>). It is not run: a hook a project names runs only after you approve it.
 ```
 
 A project's file cannot take a hook out of the sandbox (`"sandbox": false` there fails the turn:
 `only the user's own configuration file can run a hook outside the sandbox`) and cannot raise your
 `maxStopRounds`:
-`⚠ hooks: The project's configuration asks for more than yours allows and was not followed: hooks.maxStopRounds: the project's 9 is above the user's 3.`
+`⚠ hook: The project's configuration asks for more than yours allows and was not followed: hooks.maxStopRounds: the project's 9 is above the user's 3.`
 
 ## Approving, listing and seeing hooks
 
 - **Approving a project's hook.** An interactive `windlass` and `windlass tui` ask you about a hook a project's
-  file names, showing the whole command; `/hooks approve <hook>` answers it later. A one-prompt run cannot ask: it
-  says once that the hook was skipped and how to approve it. An approval is for that exact definition; an edited
-  hook is asked about again.
-- **Listing.** `/hooks` shows each hook, when it runs, its command, the file that defines it and its state.
-- **Seeing what a hook did.** A call a hook refused is shown with the hook's name and its reason; a note a hook
-  added, a stop hook that sent the agent back, and a turn that ended with a stop hook unsatisfied each have a row.
-  `--json` has all of it in the `hook.ran` events (`toModel`, `forUser`).
+  file names as soon as the session opens, before your first message. The question shows the whole command, the
+  tools it applies to, where it runs and the file that defines it; `y` allows it for this project for 30 days,
+  and `/hooks approve <hook>` asks again after a no. A one-prompt run cannot ask: it says once that the hook is skipped and how to approve it
+  (`Approving the hook "<name>" needs someone at the terminal: ...`). An approval is for that exact definition; an
+  edited hook is asked about again.
+- **Listing.** `/hooks` shows each hook, when it runs, its command, the file that defines it and its state
+  (`in force`, `waiting for your approval: not run`, or that it failed the last time it ran, with why).
+- **Seeing what a hook did.** A call a hook refused is shown with the hook's name and its reason (above); a note
+  is under the call it was added to (`note from the hook "no-todo", added to the result: ...`); a stop hook that
+  objected is `↻ the stop hook "no-scratch" did not let the turn end · the agent is sent back with what it said`;
+  and a turn that ended with one unsatisfied says so on its ending row. `--json` has all of it in the `hook.ran`
+  events (`toModel`, `forUser`).
 
 ## Not yet
 
