@@ -91,8 +91,24 @@ export function agentIndexAppended(set: AgentSet): AppendedSource {
   }
 }
 
-/** One line for the user about a definition that was skipped, shadowed or is off in some way. */
-export function describeAgentProblem(problem: AgentProblem): string {
+/**
+ * One line for the user about a definition that was skipped, shadowed or is
+ * off in some way.
+ *
+ * `inForce` is the agent the session runs as, when it runs as one. A session
+ * that started as the default agent runs as the user's own definition of
+ * that name, also where a project defines the name too: by the order of
+ * discovery the project's is the nearer one and the user's is "shadowed",
+ * and yet the user's is the one in force for this session. Saying that it
+ * "is hidden" would be the opposite of what is in force, so the line says
+ * which definition the session runs as and why, and what the other one of
+ * that name is used for (`nearer`: the definition discovery prefers).
+ */
+export function describeAgentProblem(problem: AgentProblem, inForce: { readonly name: string; readonly path: string } | null = null, nearer: string | null = null): string {
+  if (problem.severity === "shadowed" && inForce !== null && inForce.path === problem.path)
+    return `This session runs as the agent "${inForce.name}" defined in ${problem.path}: it is your own definition, and the agent a session starts as by default (agents.default) is always one of your own.${
+      nearer === null ? "" : ` The definition of the same name at ${nearer} is not in force here; it is the one a switch to "${inForce.name}" or a subagent run as "${inForce.name}" gets.`
+    }`
   const what = problem.severity === "skipped" ? "was not loaded" : problem.severity === "shadowed" ? "is hidden by another agent of the same name" : "was loaded with a warning"
   return `The agent definition at ${problem.path} ${what}: ${problem.reason}`
 }

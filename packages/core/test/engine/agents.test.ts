@@ -77,6 +77,30 @@ describe("the agent a session starts as", () => {
     }
   })
 
+  test("a default agent the project also defines: the session runs as the user's own, and the user is told that, not that theirs is hidden", async () => {
+    const OWN = REVIEWER.replace("Read the code and report what is wrong.", "Read the code as I like it read.")
+    const files = project({ reviewer: REVIEWER }, { reviewer: OWN })
+    const h = harness(files, { userConfig: { agents: { default: "reviewer" } }, config: { verify: { mode: "off" } }, spawn: {} })
+    try {
+      h.provider.enqueue(answer("Hello."))
+      h.create().send("Hi.")
+      await h.settled()
+      const own = join(files.configDir, "agents", "reviewer.md")
+      const theirs = join(files.cwd, ".claude", "agents", "reviewer.md")
+      // What is in force: the user's own definition.
+      expect(h.session.projection().session.agent).toMatchObject({ name: "reviewer", path: own })
+      expect(JSON.stringify(h.provider.requests[0]!.instructions)).toContain("Read the code as I like it read.")
+      // And that is what the user is told, with why, and what the project's definition of the name is used for.
+      expect(h.diagnostics.filter((item) => item.kind === "agents").map((item) => item.message)).toEqual([
+        `This session runs as the agent "reviewer" defined in ${own}: it is your own definition, and the agent a session starts as by default (agents.default) is always one of your own. The definition of the same name at ${theirs} is not in force here; it is the one a switch to "reviewer" or a subagent run as "reviewer" gets.`,
+      ])
+      // The sentence is true: a switch by name takes the project's.
+      expect(h.session.setAgent("reviewer")).toMatchObject({ path: theirs })
+    } finally {
+      await h.dispose()
+    }
+  })
+
   test("what is said while the session is created reaches the first listener, once: a default that was not followed, a tool that does not exist", async () => {
     const files = project({ odd: "---\nname: odd\ndescription: Names a tool that is not there.\ntools: read, Bash\n---\nWork.\n" })
     const h = harness(files, { config: { verify: { mode: "off" }, agents: { default: "odd" } } })

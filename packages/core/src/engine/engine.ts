@@ -5223,7 +5223,9 @@ class LiveSession implements EngineSession {
     // The list of agents, for a session that can run a subagent as one.
     if (this.core.agents !== null && this.offers(projection, SUBAGENT_TOOL)) {
       const set = findAgents(projection.session.cwd, this.agentPlaces())
-      for (const problem of set.problems) this.say("agents", describeAgentProblem(problem))
+      // A definition another of its name hides is said as that, unless it is the one this session runs as.
+      const inForce = projection.session.agent ?? null
+      for (const problem of set.problems) this.say("agents", describeAgentProblem(problem, inForce, set.agents.find((agent) => agent.name === problem.name)?.path ?? null))
       sources.push(agentIndexAppended(set))
     }
     const notes = this.memoryStore(projection)

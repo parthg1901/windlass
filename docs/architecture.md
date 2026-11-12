@@ -1163,7 +1163,11 @@ Markdown file: instructions, and optionally a model, an effort and restrictions.
   (source `agent-index`), again when the list changes, and a withdrawal when none is left.
 - *For clients.* `Engine.listAgents(cwd)`, `EngineSession.agents()`, `agent()` and `setAgent()`. Problems
   (a definition that was skipped or shadowed, a restriction that names a tool that does not exist, a model that
-  is not offered, a project's `agents.default`) are `diagnostic` events of kind `agents`.
+  is not offered, a project's `agents.default`) are `diagnostic` events of kind `agents`. A definition that
+  another of its name hides is said as hidden, except where it is the one the session runs as: a session that
+  started as the default runs as the user's own definition also where the project defines the name, and the
+  line then says which definition is in force and why, and that the project's is what a switch to that name
+  or a subagent run as it gets (`describeAgentProblem`).
 
 ## Hooks and language-server diagnostics
 
