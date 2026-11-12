@@ -58,8 +58,11 @@
  * 11: the record of a slash command (`command.expanded`, and with it an inbox
  *    item and a user message) says which typed arguments the template had no
  *    place for (`unused`).
+ * 12: images retired at a compaction: `compaction.ended`, and with it the
+ *    compaction message, may carry `retired` (the kept tool results whose
+ *    images are no longer sent, each with the line that follows its output).
  */
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 /**
  * Run on every connection, before anything else.

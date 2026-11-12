@@ -30,6 +30,10 @@
  *   A revert or refusal range may hold a compaction: that compaction is then
  *   excluded like any message, and model history starts from the latest one
  *   that is not.
+ * - A compaction retires the images only of settled results among the
+ *   messages it keeps, each once and with the number the result has; a
+ *   result the compaction in force retired, and that is still kept, stays
+ *   retired with the same line.
  * - Checks start only when the session would otherwise go idle, and a run has
  *   one terminal event. An execution ends as done with what the gate found.
  * - A revert and its undo happen only while idle; one that restores files is
@@ -52,7 +56,7 @@
  * as the same objects, so `projectionChanges` can find what to write.
  */
 import { AGENT_KEY } from "../agents/use.ts"
-import { type HookEnding, type StepError, type StoredEvent, HARNESS_ORIGIN, WATCH_LIMITS } from "../event/durable.ts"
+import { type HookEnding, type RetiredResult, type StepError, type StoredEvent, HARNESS_ORIGIN, WATCH_LIMITS } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
 import { sumUsage } from "../provider/usage.ts"
@@ -424,6 +428,35 @@ function apply(state: Projection, event: AppliedEvent): Projection {
   /** Checks that an exclusion range starts no later than `last`. It may reach back past a compaction, which it then excludes. */
   const range = (fromSeq: number, last: number) => {
     if (fromSeq > last) fail("invalid_range", `the range must start no later than seq ${last}`)
+  }
+  /**
+   * What a compaction may retire: images of settled results among the
+   * messages it keeps, each once, with the number the result has. And what
+   * it must: a result the compaction in force retired and that is still
+   * kept stays retired with the same line, so that an image never comes
+   * back and a line that was sent never changes.
+   */
+  const retiring = (retired: readonly RetiredResult[], keepFromSeq: number): void => {
+    const listed = new Map<string, RetiredResult>()
+    for (const entry of retired) {
+      const key = `${entry.messageId}\u0000${entry.callId}`
+      if (listed.has(key)) fail("invalid_transition", `tool call ${entry.callId} of message ${entry.messageId} is retired twice`)
+      listed.set(key, entry)
+      const message = state.messages.findLast((candidate) => candidate.id === entry.messageId)
+      if (message?.kind !== "assistant" || message.excluded !== null || message.seq < keepFromSeq)
+        return fail("invalid_transition", `message ${entry.messageId} is not a step this compaction keeps, so none of its results is retired`)
+      const part = message.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === entry.callId)
+      if (part?.type !== "tool_call" || part.state.status !== "settled" || part.state.attachments.length !== entry.images)
+        fail("invalid_transition", `tool call ${entry.callId} of message ${entry.messageId} has no result with ${entry.images} attachment${entry.images === 1 ? "" : "s"} to retire`)
+    }
+    const inForce = state.session.compaction
+    const before = inForce === null ? undefined : state.messages.findLast((candidate) => candidate.id === inForce.messageId)
+    for (const entry of before?.kind === "compaction" ? (before.retired ?? []) : []) {
+      const message = state.messages.findLast((candidate) => candidate.id === entry.messageId)
+      if (message === undefined || message.excluded !== null || message.seq < keepFromSeq) continue
+      if (listed.get(`${entry.messageId}\u0000${entry.callId}`)?.note !== entry.note)
+        fail("invalid_transition", `tool call ${entry.callId} of message ${entry.messageId} was retired by the compaction before this one and is still kept: it stays retired, with the same note`)
+    }
   }
   /** The compaction that is open under `id`. */
   const compacting = (id: MessageId) => {
@@ -948,10 +981,12 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         }))
         return { ...failed, session: { ...failed.session, open: null } }
       }
+      const retired = event.data.retired
       const ended = edit(event.data.messageId, "compaction", (message) => {
         // A summary the model wrote is the first answer, or the answer to the one repair that was asked for.
         if (event.data.source === "repaired" && message.repair === null)
           fail("invalid_transition", `compaction ${message.id} asked for no repair (compaction.repair_requested comes first)`)
+        if (retired !== undefined) retiring(retired, message.keepFromSeq)
         return {
           ...message,
           status: "completed",
@@ -961,6 +996,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
           tokensAfter: event.data.tokensAfter,
           usage: event.data.usage,
           endedAt: event.time,
+          ...(retired === undefined || retired.length === 0 ? {} : { retired }),
         }
       })
       const checkpoint = ended.messages.findLast((message) => message.id === event.data.messageId)!

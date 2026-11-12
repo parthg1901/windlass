@@ -119,7 +119,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run; `agent` when the policy that refused it is the restrictions of the agent the session runs as, then with `refusal`: which rule, the call's effect class, a sentence for the user), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
 | Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge), `watch.started` (the user's watch on a running command's output: text or a regular expression a line must match, and how often it may fire), `watch.fired` (the line, the count, and the message that tells the model), `watch.ended` (a watch that could still fire ended: removed, with its command, or lost with it) |
 | Replay | `replay.call` (per call: matched, normalised, dropped, diverged or off the recording; whether the tool ran for real), `replay.diverged` (the copy the replay carries on in, and the snapshot it was restored from), `replay.ended` (the outcome, the reason, the report) |
-| Compaction | `compaction.started` (the trigger: `auto`, `overflow`, or `manual` when the user asked; the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after, and `calls`: how many summary requests it took, retries and the repair included), `compaction.failed` (with `calls` too) |
+| Compaction | `compaction.started` (the trigger: `auto`, `overflow`, or `manual` when the user asked; the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after, `calls`: how many summary requests it took, retries and the repair included, and `retired`: the kept tool results whose images are no longer sent, each with the line that follows its stored output from then on), `compaction.failed` (with `calls` too) |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
 | Verification | `checks.started`, `checks.finished` (the evidence), `checks.failed`; the gate's outcome is on `execution.succeeded` |
 | History ranges | `revert.started`, `history.reverted` (with the record of the restore), `revert.undo_started`, `history.restored`, `revert.failed` |
@@ -305,6 +305,10 @@ is a new version with a decoder for the old one.
   session's fork chain, so a fork's first request is its parent's request. A caller cannot pass another model.
 - The system prompt and tool list are stored in the log (`baseline.set`) and change only after a compaction. Anything
   else that changes is appended as a message.
+- A message renders from its own stored fields, with one exception that is itself stored: a tool result on the
+  list of retired images of the compaction in force (`compaction.ended.retired`) is sent as its stored output
+  followed by the line that list froze for it, without its attachments. The list changes only where the prefix
+  may break anyway (a compaction, or a revert or refusal that excludes one or puts it back).
 - A request may fail to extend the previous one only after `compaction.ended`, `history.reverted`, `step.refused` or
   `settings.changed`. `checkPrefix` takes the events appended since the previous request and reports any other
   break as a violation. A check report is an appended message and breaks nothing; a revert is one of the four.
@@ -693,6 +697,44 @@ is a new version with a decoder for the old one.
   the whole log, and frozen in `compaction.ended`: the summary, an index of exact identifiers (files with lines,
   commands with the outcome of each run, errors, commits, failing tests), the user's messages verbatim up to a
   budget, and the pointer to the history tools. It is never rendered again, whatever the checkpoint code becomes.
+- *Images* (`context/images.ts`). A tool result may carry images (`tool.settled.attachments`: `read` on an image
+  file, an MCP result), and a result in view is sent again with every request, so each image is paid for in
+  every later request, long after the model has looked at it. One that was sent is never dropped or replaced
+  by itself: its block would change, and the provider's prompt cache would be lost for everything after it. So
+  images are retired where the prefix is rebuilt anyway, at a compaction, and nowhere else. What a compaction
+  did before this was only half of it: the results before the cut were no longer sent, images included, and
+  nothing said that there had been any; every image of the part kept word for word stayed, at full cost, until
+  a later compaction happened to cut it off. Now:
+  - *Before the cut* the checkpoint lists the images that were shown there, after the identifier index: the
+    file, its type, its dimensions and size, the `seq` it was read at (a result with no file: the tool that
+    returned it), with the sentence that reading the file again shows it again. One line per file, the most
+    recent within a bound (`imageTokens`, 200), the rest counted.
+  - *In the kept part* at most `IMAGE_RETIREMENT.keepRecent` (2) images stay attached, the most recent ones,
+    after a normal compaction and one the user asked for; after an aggressive one none of those the model has
+    been shown. The images of the last step always stay, however many: the next call is the first to see them.
+    Every older result keeps its stored output, byte for byte, loses its attachments, and is followed by one
+    line that says that the image was taken out at a compaction and how to see it again (`read <path> again`,
+    or the tool's name for a result that names no file). A result is kept or retired whole.
+  - *The record.* The decision is made once, when the compaction ends, and recorded with the checkpoint:
+    `compaction.ended.retired` lists each such result (`messageId`, `callId`), how many images it had, and the
+    line, frozen like the checkpoint. The reducer keeps the list on the compaction message, and the request
+    builder renders a result that is on the list of the compaction in force with the line and without its
+    attachments; nothing else about a result's rendering depends on anything but its own stored fields. So
+    every request can be rebuilt from the log alone, and between two compactions the list, and with it every
+    block that was sent, does not change (`test/request/build.property.test.ts` checks it after every event of
+    250 scripted sessions; the scenario "Old images are retired at a compaction, and at no other time" and
+    `test/engine/compaction-images.test.ts` through the loop). The stored result is untouched: a transcript
+    and the history tools still have every image.
+  - *The next compaction* starts from the list in force: a result on it that is still kept is listed again
+    with the same line, and counts for nothing; the reducer rejects a `compaction.ended` that drops one or
+    changes its line, so an image never comes back by itself and a line that was sent never changes. It also
+    rejects a record that names a result before the cut, an unsettled one, or a wrong number of images.
+  - *A revert or a refusal* whose range holds the compaction excludes it: model history is what it was before
+    it, images included, and undoing the revert brings the checkpoint and its list back. Both are among the
+    events at which the prefix may break.
+  - *What is not retired.* Media in a user's own message stays as sent while the message is in view. The cut
+    is chosen with every image at full cost (`MEDIA_TOKENS`), so a compaction keeps a little less than its
+    budget would allow once images are retired; `tokensAfter` counts what is really sent.
 - *On request.* `EngineSession.compact()` makes the same compaction because the user asks (`trigger: manual`): the
   same summary request, repair, fallback and events. It keeps word for word what the next request has to answer
   and, where the window is known, the short tail an aggressive compaction keeps. It happens at a step boundary
@@ -716,8 +758,8 @@ is a new version with a decoder for the old one.
   nothing is stored outside the log). When a compaction removes that call from the model's view, the checkpoint
   carries the list as the call left it, after the summary.
 - *After a compaction* the baseline is set again (instruction updates are folded in, the tool list is the same), and
-  the next request is the checkpoint and the kept messages, which render exactly as before. The request after that
-  extends it. The anti-thrash rules are the policy's: a compaction that freed less than a quarter blocks the next
+  the next request is the checkpoint and the kept messages, which render exactly as before but for the images
+  the compaction retired (see *Images*). The request after that extends it. The anti-thrash rules are the policy's: a compaction that freed less than a quarter blocks the next
   until the context has grown; if the request then does not fit there is one aggressive compaction; then nothing
   more is tried.
 - *What else a compaction meets.* An interrupt during the summary call closes the compaction as interrupted and

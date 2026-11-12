@@ -13,6 +13,7 @@
  *   one with `checkPrefix` and the events appended in between.
  */
 import { describe, expect, test } from "bun:test"
+import { retireImages } from "../../src/context/images.ts"
 import type { EventType, StoredEvent } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
@@ -26,6 +27,20 @@ import type { ModelRequest } from "../../src/request/request.ts"
 import { BASELINE, OPTIONS, type PartSpec, READ, SHELL, Script, providerProblems } from "./session.ts"
 
 // ---- scripted sessions ----
+
+/** Two images a tool result may carry. */
+const SHOT = { hash: "a".repeat(64), mediaType: "image/png" }
+const PHOTO = { hash: "b".repeat(64), mediaType: "image/jpeg" }
+
+/** What a compaction of `s` that cuts at `keepFromSeq` retires, by the loop's own rule, with `keepRecent` seen images left attached. */
+const retiring = (s: Script, keepRecent: number) => (keepFromSeq: number) => {
+  const view = selectModelHistory(s.projection).messages
+  return retireImages({
+    kept: view.filter((message) => message.kind !== "compaction" && message.seq >= keepFromSeq),
+    previous: view[0]?.kind === "compaction" ? (view[0].retired ?? []) : [],
+    keepRecent,
+  })
+}
 
 const INTERRUPT = "Your previous response was interrupted by the user."
 
@@ -160,6 +175,27 @@ const scenarios: Record<string, () => Script> = {
     s.release()
     return s
   },
+  "a compaction that retires the older images of what it keeps, and a second one that carries that on": () => {
+    const s = new Script().open()
+    s.user("compare the screenshots")
+    s.step({ parts: [{ call: "call_1", input: '{"path":"zero.png"}', attachments: [SHOT] }] })
+    const kept = s.step({ parts: [{ call: "call_1", input: '{"path":"one.png"}', attachments: [SHOT] }] })
+    s.step({ parts: [{ call: "call_1", input: '{"path":"two.png"}', attachments: [PHOTO] }, { call: "call_2", name: "shell" }] })
+    s.step({ parts: [{ call: "call_1", input: '{"path":"three.png"}', attachments: [SHOT, PHOTO] }] })
+    const keptSeq = s.projection.messages.find((message) => message.id === kept)!.seq
+    // The last step's two images stay (the model has not been shown them); of the others one may, and none fits.
+    s.compact(() => keptSeq, "Summary so far.", retiring(s, 1))
+    s.baseline(BASELINE)
+    s.step({ parts: [{ text: "They differ in the header." }] })
+    s.release()
+    s.user("and the footer?")
+    s.step({ parts: [{ call: "call_1", input: '{"path":"four.png"}', attachments: [SHOT] }] })
+    // The second compaction keeps everything the first kept: what was retired stays retired, with the same line.
+    s.compact(() => keptSeq, "Summary so far, again.", retiring(s, 2))
+    s.step({ parts: [{ text: "The footer is the same." }] })
+    s.release()
+    return s
+  },
   "a compaction that keeps nothing and leaves the baseline alone": () => {
     const s = new Script().open()
     s.user("first task")
@@ -226,6 +262,8 @@ function randomSession(seed: number): Script {
       .filter(() => chance(0.6))
       .map((call) => ({ call, name: pick(["read", "shell"]), outcome: pick(outcomes), started: chance(0.8) ? undefined : false }))
       .map((part) => (part.started === false && part.outcome !== "error" ? { ...part, outcome: "not_started" as const } : part))
+      // Some results carry an image or two, which a later compaction may retire.
+      .map((part) => (part.outcome === "success" && chance(0.5) ? { ...part, attachments: chance(0.2) ? [SHOT, PHOTO] : [pick([SHOT, PHOTO])] } : part))
   const opening = (): PartSpec[] => [
     ...(chance(0.5) ? [{ reasoning: `thinking ${below(1000)}`, providerData: chance(0.2) ? null : undefined }] : []),
     ...(chance(0.4) ? [{ text: chance(0.1) ? "  " : `saying ${below(1000)}` }] : []),
@@ -244,7 +282,7 @@ function randomSession(seed: number): Script {
     if (chance(0.1)) s.harness("check", `check ${below(1000)} failed`)
     if (chance(0.12)) {
       const visible = selectModelHistory(s.projection).messages.filter((message) => message.seq >= s.floor)
-      const compactionSeq = s.compact((seq) => (chance(0.3) || visible.length === 0 ? seq : pick(visible.slice(-4)).seq))
+      const compactionSeq = s.compact((seq) => (chance(0.3) || visible.length === 0 ? seq : pick(visible.slice(-10)).seq), "Summary so far.", retiring(s, below(2)))
       if (chance(0.7))
         s.baseline(
           chance(0.5) ? BASELINE : { instructions: `You are a coding agent. Epoch ${compactionSeq}.`, tools: [READ, SHELL], sources: [] },
@@ -513,6 +551,57 @@ describe("the request is an append-only log", () => {
       { status: "expected_break", causes: ["settings"], comparison: { kind: "params", index: 0 } },
       { status: "expected_break", causes: ["settings"], comparison: { kind: "params", index: 0 } },
     ])
+  })
+
+  test("an image a compaction retired is never sent again while that compaction is in force, and one it kept is sent with every request", () => {
+    // What the sessions cover: compactions that retire, and later ones that carry a retirement on.
+    const retirements = sessions.flatMap(([, script]) => script.events.flatMap((event) => (event.type === "compaction.ended" && event.data.retired !== undefined ? [event.data.retired] : [])))
+    expect(retirements.length).toBeGreaterThanOrEqual(10)
+    const notes = retirements.flat().map((entry) => `${entry.messageId} ${entry.callId} ${entry.note}`)
+    expect(notes.length - new Set(notes).size).toBeGreaterThanOrEqual(3)
+
+    const wrong = sessions.flatMap(([name, script]) => {
+      let state: Projection | null = null
+      return script.events.flatMap((event) => {
+        state = reduce(state, event)
+        if (state.baseline === null) return []
+        const view = selectModelHistory(state).messages
+        const inForce = view[0]?.kind === "compaction" ? (view[0].retired ?? []) : []
+        const retired = new Map(inForce.map((entry) => [`${entry.messageId} ${entry.callId}`, entry.note]))
+        // Every result in view, as stored, against the item the request has for it.
+        const stored = view.flatMap((message) =>
+          message.kind === "assistant" && message.status !== "running" && message.status !== "refused"
+            ? message.parts.flatMap((part) => (part.type === "tool_call" && part.state.status === "settled" ? [{ key: `${message.id} ${part.callId}`, state: part.state }] : []))
+            : [],
+        )
+        const sent = buildRequest(state, OPTIONS).input.filter((item) => item.type === "tool_result")
+        if (sent.length !== stored.length) return [`${name}: seq ${event.seq} sends ${sent.length} results of ${stored.length}`]
+        return stored.flatMap((result, index) => {
+          const item = sent[index]!
+          const note = retired.get(result.key)
+          const expected = note === undefined ? { output: result.state.output, attachments: result.state.attachments } : { output: result.state.output + note, attachments: [] }
+          return item.type === "tool_result" && item.output === expected.output && canonicalJson(item.attachments) === canonicalJson(expected.attachments) ? [] : [`${name}: seq ${event.seq}, result ${result.key}`]
+        })
+      })
+    })
+    expect(wrong).toEqual([])
+  })
+
+  test("the scripted retirement: the unanswered step keeps its images, the most recent seen one stays, older ones get the line", () => {
+    const script = scenarios["a compaction that retires the older images of what it keeps, and a second one that carries that on"]!()
+    const ended = script.events.flatMap((event) => (event.type === "compaction.ended" ? [event.data.retired ?? []] : []))
+    const line = (path: string) => `\n[The image of this result is no longer attached: it was taken out of the conversation when it was compacted, to save context. To see it again, read ${path} again.]`
+    // First: `three.png` (two images) is unanswered and stays; `two.png` would make three with a limit of one; `one.png` is older still.
+    expect(ended[0]!.map((entry) => [entry.images, entry.note])).toEqual([[1, line("one.png")], [1, line("two.png")]])
+    // Second: both are carried on unchanged. `four.png` is unanswered and stays, which is one of the two that may;
+    // `three.png` has two images and no longer fits, so it is retired now, with a line of its own.
+    expect(ended[1]!.slice(0, 2)).toEqual([...ended[0]!])
+    expect(ended[1]!.slice(2).map((entry) => [entry.images, entry.note])).toEqual([
+      [2, "\n[The 2 images of this result are no longer attached: they were taken out of the conversation when it was compacted, to save context. To see them again, read three.png again.]"],
+    ])
+    const last = buildRequest(script.projection, OPTIONS).input.flatMap((item) => (item.type === "tool_result" ? [[item.output.split("\n").length, item.attachments.length]] : []))
+    // one.png, two.png and three.png: output and line, no image (the shell call next to two.png never had one); four.png with its image.
+    expect(last).toEqual([[2, 0], [2, 0], [1, 0], [2, 0], [1, 1]])
   })
 
   test("sessions without a compaction, revert, refusal or settings change never break", () => {

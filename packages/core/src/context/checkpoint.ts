@@ -10,7 +10,9 @@
  * 2. an index of exact identifiers that summaries tend to mangle, extracted
  *    mechanically from the removed messages: file paths (with line numbers
  *    where the text gave them), commands with the outcome of each run, error
- *    lines, commit hashes and failing test names;
+ *    lines, commit hashes and failing test names; and, when a tool result
+ *    before the cut carried images, the list of them (`images.ts`): none is
+ *    sent any more, and each can be seen again by reading its file;
  * 3. the user's own messages, quoted verbatim, newest first until the budget
  *    is spent, then printed oldest first;
  * 4. one sentence saying that the full earlier conversation is available
@@ -36,6 +38,7 @@ import type { Message } from "../message/message.ts"
 import { parseArguments } from "../tool/args.ts"
 import { estimateTokens } from "./estimate.ts"
 import { HISTORY_READ, HISTORY_SEARCH, messagePieces } from "./history-tools.ts"
+import { renderImages } from "./images.ts"
 
 export interface CheckpointLimits {
   /** Tokens of the identifier index. */
@@ -44,6 +47,8 @@ export interface CheckpointLimits {
   readonly userTokens: number
   /** Tokens of one quoted user message; longer ones are cut in the middle. */
   readonly perUserMessageTokens: number
+  /** Tokens of the list of images that were shown before the cut. */
+  readonly imageTokens: number
   /** Characters of one index entry. */
   readonly entryChars: number
   /** Entries per category before the token budget applies. */
@@ -55,6 +60,7 @@ export const DEFAULT_CHECKPOINT_LIMITS: CheckpointLimits = {
   indexTokens: 1_500,
   userTokens: 1_900,
   perUserMessageTokens: 400,
+  imageTokens: 200,
   entryChars: 160,
   perCategory: { files: 40, commands: 25, errors: 15, commits: 10, tests: 20 },
 }
@@ -129,6 +135,7 @@ export function buildCheckpoint(input: CheckpointInput): Checkpoint {
     ...(input.summary === null ? [NO_SUMMARY_STATEMENT, lastWords(messages)] : [input.summary.trim()]),
     input.todos == null || input.todos.trim() === "" ? "" : [TODOS_HEADING, input.todos.trim(), TODOS_ADVICE].join("\n"),
     renderIndex(index),
+    renderImages(messages, limits.imageTokens, limits.entryChars),
     quotes.text,
     input.inProgress === true ? CONTINUE_SENTENCE : "",
     tools ? (input.summary === null ? `${HISTORY_SENTENCE} ${NO_SUMMARY_ADVICE}` : HISTORY_SENTENCE) : "",

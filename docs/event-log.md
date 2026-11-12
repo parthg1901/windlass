@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 11 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 12 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -825,6 +825,7 @@ The compaction produced its checkpoint. From now on model history is `summary` (
 - `detail`: for a person, why it is a fallback, or what is still wrong with a summary that was used anyway; `null` when there is nothing to say.
 - `tokensAfter`: the size the next request is estimated at with the checkpoint in place. `tokensBefore - tokensAfter` is what was freed.
 - `calls`: how many summary requests were sent to the model for this compaction, retries and the repair included. A summary call is a model request that is no step (it writes no `step.started`), so the model requests of a turn are its steps plus the `calls` of its compactions.
+- `retired`: the tool results among the kept messages whose images are no longer sent (`context/images.ts`). From now on each is rendered with its stored output followed by `note`, and without its attachments; `images` is how many it had. `note` is frozen here like the checkpoint. A result the compaction before this one retired, and that is still kept, is listed again with the same `note`: every request is built from the compaction in force alone. Absent when nothing was retired.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -835,6 +836,7 @@ The compaction produced its checkpoint. From now on model history is `summary` (
 | `tokensAfter` | integer ≥ 0 | yes |
 | `usage` | [usage](#usage), or `null` | yes |
 | `calls` | integer ≥ 1 | may be absent |
+| `retired` | list of [retiredResult](#retiredresult) | may be absent |
 
 ### `compaction.failed`
 
@@ -1443,6 +1445,19 @@ What a restore did to the workspace.
 | `kept[].path` | string | yes |
 | `kept[].reason` | one of `"ignored"`, `"nested_repository"`, `"not_captured"`, `"hand_edited"` | yes |
 | `keptOmitted` | integer ≥ 0 | yes |
+
+Declared in `packages/core/src/event/durable.ts`.
+
+### `retiredResult`
+
+A tool result whose images a compaction took out of the model's view (`compaction.ended.retired`): the result, how many attachments it had, and the line that follows its stored output in every request from then on.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `messageId` | string, not empty | yes |
+| `callId` | string, not empty | yes |
+| `images` | integer ≥ 1 | yes |
+| `note` | string, not empty | yes |
 
 Declared in `packages/core/src/event/durable.ts`.
 

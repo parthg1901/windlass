@@ -45,7 +45,7 @@ import type { WorkspaceSnapshots } from "../../src/engine/workspace.ts"
 import type { ExecutionId, MessageId, RequestId, SessionId } from "../../src/id.ts"
 import { type InstructionSource, agentsSource, dateSource } from "../../src/instructions/source.ts"
 import { interruptReasonOf } from "../../src/interrupt.ts"
-import { encodeRequest } from "../../src/provider/openai-responses.ts"
+import { blobRefs, encodeRequest } from "../../src/provider/openai-responses.ts"
 import { buildRequest } from "../../src/request/build.ts"
 import type { ChangeStatus, FileChange } from "../../src/snapshot/diff.ts"
 import type { SkippedFile, SnapshotId, SnapshotUnavailable } from "../../src/snapshot/index.ts"
@@ -614,8 +614,9 @@ export class Harness {
     const request = buildRequest(projection, { toolChoice: "auto" })
     expect(danglingCalls(request.input)).toEqual([])
     expect(request.input.at(-1)?.type).not.toBe("reasoning")
-    // The provider's own encoder accepts it.
-    expect(() => encodeRequest(request, new Map())).not.toThrow()
+    // The provider's own encoder accepts it, with the media the request refers to as the store holds it.
+    const media = new Map(blobRefs(request).flatMap((ref) => [this.store.getBlob(ref.hash)].flatMap((blob) => (blob === null ? [] : [[ref.hash, blob.bytes] as const]))))
+    expect(() => encodeRequest(request, media)).not.toThrow()
   }
 
   /** Ends the test's process cleanly. */
@@ -792,7 +793,11 @@ function label(events: readonly NewEvent[]): Plain[] {
     if (item.type === "tool.settled" && item.data.diagnostics !== undefined)
       data.diagnostics = { ...item.data.diagnostics, waitedMs: 0, servers: item.data.diagnostics.servers.map((server) => ({ ...server, fingerprint: "" })) }
     if (item.type === "compaction.started") data.tokensBefore = 0
-    if (item.type === "compaction.ended") data.tokensAfter = 0
+    if (item.type === "compaction.ended") {
+      data.tokensAfter = 0
+      // The results a compaction retired the images of are named by their message, like everything else.
+      if (item.data.retired !== undefined) data.retired = item.data.retired.map((entry) => ({ ...entry, messageId: label("m", entry.messageId) }))
+    }
     // The agent's instructions name the file that defines it, which is a real path in the loop and `/repo/...` in a
     // scenario, so its fingerprint is a stand-in here; a test compares it with the record.
     if (item.type === "baseline.set") return { type: item.type, data: { sources: item.data.sources.map((entry) => (entry.source === "agent" ? { ...entry, fingerprint: "<agent>" } : entry)) } }

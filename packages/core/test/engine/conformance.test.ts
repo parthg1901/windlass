@@ -54,9 +54,9 @@ import { EDIT } from "../scenarios/revert.ts"
 import { CHILD_WORDS, INTERRUPTED_LINT, STOPPED_TESTS } from "../scenarios/call-stop.ts"
 import { ERROR_WATCH, SLOW_LINE, SLOW_WATCH, UP_WATCH } from "../scenarios/lineage.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, HAND_EDITED, SECOND_FIX } from "../scenarios/verification.ts"
-import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
+import type { AnyTool, ToolContext, ToolResult } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
-import { TODO_INPUT } from "../scenarios/compaction.ts"
+import { RETIRED_NOTE, TODO_INPUT, imageBlob, imageBytes, imageDisplay, imageOutput } from "../scenarios/compaction.ts"
 import { CAPTAIN_FILE, DELEGATE_AS, REVIEWER_FILE, WRITE_FIX } from "../scenarios/agents.ts"
 import { RELEASE_NOTES_ARGS, RELEASE_NOTES_FILE, REVIEW_ARGS, REVIEW_FILE, SHIP_ARGS, SHIP_FILE } from "../scenarios/commands.ts"
 import { mapSession } from "../../src/telemetry/map.ts"
@@ -141,6 +141,11 @@ const answer = (value: string) => [script.text(value), U]
 const at = (inputTokens: number) => script.usage(measured(inputTokens))
 const readsAt = (path: string, inputTokens: number) => [call("call_1", "read", { path }), at(inputTokens)]
 const answersAt = (value: string, inputTokens: number) => [script.text(value), at(inputTokens)]
+/** The scripted `read` tool on an image file: the result carries the image, stored as the real tool stores it. */
+const showsImage = (input: Record<string, unknown>, context: ToolContext): ToolResult => {
+  const path = String(input.path)
+  return { status: "success", output: imageOutput(path), truncation: null, attachments: [context.putBlob(imageBytes(path), "image/png")], display: imageDisplay(path) }
+}
 /** What the model returns for a summary request: no usage is scripted, as for a stream that was only read for its text. */
 const summary = (value = SUMMARY) => [script.text(value)]
 
@@ -1066,6 +1071,56 @@ const PLAYS: Record<string, Play> = {
     expect(checkpointText).toContain("The work was in progress when this checkpoint was taken.")
   },
 
+  "Old images are retired at a compaction, and at no other time": async (h, say) => {
+    h.provider.enqueue(
+      readsAt("one.png", 9000),
+      readsAt("two.png", 12000),
+      readsAt("three.png", 15000),
+      readsAt("four.png", 25000),
+      summary(),
+      answersAt("The second and the third differ in the header; the fourth has the dialog open.", 5000),
+      answersAt("four.png.", 5200),
+    )
+    h.tools.on("read", showsImage, showsImage, showsImage, showsImage)
+    h.create().send(say[0]!)
+    await h.settled()
+    h.session.send(say[1]!)
+    await h.settled()
+    const [, , , fourth, compaction, after, next] = h.provider.requests
+    const results = (request: typeof after) => request!.input.flatMap((item) => (item.type === "tool_result" ? [item] : []))
+    // Before the compaction every result is sent with its image, however old: four results, three of them in the fourth request.
+    expect(results(fourth).map((item) => item.attachments)).toEqual([[imageBlob("one.png")], [imageBlob("two.png")], [imageBlob("three.png")]])
+    // The summary request is the step request of the part before the cut plus the prompt: the first step, image included.
+    expect(results(compaction).map((item) => item.attachments)).toEqual([[imageBlob("one.png")]])
+    // After it: the checkpoint and the three kept steps. The oldest kept result has its stored text and the line, and no image.
+    expect(after!.input.map((item) => item.type)).toEqual(["message", "tool_call", "tool_result", "tool_call", "tool_result", "tool_call", "tool_result"])
+    expect(results(after)).toEqual([
+      { type: "tool_result", callId: "call_1", output: imageOutput("two.png") + RETIRED_NOTE("two.png"), attachments: [] },
+      { type: "tool_result", callId: "call_1", output: imageOutput("three.png"), attachments: [imageBlob("three.png")] },
+      { type: "tool_result", callId: "call_1", output: imageOutput("four.png"), attachments: [imageBlob("four.png")] },
+    ])
+    // The checkpoint names the image that went with the removed step, and how to see it again.
+    const checkpointText = JSON.stringify(after!.input[0])
+    expect(checkpointText).toContain("## Images you were shown earlier (no longer attached)")
+    expect(checkpointText).toContain(`- one.png (image/png, 640x480 pixels, ${imageBytes("one.png").length} bytes), read at seq 6`)
+    expect(checkpointText).toContain("read its file again")
+    // Between compactions nothing changes: the next turn's request is the one after the compaction plus appended items.
+    expect(next!.input.slice(0, after!.input.length)).toEqual([...after!.input])
+    // The only requests that do not extend the one before them are the compaction's own: the summary request (the
+    // part before the cut, then the prompt) and the first request after it. Every step request before and after extends.
+    expect(h.provider.prefixBreaks().map((found) => found.callIndex)).toEqual([4, 5])
+    // The stored results are untouched: a transcript, and the history tools, still have every image.
+    const stored = h.session.projection().messages.flatMap((message) => (message.kind === "assistant" ? message.parts.flatMap((part) => (part.type === "tool_call" && part.state.status === "settled" ? [part.state.attachments.length] : [])) : []))
+    expect(stored).toEqual([1, 1, 1, 1])
+  },
+
+  "What a compaction may not record about images": async (h, say) => {
+    h.provider.enqueue(readsAt("one.png", 9000), readsAt("two.png", 12000), readsAt("three.png", 15000), readsAt("four.png", 25000), summary(), answersAt("The fourth has the dialog open.", 5000))
+    h.tools.on("read", showsImage, showsImage, showsImage, showsImage)
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
   "The provider rejects a request as too large: compact aggressively and rebuild": async (h, say) => {
     h.provider.enqueue(
       answer("A long explanation."),
@@ -1889,7 +1944,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(114)
+    expect(scenarios).toHaveLength(116)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

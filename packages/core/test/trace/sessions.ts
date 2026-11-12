@@ -453,6 +453,62 @@ export const SCRIPTS: readonly TraceScript[] = [
     },
   },
   {
+    // A compaction in the middle of a turn that read four screenshots. It keeps the last three steps: the first
+    // step's image is gone with the step (the checkpoint names it), the oldest kept result keeps its text and loses
+    // its image, and the two most recent keep theirs. Calls 0 to 3 are the steps; 4 is the summary request, which
+    // leaves the kept steps out and says so; 5 follows the compaction; 6 and 7 extend it: nothing about the images
+    // changes after the compaction, so the turn's answer and the next turn read the whole prefix from the cache.
+    name: "compaction that retires an old image",
+    clean: false,
+    breaks: { 5: ["compaction"] },
+    intentional: { 4: ["compaction"], 5: ["compaction"] },
+    reported: { 5: ["compaction"] },
+    run(loop) {
+      const shot = (name: string) => loop.store.putBlob(new TextEncoder().encode(`\x89PNG synthetic screenshot ${name}`), "image/png")
+      const shows = (id: string, name: string) => {
+        loop.start(id)
+        loop.add(
+          called(id, "call_1", "read", JSON.stringify({ path: `${name}.png` })),
+          started(id, "call_1"),
+          settled(id, "call_1", "success", `${name}.png: PNG image (image/png), 640x480 pixels, 2048 bytes, attached.`, [shot(name)]),
+          stepEnded(id, "tool_calls"),
+        )
+      }
+      opening(loop)
+      loop.add(enqueue("u1", `Compare the four screenshots with this stylesheet. ${pasted("style.css")}`), executionStarted("exe_1"), deliver("u1"))
+      shows("a1", "one")
+      shows("a2", "two")
+      shows("a3", "three")
+      shows("a4", "four")
+      loop.add(compactionStarted("c1", loop.seqOf("a2")))
+      loop.call("c1", 1, "ok", "compaction")
+      loop.add(
+        event("compaction.ended", {
+          messageId: "c1" as MessageId,
+          summary: "Checkpoint: one.png matches the stylesheet.\n\n## Images you were shown earlier (no longer attached)\n- one.png (image/png, 640x480 pixels, 2048 bytes), read at seq 5",
+          source: "model",
+          detail: null,
+          tokensAfter: 0,
+          usage: null,
+          calls: 1,
+          retired: [
+            {
+              messageId: "a2" as MessageId,
+              callId: "call_1" as CallId,
+              images: 1,
+              note: "\n[The image of this result is no longer attached: it was taken out of the conversation when it was compacted, to save context. To see it again, read two.png again.]",
+            },
+          ],
+        }),
+      )
+      loop.add(baselineSet())
+      loop.start("a5")
+      loop.add(textEnded("a5", "The fourth has the dialog open; the others differ in the header."), stepEnded("a5"), executionSucceeded("exe_1"))
+      loop.prompt("2", "Which one has the dialog?")
+      loop.answer("2", "a6", "four.png.")
+    },
+  },
+  {
     name: "refusal",
     clean: false,
     breaks: { 3: ["refusal"] },

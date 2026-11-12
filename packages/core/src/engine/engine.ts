@@ -72,7 +72,8 @@ import { type LoadedConfig, loadConfig, loadConfigSync } from "../config/load.ts
 import type { CheckConfig } from "../config/schema.ts"
 import { text } from "../content.ts"
 import { buildCheckpoint } from "../context/checkpoint.ts"
-import { ITEM_OVERHEAD, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool, estimatorMargin } from "../context/estimate.ts"
+import { IMAGE_RETIREMENT, retireImages, retirementSaves } from "../context/images.ts"
+import { ITEM_OVERHEAD, MEDIA_TOKENS, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool, estimatorMargin } from "../context/estimate.ts"
 import { HISTORY_READ, HISTORY_SEARCH } from "../context/history-tools.ts"
 import { type CompactionConfig, type CompactionDecision, DEFAULT_COMPACTION_CONFIG, decideAfterOverflow, decideCompaction, tailBudget } from "../context/policy.ts"
 import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPrompt, summaryRepairPrompt } from "../context/summary.ts"
@@ -5000,9 +5001,22 @@ class LiveSession implements EngineSession {
     // The request is not in the kept tail. That is work in progress only while something is still unanswered: a
     // compaction the user asks for after the model's answer cut a turn that is over.
     const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn && !wouldGoIdle(start), todos })
-    const tokensAfter = this.sizeAfterCompaction(baseline, checkpoint.tokens, tail.keptTokens)
+    // The images of the kept part: the ones the next call answers stay, and the most recent of the others; every
+    // older result is sent from now on with its stored text and a line that says so, without them. Decided once,
+    // here, and recorded with the checkpoint, so every later request is built from the record. What the
+    // compaction in force had retired, and is still kept, stays retired with the same line.
+    const inView = selectModelHistory(now).messages
+    const inForce = inView[0]?.kind === "compaction" ? (inView[0].retired ?? []) : []
+    const retired = retireImages({
+      kept: inView.filter((message) => message.kind !== "compaction" && message.seq >= keepFromSeq),
+      previous: inForce,
+      keepRecent: mode === "aggressive" ? IMAGE_RETIREMENT.keepRecentAggressive : IMAGE_RETIREMENT.keepRecent,
+    })
+    const tokensAfter = Math.max(0, this.sizeAfterCompaction(baseline, checkpoint.tokens, tail.keptTokens) - retirementSaves(retired, MEDIA_TOKENS))
     // Every summary request counted up `attempt`: the retries of one that failed and the repair are requests too.
-    this.write([event("compaction.ended", { messageId, summary: checkpoint.text, source: chosen.source, detail: chosen.detail, tokensAfter, usage, calls: attempt - 1 })])
+    this.write([
+      event("compaction.ended", { messageId, summary: checkpoint.text, source: chosen.source, detail: chosen.detail, tokensAfter, usage, calls: attempt - 1, ...(retired.length === 0 ? {} : { retired }) }),
+    ])
     this.probe("compaction.ended")
     return "compacted"
   }

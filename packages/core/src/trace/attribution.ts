@@ -41,7 +41,7 @@ import type { StoredEvent } from "../event/durable.ts"
 import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { AssistantMessage, Message, Projection } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
-import { type CallOptions, buildCompactionRequest, buildRequest, renderMessage } from "../request/build.ts"
+import { type CallOptions, buildCompactionRequest, buildRequest, renderMessage, retiredNotes } from "../request/build.ts"
 import { type PrefixBreakCause, prefixBreakCauses } from "../request/build-break.ts"
 import { type BlockHash, comparePrefix, hashBlock, hashRequest } from "../request/prefix.ts"
 import type { InputItem, ModelRequest } from "../request/request.ts"
@@ -399,7 +399,7 @@ interface ItemSource {
 /** The input items of a model view with the message each one renders, in request order (as `buildRequestFromHistory`). */
 function historySources(history: ModelHistory): ItemSource[] {
   if (history.baseline === null) return []
-  const context = { model: history.settings.model, baselineSeq: history.baseline.seq }
+  const context = { model: history.settings.model, baselineSeq: history.baseline.seq, retired: retiredNotes(history) }
   return history.messages.flatMap((message) => renderMessage(message, context).map((item) => ({ item, message })))
 }
 

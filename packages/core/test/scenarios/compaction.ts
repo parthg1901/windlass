@@ -20,6 +20,8 @@
  * still fits, the loop sends it; when it does not, the compaction is
  * aggressive at once. `test/engine/compaction.test.ts` covers it.
  */
+import { createHash } from "node:crypto"
+import type { BlobRef } from "../../src/content.ts"
 import { event } from "../../src/event/durable.ts"
 import { todoList } from "../../src/tools/todo.ts"
 import {
@@ -54,6 +56,7 @@ import {
   stepEndedAt,
   stepProviderFailed,
   stepStarted,
+  toolStarted,
 } from "./script.ts"
 
 /** One step that reads a file, measured at `inputTokens`. Five events. */
@@ -487,6 +490,105 @@ export const onRequest: Scenario = {
   ],
 }
 
+// ---------------------------------------------------------------- images
+
+/** The bytes of a scenario's image file: a stand-in, never decoded. */
+export const imageBytes = (path: string) => new TextEncoder().encode(`PNG ${path}`)
+/** The reference a tool's result carries for it: the SHA-256 of the bytes, as the blob store names them. */
+export const imageBlob = (path: string): BlobRef => ({ hash: createHash("sha256").update(imageBytes(path)).digest("hex"), mediaType: "image/png" })
+/** What the `read` tool says about an image file it attached, and what it reports for a client. */
+export const imageOutput = (path: string) => `${path}: PNG image (image/png), 640x480 pixels, ${imageBytes(path).length} bytes, attached.`
+export const imageDisplay = (path: string) => ({ path, image: { mediaType: "image/png", width: 640, height: 480, bytes: imageBytes(path).length } })
+/** One step that reads an image file, measured at `inputTokens`: its result carries the image. Five events. */
+const readsImage = (id: string, path: string, inputTokens: number) => [
+  stepStarted(id),
+  called(id, "call_1", "read", JSON.stringify({ path })),
+  toolStarted(id, "call_1", "read"),
+  event("tool.settled", { messageId: m(id), callId: c("call_1"), outcome: "success", output: imageOutput(path), truncation: null, attachments: [imageBlob(path)], display: imageDisplay(path) }),
+  stepEndedAt(id, inputTokens, "tool_calls"),
+]
+/** The line that follows the stored output of a result whose image a compaction retired, as the loop freezes it. */
+export const RETIRED_NOTE = (path: string) =>
+  `\n[The image of this result is no longer attached: it was taken out of the conversation when it was compacted, to save context. To see it again, read ${path} again.]`
+
+/** The window of the scenario about images: large enough for a compaction to keep three steps word for word. */
+export const IMAGE_WINDOW = 32_000
+const screenshots = [
+  ...opening("Compare the four screenshots."),
+  ...readsImage("a1", "one.png", 9000),
+  ...readsImage("a2", "two.png", 12000),
+  ...readsImage("a3", "three.png", 15000),
+  ...readsImage("a4", "four.png", 25000),
+]
+const retiredTwo = [{ messageId: m("a2"), callId: c("call_1"), images: 1, note: RETIRED_NOTE("two.png") }]
+
+export const imagesRetired: Scenario = {
+  title: "Old images are retired at a compaction, and at no other time",
+  description:
+    "A tool result may carry an image (the `read` tool on an image file, an MCP result), and it is sent again with every later request. An image that was sent is never dropped by itself: the block that holds it would change, and the provider's prompt cache would be lost for everything after it. So images are retired where the prefix is rebuilt anyway. Here one turn reads four screenshots and the next request is over the trigger. The compaction keeps the last three steps word for word. The first step is before the cut: nothing of it is sent any more, and the checkpoint lists its image (the file, its type and size) with the sentence that reading the file again shows it again. Of the kept results, the last step's image stays, because the model has not been shown it yet, and so does the one before it (the two most recent stay); the oldest kept result keeps its stored text and loses its image, and one line is appended that says so and how to see it again. `compaction.ended` records that (`retired`: the result, how many images, the line, frozen), and every request from then on is built from the record: the turn's answer and the next turn extend the request after the compaction block for block.",
+  provider: "the four reading steps are measured at 9,000, 12,000, 15,000 and 25,000 input tokens, and each result carries an image; the summary call returns a summary; the model then answers, and answers the next message",
+  contextWindow: IMAGE_WINDOW,
+  phases: [
+    {
+      label: "four steps, each with an image in its result; after the fourth the next request is over the trigger",
+      events: screenshots,
+      expect: { history: ["u1", "a1", "a2", "a3", "a4"], open: null },
+    },
+    {
+      label: "compact between two steps: three steps are kept, and the oldest of them loses its image",
+      events: [compactionStarted("c1", 11), event("compaction.ended", { messageId: m("c1"), summary: checkpoint(screenshots, 11, SUMMARY, true), source: "model", detail: null, tokensAfter: 0, usage: null, calls: 1, retired: retiredTwo }), baseline()],
+      expect: { history: ["c1", "a2", "a3", "a4"], open: null, execution: { status: "running", crashResumes: 0 } },
+    },
+    {
+      label: "the turn carries on, and so does the next one: nothing about the images changes between compactions",
+      events: [
+        ...answers("a5", "The second and the third differ in the header; the fourth has the dialog open.", 5000),
+        executionSucceeded(),
+        enqueue("u2", "Which one has the dialog?"),
+        executionStarted("exe_2"),
+        deliver("u2"),
+        ...answers("a6", "four.png.", 5200),
+        executionSucceeded("exe_2"),
+      ],
+      expect: {
+        ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "a3" }, { id: "a4" }, { id: "c1", kind: "compaction", status: "completed" }, { id: "a5" }, { id: "u2" }, { id: "a6" }],
+        history: ["c1", "a2", "a3", "a4", "a5", "u2", "a6"],
+        execution: null,
+      },
+    },
+  ],
+}
+
+/** The same compaction with a record the reducer does not accept, for the scenario's wrong moves. */
+const endedRetiring = (retired: readonly { messageId: ReturnType<typeof m>; callId: ReturnType<typeof c>; images: number; note: string }[]) =>
+  event("compaction.ended", { messageId: m("c1"), summary: checkpoint(screenshots, 11, SUMMARY, true), source: "model", detail: null, tokensAfter: 0, usage: null, calls: 1, retired: [...retired] })
+
+export const imagesRetiredWrongly: Scenario = {
+  title: "What a compaction may not record about images",
+  description:
+    "The record of retired images is what every later request is built from, so the reducer accepts only what can be rendered: a result among the messages the compaction keeps, that is settled and carries exactly the number of images the record says, named once. A result before the cut is not sent at all and has nothing to retire; a result without an image has nothing to lose.",
+  provider: "as in the scenario before: four reading steps with an image each, then the summary call",
+  contextWindow: IMAGE_WINDOW,
+  phases: [
+    {
+      label: "the compaction is open, with the cut before the second step",
+      events: [...screenshots, compactionStarted("c1", 11)],
+      expect: { open: "c1", history: ["u1", "a1", "a2", "a3", "a4"] },
+      rejects: [
+        { event: endedRetiring([{ messageId: m("a1"), callId: c("call_1"), images: 1, note: RETIRED_NOTE("one.png") }]), code: "invalid_transition", why: "the first step is before the cut: it is not sent any more, so nothing of it is retired" },
+        { event: endedRetiring([{ messageId: m("a2"), callId: c("call_1"), images: 2, note: RETIRED_NOTE("two.png") }]), code: "invalid_transition", why: "the result carries one image, not two" },
+        { event: endedRetiring([...retiredTwo, ...retiredTwo]), code: "invalid_transition", why: "a result is retired once" },
+        { event: endedRetiring([{ messageId: m("u1"), callId: c("call_1"), images: 1, note: RETIRED_NOTE("one.png") }]), code: "invalid_transition", why: "only a step has results" },
+      ],
+    },
+    {
+      label: "the compaction ends with a record the reducer accepts, and the turn carries on",
+      events: [endedRetiring(retiredTwo), baseline(), ...answers("a5", "The fourth has the dialog open.", 5000), executionSucceeded()],
+      expect: { history: ["c1", "a2", "a3", "a4", "a5"], execution: null },
+    },
+  ],
+}
+
 export const compactionScenarios = [
   atUserBoundary,
   midTurn,
@@ -498,4 +600,6 @@ export const compactionScenarios = [
   crashedCompaction,
   taskListSurvives,
   onRequest,
+  imagesRetired,
+  imagesRetiredWrongly,
 ]

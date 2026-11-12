@@ -63,7 +63,7 @@ export interface CompactionConfig {
   readonly minFreedRatio: number
   /** Upper bound of the summary the model writes; the validator enforces it. */
   readonly summaryMaxTokens: number
-  /** Upper bound of the mechanical part of the checkpoint (identifier index and quoted user messages). */
+  /** Upper bound of the mechanical part of the checkpoint (identifier index, the list of images and quoted user messages). */
   readonly checkpointExtraMaxTokens: number
 }
 
@@ -74,7 +74,7 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   aggressiveTargetRatio: 0.2,
   minFreedRatio: 0.25,
   summaryMaxTokens: 2_500,
-  checkpointExtraMaxTokens: 3_500,
+  checkpointExtraMaxTokens: 3_700,
 }
 
 /** What the latest compaction of the session achieved. The engine derives it from the log. */

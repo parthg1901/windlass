@@ -6,6 +6,7 @@ import { type BlobRef, text } from "../../src/content.ts"
 import {
   type EventData,
   type NewEvent,
+  type RetiredResult,
   type SessionSettings,
   type StepError,
   type StoredEvent,
@@ -327,14 +328,19 @@ export class Script {
     )
   }
 
-  /** A completed compaction. Returns the `seq` of the compaction message. */
-  compact(keep: (compactionSeq: number) => number, summary = "Summary so far."): number {
+  /**
+   * A completed compaction. Returns the `seq` of the compaction message.
+   * `retire` says, from the cut, which kept results lose their images (`compaction.ended.retired`).
+   */
+  compact(keep: (compactionSeq: number) => number, summary = "Summary so far.", retire?: (keepFromSeq: number) => readonly RetiredResult[]): number {
     this.claim()
     const messageId = this.id("cmp")
     // The cut is decided when the compaction starts; its own message gets the next seq.
     const seq = this.seq + 1
-    this.apply(event("compaction.started", { messageId, trigger: "auto", mode: "normal", keepFromSeq: keep(seq), prompt: COMPACTION_PROMPT, tokensBefore: 0 }))
-    this.apply(event("compaction.ended", { messageId, summary, source: "model", detail: null, tokensAfter: 0, usage: null }))
+    const keepFromSeq = keep(seq)
+    const retired = retire?.(keepFromSeq) ?? []
+    this.apply(event("compaction.started", { messageId, trigger: "auto", mode: "normal", keepFromSeq, prompt: COMPACTION_PROMPT, tokensBefore: 0 }))
+    this.apply(event("compaction.ended", { messageId, summary, source: "model", detail: null, tokensAfter: 0, usage: null, ...(retired.length === 0 ? {} : { retired: [...retired] }) }))
     return seq
   }
 

@@ -17,6 +17,7 @@ import {
   delivery,
   finishReason,
   instructionFingerprint,
+  retiredResult,
   lineage,
   sessionSettings,
   skippedFile,
@@ -262,6 +263,12 @@ export const message = variant("kind", {
     usage: nullable(usage),
     error: nullable(stepError),
     endedAt: nullable(integer(0)),
+    /**
+     * The kept tool results whose images are no longer sent while this
+     * compaction is in force (`compaction.ended.retired`); absent when there
+     * are none. The request builder renders them from this.
+     */
+    retired: optional(array(retiredResult)),
   }),
 })
 export type Message = Infer<typeof message>

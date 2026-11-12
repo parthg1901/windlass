@@ -23,8 +23,10 @@
  * one are `compaction.ended` (with the `baseline.set` that follows it),
  * `history.reverted`, `step.refused` and `settings.changed`; see
  * `build-break.ts`. A checkpoint is frozen text and the messages a compaction
- * keeps render exactly as they did before it, so the request after the first
- * one that follows a compaction extends it like any other.
+ * keeps render exactly as they did before it (but for the images it
+ * retired, below, which is recorded with it and never changes while it is in
+ * force), so the request after the first one that follows a compaction
+ * extends it like any other.
  *
  * The `params` block comes from stored state too: `model` and
  * `reasoningEffort` are the session's settings (`session.created`,
@@ -51,6 +53,7 @@
  * | assistant reasoning part                 | `reasoning`, or nothing (rules below) |
  * | assistant tool call part                 | `tool_call`, argument text verbatim |
  * | settled tool call, every outcome         | `tool_result` with the stored output and attachments, byte for byte |
+ * | settled tool call the compaction in force retired the images of | `tool_result` with the stored output, byte for byte, followed by the note the compaction froze, and no attachments |
  * | excluded (reverted or refused) messages  | nothing (`selectModelHistory` leaves them out) |
  *
  * Roles. `developer` is the role with the harness's authority, so it is used
@@ -72,6 +75,15 @@
  * `effect_unknown`) has no field on the wire: the stored output text already
  * says what happened, including the text that explains a call that never
  * started or whose effect is unknown, and it is replayed unchanged.
+ *
+ * Retired images. An image that was sent stays in its block until the prefix
+ * is rebuilt, so only a compaction takes one out: `compaction.ended` lists
+ * the kept results whose images are no longer sent, each with the line that
+ * follows its stored output from then on (`context/images.ts` decides which
+ * and writes the line, once). The list of the compaction in force is the
+ * only thing a result's rendering depends on besides its own stored fields,
+ * and it changes exactly where the prefix may: at a compaction, and when a
+ * revert or a refusal excludes the compaction or puts it back.
  *
  * Reasoning is replayed only when all of these hold; otherwise the part is
  * dropped, which the provider accepts (replay is optional):
@@ -175,7 +187,7 @@ export function buildRequest(projection: Projection, options: BuildOptions): Mod
 export function buildRequestFromHistory(history: ModelHistory, options: BuildOptions): ModelRequest {
   const baseline = history.baseline
   if (baseline === null) throw new RequestBuildError("no_baseline", "the session has no baseline.set event yet")
-  const context = { model: history.settings.model, baselineSeq: baseline.seq }
+  const context = { model: history.settings.model, baselineSeq: baseline.seq, retired: retiredNotes(history) }
   return {
     // Built field by field so that an extra property on the caller's object never reaches a block hash.
     params: requestParams(history, options),
@@ -223,6 +235,24 @@ export interface RenderContext {
   readonly model: string
   /** `seq` of the baseline in force. */
   readonly baselineSeq: number
+  /** The results whose images the compaction in force retired (`retiredNotes`). Default: none. */
+  readonly retired?: ReadonlyMap<string, string>
+}
+
+/**
+ * The tool results the compaction in force retired the images of, by
+ * `retiredKey`, with the note that follows each one's stored output. The
+ * compaction in force is the checkpoint the model's view starts with.
+ */
+export function retiredNotes(history: Pick<ModelHistory, "messages">): ReadonlyMap<string, string> {
+  const checkpoint = history.messages[0]
+  const retired = checkpoint?.kind === "compaction" ? (checkpoint.retired ?? []) : []
+  return new Map(retired.map((entry) => [retiredKey(entry.messageId, entry.callId), entry.note]))
+}
+
+/** A tool result's key in `RenderContext.retired`: a provider may reuse a call ID in a later step, so the message is part of it. */
+export function retiredKey(messageId: MessageId, callId: string): string {
+  return `${messageId}\u0000${callId}`
 }
 
 /** The input items one model-visible message becomes. See the table at the top of this file. */
@@ -239,7 +269,7 @@ export function renderMessage(message: Message, context: RenderContext): InputIt
       if (message.seq < context.baselineSeq || blank(message.text)) return []
       return [{ type: "message", role: "developer", content: text(message.text) }]
     case "assistant":
-      return renderAssistant(message, context.model)
+      return renderAssistant(message, context.model, context.retired)
     case "compaction":
       if (message.status !== "completed") return []
       if (message.summary === null)
@@ -261,7 +291,7 @@ export function harnessOpen(origin: string) {
 /** The last line of a harness message. */
 export const HARNESS_CLOSE = "</harness>"
 
-function renderAssistant(message: AssistantMessage, model: string): InputItem[] {
+function renderAssistant(message: AssistantMessage, model: string, retired?: ReadonlyMap<string, string>): InputItem[] {
   if (message.status === "running" || message.status === "refused") return []
   const sameModel = message.model === model
   const lastOutput = message.parts.findLastIndex(
@@ -294,6 +324,9 @@ function renderAssistant(message: AssistantMessage, model: string): InputItem[] 
         "unsettled_call",
         `tool call ${part.callId} of ${message.status} message ${message.id} is ${part.state.status}`,
       )
+    // A result whose images the compaction in force retired: its stored output, the frozen note, and no attachments.
+    const note = retired?.get(retiredKey(message.id, part.callId))
+    if (note !== undefined) return [{ type: "tool_result", callId: part.callId, output: part.state.output + note, attachments: [] }]
     return [{ type: "tool_result", callId: part.callId, output: part.state.output, attachments: part.state.attachments }]
   })
   return [...output, ...results]

@@ -223,6 +223,14 @@ export const stepError = variant("kind", {
 })
 export type StepError = Infer<typeof stepError>
 
+/**
+ * A tool result whose images a compaction took out of the model's view
+ * (`compaction.ended.retired`): the result, how many attachments it had,
+ * and the line that follows its stored output in every request from then on.
+ */
+export const retiredResult = object({ messageId, callId, images: integer(1), note: nonEmptyString })
+export type RetiredResult = Infer<typeof retiredResult>
+
 /** How hard a compaction cuts: see `compaction.started`. */
 export const compactionMode = oneOf(["normal", "aggressive"])
 export type CompactionMode = Infer<typeof compactionMode>
@@ -1079,6 +1087,13 @@ export const durableEvents = {
    *   compaction, retries and the repair included. A summary call is a model
    *   request that is no step (it writes no `step.started`), so the model
    *   requests of a turn are its steps plus the `calls` of its compactions.
+   * - `retired`: the tool results among the kept messages whose images are
+   *   no longer sent (`context/images.ts`). From now on each is rendered with
+   *   its stored output followed by `note`, and without its attachments;
+   *   `images` is how many it had. `note` is frozen here like the checkpoint.
+   *   A result the compaction before this one retired, and that is still
+   *   kept, is listed again with the same `note`: every request is built
+   *   from the compaction in force alone. Absent when nothing was retired.
    */
   "compaction.ended": define(
     1,
@@ -1090,6 +1105,7 @@ export const durableEvents = {
       tokensAfter: integer(0),
       usage: nullable(usage),
       calls: optional(integer(1)),
+      retired: optional(array(retiredResult)),
     }),
   ),
   /**
