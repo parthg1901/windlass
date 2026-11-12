@@ -1,0 +1,153 @@
+/**
+ * The four features in the real `App`: a project's MCP server is put in the
+ * approval dock (what it runs, where it is defined, what each answer does)
+ * and approved by a key; a server that cannot start is a note with why;
+ * `/skills`, `/wakeups` and `/memory` show the line CLI's words; a webhook's
+ * secret is shown once when it is created; a message a wake-up delivered is
+ * labelled as one; an MCP call's question shows the arguments it would send.
+ */
+import { afterEach, describe, expect, test } from "bun:test"
+import type { McpServerInfo } from "@light-harness/acp/extensions"
+import { type CallId, type MessageId, event } from "@light-harness/core"
+import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
+import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+
+let mounted: Mounted | null = null
+afterEach(async () => {
+  await mounted?.dispose()
+  mounted = null
+})
+
+const m = (id: string) => id as MessageId
+const c = (id: string) => id as CallId
+const flat = (frame: string) => frame.replace(/\s+/g, " ")
+
+const THEIRS: McpServerInfo = {
+  name: "theirs",
+  state: "awaiting_approval",
+  transport: "stdio",
+  target: "tracker-mcp --stdio",
+  tools: null,
+  hiddenTools: 0,
+  error: null,
+  retryInMs: null,
+  origin: "project",
+  file: "/work/.light-harness/config.json",
+  question: { fingerprint: "0123456789abcdef", subject: "tracker-mcp --stdio", details: ['This project\'s configuration names the MCP server "theirs", which is started by running that command. It runs outside the sandbox, with your permissions.'] },
+}
+
+async function open(width = 110, height = 34) {
+  const backend = new ScriptBackend()
+  mounted = await mount({ width, height, backend })
+  return { backend, session: backend.session!, mounted }
+}
+
+describe("MCP servers", () => {
+  test("a project's server waits in the dock: what it runs, where it is defined, and the two answers; `a` starts it", async () => {
+    const { session } = await open()
+    const approved: string[] = []
+    session.approveMcp = async (name, fingerprint) => {
+      approved.push(`${name}:${fingerprint}`)
+      return true
+    }
+    mounted!.clock.now += QUIET_MS + 10
+    session.pushMcp({ sessionId: session.id, available: true, servers: [THEIRS] })
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain('Start the MCP server "theirs" that this project\'s configuration names?')
+    expect(frame).toContain("tracker-mcp --stdio")
+    expect(frame).toContain("[a] Start it for this project")
+    expect(frame).toContain("Not now: it stays stopped")
+    expect(frame).not.toContain("tell the agent why")
+    // The same question is not put twice.
+    session.pushMcp({ sessionId: session.id, available: true, servers: [THEIRS] })
+    mounted!.clock.now += ARMING_MS + 10
+    await mounted!.setup.mockInput.typeText("a")
+    await mounted!.settle()
+    expect(approved).toEqual(["theirs:0123456789abcdef"])
+    const after = flat(await mounted!.frame())
+    expect(after).toContain('approved: MCP server "theirs" starts now')
+    expect(after).not.toContain("[a] Start it for this project")
+  })
+
+  test("a server that cannot start is said once, with why; /mcp lists the servers", async () => {
+    const { session } = await open()
+    const failed: McpServerInfo = { ...THEIRS, name: "tracker", state: "failed", origin: "user", file: "/home/u/.config/light-harness/config.json", question: null, error: "the server process exited with code 1; stderr ends with: TRACKER_TOKEN is not set", retryInMs: 5000 }
+    session.mcp = async () => ({ sessionId: session.id, available: true, servers: [failed] })
+    session.pushMcp({ sessionId: session.id, available: true, servers: [failed] })
+    session.pushMcp({ sessionId: session.id, available: true, servers: [failed] })
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame.match(/could not start/g)).toHaveLength(1)
+    expect(frame).toContain("TRACKER_TOKEN is not set")
+    await mounted!.setup.mockInput.typeText("/mcp")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    const listed = flat(await mounted!.frame())
+    expect(listed).toContain("tracker · failed to start")
+    expect(listed).toContain("defined in your file")
+  })
+
+  test("an MCP call's question shows the arguments it would send", async () => {
+    const { backend, session } = await open()
+    const input = JSON.stringify({ server: "tracker", tool: "create_issue", arguments: { title: "Login fails" } })
+    session.emit(event("execution.started", { executionId: "exe_1" } as never), event("tool.called", { messageId: m("m1"), callId: c("c1"), name: "mcp_call", input, providerData: null }))
+    await mounted!.settle()
+    mounted!.clock.now += QUIET_MS + 10
+    void backend.onApproval(
+      {
+        sessionId: session.id,
+        toolCallId: "m1/c1",
+        messageId: "m1",
+        callId: "c1",
+        question: { title: "Allow the MCP tool tracker/create_issue?", subject: "tracker/create_issue", details: [], choices: [{ id: "once", label: "Allow once", approve: true, remembers: null }, { id: "deny", label: "Don't allow", approve: false, remembers: null }] },
+        needs: [],
+        then: { kind: "run" },
+        subagent: null,
+        subagentSessionId: null,
+      },
+      new AbortController().signal,
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("mcp_call tracker/create_issue")
+    expect(frame).toContain('sends: {"title":"Login fails"}')
+  })
+})
+
+describe("/skills, /wakeups, /memory and what wake-ups deliver", () => {
+  test("the listings, the secret once on creation, and a wake-up's message labelled", async () => {
+    const { session } = await open(120, 50)
+    session.skills = async () => ({
+      sessionId: session.id,
+      available: true,
+      skills: [{ name: "release-notes", description: "How to write release notes.", path: "/work/.light-harness/skills/release-notes/SKILL.md", scope: "project", root: "/work/.light-harness/skills" }],
+      problems: [{ path: "/work/.light-harness/skills/broken/SKILL.md", severity: "skipped", reason: "it does not start with front matter" }],
+      roots: [],
+    })
+    session.wakeSecret = async (id) => ({ id, url: "http://127.0.0.1:47863/w/wk_1", secret: "whsec_abc", message: null })
+    session.memory = async () => ({ sessionId: session.id, enabled: false, off: "Memory is off. To turn it on, put { \"memory\": { \"enabled\": true } } in ~/.config/light-harness/config.json; sessions started after that have it.", notes: [], pending: [], problems: [], review: [], paths: null })
+    await mounted!.setup.mockInput.typeText("/skills")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    session.emit(
+      event("tool.called", { messageId: m("m1"), callId: c("c1"), name: "wake_create", input: '{"trigger":"webhook","message":"x"}', providerData: null }),
+      event("tool.settled", { messageId: m("m1"), callId: c("c1"), outcome: "success", output: "Created wake-up wk_1.", truncation: null, attachments: [], display: { wake: { action: "create", id: "wk_1" } } } as never),
+    )
+    await mounted!.settle()
+    await mounted!.setup.mockInput.typeText("/memory")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    session.emit(
+      event("inbox.enqueued", { messageId: m("w1"), delivery: "queue", origin: "wake", content: [{ type: "text", text: "[Wake-up wk_9 · every 1m]\nThis message was not typed by the user just now.\n\nThe message set up with the wake-up:\nCheck CI." }] } as never),
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain("release-notes · How to write release notes.")
+    expect(frame).toContain("/work/.light-harness/skills/broken/SKILL.md")
+    expect(frame).toContain("secret whsec_abc")
+    expect(frame).toContain("Memory is off.")
+    expect(frame).toContain("wake-up wk_9: it fired (every 1m) · not typed by you")
+    expect(frame).toContain("Check CI.")
+  })
+})

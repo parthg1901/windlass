@@ -36,7 +36,7 @@
  */
 import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@light-harness/acp/client"
-import { EXT } from "@light-harness/acp/extensions"
+import { EXT, type MemoryChangeParams, type MemoryChangeResult } from "@light-harness/acp/extensions"
 import { type RevertResult, brand } from "@light-harness/core"
 import type { EngineEvent } from "./cli.ts"
 import {
@@ -48,6 +48,11 @@ import {
   type ConfigChoice,
   type Delivery,
   type DiffResult,
+  type McpStateResult,
+  type MemoryStateResult,
+  type SkillsResult,
+  type WakeListResult,
+  type WakeSecretResult,
   type ForkInfo,
   type ModelChoice,
   type OpenSettings,
@@ -251,6 +256,49 @@ class AcpSession implements BackendSession {
 
   async title(): Promise<string | null> {
     return (await this.call(() => this.session.state())).title
+  }
+
+  mcp(): Promise<McpStateResult> {
+    return this.feature(EXT.mcp, () => this.session.mcp())
+  }
+
+  async approveMcp(name: string, fingerprint: string): Promise<boolean> {
+    return (await this.feature(EXT.mcpApprove, () => this.session.approveMcp(name, fingerprint))).approved
+  }
+
+  onMcp(listener: (state: McpStateResult) => void): () => void {
+    return this.session.onSignal((signal) => {
+      if (signal.kind === "mcp") listener(signal.mcp)
+    })
+  }
+
+  skills(): Promise<SkillsResult> {
+    return this.feature(EXT.skills, () => this.session.skills())
+  }
+
+  wakeups(): Promise<WakeListResult> {
+    return this.feature(EXT.wakeups, () => this.session.wakeups())
+  }
+
+  cancelWake(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }> {
+    return this.feature(EXT.wakeCancel, () => this.session.cancelWake(id))
+  }
+
+  wakeSecret(id: string): Promise<WakeSecretResult> {
+    return this.feature(EXT.wakeSecret, () => this.session.wakeSecret(id))
+  }
+
+  memory(): Promise<MemoryStateResult> {
+    return this.feature(EXT.memory, () => this.session.memory())
+  }
+
+  memoryChange(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult> {
+    return this.feature(EXT.memoryChange, () => this.session.memoryChange(params))
+  }
+
+  private feature<T>(method: string, work: () => Promise<T>): Promise<T> {
+    if (!this.session.offers(method)) return Promise.reject(new BackendError(`this engine does not offer ${method.replace(/^.*\//, "/")} (it may be another version)`))
+    return this.call(work)
   }
 
   close(shutdown: boolean): Promise<void> {

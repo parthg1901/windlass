@@ -4,6 +4,7 @@
  * a fixed virtual clock), so a frame is the same on every run and can be
  * compared as text.
  */
+import type { McpStateResult } from "@light-harness/acp/extensions"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { NewEvent, SessionId, StoredEvent } from "@light-harness/core"
 import type { Scenario } from "@light-harness/core/testing/scenarios"
@@ -150,6 +151,25 @@ export class ScriptSession implements BackendSession {
   rename?: BackendSession["rename"]
   storedEvents?: BackendSession["storedEvents"]
   fork?: BackendSession["fork"]
+  mcp?: BackendSession["mcp"]
+  approveMcp?: BackendSession["approveMcp"]
+  skills?: BackendSession["skills"]
+  wakeups?: BackendSession["wakeups"]
+  cancelWake?: BackendSession["cancelWake"]
+  wakeSecret?: BackendSession["wakeSecret"]
+  memory?: BackendSession["memory"]
+  memoryChange?: BackendSession["memoryChange"]
+  private readonly mcpListeners = new Set<(state: McpStateResult) => void>()
+
+  onMcp(listener: (state: McpStateResult) => void): () => void {
+    this.mcpListeners.add(listener)
+    return () => void this.mcpListeners.delete(listener)
+  }
+
+  /** The server says the MCP servers changed. */
+  pushMcp(state: McpStateResult): void {
+    for (const listener of this.mcpListeners) listener(state)
+  }
 
   constructor(
     private readonly backend: ScriptBackend,

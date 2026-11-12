@@ -10,6 +10,19 @@ export { turnOutcomeOf, EXIT_UNRESOLVED, exitCodeOf, signInReason } from "../../
 export { callArgument, checkLines, checksSummary, detailLines, diffStat, errorSummary, fileList, firstLine, successSummary, unresolvedReason } from "../../cli/src/tools.ts"
 export { formatDuration, formatBytes, nearest } from "../../cli/src/text.ts"
 export { changeLabel, handEditChoices } from "../../cli/src/commands.ts"
+export {
+  type Line,
+  mcpFailureText,
+  mcpLines,
+  memoryAction,
+  memoryLines,
+  rememberArgs,
+  skillsLines,
+  wakeLines,
+  wakeMessageSummary,
+  webhookSecretLines,
+} from "../../cli/src/features.ts"
+export { mcpArguments } from "../../cli/src/tools.ts"
 export { usageText } from "../../cli/src/renderer.ts"
 export { FakeEngine, type FakeOptions, type FakeSession } from "../../cli/src/fake-engine.ts"
 export { type DemoScenario, demoScenarios, findScenario } from "../../cli/src/demo/scenarios.ts"

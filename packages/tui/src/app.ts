@@ -21,7 +21,9 @@ import type { RevertPlan, RevertResult } from "@light-harness/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
-import { changeLabel, fileList, formatDuration, nearest } from "./cli.ts"
+import { changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
+import type { McpServerInfo, McpStateResult } from "@light-harness/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
@@ -95,7 +97,13 @@ export class App {
   /** The reason the last open failed, for /reconnect. */
   private target: OpenTarget
   /** The approval question waiting for the user, and how to answer it. */
-  private dock: { readonly state: DockState; readonly answer: (answer: ApprovalAnswer | null) => void } | null = null
+  private dock: { readonly state: DockState; readonly answer: (answer: ApprovalAnswer | null) => void; readonly server?: McpServerInfo } | null = null
+  /** Servers the project's configuration names that wait for the user's answer in the dock, and the ones asked about. */
+  private readonly serverQuestions: McpServerInfo[] = []
+  private readonly asked = new Set<string>()
+  /** Failures already told, by server and reason. */
+  private readonly toldFailures = new Set<string>()
+  private unwatchMcp: (() => void) | null = null
   private readonly dockView: LinesView
   readonly pager: Pager
   /** When the user last typed in the input: the dock does not take the focus from someone typing. */
@@ -199,6 +207,8 @@ export class App {
       this.target = { kind: "resume", id: session.id }
       this.conversation.empty = this.welcome()
       this.pump = this.consume(session)
+      this.unwatchMcp?.()
+      this.unwatchMcp = session.onMcp?.((state) => this.mcpChanged(session, state)) ?? null
       void this.loadModels()
       void this.refreshApproval()
       void session.title?.().then(
@@ -238,7 +248,10 @@ export class App {
     try {
       for await (const item of session.events) {
         if ("turn" in item) this.transcript.applyTurn(item.turn)
-        else this.transcript.apply(item.event, item.replay)
+        else {
+          this.transcript.apply(item.event, item.replay)
+          if (!item.replay) this.featureEvent(session, item.event)
+        }
         this.settleDock()
         if (!this.transcript.activity.executing) this.suggestIfIdle()
         // The mode label next to the input follows the turn starting and ending.
@@ -263,6 +276,8 @@ export class App {
     if (this.transcript.activity.executing) return this.say("stop the agent first (Ctrl-C), then switch sessions", "warn")
     const old = this.session
     this.session = null
+    this.serverQuestions.length = 0
+    this.closeDock()
     await old?.close(false)
     await this.pump
     this.transcript.reset()
@@ -559,6 +574,16 @@ export class App {
         return session?.rename !== undefined
       case "fork":
         return session?.fork !== undefined
+      case "mcp":
+        return session?.mcp !== undefined
+      case "skills":
+        return session?.skills !== undefined
+      case "wakeups":
+        return session?.wakeups !== undefined
+      case "memory":
+      case "remember":
+      case "forget":
+        return session?.memory !== undefined
       case "reconnect":
         return this.connection !== "connected" && this.connection !== "starting"
       case "queue":
@@ -621,6 +646,13 @@ export class App {
           return await this.rename(rest)
         case "fork":
           return await this.fork(rest)
+        case "mcp":
+        case "skills":
+        case "wakeups":
+        case "memory":
+        case "remember":
+        case "forget":
+          return await this.featureCommand(spec.name, rest)
       }
     } finally {
       this.busyCommand = false
@@ -844,18 +876,22 @@ export class App {
    * withdrawn (the turn was stopped, the session closed).
    */
   private approve(ask: ApprovalAsk, signal: AbortSignal): Promise<ApprovalAnswer | null> {
+    // A tool call's question cannot wait: a server's question steps aside and comes back after it.
+    const server = this.dock?.server
+    if (server !== undefined) this.serverQuestions.unshift(server)
     this.dock?.answer(null)
     // A subagent's question is about a call in the subagent's own conversation.
     const row = this.transcript.toolRowFor(ask)
     const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
     return new Promise((resolve) => {
-      const state = new DockState(ask, row === null ? null : { name: row.name, arg: row.arg }, { focused: quiet, now: this.now() })
+      const state = new DockState(ask, row === null ? null : { name: row.name, arg: row.arg, input: row.input }, { focused: quiet, now: this.now() })
       const entry = {
         state,
         answer: (answer: ApprovalAnswer | null) => {
           if (this.dock === entry) this.dock = null
           this.layout()
           resolve(answer)
+          this.nextServerQuestion()
         },
       }
       this.dock = entry
@@ -876,10 +912,144 @@ export class App {
   /** The question was settled without this dock (the call ended, the turn ended): it goes away. */
   private settleDock(): void {
     const dock = this.dock
-    if (dock === null) return
+    if (dock === null || dock.server !== undefined) return
     const row = this.transcript.toolRowFor(dock.state.ask)
     const stillAsked = row === null || (row.phase !== "settled" && (row.approval === null || (row.approval.state === "asked" && row.approval.live)))
     if (!stillAsked || !this.transcript.activity.executing) this.closeDock()
+  }
+
+  // ---------------------------------------------------------------- MCP servers, skills, wake-ups, memory
+
+  /** The servers changed: a failure is told once with why; a project's server waiting for approval is put in the dock. */
+  private mcpChanged(session: BackendSession, state: McpStateResult): void {
+    if (this.session !== session) return
+    for (const server of state.servers) {
+      if (server.state === "failed" && server.error !== null && !this.toldFailures.has(`${server.name}\u0000${server.error}`)) {
+        this.toldFailures.add(`${server.name}\u0000${server.error}`)
+        this.transcript.note([span(mcpFailureText(server), "warn")], "warn", "!")
+      }
+      if (server.state === "awaiting_approval" && server.question !== null && !this.asked.has(mcpAskId(server))) {
+        this.asked.add(mcpAskId(server))
+        this.serverQuestions.push(server)
+      }
+    }
+    this.nextServerQuestion()
+    this.redraw()
+  }
+
+  /** Puts the next server question in the dock, when the dock is free. */
+  private nextServerQuestion(): void {
+    const session = this.session
+    if (this.dock !== null || session === null || this.leaving !== null) return
+    const server = this.serverQuestions.shift()
+    if (server === undefined) return
+    const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
+    const state = new DockState(mcpServerAsk(session.id, server), null, { focused: quiet, now: this.now(), withNote: false })
+    const entry = {
+      state,
+      server,
+      answer: (answer: ApprovalAnswer | null) => {
+        if (this.dock !== entry) return
+        this.dock = null
+        this.layout()
+        // `null`: it stepped aside for a tool call's question, or the session went; it is not an answer.
+        if (answer !== null) void this.answerServer(session, server, answer.choice === "once")
+        this.nextServerQuestion()
+      },
+    }
+    this.dock = entry
+    this.conversation.toBottom()
+    this.layout()
+  }
+
+  private async answerServer(session: BackendSession, server: McpServerInfo, start: boolean): Promise<void> {
+    if (!start) return this.say(`MCP server "${server.name}" not started; /mcp approve ${server.name} asks again`)
+    try {
+      const approved = (await session.approveMcp?.(server.name, server.question!.fingerprint)) ?? false
+      if (approved) this.transcript.note([span(`approved: MCP server "${server.name}" starts now`), span(" · its tools reach the agent at its next step · /mcp shows it", "dim")], "accent", "✓")
+      else this.say(`MCP server "${server.name}" no longer waits for an approval (its definition changed); /mcp shows it`, "warn")
+      this.redraw()
+    } catch (error) {
+      this.say(`could not approve "${server.name}": ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /** What an event asks of the client besides showing it: a webhook wake-up's secret, once, when it is created. */
+  private featureEvent(session: BackendSession, event: import("./cli.ts").EngineEvent): void {
+    if (event.type !== "tool.settled" || event.data.outcome !== "success" || session.wakeSecret === undefined) return
+    const wake = (event.data.display as { wake?: { action?: unknown; id?: unknown } } | null)?.wake
+    if (wake?.action !== "create" || typeof wake.id !== "string") return
+    void session.wakeSecret(wake.id).then(
+      (secret) => {
+        if (secret.secret === null || this.session !== session) return
+        this.showLines(webhookSecretLines(secret, true), "accent", "⏰")
+      },
+      () => {},
+    )
+  }
+
+  private showLines(lines: readonly Line[], tone: "dim" | "accent" | "warn" = "dim", symbol = "·"): void {
+    const { head, detail } = noteOf(lines)
+    this.transcript.note(head, tone, symbol, detail)
+    this.conversation.toBottom()
+    this.redraw()
+  }
+
+  /** `/mcp`, `/skills`, `/wakeups`, `/memory`, `/remember`, `/forget`: the line CLI's words, as a note in the conversation. */
+  private async featureCommand(name: "mcp" | "skills" | "wakeups" | "memory" | "remember" | "forget", rest: string): Promise<void> {
+    const session = this.session
+    if (session === null) return this.say(`/${name} needs an open session`, "warn")
+    const missing = () => this.say(`/${name} is not available with this engine (${this.options.backend.label})`, "warn")
+    const words = rest.trim().split(/\s+/).filter((word) => word !== "")
+    try {
+      switch (name) {
+        case "mcp": {
+          if (session.mcp === undefined) return missing()
+          const state = await session.mcp()
+          if (words.length === 0) return this.showLines(mcpLines(state))
+          if (words[0] !== "approve" || words.length !== 2) return this.say("/mcp takes nothing (the listing) or approve <server>", "warn")
+          const server = state.servers.find((candidate) => candidate.name === words[1])
+          if (server === undefined) return this.say(`there is no MCP server "${words[1]}" in this session; /mcp lists them`, "warn")
+          if (server.state !== "awaiting_approval" || server.question === null) return this.say(`the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
+          if (!this.serverQuestions.some((candidate) => candidate.name === server.name) && this.dock?.server?.name !== server.name) this.serverQuestions.push(server)
+          return this.nextServerQuestion()
+        }
+        case "skills":
+          if (session.skills === undefined) return missing()
+          return this.showLines(skillsLines(await session.skills()))
+        case "wakeups": {
+          if (session.wakeups === undefined) return missing()
+          if (words.length === 0) return this.showLines(wakeLines(await session.wakeups()))
+          if (words.length !== 2 || (words[0] !== "cancel" && words[0] !== "secret")) return this.say("/wakeups takes nothing (the listing), cancel <id> or secret <id>", "warn")
+          if (words[0] === "secret") return this.showLines(webhookSecretLines(await session.wakeSecret!(words[1]!), false), "accent", "⏰")
+          const result = await session.cancelWake!(words[1]!)
+          return this.say(result.message, result.cancelled ? "dim" : "warn")
+        }
+        case "memory": {
+          if (session.memory === undefined) return missing()
+          const action = memoryAction(rest)
+          if (action === null) return this.showLines(memoryLines(await session.memory()))
+          if ("problem" in action) return this.say(action.problem, "warn")
+          const result = await session.memoryChange!(action)
+          return this.say(result.message, result.ok ? "dim" : "warn")
+        }
+        case "remember": {
+          if (session.memoryChange === undefined) return missing()
+          const { text, scope } = rememberArgs(rest)
+          if (text === "") return this.say("/remember needs the note: /remember this repo uses pnpm (--me for a note about you, in every project)", "warn")
+          const result = await session.memoryChange({ action: "remember", text, scope })
+          return this.say(result.message, result.ok ? "dim" : "warn")
+        }
+        case "forget": {
+          if (session.memoryChange === undefined) return missing()
+          if (!/^m_\w+$/.test(rest.trim())) return this.say("/forget needs a note's ID, as /memory lists them: /forget m_1a2b3c4d", "warn")
+          const result = await session.memoryChange({ action: "retract", id: rest.trim() })
+          return this.say(result.message, result.ok ? "dim" : "warn")
+        }
+      }
+    } catch (error) {
+      this.say(`/${name} failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
   }
 
   private async refreshApproval(): Promise<void> {

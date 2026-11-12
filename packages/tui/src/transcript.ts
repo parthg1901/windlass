@@ -11,7 +11,7 @@
 import { type DiffResult, type TurnNotification, deriveTitle } from "@light-harness/acp/extensions"
 import { type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@light-harness/core"
-import { type EngineEvent, callArgument, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type EngineEvent, callArgument, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -924,6 +924,12 @@ export class Transcript {
     const text = data.content.map((part) => (part.type === "text" ? part.text : "[image]")).join("")
     const midTurn = this.activity.executing
     this.inboxText.set(data.messageId, { text, delivery: data.delivery, midTurn })
+    // A wake-up's message is not something the user typed: which wake-up, why, and the message it was set up with.
+    if (data.origin === "wake" || data.origin === "wake_webhook") {
+      const summary = wakeMessageSummary(text, data.origin)
+      this.notice("⏰", "accent", [span(summary.head, "accent")], summary.message === null ? [] : [[span(sanitize(summary.message))]], replay, "session")
+      return
+    }
     if (data.origin !== null) {
       this.notice(SYMBOL.inbox, "dim", [span(`${data.origin}: `, "dim"), span(`"${oneLine(text)}"`)], [], replay, "work")
       return

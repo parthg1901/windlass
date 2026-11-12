@@ -17,6 +17,7 @@
  */
 import type { ApprovalAsk } from "@light-harness/acp/client"
 import { describeNeed } from "@light-harness/core"
+import { mcpArguments } from "./cli.ts"
 import { plural, sanitize, truncate, wrapLine, width as textWidth } from "./layout.ts"
 import { type Span, span } from "./theme.ts"
 
@@ -55,15 +56,15 @@ export class DockState {
 
   constructor(
     readonly ask: ApprovalAsk,
-    /** The tool and its argument, as the conversation shows the call. */
-    readonly tool: { readonly name: string; readonly arg: string } | null,
-    options: { readonly focused: boolean; readonly now: number },
+    /** The tool and its argument, as the conversation shows the call; `input`: its arguments as written. */
+    readonly tool: { readonly name: string; readonly arg: string; readonly input?: string } | null,
+    options: { readonly focused: boolean; readonly now: number; readonly withNote?: boolean },
   ) {
     const letters: Record<string, string> = { once: "a", session: "s", project: "p", deny: "n" }
     const choices = ask.question.choices
     this.items = [
       ...choices.map((choice, index) => ({ choice: choice.id, label: sanitize(choice.label), remembers: choice.remembers === null ? null : sanitize(choice.remembers), key: letters[choice.id] ?? String(index + 1), withNote: false })),
-      ...(choices.some((choice) => choice.id === "deny") ? [{ choice: "deny", label: "Don't allow, and tell the agent why…", remembers: null, key: "m", withNote: true }] : []),
+      ...(options.withNote !== false && choices.some((choice) => choice.id === "deny") ? [{ choice: "deny", label: "Don't allow, and tell the agent why…", remembers: null, key: "m", withNote: true }] : []),
     ]
     this.focused = options.focused
     this.armedAt = options.focused ? options.now + ARMING_MS : options.now
@@ -133,6 +134,9 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
   const toolName = state.tool?.name ?? null
   const what: Span[][] = subject.length === 0 ? [] : wrapLine([span("  "), span(toolName === null ? "" : `${toolName}  `, undefined, { bold: true }), span(subject[0]!, "accent")], columns, [span("    ")]).slice(0, 2)
   if (subject.length > 1) what.push([span(`    … and ${plural(subject.length - 1, "more line")}`, "dim")])
+  // An MCP call: the title names the server's tool; what the user decides on is what would leave the machine.
+  const sent = toolName === "mcp_call" && state.tool?.input !== undefined ? mcpArguments(state.tool.input) : null
+  if (sent !== null) what.push(...wrapLine([span("  sends: ", "dim"), span(sanitize(sent))], columns, [span("    ")]).slice(0, 4))
   const needs = ask.needs.map(describeNeed)
   const why = needs.length === 0 ? [] : wrapLine([span("  why: ", "dim"), span(needs.length === 1 ? needs[0]! : `${needs.slice(0, -1).join(", ")} and ${needs.at(-1)}`)], columns, [span("       ")])
   const runs = ask.then.kind === "run_sandboxed" ? runsText(ask.then) : [span("  runs: ", "dim"), span("without the sandbox, with your permissions", "warn")]

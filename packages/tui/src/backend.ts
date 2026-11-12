@@ -5,11 +5,11 @@
  * features a backend may lack; the TUI says so instead of offering them.
  */
 import type { ApprovalAnswer, ApprovalAsk } from "@light-harness/acp/client"
-import type { DiffResult, TurnNotification } from "@light-harness/acp/extensions"
+import type { DiffResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@light-harness/acp/extensions"
 import type { RevertResult } from "@light-harness/core"
 import type { EngineEvent } from "./cli.ts"
 
-export type { ApprovalAnswer, ApprovalAsk, DiffResult, TurnNotification }
+export type { ApprovalAnswer, ApprovalAsk, DiffResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }
 
 export type Delivery = "steer" | "queue"
 
@@ -47,6 +47,8 @@ export interface SessionChoice {
   readonly model: string
   readonly effort: string | null
   readonly archived: boolean
+  /** A fork: the session it was forked from. */
+  readonly forkedFrom?: string | null
 }
 
 /** A question the agent asks besides tool approvals (the hand-edit question of an undo), and its choices. */
@@ -125,6 +127,18 @@ export interface BackendSession {
   /** A new session with this one's conversation so far (`copy`: in a copy of the workspace). Nothing is opened. */
   /** `throughSeq`: after that event (a turn's end) instead of after the latest step. */
   fork?(options: { readonly copy: boolean; readonly throughSeq?: number }): Promise<ForkInfo>
+  /** The session's MCP servers, and the user's approval of one the project names. */
+  mcp?(): Promise<McpStateResult>
+  approveMcp?(name: string, fingerprint: string): Promise<boolean>
+  /** Called when the servers change (started, failed, waiting for approval). Returns the unsubscribe function. */
+  onMcp?(listener: (state: McpStateResult) => void): () => void
+  skills?(): Promise<SkillsResult>
+  wakeups?(): Promise<WakeListResult>
+  cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>
+  /** A webhook wake-up's URL and secret: for the user's eyes only. */
+  wakeSecret?(id: string): Promise<WakeSecretResult>
+  memory?(): Promise<MemoryStateResult>
+  memoryChange?(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult>
   /** Lets go of the session; with `shutdown`, running work stops as a shutdown and resumes at the next open. */
   close(shutdown: boolean): Promise<void>
   /** Why the events ended without `close` (the server went away), as a sentence; `null` while all is well. */
