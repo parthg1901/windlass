@@ -189,6 +189,11 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **The steer tag goes on its own line** when the message fills the width (`  ↳ steered into the turn`); it is never cut any more.
 - **Ctrl-C at an idle, empty prompt says `· press Ctrl-D or type /quit to leave`** (seen 2026-11-12, connected and signed out); a demo's pre-filled input is cleared by it instead.
 - **An unknown `/word` is not sent**: the TUI answers `/<word> is not a command, so nothing was sent; did you mean /<nearest>?` and `//text` sends `/text`. A test that types a message starting with a slash must double it.
+- **Alt-Up selects the turn's ending row first**; a subagent's row is two more Alt-Ups up, and selection skips plain shell rows.
+- **Under load, start-up is slow**: at a load average of about 11 on two cores, start to `● ready` took 3.5 to 6 s. Allow 30 s when other agents are running.
+- **A background `shell` row looks exactly like a finished one**; check the process with `pgrep -P`.
+- **The `■ stopping…` row stays above `■ interrupted`**: wait for the second, not for the first to go.
+- **`/sessions` cuts IDs to `ses_4…`** and forks share a title: match a row on its age or title, not its ID.
 
 ## Measured (two-core aarch64, 2026-11-12)
 

@@ -112,6 +112,14 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 - [docs/troubleshooting.md](docs/troubleshooting.md): the errors you are likely to meet, and what to do.
 - [docs/safety.md](docs/safety.md): what the agent may do without asking, and what the sandbox does and does not stop.
 - [docs/acp.md](docs/acp.md): using it from an editor.
+- [docs/subagents.md](docs/subagents.md): subagents, a worktree of their own, background commands.
+- [docs/forks.md](docs/forks.md): forking a session, with or without a copy of the workspace.
+- [docs/replay.md](docs/replay.md): replaying a recorded session against a changed prompt, and what that can tell you.
+- [docs/mcp.md](docs/mcp.md): MCP servers, and why a server a project names waits for your approval.
+- [docs/skills.md](docs/skills.md): skills and where they live.
+- [docs/wake-ups.md](docs/wake-ups.md): timers, checks and webhooks that wake a session.
+- [docs/memory.md](docs/memory.md): notes that persist across sessions (off by default).
+- [docs/event-log.md](docs/event-log.md): the format of a session's log.
 - `lh --help`: every option and exit code.
 
 ## Licence
