@@ -96,7 +96,7 @@ describe("the real engine", () => {
       type("/redo\r")
       await settle(true)
       expect(vt.text.split("\n").at(-1)).toBe("[y] overwrite · [k] keep as they are now · [N] change nothing ›")
-      expect(vt.text.replace(/\n\s+/g, " ")).toContain("1 file changed outside this session since the /undo (by you, another program or another session): notes.md")
+      expect(vt.text.replace(/\n\s+/g, " ")).toContain("1 file changed since the /undo by you or another program: notes.md")
       expect(vt.text.replace(/\n\s+/g, " ")).toContain("y  overwrite: it goes back to how the turn left it, and the changes since the /undo are lost for good")
       type("n\r")
       await settle()

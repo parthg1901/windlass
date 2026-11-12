@@ -173,7 +173,8 @@ does is forwarded as it happens (`_windlass/child`, or `child.event` in the even
 
 The other question the agent asks is the hand-edit question of an undo or redo (`_windlass/revert`, below):
 `session/request_permission` with options `overwrite` (allow once), `keep` (allow once: restore the rest) and
-`cancel` (reject once). Its `toolCall` names the files (`locations`) and says what overwriting means;
+`cancel` (reject once). Its `toolCall` names the files (`locations`), says who changed each as far as the engine can
+tell (`handEditSentences` in `packages/acp/src/extensions.ts` words the plan's `editedBy`) and what overwriting means;
 `_meta["windlass"] = { command, plan, handEdited }` has the whole plan. A cancelled request changes nothing.
 A client tells the two apart by `_meta["windlass"]`: `approval` or `plan`.
 
@@ -392,7 +393,10 @@ latest by default), the files and the conversation, and undo that. Only while th
 // result: the engine's RevertResult
 { kind: "preview", plan } | { kind: "reverted", plan, restore } | { kind: "hand_edited", plan }   // nothing changed (also when the question was declined)
   | { kind: "refused", reason: "busy" | "nothing_to_revert" | "not_found" | "compacted", message } | { kind: "failed", plan, message }
-// plan: { fromSeq, messageId, messages, target, unrestorable, changes: { path, status, handEdited }[], kept }
+// plan: { fromSeq, messageId, messages, target, unrestorable, changes: { path, status, handEdited, editedBy? }[], kept }
+// editedBy (there when handEdited): who changed the file outside the session's own work, as far as the snapshots tell:
+//   { kind: "outside" } (you or another program), { kind: "session", sessionId: string | null } (while another
+//   session, or with null several, worked in the directory), { kind: "unknown" }
 ```
 
 **`_windlass/diff`** (request): the files a turn or a step changed, with bounded per-file patches, from the

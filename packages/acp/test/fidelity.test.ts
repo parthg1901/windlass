@@ -203,6 +203,9 @@ describe("undo and redo", () => {
     ])
     expect(asked!.toolCall.locations).toEqual([{ path: join(harness.workspace, "notes.md") }])
     expect((asked!._meta?.[NS] as { command: string; handEdited: string[] }).handEdited).toEqual(["notes.md"])
+    // The question says who changed the file, from the plan's `editedBy`: here nothing of any session ran when it changed.
+    expect((asked!._meta?.[NS] as { plan: { changes: unknown[] } }).plan.changes[0]).toMatchObject({ path: "notes.md", editedBy: { kind: "outside" } })
+    expect(JSON.stringify(asked!.toolCall.content)).toContain("1 file changed since the turn by you or another program: notes.md.")
     const state = await ext<{ canRedo: boolean }>(harness, EXT.session, { sessionId })
     expect(state.canRedo).toBe(true)
     const redone = await ext<{ kind: string }>(harness, EXT.undoRevert, { sessionId, handEdits: "abort" })

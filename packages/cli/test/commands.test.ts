@@ -32,7 +32,7 @@ const agentOnly = plan([
 ])
 const withHandEdit = plan([
   { path: "src/add.ts", status: "modified", handEdited: false },
-  { path: "notes.md", status: "modified", handEdited: true },
+  { path: "notes.md", status: "modified", handEdited: true, editedBy: { kind: "outside" } },
 ])
 
 /** What the engine does without a dry run: refuses to overwrite hand edits unless told how, as the real one does. */
@@ -110,7 +110,7 @@ describe("/undo", () => {
     await type("/undo\r")
     // What each answer does to the file, before it is asked: keep leaves the agent's change in it too.
     expect(output().slice(-4)).toEqual([
-      "  1 file changed outside this session since the turn (by you, another program or another session): notes.md",
+      "  1 file changed since the turn by you or another program: notes.md",
       "  y  overwrite: it goes back to before the turn and those changes are lost (/redo brings them back)",
       "  k  keep: it stays exactly as now, those changes and the agent's in it both; the other files go back",
       "  n  change nothing",
@@ -123,6 +123,29 @@ describe("/undo", () => {
     // The answer was the command's, not a message for the agent, and the usual prompt is back.
     expect(actions).toEqual([])
     expect(prompt()).toBe("› type a message")
+    await screen.commandsSettled()
+  })
+
+  test("the question says who changed each file, as far as the engine can tell", async () => {
+    session({
+      kind: "preview",
+      plan: plan([
+        { path: "notes.md", status: "modified", handEdited: true, editedBy: { kind: "outside" } },
+        { path: "a.ts", status: "modified", handEdited: true, editedBy: { kind: "session", sessionId: "ses_other" as never } },
+        { path: "b.ts", status: "modified", handEdited: true, editedBy: { kind: "session", sessionId: "ses_other" as never } },
+        { path: "c.ts", status: "modified", handEdited: true, editedBy: { kind: "session", sessionId: null } },
+        { path: "d.ts", status: "modified", handEdited: true, editedBy: { kind: "unknown" } },
+      ]),
+    })
+    const { type, output, screen } = setup(140)
+    await type("/undo\r")
+    expect(output().slice(-7, -3)).toEqual([
+      "  1 file changed since the turn by you or another program: notes.md",
+      "  2 files changed since the turn while session ses_other was working in this directory: a.ts, b.ts",
+      "  1 file changed since the turn while other sessions were working in this directory: c.ts",
+      "  1 file changed since the turn, and it cannot be told by whom (it may be this session's own command or checks): d.ts",
+    ])
+    await type("n\r")
     await screen.commandsSettled()
   })
 

@@ -111,6 +111,7 @@ import {
   type SubagentRef,
   type SessionState,
   type StateNotification,
+  handEditSentences,
   sessionTitle,
 } from "./extensions.ts"
 import { hookFailure, hooksState, lspState, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
@@ -655,7 +656,7 @@ class ConnectionState {
       sessionId: view.session.id,
       toolCall: {
         toolCallId: `${META.capabilities}-${command}-${plan.fromSeq}`,
-        // Who changed them cannot be told (the user, another program, another session in the same directory).
+        // Who changed them is in the text, as far as the engine can tell (`editedBy` of each file).
         title: undo ? `Redo: ${files} changed outside this session since the undo` : `Undo: ${files} changed outside this session since the turn`,
         kind: "edit",
         status: "pending",
@@ -665,7 +666,7 @@ class ConnectionState {
             type: "content",
             content: {
               type: "text",
-              text: `Changed outside this session (by you, another program or another session): ${byHand.join(", ")}. ${
+              text: `${handEditSentences(plan.changes, undo ? "since the undo" : "since the turn").map((sentence) => `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`).join(" ")} ${
                 undo
                   ? "Overwrite: they go back to how the turn left them, and the changes since the undo are lost for good. Keep: they stay exactly as they are now, with those changes; the other files come back."
                   : "Overwrite: they go back to before the turn and those changes are lost (redo brings them back). Keep: they stay exactly as they are now, those changes and the agent's in them both; the other files go back."

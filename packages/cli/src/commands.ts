@@ -19,6 +19,7 @@
  */
 import type { HandEditPolicy, RevertOptions, RevertPlan, RevertResult } from "@windlass/core"
 import type { SessionRevertOptions } from "./engine.ts"
+import { handEditSentences } from "@windlass/acp/extensions"
 import { type Segment, plural, seg } from "./text.ts"
 import { fileList } from "./tools.ts"
 
@@ -90,8 +91,11 @@ export async function runSessionCommand(command: Command, session: RevertableSes
     const confirm = async (asked: RevertPlan): Promise<HandEditPolicy | null> => {
       const edited = asked.changes.filter((change) => change.handEdited).map((change) => change.path)
       const them = edited.length === 1 ? "it" : "them"
-      // Who changed them cannot be told (you, another program, another session in the same directory): the words fit all three.
-      io.print([seg(`  ${plural(edited.length, "file")} changed outside this session ${undo ? "since the turn" : "since the /undo"} (by you, another program or another session): `, "yellow"), seg(fileList(edited, 6))])
+      // Who changed them, as far as the engine can tell: you or another program, another session at work here, or nobody it can name.
+      for (const sentence of handEditSentences(asked.changes, undo ? "since the turn" : "since the /undo")) {
+        const at = sentence.lastIndexOf(": ")
+        io.print([seg(`  ${sentence.slice(0, at + 2)}`, "yellow"), seg(sentence.slice(at + 2))])
+      }
       // What each answer does to those files, said before it is asked. Only an undo keeps a way back: /redo restores
       // the workspace as it was right before it, hand edits included.
       for (const line of handEditChoices(undo, them)) io.print([seg(line, "dim")])

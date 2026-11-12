@@ -838,6 +838,41 @@ export function quotedCommand(argv: readonly string[]): string {
   return argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" ")
 }
 
+/** A file of a revert plan (`RevertPlan.changes`), as far as the hand-edit question needs it. */
+export interface PlannedChange {
+  readonly path: string
+  readonly handEdited: boolean
+  /** Who changed it, as far as the snapshots tell; there exactly when `handEdited`. */
+  readonly editedBy?: { readonly kind: "outside" } | { readonly kind: "session"; readonly sessionId: string | null } | { readonly kind: "unknown" }
+}
+
+/**
+ * The files an undo or a redo asks about before it overwrites them, said
+ * with who changed each as far as the engine can tell (`editedBy`), one
+ * sentence per answer: by the user or another program while no session
+ * worked; while another session worked in the same directory (named, or
+ * several); or by nobody that can be told, which may be this session's own
+ * command or checks. `since` is what the change came after (`since the
+ * turn`, `since the /undo`). No sentence ends with a full stop.
+ */
+export function handEditSentences(changes: readonly PlannedChange[], since: string): string[] {
+  const groups = new Map<string, string[]>()
+  for (const change of changes) {
+    if (!change.handEdited) continue
+    const by = change.editedBy ?? { kind: "unknown" as const }
+    const who =
+      by.kind === "outside"
+        ? " by you or another program"
+        : by.kind === "session"
+          ? by.sessionId === null
+            ? " while other sessions were working in this directory"
+            : ` while session ${by.sessionId} was working in this directory`
+          : ", and it cannot be told by whom (it may be this session's own command or checks)"
+    groups.set(who, [...(groups.get(who) ?? []), change.path])
+  }
+  return [...groups].map(([who, paths]) => `${paths.length === 1 ? "1 file" : `${paths.length} files`} changed ${since}${who}: ${paths.join(", ")}`)
+}
+
 /** One item of the model's task list (the `todo` tool). */
 export interface TaskItem {
   readonly text: string
