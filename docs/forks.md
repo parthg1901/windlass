@@ -108,14 +108,27 @@ that line of work. What you allowed "in this project" still applies.
 
 A fork's log holds only its own events and reads the earlier ones from the original's file, so keep the original.
 
+## A fork of a fork, and a fork without its original
+
+A fork is forked like any session, also at a point it inherited: `windlass fork <a fork> --turn 1` works when turn 1
+is from the original's part of the conversation, and so does `--through <n>` for one of its events. The new session
+is then recorded as a fork of the session that point belongs to (the original), and reads that part from its file.
+
+If the original's file is deleted or moved, the fork is still listed and still runs. A new message to it is
+answered, and you are told once that the earlier part cannot be listed:
+
+```text
+⚠ history: The part of this conversation from before the fork cannot be shown: the history inherited from session <id> cannot be read: <file> is missing. The session still has it, so the model sees it and the session goes on; only what happened since the fork is listed.
+```
+
+Forking that fork, or replaying it, needs the events it no longer has, and is refused with the file that is
+missing (exit code 2):
+
+```text
+windlass: session <id> cannot be forked: the history inherited from session <id> cannot be read: <file> is missing
+windlass: session <id> cannot be replayed: the history inherited from session <id> cannot be read: <file> is missing
+```
+
 ## Not yet
 
-- **A fork whose original is gone cannot go on.** If the original session's file is deleted or moved, the fork is
-  still listed, but a new message to it fails, and so does forking it: `windlass` prints only `windlass: Internal error`
-  (exit code 1). The reason, which nothing prints, is
-  `the history inherited from session <id> cannot be read: <file> is missing`.
-<!-- NOT-YET(fork-inherited-turn): forking a fork at a turn or event it inherited fails with "Internal error" -->
-- **A fork cannot be forked at a point it inherited.** `windlass fork <a fork>` forks it after its latest step, but
-  `--turn <n>` or `--through <n>` for a turn or event of the original's part of the conversation prints only
-  `windlass: Internal error` (exit code 1). Fork the original at that point instead.
 - **No fork from the line interface's prompt**: use `windlass fork`, or `/fork` in `windlass tui`.

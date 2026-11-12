@@ -553,7 +553,27 @@ describe("quoted program messages", () => {
       quote: "seq 9 of session ses_f808227c38aa09907cd80c89 is inside a step: a session is forked at a step boundary (the nearest one before it is seq 7)",
       pieces: ["inside a step", ": a session is forked at a step boundary (the nearest one before it is seq "],
     },
-    { page: "docs/forks.md", quote: "`the history inherited from session <id> cannot be read: <file> is missing`", pieces: ["the history inherited from session ", " cannot be read: ", " is missing"] },
+    {
+      page: "docs/forks.md",
+      quote: `${BIN}: session <id> cannot be forked: the history inherited from session <id> cannot be read: <file> is missing`,
+      pieces: [" cannot be forked: ", "the history inherited from session ", " cannot be read: ", " is missing"],
+    },
+    {
+      page: "docs/forks.md",
+      quote: `${BIN}: session <id> cannot be replayed: the history inherited from session <id> cannot be read: <file> is missing`,
+      pieces: [" cannot be replayed: ", "the history inherited from session ", " cannot be read: ", " is missing"],
+    },
+    {
+      page: "docs/forks.md",
+      quote: "⚠ history: The part of this conversation from before the fork cannot be shown: the history inherited from session <id> cannot be read: <file> is missing. The session still has it, so the model sees it and the session goes on; only what happened since the fork is listed.",
+      pieces: [
+        "The part of this conversation from before the fork cannot be shown: ",
+        "the history inherited from session ",
+        " cannot be read: ",
+        " is missing",
+        ". The session still has it, so the model sees it and the session goes on; only what happened since the fork is listed.",
+      ],
+    },
     { page: "docs/forks.md", quote: "there is no turn 7: the session has turns 1 to 2", pieces: ["there is no turn ", ": the session has ", "turns 1 to "] },
     { page: "docs/forks.md", quote: "Its turns:", pieces: ["Its turns:"] },
     { page: "docs/forks.md", quote: "after turn 2 (event 28).", pieces: ["after turn ", " (event "] },
