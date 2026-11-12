@@ -781,6 +781,8 @@ export class PrettyRenderer implements Sink {
     const arg = flatten(callArgument(data.name, data.input))
     const call: Call = { name: data.name, arg, input: data.input, startedAt: null, after: -1 }
     this.calls.set(key(data.messageId, data.callId), call)
+    // The task list is shown as the list itself when the call settles, not as a call.
+    if (data.name === TASK_TOOL) return
     this.open.add(key(data.messageId, data.callId))
     this.lineWithArg("info", [seg(`${SYMBOL.call} `, "cyan"), seg(data.name, "bold"), seg(arg === "" ? "" : " ")], arg, [])
     call.after = this.lines
@@ -795,6 +797,14 @@ export class PrettyRenderer implements Sink {
     const adjacent = call.after === this.lines && this.open.size === 1 && this.open.has(id)
     this.open.delete(id)
     const duration = call.startedAt === null ? null : formatDuration(time - call.startedAt)
+    // The model's task list: a checklist, with how far it is.
+    const tasks = call.name === TASK_TOOL && data.outcome === "success" ? tasksOf(data.display) : null
+    if (tasks !== null) {
+      this.line("info", [seg("≡ ", "cyan"), seg("tasks", "bold"), seg(` · ${tasksProgress(tasks)}`, "dim")])
+      for (const task of tasks)
+        this.lineWithArg("info", [seg(`  ${TASK_MARK[task.status]} `, task.status === "done" ? "green" : task.status === "in_progress" ? "cyan" : "dim")], flatten(task.text), [])
+      return
+    }
     // Refused by the agent the session runs as: the agent's rule, in the user's words, instead of the text the model got.
     const refusal = this.agentRefusals.get(id)
     if (refusal !== undefined) {

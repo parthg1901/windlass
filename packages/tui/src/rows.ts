@@ -10,7 +10,7 @@
  * capped; a second expansion shows it in full up to `FULL_OUTPUT_LINES`.
  */
 import { SUBAGENT_NOTE } from "@windlass/core"
-import { detailLines, diffStat, errorSummary, fileList, formatBytes, formatDuration, successSummary, unresolvedReason, usageText } from "./cli.ts"
+import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diffStat, errorSummary, fileList, formatBytes, formatDuration, requestsText, successSummary, tasksOf, tasksProgress, unresolvedReason, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
@@ -129,6 +129,11 @@ function reasoningLines(row: ReasoningRow, columns: number): Span[][] {
 // ---------------------------------------------------------------- tools
 
 function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[][] {
+  // The model's task list is shown as the list, not as a call (expanded, it is the call like any other).
+  if (row.name === TASK_TOOL && row.expand === 0) {
+    const tasks = taskListLines(row, columns)
+    if (tasks !== null) return tasks
+  }
   const head = toolHead(row, columns, context)
   const lines: Span[][] = [head]
   if (row.subagent !== null) return [head, ...subagentLines(row, row.subagent, columns, context)]
@@ -151,6 +156,24 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
   lines.push(...runLines(row, columns))
   lines.push(...outputLines(row, columns))
   return lines
+}
+
+/**
+ * A `todo` call as the checklist it left: how far the list is, then every
+ * task with its mark (done, in progress, pending). `null` while the call has
+ * no list to show (it failed, or was not run): then it is a call like any other.
+ */
+function taskListLines(row: ToolRow, columns: number): Span[][] | null {
+  const head = (text: string) => [span("≡ ", "accent"), span("tasks", undefined, { bold: true }), span(` · ${text}`, "dim")]
+  if (row.phase !== "settled") return [head("updating…")]
+  const tasks = row.outcome === "success" ? tasksOf(row.display) : null
+  if (tasks === null) return null
+  return [
+    head(tasksProgress(tasks)),
+    ...tasks.flatMap((task) =>
+      wrapLine([span(`  ${TASK_MARK[task.status]} `, task.status === "done" ? "ok" : task.status === "in_progress" ? "accent" : "dim"), span(task.text, task.status === "done" ? "dim" : undefined, task.status === "in_progress" ? { bold: true } : undefined)], columns, [span("    ")]),
+    ),
+  ]
 }
 
 /**

@@ -101,6 +101,10 @@ export function successSummary(name: string, settled: Settled): string {
     }
     case "shell":
       return shellStatus(display) ?? ""
+    case TASK_TOOL: {
+      const tasks = tasksOf(settled.display)
+      return tasks === null ? firstLine(settled.output) : `tasks: ${tasksProgress(tasks)}`
+    }
     default:
       return firstLine(settled.output)
   }

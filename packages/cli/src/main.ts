@@ -471,6 +471,9 @@ async function sayOpened(renderer: PrettyRenderer, session: Session, resumed: bo
   renderer.notice(`resumed session ${session.id}${title} · ${turns}${agent}${hint}`)
   // Where the conversation stands, so the user knows what they are coming back to.
   renderer.printLines(recapLines(described.events))
+  // The model's task list as it stands: what it was in the middle of.
+  const tasks = described.tasks ?? null
+  if (tasks !== null && tasks.length > 0) renderer.printLines([{ text: `Its task list (${tasksProgress(tasks)}):`, tone: "dim" }, ...taskLines(tasks, 2)])
 }
 
 /**

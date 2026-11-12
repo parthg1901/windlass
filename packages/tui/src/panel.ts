@@ -7,7 +7,9 @@
  * nothing is estimated. Bars use different glyphs for cached and uncached
  * input, so they read the same without colour.
  */
+import type { TaskItem } from "@windlass/acp/extensions"
 import type { Usage } from "@windlass/core"
+import { TASK_MARK, requestsText, tasksProgress } from "./cli.ts"
 import { compact, plural, thousands, truncate, width } from "./layout.ts"
 import { type Span, span } from "./theme.ts"
 import type { Activity, CallUsage, SessionInfo } from "./transcript.ts"
@@ -49,11 +51,15 @@ export interface PanelInput {
   readonly home: string | null
   /** The approval mode, and whether commands can be sandboxed here; `null` when the server runs without the approval layer. */
   readonly approval?: { readonly mode: string | null; readonly sandbox: boolean } | null
+  /** The model's task list as it stands; `null` or absent: it has none. */
+  readonly tasks?: readonly TaskItem[] | null
   /** The session's subagents at work, in the foreground or the background. */
   readonly subagents?: readonly { readonly title: string; readonly background: boolean; readonly asking: boolean; readonly kind?: "subagent" | "command" }[]
 }
 
 export const PANEL_WIDTH = 36
+/** The most tasks the panel lists: the rest is a count, with the one in progress always among those shown. */
+const PANEL_TASKS = 8
 
 export function panelLines(input: PanelInput, columns: number, rows: number): Span[][] {
   const inner = columns - 2
@@ -80,6 +86,22 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
     lines.push([span("approval ", "dim"), span(approval.mode ?? "?", undefined, { bold: true }), span(approval.sandbox ? " · sandbox ⊡" : " · no sandbox", approval.sandbox ? "dim" : "warn")])
   if (session.taint !== null) field("trust", "untrusted · /clear-taint", "warn")
   lines.push([])
+
+  // The model's task list stays in view while the conversation scrolls.
+  const tasks = input.tasks ?? null
+  if (tasks !== null && tasks.length > 0) {
+    heading("Tasks", [span(`  ${tasksProgress(tasks)}`, "dim")])
+    // When the list is longer than fits, the part around the task in progress.
+    const current = Math.max(0, tasks.findIndex((task) => task.status === "in_progress"))
+    const from = Math.max(0, Math.min(current - 2, tasks.length - PANEL_TASKS))
+    const shown = tasks.slice(from, from + PANEL_TASKS)
+    if (from > 0) lines.push([span(`  … ${from} before`, "dim")])
+    for (const task of shown)
+      lines.push([span(`${TASK_MARK[task.status]} `, task.status === "done" ? "ok" : task.status === "in_progress" ? "accent" : "dim"), span(truncate(task.text, inner - 2), task.status === "done" ? "dim" : undefined, task.status === "in_progress" ? { bold: true } : undefined)])
+    const after = tasks.length - from - shown.length
+    if (after > 0) lines.push([span(`  … ${after} more`, "dim")])
+    lines.push([])
+  }
 
   // A fork counts its own model calls; the ones before the fork point were its parent's, and are named apart.
   const inherited = Math.min(session.inheritedCalls ?? 0, input.calls.length)

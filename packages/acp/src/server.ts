@@ -935,6 +935,8 @@ class ConnectionState {
       canRedo: session.reverts.length > 0,
       /** The agent the session runs as (or will from its next step); `null`: none. */
       agent: view.session.agent()?.name ?? null,
+      /** The model's task list as it stands (the latest `todo` call that counts); `null`: it never set one. */
+      todos: currentTodos(projection.messages)?.items ?? null,
     }
   }
 

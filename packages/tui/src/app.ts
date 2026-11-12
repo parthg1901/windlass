@@ -1538,6 +1538,7 @@ export class App {
         connection: this.connection === "connected" ? "connected" : this.connection,
         home: this.options.home,
         approval: this.approvalInfo === null || !this.approvalInfo.enabled ? null : { mode: this.approvalInfo.mode, sandbox: this.approvalInfo.sandboxUnavailable === null },
+        tasks: this.transcript.tasks(),
         subagents: [
           ...this.transcript.runningSubagents().map((view) => ({ title: view.title ?? view.sessionId, background: view.background, asking: view.asking })),
           ...[...this.transcript.background.entries()].map(([id, command]) => ({ title: `${id}: ${command.command}`, background: true, asking: false, kind: "command" as const })),

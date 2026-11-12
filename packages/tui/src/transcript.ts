@@ -8,7 +8,7 @@
  * live or replayed, and never touches a terminal. The wording follows the
  * line-based CLI's renderer, so both clients say the same things.
  */
-import { type DiffResult, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
+import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type AgentRecord, type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, callArgument, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
@@ -383,6 +383,17 @@ export class Transcript {
       }
     })
     return true
+  }
+
+  /**
+   * The model's task list as it stands: what its latest `todo` call that
+   * succeeded and was not undone left, from the events (so a session opened
+   * again shows it). `null` when there is none, or it was cleared.
+   */
+  tasks(): readonly TaskItem[] | null {
+    const row = this.rows.findLast((candidate): candidate is ToolRow => candidate.kind === "tool" && candidate.name === TASK_TOOL && candidate.outcome === "success" && !isUndoneRow(candidate))
+    const tasks = row === undefined ? null : tasksOf(row.display)
+    return tasks === null || tasks.length === 0 ? null : tasks
   }
 
   /** The subagents still at work, oldest first: in the foreground or the background. */
