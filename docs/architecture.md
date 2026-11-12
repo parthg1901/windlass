@@ -616,6 +616,14 @@ is a new version with a decoder for the old one.
   undo goes back to, a step's changes count as its own only for the paths its write calls name; everything a
   command, a run of checks or a restore spans is asked about. A session that is alone in its directory is never
   asked about what its own commands changed.
+- *Who changed a file the restore asks about.* Each such file in a revert's plan says who it was, as far as the
+  snapshots tell (`changes[].editedBy`, set exactly when `handEdited` is): `outside` when nothing of any
+  session ran as it changed, so the user or another program; `session` with the other session's ID when it
+  changed inside that session's own work, read off that session's log and snapshots (`changedInOwnWork`; the
+  ID is `null` when the work of more than one session spans the change); `unknown` when it cannot be told: the
+  file changed while this session's own command ran and another session was recording the directory, in none
+  of whose own work it shows, or the snapshots in between are gone. A client words its question from that
+  instead of calling every such file edited by hand.
 - *Snapshot retention.* After each execution, and when a session is archived, the loop drops snapshots of that
   session, never one a revert or an undo could still need (`neededSnapshots` in `engine/workspace.ts`): the
   snapshot every revertable user message goes back to, everything recorded since the latest of them (an undo of

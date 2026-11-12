@@ -167,16 +167,55 @@ export async function handEditedPaths(
   now: string,
   own?: OwnPaths,
 ): Promise<string[]> {
-  const paths = new Set<string>()
+  return [...(await editedOutside(store, timeline, now, own)).keys()].sort()
+}
+
+/**
+ * The same paths, each with where its change fell: `between` the stretches
+ * of the session's own work (nothing of the harness ran there, so it was
+ * the user, another program or another session), or only `during` one of
+ * them, which is asked about because another session was at work in the
+ * directory and the session's own calls do not say they wrote the path.
+ * There the session's own command may have changed it as well. A path that
+ * changed in both is `between`.
+ */
+export async function editedOutside(
+  store: Pick<WorkspaceSnapshots, "changedFiles">,
+  timeline: readonly (Pick<SnapshotMark, "id" | "point"> & Partial<Pick<SnapshotMark, "messageId">>)[],
+  now: string,
+  own?: OwnPaths,
+): Promise<Map<string, "between" | "during">> {
+  const paths = new Map<string, "between" | "during">()
   for (const [index, from] of timeline.entries()) {
     const to = timeline[index + 1]?.id ?? now
     if (from.id === to) continue
     const work = isHarnessWork(from.point)
     if (work && own === undefined) continue
     const mine = work ? own!(from) : null
-    for (const path of await store.changedFiles(from.id as never, to as never)) if (mine === null || !mine.has(path)) paths.add(path)
+    for (const path of await store.changedFiles(from.id as never, to as never)) {
+      if (mine === null) paths.set(path, "between")
+      else if (!mine.has(path) && !paths.has(path)) paths.set(path, "during")
+    }
   }
-  return [...paths].sort()
+  return paths
+}
+
+/**
+ * The paths that changed inside another session's own work (a step's tools,
+ * a run of checks, a restore), read off that session's log from `sinceTime`
+ * on: what a revert plan says that session changed. Its last stretch, when
+ * nothing was recorded after it, runs to `now`.
+ */
+export async function changedInOwnWork(store: Pick<WorkspaceSnapshots, "changedFiles">, events: readonly StoredEvent[], sinceTime: number, now: string): Promise<Set<string>> {
+  const marks = events.flatMap((item) => (item.type === "snapshot.taken" && item.time >= sinceTime ? [mark(item)] : []))
+  const paths = new Set<string>()
+  for (const [index, from] of marks.entries()) {
+    if (!isHarnessWork(from.point)) continue
+    const to = marks[index + 1]?.id ?? now
+    if (from.id === to) continue
+    for (const path of await store.changedFiles(from.id as never, to as never)) paths.add(path)
+  }
+  return paths
 }
 
 /** What a snapshot left out, in the shape and order `snapshot.coverage` records. */

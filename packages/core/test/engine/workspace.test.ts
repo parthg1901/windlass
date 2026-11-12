@@ -209,9 +209,10 @@ describe("revert", () => {
       expect(stopped).toMatchObject({
         kind: "hand_edited",
         plan: {
+          // Nothing of the harness ran when they changed: the user, or another program.
           changes: [
-            { path: "a.ts", status: "modified", handEdited: true },
-            { path: "notes.md", status: "modified", handEdited: true },
+            { path: "a.ts", status: "modified", handEdited: true, editedBy: { kind: "outside" } },
+            { path: "notes.md", status: "modified", handEdited: true, editedBy: { kind: "outside" } },
           ],
         },
       })

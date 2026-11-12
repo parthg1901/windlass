@@ -226,7 +226,8 @@ import {
   type WorkspaceSnapshots,
   coverageOf,
   firstDelivery,
-  handEditedPaths,
+  changedInOwnWork,
+  editedOutside,
   neededSnapshots,
   snapshotsAfter,
   snapshotsSinceDelivery,
@@ -628,6 +629,22 @@ export interface RevertOptions {
 }
 
 /** What a revert, or the undo of one, does or would do. */
+/**
+ * Who changed a file a revert would overwrite, outside the session's own
+ * work.
+ * - `outside`: nothing of any session ran when it changed: the user, or
+ *   another program.
+ * - `session`: it changed while another session's own tools, checks or
+ *   restore ran in the same directory, by that session's snapshots.
+ *   `sessionId` is that session, or `null` when more than one session's
+ *   work spans the change. (The user may have changed it too.)
+ * - `unknown`: it cannot be told. The file changed while this session's own
+ *   command, checks or restore ran and another session was recording the
+ *   same directory, in none of whose own work the change shows; or the
+ *   snapshots in between are gone. It may be this session's own change.
+ */
+export type EditedBy = { readonly kind: "outside" } | { readonly kind: "session"; readonly sessionId: SessionId | null } | { readonly kind: "unknown" }
+
 export interface RevertPlan {
   /** The range of history that leaves (or, for an undo, re-enters) the model's view starts here. */
   readonly fromSeq: number
@@ -639,8 +656,14 @@ export interface RevertPlan {
   readonly target: string | null
   /** Why no file is restored, when `target` is `null`. */
   readonly unrestorable: string | null
-  /** Every file the restore writes or removes, and whether it was edited by hand after `target` was taken. */
-  readonly changes: readonly { readonly path: string; readonly status: ChangeStatus; readonly handEdited: boolean }[]
+  /**
+   * Every file the restore writes or removes, and whether it was changed
+   * outside this session's own work after `target` was taken (`handEdited`:
+   * the restore asks before it overwrites one). `editedBy` says who that
+   * was, as far as the snapshots tell; it is there exactly when the file
+   * is `handEdited`.
+   */
+  readonly changes: readonly { readonly path: string; readonly status: ChangeStatus; readonly handEdited: boolean; readonly editedBy?: EditedBy }[]
   /** Paths the restore leaves alone whatever happens: ignored files, nested repositories, files no snapshot captured. */
   readonly kept: readonly KeptPath[]
 }
@@ -6206,12 +6229,22 @@ class LiveSession implements EngineSession {
     if (typeof dry === "string") return { kind: "failed", plan: null, message: `the workspace cannot be restored: ${dry}` }
     // When the snapshots in between cannot be compared any more, every file counts as possibly edited by hand.
     const edited = await this.ownPathsSince(store, sinceSeq)
-      .then((own) => handEditedPaths(store, timeline, dry.before, own))
-      .then(
-        (paths) => new Set(paths),
-        () => null,
-      )
-    const changes = dry.changes.map((change) => ({ path: change.path, status: change.status, handEdited: edited === null || edited.has(change.path) }))
+      .then((own) => editedOutside(store, timeline, dry.before, own))
+      .catch(() => null)
+    // Which of those another session changed: only looked for when one of them is in the plan.
+    const theirs = edited !== null && dry.changes.some((change) => edited.has(change.path)) ? await this.othersWorkSince(store, sinceSeq, dry.before) : new Map<SessionId, ReadonlySet<string>>()
+    const editedBy = (path: string): EditedBy | null => {
+      if (edited === null) return { kind: "unknown" }
+      const where = edited.get(path)
+      if (where === undefined) return null
+      const sessions = [...theirs].filter(([, paths]) => paths.has(path)).map(([id]) => id)
+      if (sessions.length > 0) return { kind: "session", sessionId: sessions.length === 1 ? sessions[0]! : null }
+      return where === "between" ? { kind: "outside" } : { kind: "unknown" }
+    }
+    const changes = dry.changes.map((change) => {
+      const by = editedBy(change.path)
+      return { path: change.path, status: change.status, handEdited: by !== null, ...(by === null ? {} : { editedBy: by }) }
+    })
     const plan: RevertPlan = { ...base, target, unrestorable: null, changes, kept: dry.kept }
     if (dry.kind === "blocked") return { kind: "failed", plan, message: dry.message ?? "git refused the restore" }
     if (options.dryRun) return { kind: "preview", plan }
@@ -6244,9 +6277,8 @@ class LiveSession implements EngineSession {
    */
   private async ownPathsSince(store: WorkspaceSnapshots, sinceSeq: number): Promise<OwnPaths | undefined> {
     if (store.list === undefined) return undefined
-    const since = this.store.readEvents(this.id, { afterSeq: sinceSeq - 1, limit: 1 })[0]?.time ?? 0
-    // A little before: the two clocks are the same one, read a moment apart.
-    const others = (await store.list()).some((ref) => ref.session !== this.id && ref.takenAt >= since - 1000)
+    const since = this.sinceTime(sinceSeq)
+    const others = (await store.list()).some((ref) => ref.session !== this.id && ref.takenAt >= since)
     if (!others) return undefined
     const projection = this.projection()
     const cwd = projection.session.cwd
@@ -6271,6 +6303,35 @@ class LiveSession implements EngineSession {
       }
       return own
     }
+  }
+
+  /** When the event at `sinceSeq` was written, a little earlier: the snapshot store's clock and the log's are the same one, read a moment apart. */
+  private sinceTime(sinceSeq: number): number {
+    return (this.store.readEvents(this.id, { afterSeq: sinceSeq - 1, limit: 1 })[0]?.time ?? 0) - 1000
+  }
+
+  /**
+   * What each other session that recorded this working directory since the
+   * event at `sinceSeq` changed in its own work, by its own log and
+   * snapshots: the paths a revert plan says that session changed. A session
+   * whose log or snapshots cannot be read is left out (what it changed then
+   * counts as changed by nobody known). Empty when this session is alone.
+   */
+  private async othersWorkSince(store: WorkspaceSnapshots, sinceSeq: number, now: string): Promise<Map<SessionId, ReadonlySet<string>>> {
+    const found = new Map<SessionId, ReadonlySet<string>>()
+    if (store.list === undefined) return found
+    const since = this.sinceTime(sinceSeq)
+    const others = new Set((await store.list().catch(() => [])).flatMap((ref) => (ref.session !== this.id && ref.takenAt >= since ? [ref.session as SessionId] : [])))
+    for (const id of others) {
+      try {
+        const events = this.core.stores.read(id, (other) => other.readEvents(id))
+        const paths = await changedInOwnWork(store, events, since, now)
+        if (paths.size > 0) found.set(id, paths)
+      } catch {
+        // Its log is gone or a snapshot of it was dropped: nothing is known of what it changed.
+      }
+    }
+    return found
   }
 
   /**

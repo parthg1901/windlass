@@ -12,7 +12,7 @@ import { join } from "node:path"
 import { type Harness, TEST_CONTEXT_WINDOW_ENV, createHarness, testContextWindow } from "../../src/assembly.ts"
 import { parseConfigFile, resolveConfig } from "../../src/config/schema.ts"
 import { estimateRequest } from "../../src/context/estimate.ts"
-import { EngineError, type EngineSession, type RevertResult } from "../../src/engine/engine.ts"
+import { EngineError, type EngineSession, type RevertPlan, type RevertResult } from "../../src/engine/engine.ts"
 import type { EngineEvent } from "../../src/engine/channel.ts"
 import { neededSnapshots } from "../../src/engine/workspace.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
@@ -526,7 +526,7 @@ describe("snapshot retention", () => {
     // The other session's file was written after this session's last turn: it is not this session's to remove.
     const preview = await again.revert({ dryRun: true })
     expect(preview).toMatchObject({ kind: "preview" })
-    expect(changesOf(preview).find((change) => change.path === "other.txt")).toMatchObject({ handEdited: true })
+    expect(changesOf(preview).find((change) => change.path === "other.txt")).toEqual({ path: "other.txt", status: "deleted", handEdited: true, editedBy: { kind: "session", sessionId: other.id } })
     expect(await again.revert({ handEdits: "keep" })).toMatchObject({ kind: "reverted" })
     expect(readFileSync(join(t.directory, "step-b.txt"), "utf8")).toBe("turn 2 b\n")
     expect(readFileSync(join(t.directory, "other.txt"), "utf8")).toBe("theirs\n")
@@ -561,6 +561,21 @@ describe("two sessions in one workspace", () => {
     const changes = changesOf(preview)
     // Its own file is its own; the other session's files are not, whether they changed during its command or after its turn.
     expect(Object.fromEntries(changes.map((change) => [change.path, change.handEdited]))).toEqual({ "after.md": true, "notes.md": false, "theirs.md": true })
+    // The plan says who it was: the other session, by its ID, since both files changed while its own write calls ran.
+    expect(Object.fromEntries(changes.map((change) => [change.path, change.editedBy]))).toEqual({
+      "after.md": { kind: "session", sessionId: theirs.id },
+      "notes.md": undefined,
+      "theirs.md": { kind: "session", sessionId: theirs.id },
+    })
+    // A file the user changed while no session was at work is the user's (or another program's), and the plan says that instead.
+    writeFileSync(join(directory, "notes.md"), "# Notes\n\nmine, and the user's\n")
+    writeFileSync(join(directory, "after.md"), "theirs, after, and the user's\n")
+    const edited = changesOf(await mine.revert({ dryRun: true }))
+    expect(edited.find((change) => change.path === "notes.md")).toMatchObject({ handEdited: true, editedBy: { kind: "outside" } })
+    // What the other session changed and the user changed after it is still named as the other session's: its work spans a change of it.
+    expect(edited.find((change) => change.path === "after.md")).toMatchObject({ handEdited: true, editedBy: { kind: "session", sessionId: theirs.id } })
+    writeFileSync(join(directory, "notes.md"), "# Notes\n\nmine\n")
+    writeFileSync(join(directory, "after.md"), "theirs, after\n")
     // Without a word from the user nothing is touched.
     expect((await mine.revert()).kind).toBe("hand_edited")
     expect(readFileSync(join(directory, "theirs.md"), "utf8")).toBe("theirs, during\n")
@@ -578,6 +593,8 @@ describe("two sessions in one workspace", () => {
       "after.md": false,
       "notes.md": true,
     })
+    // It was this session's restore that changed notes.md since, and the other session's plan names it.
+    expect(changesOf(their).find((change) => change.path === "notes.md")!.editedBy).toEqual({ kind: "session", sessionId: mine.id })
   }, 60_000)
 
   test("a session alone in its workspace is not asked about what its own commands changed", async () => {
@@ -667,9 +684,9 @@ describe("compaction on the real assembly", () => {
 })
 
 /** The files a revert would write or remove, with whether each counts as changed by someone else. */
-function changesOf(result: RevertResult): { path: string; handEdited: boolean }[] {
+function changesOf(result: RevertResult): RevertPlan["changes"] {
   if (result.kind !== "preview" && result.kind !== "hand_edited" && result.kind !== "reverted") throw new Error(`no plan: ${result.kind}`)
-  return result.plan.changes.map((change) => ({ path: change.path, handEdited: change.handEdited }))
+  return result.plan.changes
 }
 
 function codeOf(work: () => unknown): string {
