@@ -208,6 +208,7 @@ import {
   refusedTurnStart,
   repeatsItself,
   turnless,
+  wholeTurn,
   reportsThisTurn,
   saysNothing,
   settleUnsettled,
@@ -6004,7 +6005,7 @@ class LiveSession implements EngineSession {
     let unsatisfied: HookEnding | undefined
     if (this.hookConfig.stop.length > 0 && this.core.hooks !== null && !state.inbox.some(isSteer) && state.session.lineage?.kind !== "spawn" && answered?.kind === "assistant") {
       const lastText = answered.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
-      const outcome = await runStopHooks(this.hookContext(run), this.hookConfig.stop, { roundsSent: stopRoundsSent(currentTurn(state)), maxRounds: this.hookConfig.maxStopRounds, lastText })
+      const outcome = await runStopHooks(this.hookContext(run), this.hookConfig.stop, { roundsSent: stopRoundsSent(wholeTurn(state)), maxRounds: this.hookConfig.maxStopRounds, lastText })
       records = outcome.records.map((record) => hookRan(record, null))
       this.tellHookFailures(outcome.records)
       const decision = outcome.decision

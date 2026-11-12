@@ -68,6 +68,30 @@ export function currentTurn(projection: Projection): readonly Message[] {
   return start === -1 ? projection.messages.filter((message) => message.seq > startedSeq) : projection.messages.slice(start)
 }
 
+/**
+ * Whether `message` begins a turn as a person sees one: a user's message,
+ * or input that waited for the turn before it to end (a queued item, such
+ * as a wake-up's message). What the harness itself delivers in the middle
+ * of a turn does not: the end of a background command, a watch that fired,
+ * a background subagent's result. The turn it arrived in goes on.
+ */
+function beginsTurn(message: Message): boolean {
+  return message.kind === "user" || (message.kind === "synthetic" && message.delivery === "queue")
+}
+
+/**
+ * The messages under the claim since the turn began: from the latest
+ * message that begins one (`beginsTurn`), or from the start of the
+ * execution. What a bound that holds for a whole turn is counted over (the
+ * rounds of the stop hooks): unlike `currentTurn`, it does not start again
+ * at a message the harness delivers in the middle of the turn.
+ */
+export function wholeTurn(projection: Projection): readonly Message[] {
+  const startedSeq = claimOf(projection).startedSeq
+  const start = projection.messages.findLastIndex((message) => message.seq > startedSeq && beginsTurn(message))
+  return start === -1 ? projection.messages.filter((message) => message.seq > startedSeq) : projection.messages.slice(start)
+}
+
 /** The input that opened the current turn, when there is one. A per-turn step limit is keyed by its ID. */
 export function turnInput(projection: Projection): Message | undefined {
   const first = currentTurn(projection)[0]

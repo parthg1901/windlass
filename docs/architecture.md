@@ -1080,7 +1080,9 @@ next turn. Hooks of a point run one after another, the user's first, then the pr
   the turn: the stop hooks are asked. One that objects sends the model back with its message, a harness message of
   origin `stop_hook`, appended with the records and with whatever the gate was about to write (a run's
   `checks.finished`) in one append. The rounds are counted from those messages in the log (`stopRoundsSent`),
-  never kept in memory. At `maxStopRounds` the turn ends anyway: its ending carries `hooks.unsatisfied` and
+  never kept in memory, over the whole turn (`wholeTurn` in `engine/state.ts`: since the user's message or the
+  queued item that began it), so a message the harness delivers in the middle of the turn, such as the end of a
+  background command, does not start the count again. At `maxStopRounds` the turn ends anyway: its ending carries `hooks.unsatisfied` and
   `hooks.objections` (what each of those hooks said this last time, which was sent to nobody, so the `hook.ran`
   of that round has no text for the model and the ending is where a client reads the hook's words), and the
   user is told by a `diagnostic` of kind `hooks`. A stop hook that cannot answer lets the turn end. Gate first,

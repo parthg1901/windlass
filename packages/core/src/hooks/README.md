@@ -214,7 +214,8 @@ and per point a `HookPointContext`: the runner, `trust` (`mode`, the session's t
 3. **Stop** (`runStopHooks(context, config.stop, { roundsSent, maxRounds: config.maxStopRounds, lastText })`):
    where the loop would end the turn (before `execution.succeeded`, or before `turn.ended` with a queued message),
    **after the verification gate said the turn may end** (`finish` or `finish_unresolved`). `roundsSent` is
-   `stopRoundsSent(currentTurn(projection))`, counted from the log, never kept in memory. `lastText` is the
+   `stopRoundsSent(wholeTurn(projection))`, counted from the log, never kept in memory, over the whole turn: a
+   message the harness delivers in the middle of it (a background command's end) does not start the count again. `lastText` is the
    assistant's last text. Then:
    - `end`: end the turn as the gate decided; list `failed` hooks to the user.
    - `continue`: append `decision.message` as a harness message (`synthetic`, `delivery: null`, origin

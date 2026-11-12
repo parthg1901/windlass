@@ -129,7 +129,8 @@ export const STOP_HOOK_ORIGIN = "stop_hook"
 
 /**
  * How many times stop hooks sent the model back in a turn: the stop-hook messages among the turn's messages
- * (`currentTurn(projection)` in `engine/state.ts`), never a counter in memory, so a restart counts the same.
+ * (`wholeTurn(projection)` in `engine/state.ts`: since the user's message or the queued item that began it, not
+ * since a message the harness delivered in the middle), never a counter in memory, so a restart counts the same.
  */
 export function stopRoundsSent(turn: readonly Message[]): number {
   return turn.filter((message) => message.kind === "synthetic" && message.delivery === null && message.origin === STOP_HOOK_ORIGIN && message.excluded === null).length
