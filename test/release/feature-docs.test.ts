@@ -527,6 +527,9 @@ describe("quoted program messages", () => {
     { page: "docs/wake-ups.md", quote: "`The secret that signs requests is shown to the user, not to you.`", pieces: ["The secret that signs requests is shown to the user, not to you."] },
     { page: "docs/subagents.md", quote: "[subagent ses_1ae0494804f409c64284c352: finished after 2 steps, 1 tool call]", pieces: ["[subagent ", " after "] },
     { page: "docs/subagents.md", quote: "Started subagent <id> in the background.", pieces: ["Started subagent ", " in the background."] },
+    { page: "docs/subagents.md", quote: "  + subagents: 1,100 in · 400 cached (36%) · 15 out", pieces: ["  + subagents: ", " in", " cached (", " out"] },
+    { page: "docs/subagents.md", quote: "✓ subagent answered", pieces: [" answered"] },
+    { page: "docs/subagents.md", quote: "the subagent's answer reached the agent", pieces: ["the subagent's answer reached the agent"] },
     { page: "docs/subagents.md", quote: "↳ its result is sent to the agent after the current step", pieces: ["its result is sent to the agent after the current step"] },
     { page: "docs/subagents.md", quote: "↳ its result is sent to the agent, which carries on", pieces: ["its result is sent to the agent, which carries on"] },
     { page: "docs/subagents.md", quote: "merged 1 file into the workspace: child.txt", pieces: [" into the workspace: "] },
@@ -657,6 +660,17 @@ describe("what the pages say is not there yet", () => {
       rmSync(home, { recursive: true, force: true })
     }
   }, 60_000)
+
+  test("only the line interface adds a subagents line, and only for foreground subagents (docs/subagents.md, Its tokens)", () => {
+    const page = text["docs/subagents.md"]
+    expect(page).toContain("<!-- NOT-YET(subagents-token-line):")
+    expect(page).toContain("A subagent started in the background is not on that line")
+    const renderer = readFileSync(join(ROOT, "packages/cli/src/renderer.ts"), "utf8")
+    // A foreground subagent's usage is added to the turn's; a background one's is not. When that changes, the page does.
+    expect(renderer, "the line interface counts background subagents now: update docs/subagents.md").toMatch(/known\?\.kind === "subagent" && !known\.background && event\.data\.usage !== null[^\n]*childUsage = addUsage/)
+    for (const file of sourceFiles().filter((path) => path.startsWith(join(ROOT, "packages/tui/src"))))
+      expect(readFileSync(file, "utf8"), `${file} has a subagents token line now: update docs/subagents.md`).not.toMatch(/\+ subagents|childUsage/)
+  })
 
   test("nothing puts a pending memory note to the user unasked yet (docs/memory.md, Not yet)", () => {
     expect(text["docs/memory.md"]).toContain("**Pending notes are not put to you unasked.**")

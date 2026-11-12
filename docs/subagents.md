@@ -21,8 +21,11 @@ windlass "use a subagent to count the lines in notes.txt"
 ```text
 ▸ subagent Count the lines in notes.txt and report the number.
   ▸ subagent ses_1ae04948 started
+    subagent ses_1ae04948: Count the lines in notes.txt and report the number.
     ↳ subagent ses_1ae04948 ✓ read notes.txt · 1 line
-  ✓ subagent ses_1ae04948 finished · 2 steps, 1 tool call · 232ms
+  ✓ subagent ses_1ae04948 finished · 2 steps, 1 tool call · 1.1k tokens · 232ms
+  ✓ subagent answered · 240ms
+    One line.
 ```
 
 The parent gets the child's final answer as the tool's result, followed by a line such as
@@ -39,9 +42,25 @@ ended without an answer comes back as an error that says so.
 - **Stopping.** Ctrl-C (or closing the session) stops the parent and everything it started.
 
 While a subagent works in the foreground, the status line of `windlass` says what it is running (`⋯ subagent ses_3ebb35c4:
-running read a.txt · 1 step, 1 tool`), as `windlass tui` does. Its model calls are its own: the turn's ending adds a line
-`+ subagents: ...` with their tokens beside the turn's own. When its answer reaches the agent the line says so
-(`the subagent's answer reached the agent`), not as if you had typed it.
+running read a.txt · 1 step, 1 tool`), as `windlass tui` does. When a background subagent's answer reaches the agent
+the line says so (`the subagent's answer reached the agent`), not as if you had typed it.
+
+**Its tokens.** A subagent's model calls are its own, not the turn's. Its `finished` row says how many tokens they
+took (`· 1.1k tokens`), and the line interface adds a line for them to the turn's ending, under the turn's own:
+
+```text
+✓ done · no checks configured · 2 steps · 451ms
+  tokens · 2,200 in · 1,000 cached (45%) · 29 out
+  + subagents: 1,100 in · 400 cached (36%) · 15 out
+```
+
+`tokens` is what the agent's own model calls of this turn took: input, how much of it was read from the prompt
+cache, output. `+ subagents:` is the same three numbers added up over the subagents that ran in the foreground
+and ended in this turn; it is there only when there was one.
+<!-- NOT-YET(subagents-token-line): a background subagent, and the full-screen interface, have no "+ subagents:" line -->
+A subagent started in the background is not on that line, whenever it ends: its tokens are on its own `finished`
+row and nowhere in the turn's ending. `windlass tui` has no such line at all; its ending row shows the turn's own
+tokens.
 
 ### In the background
 
@@ -49,7 +68,7 @@ With `background: true` the call returns at once (`Started subagent <id> in the 
 carries on. When the child ends, its answer is delivered to the parent as a message, after the parent's current step:
 
 ```text
-  ✓ subagent ses_98910ff9 finished · 1 step, 0 tool calls · 1.3s
+  ✓ subagent ses_98910ff9 finished · 1 step, 0 tool calls · 605 tokens · 1.3s
   ↳ its result is sent to the agent after the current step
 ```
 
