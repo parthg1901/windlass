@@ -24,7 +24,7 @@ Bun is the only tool needed. Tests that check prompt-cache behaviour load the si
   sequences. Nothing is deleted.
 - **`packages/core` has no runtime dependencies.**
 - **One provider** (ChatGPT-plan sign-in through the Responses API). No API-key paths.
-- **The product name is a placeholder.** Read every name from `packages/core/src/brand.ts`.
+- **The product's name lives in one file.** Read every name from `packages/core/src/brand.ts`.
 
 `packages/core/test/request/`, `packages/core/test/trace/prefix-gate.test.ts` and the scenarios under
 `packages/core/test/scenarios/` enforce most of this.

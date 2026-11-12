@@ -150,7 +150,7 @@ Reading a result:
 
 ## After the engine fixes (2026-11-12)
 
-- The store's schema version is 6: session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
+- The store's schema version is 7 (it changes with most engine passes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
 - A one-prompt run can search and call a tool of an untrusted MCP server with `--approval full`; only the call's result taints the session, the search does not.
 - `wake_cancel`, `memory_save` and `memory_retract` run unattended in `auto` and `full`; `ask` still asks.
 - A compaction's ending carries `calls`, the summary calls it took: count them with `bun evals/dogfood/events.ts <id> --type compaction.ended`. Model requests of a turn are its steps plus those calls.
@@ -158,4 +158,12 @@ Reading a result:
 - A subagent's ending says `left_to_parent` for verification, not `not_configured`.
 - `evals/gate.test.ts` fails until the baseline is re-recorded on all 27 tasks.
 - Under load 15 or more, type-check a commit in a copy (`git archive <sha> | tar -x -C <dir>`) so edits can continue meanwhile.
+
+## Hooks and language-server diagnostics (wired 2026-11-12)
+
+- With no `hooks` and no `lsp` section configured, a session's requests and log are byte-identical to before; a test holds that.
+- A before hook that refuses a call shows the model the reason as the call's result; an after hook's note and a language server's diagnostics are appended to the tool's result before it is capped and stored.
+- A project's hook or language server is skipped, with a diagnostic, until a client can approve it (no client can yet); put them in the user's config file to test.
+- Stop hooks do not run for a subagent's turn; a replay runs no hooks and no language servers.
+- Live, pyright's first diagnostics after an edit took 1.4 s; the default bound is 1.5 s, so a cold server can miss the first edit.
 

@@ -4,7 +4,7 @@ A coding-agent harness: a session is an append-only event log in SQLite, and eve
 
 ## Rules that are easy to break
 
-- **The product name is a placeholder.** Read every name, binary name and directory name from `packages/core/src/brand.ts`. Never type the name in code, tests or protocol identifiers.
+- **The product's name lives in one file.** Read every name, binary name, alias and directory name from `packages/core/src/brand.ts`. Never type the name in code, tests or protocol identifiers.
 - **One provider.** ChatGPT-plan sign-in through OpenAI's Responses API. Do not add API-key paths or other providers.
 - **Nothing is published.** Local commits only. Never push, add a remote, or publish a package.
 - **Commits:** one line, conventional style (`feat(engine): ...`), no AI attribution or co-author lines. Say what changed for someone reading the log later: no agent or branch names, no planning words (pass, wave, prep, leaf, spine), no finding numbers. No merge commits: rebase and fast-forward. In a checkout shared with other agents, never `git add -A`; commit with an explicit path list: `git commit -m "..." -- <paths>`.
@@ -24,7 +24,8 @@ packages/core   engine, store, reducer, request builder, provider, tools, sandbo
                 mcp, skills, wake (wired in; wake-ups fire only where the engine is told to run them),
                 memory (wired, off by default)
                 agents and the todo tool (wired in)
-                leaf modules not yet wired into the engine: hooks, commands, lsp, telemetry
+                hooks and lsp (language-server diagnostics), wired in; both off until configured
+                modules not yet wired into the engine: commands, telemetry
 packages/acp    Agent Client Protocol v1 server and the shared client
 packages/cli    line-based CLI (an ACP client); subcommands acp, tui
 packages/tui    full-screen interface (an ACP client)
