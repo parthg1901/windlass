@@ -1956,14 +1956,22 @@ export class App {
     if (this.connection === "connected" && subagents.length > 0 && (!activity.executing || subagents.some((view) => view.background)))
       parts.push(span(` · ${plural(subagents.length, "subagent")} at work${subagents.length === 1 ? `: ${truncate(subagents[0]!.title ?? "", 30)}` : ""}`, "accent"))
     const commands = [...this.transcript.background.entries()]
-    if (this.connection === "connected" && commands.length > 0)
-      parts.push(span(` · ◌ ${commands.length === 1 ? `background ${commands[0]![0]}: ${truncate(commands[0]![1].command, 24)}` : plural(commands.length, "background command")}`, "accent"))
+    const turn = activity.executing && activity.turnStartedAt !== null ? `turn ${formatDuration(Math.max(0, now - activity.turnStartedAt))} · ${requestsText(activity.steps, activity.summaryCalls)}` : ""
+    const scrolled: Span[] = []
     if (this.conversation.scrolledAway) {
       const below = this.conversation.newBelow
-      parts.push(span(`   ↑ scrolled${below > 0 ? ` · ${plural(below, "new line")} below` : ""} · Esc follows`, "warn"))
+      scrolled.push(span(`   ↑ scrolled${below > 0 ? ` · ${plural(below, "new line")} below` : ""} · Esc follows`, "warn"))
     }
+    if (this.connection === "connected" && commands.length > 0) {
+      // One command is named with as much of its text as the line has room for (at least 24 characters).
+      const [id, command] = commands[0]!
+      const head = ` · ◌ background ${id}: `
+      const others = [...parts, ...scrolled].reduce((sum, part) => sum + textWidth(part.text), 0) + (turn === "" ? 0 : textWidth(turn) + 2)
+      const room = Math.max(24, columns - others - textWidth(head))
+      parts.push(span(commands.length === 1 ? `${head}${truncate(command.command, room)}` : ` · ◌ ${plural(commands.length, "background command")}`, "accent"))
+    }
+    parts.push(...scrolled)
     const left = parts
-    const turn = activity.executing && activity.turnStartedAt !== null ? `turn ${formatDuration(Math.max(0, now - activity.turnStartedAt))} · ${requestsText(activity.steps, activity.summaryCalls)}` : ""
     const right = [span(turn, "dim")]
     const used = left.reduce((sum, part) => sum + textWidth(part.text), 0)
     const rightWidth = textWidth(turn)

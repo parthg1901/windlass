@@ -247,6 +247,25 @@ describe("background commands", () => {
     expect(after).not.toMatch(/bg +◌ bg_1/)
   })
 
+  test("the status line names the command with as much of it as the line has room for", async () => {
+    const command = "bun run dev --port 3000 --host 0.0.0.0 --watch src --log-level debug"
+    const { session } = await open(140, 40)
+    session.emit(
+      event("execution.started", { executionId: "exe_1" } as never),
+      event("spawn.started", { spawnId: "bg_1", messageId: m("m1"), callId: c("c1"), background: true, work: { kind: "command", command, logPath: "/tmp/x.log" } } as never),
+      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } } as never),
+    )
+    await mounted!.settle()
+    const status = (await mounted!.frame()).split("\n").find((line) => line.includes("● ready"))!
+    expect(status).toContain(`● ready · ◌ background bg_1: ${command}`)
+    // Narrow, it is cut to the room there is, never below 24 characters of the command.
+    mounted!.setup.resize(60, 30)
+    await mounted!.settle()
+    const narrow = (await mounted!.frame()).split("\n").find((line) => line.includes("● ready"))!
+    expect(narrow).toMatch(/◌ background bg_1: bun run dev --port 3000 --h\S*…/)
+    expect(Bun.stringWidth(narrow.trimEnd())).toBeLessThanOrEqual(60)
+  })
+
   test("the line about commands still running is said once for the same commands, however many turns end meanwhile", async () => {
     const { session } = await open(140, 40)
     const turn = (id: string) => [event("execution.started", { executionId: id } as never), event("execution.succeeded", { executionId: id, verification: { status: "not_configured" } } as never)]
