@@ -34,6 +34,7 @@ import {
   openSqliteStore,
 } from "@light-harness/core"
 import { AuthError, accessToken, dataDir } from "@light-harness/core/auth/chatgpt"
+import { offerSession } from "./commands.ts"
 import { type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, type Session, type SessionSummary } from "./engine.ts"
 
 /** The model a new session uses when `--model` is not given. `--models` lists what the account offers. */
@@ -93,6 +94,8 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
           () => false,
         ),
       log: (line) => process.stderr.write(`${brand.binary}: ${line}\n`),
+      // What `--model` is checked against. A scripted provider has no listing, so nothing is checked.
+      ...(options.provider === undefined ? { listModels: () => listModels({ accessToken }).then((models) => models.map((model) => model.slug)) } : {}),
       ...options.engine,
       store,
       provider,
@@ -138,7 +141,12 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
     open: async (request): Promise<Session> => {
       if (stopping !== null) throw new EngineUnavailable("the engine is closed")
       if (options.provider === undefined) await requireSignIn()
-      const session = sessionFor(start(), request)
+      const loop = start()
+      // A model named on the command line is checked before a session is created with it or switched to it.
+      if (request.model !== null) await validate(loop.engine, settingsFor(request))
+      const session = sessionFor(loop, request)
+      // `/undo` and `/redo` act on this session (see `commands.ts`).
+      offerSession(session)
       return {
         id: session.id,
         events: session.events,
@@ -205,6 +213,16 @@ function open(engine: CoreEngine, id: SessionId): EngineSession {
     return engine.openSession(id, { resume: "wait" })
   } catch (error) {
     if (error instanceof EngineError && error.code === "session_not_found") throw new EngineUnavailable(`there is no session ${id}`)
+    throw error
+  }
+}
+
+/** Refuses a model the provider does not offer, naming the ones it does. */
+async function validate(engine: CoreEngine, settings: SessionSettings): Promise<void> {
+  try {
+    await engine.validateSettings(settings)
+  } catch (error) {
+    if (error instanceof EngineError && error.code === "unknown_model") throw new EngineUnavailable(error.message)
     throw error
   }
 }

@@ -65,6 +65,39 @@ export function renderLine(segments: readonly Segment[], max: number, color: boo
   return out
 }
 
+/** Word-wraps one line of text to `width` columns; a word longer than a line is cut. */
+export function wrap(text: string, width: number): string[] {
+  const out: string[] = []
+  let current = ""
+  for (const word of text.split(" ")) {
+    const next = current === "" ? word : `${current} ${word}`
+    if (displayWidth(next) <= width) current = next
+    else {
+      if (current !== "") out.push(current)
+      current = truncate(word, width)
+    }
+  }
+  if (current !== "") out.push(current)
+  return out
+}
+
+/**
+ * A styled line as terminal rows: as it is when it fits `max` columns,
+ * otherwise wrapped at word boundaries with the continuation rows indented.
+ * A wrapped line keeps its words and loses its per-segment styling: every row
+ * takes the style of the line's last styled segment.
+ */
+export function renderWrapped(segments: readonly Segment[], max: number, color: boolean): string[] {
+  const whole = segments.map((part) => flatten(part.text)).join("")
+  if (displayWidth(whole) <= max) return [renderLine(segments, max, color)]
+  const tone = segments.findLast((part) => part.tone !== undefined)?.tone
+  // The line's own indent is kept on its first row; the rows after it are indented two columns more.
+  const lead = whole.slice(0, whole.length - whole.trimStart().length)
+  const [first, ...rest] = wrap(whole.trim(), max - lead.length)
+  const more = wrap(rest.join(" "), max - lead.length - 2).map((row) => `${lead}  ${row}`)
+  return [`${lead}${first ?? ""}`, ...more].map((row) => paint(color, tone, row))
+}
+
 /** One visual line: control characters, tabs and newlines become spaces or a visible return mark. */
 export function flatten(text: string): string {
   return text.replace(/\r?\n/g, " ⏎ ").replace(/\t/g, "  ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")

@@ -7,10 +7,10 @@
  * - `JsonSink`: every event as one JSON line, nothing else on stdout.
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
-import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, brand } from "@light-harness/core"
+import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
-import { callArgument, detailLines, errorSummary, successSummary } from "./tools.ts"
-import { type Segment, type Tone, displayWidth, flatten, formatDuration, paint, plural, renderLine, seg, truncate } from "./text.ts"
+import { callArgument, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
+import { type Segment, type Tone, displayWidth, flatten, formatDuration, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
 
 export interface Sink {
   event(event: EngineEvent): void
@@ -88,6 +88,8 @@ const SYMBOL = {
   compact: "⇣",
   note: "·",
   prompt: "›",
+  undo: "↶",
+  redo: "↷",
 } as const
 
 export class PrettyRenderer implements Sink {
@@ -119,6 +121,10 @@ export class PrettyRenderer implements Sink {
   private continuing = false
   private status: string | null = null
   private statusDrawn = false
+  /** The run of checks in progress: which checks, and the latest progress text of the one that is running. */
+  private checking: { readonly names: readonly string[]; readonly startedAt: number; progress: string | null } | null = null
+  /** A failing run was reported to the model and its next step has not started: the line that says so is still owed. */
+  private sentBack = 0
 
   constructor(private readonly options: PrettyOptions) {}
 
@@ -173,6 +179,20 @@ export class PrettyRenderer implements Sink {
       case "tool.progress":
         this.progress.set(key(event.messageId, event.callId), event.text)
         return
+      case "checks.progress":
+        if (this.checking !== null) this.checking.progress = event.text
+        return
+      case "workspace.changes":
+        // The files this turn changed, right before its outcome line.
+        this.lineWithArg("info", [seg(`${SYMBOL.note} changed ${plural(event.files.length, "file")}: `, "dim")], fileList(event.files, 6), [])
+        return
+      case "diagnostic": {
+        // Something is wrong with the harness itself. It is said in full: this is what a bug report quotes.
+        const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind.replace(/_/g, " ")
+        this.line("info", [seg(`${SYMBOL.unknown} ${what}: `, "yellow")])
+        for (const line of wrap(flatten(event.message), this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+        return
+      }
       case "text.ended":
         return this.textEnded(event.data.messageId, event.data.text)
       case "reasoning.ended":
@@ -194,6 +214,11 @@ export class PrettyRenderer implements Sink {
         this.open.clear()
         this.retrying = false
         if (this.turn !== null) this.turn.steps += 1
+        if (this.sentBack > 0) {
+          // Said only now that the agent is in fact working again: a report can also be the last thing in a turn.
+          this.line("info", [seg(`${SYMBOL.retry} `, "yellow"), seg("the agent is shown the failing checks and carries on"), seg(this.sentBack > 1 ? ` · round ${this.sentBack}` : "", "dim")])
+          this.sentBack = -this.sentBack
+        }
         return
       case "step.ended":
         this.closeStep(event.data.messageId, event.data.usage)
@@ -301,8 +326,7 @@ export class PrettyRenderer implements Sink {
       case "execution.succeeded": {
         const turn = this.endTurn()
         const parts = [turn === null ? null : plural(turn.steps, "step"), turn === null ? null : formatDuration(event.time - turn.start)]
-        this.summary([seg(`${SYMBOL.ok} `, "green"), seg("done", ["green", "bold"]), seg(suffix(parts), "dim")], turn)
-        return
+        return this.succeeded(event.data.verification, parts, turn)
       }
       case "execution.failed": {
         const turn = this.endTurn()
@@ -330,8 +354,67 @@ export class PrettyRenderer implements Sink {
         this.summary([seg(`${SYMBOL.stop} `, "yellow"), seg("interrupted", ["yellow", "bold"]), seg(suffix([time]), "dim")], turn, more)
         return
       }
+      case "snapshot.taken":
+      case "revert.started":
+      case "revert.undo_started":
+        return
+      case "snapshot.unavailable":
+        // Once per session: the engine records it only when it changes.
+        // The reason is wrapped, not cut: it says what to install or fix.
+        this.line("info", [seg(`${SYMBOL.note} files cannot be restored by /undo in this session:`, "dim")])
+        for (const line of wrap(flatten(event.data.message), this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        return
+      case "snapshot.coverage": {
+        const { skipped, nestedRepositories } = event.data
+        if (skipped.length > 0)
+          this.lineWithArg("info", [seg(`${SYMBOL.note} ${plural(skipped.length, "file")} cannot be undone (too large or unreadable): `, "dim")], fileList(skipped.map((file) => file.path), 4), [])
+        if (nestedRepositories.length > 0)
+          this.lineWithArg("info", [seg(`${SYMBOL.note} not tracked for undo (${plural(nestedRepositories.length, "nested repository", "nested repositories")}): `, "dim")], fileList(nestedRepositories, 4), [])
+        return
+      }
+      case "checks.started":
+        this.checking = { names: event.data.checks, startedAt: event.time, progress: null }
+        return
+      case "checks.finished": {
+        const took = this.checking === null ? null : formatDuration(event.time - this.checking.startedAt)
+        this.checking = null
+        const checks = event.data.evidence.checks
+        const failed = checks.some((check) => check.status !== "passed")
+        this.line("info", [seg(`${failed ? SYMBOL.fail : SYMBOL.ok} `, failed ? "red" : "green"), seg(`checks: ${checksSummary(checks)}`, failed ? "red" : undefined), seg(suffix([took]), "dim")])
+        for (const detail of checkLines(checks)) {
+          this.lineWithArg("info", [seg(`  ${SYMBOL.fail} `, "red"), seg(detail.name, "bold"), seg(` · ${detail.status}`, "red"), seg(" · ", "dim")], detail.command, [])
+          if (detail.output !== null) this.line("info", [seg(`    output: ${detail.output}`, "dim")])
+        }
+        return
+      }
+      case "checks.failed": {
+        this.checking = null
+        const error = event.data.error
+        if (error.kind === "interrupted") this.line("info", [seg(`${SYMBOL.stop} `, "yellow"), seg("the checks were stopped before they finished", "dim")])
+        else if (error.kind === "crashed") {
+          this.cutOff = "crash"
+          this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg("the checks were cut short when the previous process stopped", "dim")])
+        } else this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg(`the checks could not be run: ${stepErrorText(error)}`, "red")])
+        return
+      }
       case "history.reverted":
-        this.line("info", [seg(`${SYMBOL.note} history rewound`, "dim")])
+      case "history.restored": {
+        const undone = event.type === "history.reverted"
+        const record = event.data.restore
+        const head = [seg(`${undone ? SYMBOL.undo : SYMBOL.redo} `, "cyan"), seg(undone ? "went back" : "brought back")]
+        if (record === null) this.line("info", [...head, seg(undone ? " · the conversation was rewound; no file was restored" : " · the conversation is as it was; no file was restored", "dim")])
+        else this.line("info", [...head, seg(` · ${plural(record.changed, "file")} restored`), seg(undone ? " · /redo brings it back" : "", "dim")])
+        const kept = record?.kept ?? []
+        const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
+        const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
+        if (byHand.length > 0) this.lineWithArg("info", [seg("  kept as you edited them: ", "dim")], fileList(byHand, 6), [])
+        if (other.length > 0 || (record?.keptOmitted ?? 0) > 0)
+          this.lineWithArg("info", [seg("  left alone (ignored or never recorded): ", "dim")], fileList(other, 6), [seg((record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : "", "dim")])
+        return
+      }
+      case "revert.failed":
+        this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg(`the workspace could not be restored: ${flatten(event.data.message)}`, "red")])
+        this.line("info", [seg("  nothing changed in the conversation", "dim")])
         return
       case "session.created":
         this.settings = event.data.settings
@@ -479,9 +562,32 @@ export class PrettyRenderer implements Sink {
     this.line("info", [seg(`${SYMBOL.settings} `, "cyan"), seg(changes.join(" · ")), seg(" · from the next step", "dim")])
   }
 
+  /** The three ways a turn ends as done: on passing checks, without any, or with checks that still fail. */
+  private succeeded(verification: VerificationOutcome, parts: readonly (string | null)[], turn: Turn | null): void {
+    const done = (basis: string) => this.summary([seg(`${SYMBOL.ok} `, "green"), seg("done", ["green", "bold"]), seg(` · ${basis}`, basis === "checks passed" ? "green" : "dim"), seg(suffix(parts), "dim")], turn)
+    switch (verification.status) {
+      case "passed":
+        return done("checks passed")
+      case "not_needed":
+        return done("nothing to check")
+      case "not_configured":
+        return done("no checks configured")
+      case "unresolved": {
+        const head = [seg(`${SYMBOL.fail} `, "red"), seg("stopped with failing checks", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), seg(suffix(parts), "dim")]
+        // The reason is never cut: it is why "done" is not what this turn ended as.
+        const why = wrap(unresolvedReason(verification), this.width - 2).map((line) => [seg(`  ${line}`, "yellow")])
+        return this.summary(head, turn, why)
+      }
+    }
+  }
+
   private syntheticAppended(origin: string): void {
     switch (origin) {
       case "interrupt":
+        return
+      case "check_report":
+        // Counted here and said when the agent's next step starts (see `step.started`).
+        this.sentBack = Math.abs(this.sentBack) + 1
         return
       case "continuation":
         this.continuing = true
@@ -565,6 +671,8 @@ export class PrettyRenderer implements Sink {
     this.running.clear()
     this.open.clear()
     this.progress.clear()
+    this.checking = null
+    this.sentBack = 0
     return turn
   }
 
@@ -658,6 +766,11 @@ export class PrettyRenderer implements Sink {
       const what = this.running.size > 1 ? `${this.running.size} tools running` : `running ${call?.name ?? "tool"} ${call?.arg ?? ""}`.trimEnd()
       return `⋯ ${what}${tail}`
     }
+    if (this.checking !== null) {
+      const tail = this.checking.progress?.split("\n").filter((line) => line.trim() !== "").at(-1)
+      const what = this.stop === "shown" ? "waiting for the checks to stop" : `running ${this.checking.names.length === 1 ? "check" : "checks"}: ${this.checking.names.join(", ")}`
+      return `⋯ ${what}${tail === undefined || this.stop === "shown" ? "" : ` · ${tail}`}`
+    }
     if (this.stop === "shown") return "⋯ stopping"
     if (this.compacting) return "⋯ compacting the conversation"
     if (this.retrying) return "⋯ waiting to retry"
@@ -720,6 +833,10 @@ export class QuietSink implements Sink {
       case "execution.succeeded": {
         const text = this.lastMessage === null ? "" : (this.texts.get(this.lastMessage) ?? []).join("\n")
         if (text !== "") this.write(text.endsWith("\n") ? text : `${text}\n`)
+        // The answer alone would read as "done"; that the checks still fail goes where failures go.
+        const verification = event.data.verification
+        if (verification.status === "unresolved")
+          this.writeError(`${brand.binary}: stopped with failing checks: ${verification.failing.join(", ")} (${unresolvedReason(verification)})\n`)
         return
       }
       case "step.failed":
@@ -791,6 +908,7 @@ export function usageText(usage: Usage, width = Number.POSITIVE_INFINITY): strin
 
 function errorLabel(error: ProviderError): string {
   if (error.kind === "transport" && error.reason === "stalled") return "the connection stalled"
+  if (error.kind === "transport" && error.reason === "timeout") return "the model call took too long"
   const labels: Record<ProviderError["kind"], string> = {
     rate_limit: "rate limited",
     provider_internal: "server error",
@@ -829,22 +947,6 @@ function stepErrorText(error: StepError): string {
     case "internal":
       return error.message
   }
-}
-
-/** Word-wraps one line of text to `width` columns; a word longer than a line is cut. */
-function wrap(text: string, width: number): string[] {
-  const out: string[] = []
-  let current = ""
-  for (const word of text.split(" ")) {
-    const next = current === "" ? word : `${current} ${word}`
-    if (displayWidth(next) <= width) current = next
-    else {
-      if (current !== "") out.push(current)
-      current = truncate(word, width)
-    }
-  }
-  if (current !== "") out.push(current)
-  return out
 }
 
 /** An instruction source key as a person reads it: `agents:<path>` is the file. */

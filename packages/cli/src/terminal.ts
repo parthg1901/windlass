@@ -11,8 +11,14 @@
  *
  * The editor keeps whole entries: an entry may span several lines (Alt-Enter,
  * a trailing backslash, or a paste), and Up and Down recall it whole.
+ *
+ * Two entries are not handed on as input: `/undo` and `/redo` act on the
+ * session (`commands.ts`). The editor runs them itself, prints what they say
+ * above the input, and, when one asks a question, shows the question as the
+ * prompt and gives it the next entry as the answer.
  */
-import { type Segment, displayWidth, renderLine, seg, stripAnsi, truncate } from "./text.ts"
+import { type CommandIo, runSessionCommand, sessionCommand } from "./commands.ts"
+import { type Segment, displayWidth, renderLine, renderWrapped, seg, stripAnsi, truncate } from "./text.ts"
 
 export interface ScreenOptions {
   readonly write: (text: string) => void
@@ -48,6 +54,10 @@ export class Screen {
   private draft = ""
   private pasting = false
   private pasted = ""
+  /** A command's question that is waiting for its answer: the next entry (or a Ctrl-C) goes to it. */
+  private asking: { readonly answer: (text: string | null) => void; readonly prompt: string; readonly hint: string } | null = null
+  /** The command that is running, so that a second one waits its turn. */
+  private command: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: ScreenOptions) {}
 
@@ -119,16 +129,44 @@ export class Screen {
         this.insert((submit ? rest.slice(0, -1) : rest).replace(/\r\n?/g, "\n").replace(/\t/g, "  "))
         if (submit) {
           const action = this.enter()
-          if (action !== null) handle(action)
+          if (action !== null) this.dispatch(action, handle)
         }
         break
       }
       const token = nextToken(rest)
       rest = rest.slice(token.length)
       const action = this.key(token)
-      if (action !== null) handle(action)
+      if (action !== null) this.dispatch(action, handle)
     }
     this.redraw()
+  }
+
+  /** Hands an action on, unless it answers a command's question or is itself a command. */
+  private dispatch(action: EditorAction, handle: (action: EditorAction) => void): void {
+    const asking = this.asking
+    if (asking !== null) {
+      // Ctrl-C and Ctrl-D back out of the question; they do not reach the turn or leave the program.
+      this.asking = null
+      this.show(asking.prompt, asking.hint)
+      return asking.answer(action.kind === "submit" ? action.text : null)
+    }
+    const command = action.kind === "submit" ? sessionCommand(action.text) : null
+    if (command === null) return handle(action)
+    const io: CommandIo = {
+      // What a command says is never cut: a line that does not fit is wrapped.
+      print: (line) => this.write(`${renderWrapped(line, Math.max(10, this.options.columns()) - 1, this.options.color).join("\n")}\n`),
+      ask: (question) =>
+        new Promise((answer) => {
+          this.asking = { answer, prompt: this.prompt, hint: this.hint }
+          this.show(question)
+        }),
+    }
+    this.command = this.command.then(() => runSessionCommand(command, io))
+  }
+
+  /** Resolves when no `/undo` or `/redo` is running. */
+  commandsSettled(): Promise<void> {
+    return this.command
   }
 
   /** What is typed in the input now. */

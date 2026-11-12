@@ -239,7 +239,7 @@ describe("turn summary", () => {
         event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_configured" } }),
       ]),
     )
-    expect(out.split("\n").slice(-3)).toEqual(["✓ done · 2 steps · 800ms", "  tokens · 20,500 in · 9,984 cached (49%) · 240 out", ""])
+    expect(out.split("\n").slice(-3)).toEqual(["✓ done · no checks configured · 2 steps · 800ms", "  tokens · 20,500 in · 9,984 cached (49%) · 240 out", ""])
   })
 
   test("has no usage line when no step reported usage", () => {
@@ -361,5 +361,144 @@ describe("events the core added", () => {
     expect(out).toContain('↳ queued: "Then the changelog." · the agent will see it after this turn\n')
     expect(render(stored([...opening(), event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("Also check b.ts and c.ts.") })]), { columns: () => 40 })).toContain('↳ sent: "Also check …" · after this step\n')
     expect(out.split("\n").slice(-3)).toEqual(["■ interrupted · 800ms", "  1 message still waiting · delivered when work starts again", ""])
+  })
+})
+
+describe("verification, the workspace and reverts", () => {
+  const SES = "ses_test" as SessionId
+  const check = (name: string, status: "passed" | "failed" | "timed_out" | "could_not_start", extra: object = {}) => ({
+    name,
+    command: `bun ${name}`,
+    status,
+    exitCode: status === "passed" ? 0 : status === "failed" ? 1 : null,
+    signal: null,
+    durationMs: 10,
+    files: ["a.ts"],
+    fingerprint: "f",
+    outputPath: status === "passed" ? null : `/data/spill/checks/check-${name}-0a.log`,
+    outputBytes: 0,
+    outputLines: 0,
+    ...extra,
+  })
+  const evidence = (...checks: ReturnType<typeof check>[]) => ({ run: 1, afterSeq: 1, changedFiles: ["a.ts"], checks })
+  const finished = (...checks: ReturnType<typeof check>[]) => event("checks.finished", { run: 1, evidence: evidence(...checks) })
+  const lines = (events: readonly NewEvent[], width = 80) => render(stored(events), { columns: () => width }).split("\n").filter((line) => line !== "")
+
+  test("a passing run is one line with the count", () => {
+    expect(lines([event("checks.started", { run: 1, checks: ["test", "lint"] }), finished(check("test", "passed"), check("lint", "passed"))])).toEqual(["✓ checks: 2 passed · 100ms"])
+  })
+
+  test("a failing run names each check that did not pass, how it ended, its command and where its output is", () => {
+    const out = lines([
+      event("checks.started", { run: 1, checks: ["test", "types", "lint"] }),
+      finished(check("test", "failed"), check("types", "timed_out"), check("lint", "passed"), check("build", "could_not_start"), check("e2e", "failed", { exitCode: null, signal: "SIGKILL" })),
+    ])
+    expect(out).toEqual([
+      "✗ checks: 2 failed, 1 timed out, 1 could not start, 1 passed · 100ms",
+      "  ✗ test · exit 1 · bun test",
+      "    output: /data/spill/checks/check-test-0a.log",
+      "  ✗ types · timed out · bun types",
+      "    output: /data/spill/checks/check-types-0a.log",
+      "  ✗ build · could not start · bun build",
+      "    output: /data/spill/checks/check-build-0a.log",
+      "  ✗ e2e · killed by SIGKILL · bun e2e",
+      "    output: /data/spill/checks/check-e2e-0a.log",
+    ])
+  })
+
+  test("the three endings of a turn that the engine calls done are told apart", () => {
+    const ending = (verification: NewEvent<"execution.succeeded">["data"]["verification"]) =>
+      lines([event("execution.started", { executionId: "exe_1" as never }), event("execution.succeeded", { executionId: "exe_1" as never, verification })])
+    expect(ending({ status: "passed", evidence: evidence(check("test", "passed")) })).toEqual(["✓ done · checks passed · 0 steps · 100ms"])
+    expect(ending({ status: "not_configured" })).toEqual(["✓ done · no checks configured · 0 steps · 100ms"])
+    expect(ending({ status: "not_needed" })).toEqual(["✓ done · nothing to check · 0 steps · 100ms"])
+    expect(ending({ status: "unresolved", reason: "report_mode", failing: ["test", "lint"], acknowledgement: null, evidence: evidence(check("test", "failed")) })).toEqual([
+      "✗ stopped with failing checks: test, lint · 0 steps · 100ms",
+      "  verify.mode is report: failures are recorded and the agent is not sent back",
+    ])
+    // Colour says the same thing: green for done, red for stopped.
+    const colored = render(stored([event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_needed" } })]), { color: true })
+    expect(colored).toContain("\x1b[32m")
+    expect(colored).not.toContain("\x1b[31m")
+  })
+
+  test("the reason a turn stopped with failing checks is never cut on a narrow terminal", () => {
+    const reason = "The integration tests need a database that this machine does not have."
+    const out = lines(
+      [event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "unresolved", reason: "acknowledged", failing: ["test"], acknowledgement: { checks: ["test"], reason }, evidence: evidence(check("test", "failed")) } })],
+      40,
+    )
+    expect(out.every((line) => displayWidth(line) <= 40)).toBe(true)
+    expect(out.join(" ").replace(/\s+/g, " ")).toContain(reason)
+  })
+
+  test("the quiet sink says on stderr that the answer it printed did not end on passing checks", async () => {
+    const run = await runCli(["--quiet", "--demo", "the-checks-still-fail-after-the-last-allowed-round", "--demo-speed", "0", "Fix it."])
+    expect(run.out).toBe("Now it adds.\n")
+    expect(run.err).toContain(`${brandBinary}: stopped with failing checks: test (still failing after 2 runs`)
+  })
+
+  test("the files a turn changed are listed before its outcome, shortened to fit", () => {
+    const changes: EphemeralEvent = { type: "workspace.changes", sessionId: SES, from: "w0", to: "w1", files: Array.from({ length: 9 }, (_, index) => `src/file-${index}.ts`) }
+    const out = render([...stored([event("execution.started", { executionId: "exe_1" as never })]), changes], { columns: () => 60 }).split("\n")
+    expect(out[0]).toMatch(/^· changed 9 files: src\/file-0\.ts, src\/file-1\.ts.*…$/)
+    expect(displayWidth(out[0]!)).toBeLessThanOrEqual(60)
+    const few: EphemeralEvent = { ...changes, files: ["a.ts", "b.ts"] }
+    expect(render([few])).toBe("· changed 2 files: a.ts, b.ts\n")
+  })
+
+  test("a session without snapshots says so once, and what snapshots leave out is listed", () => {
+    expect(lines([event("snapshot.unavailable", { reason: "git_not_found", message: "git was not found on PATH; snapshots need git 2.25 or newer." })])).toEqual([
+      "· files cannot be restored by /undo in this session:",
+      "  git was not found on PATH; snapshots need git 2.25 or newer.",
+    ])
+    expect(
+      lines([
+        event("snapshot.taken", { id: "w0", point: "delivery", messageId: null }),
+        event("snapshot.coverage", { skipped: [{ path: "big.bin", reason: "too_large", bytes: 3_000_000 }], nestedRepositories: ["vendor/lib"] }),
+        event("snapshot.coverage", { skipped: [], nestedRepositories: [] }),
+      ]),
+    ).toEqual(["· 1 file cannot be undone (too large or unreadable): big.bin", "· not tracked for undo (1 nested repository): vendor/lib"])
+  })
+
+  test("a revert says what was restored and what was kept, and a failed one that nothing changed", () => {
+    const restore = { target: "w0", before: "w1", after: "w0", changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
+    expect(lines([event("history.reverted", { fromSeq: 6, restore })])).toEqual([
+      "↶ went back · 3 files restored · /redo brings it back",
+      "  kept as you edited them: notes.md",
+      "  left alone (ignored or never recorded): dist/app.js",
+    ])
+    expect(lines([event("history.reverted", { fromSeq: 6, restore: null })])).toEqual(["↶ went back · the conversation was rewound; no file was restored"])
+    expect(lines([event("history.restored", { revertSeq: 9, restore: { ...restore, kept: [] } })])).toEqual(["↷ brought back · 3 files restored"])
+    expect(lines([event("revert.failed", { message: "git refused the restore" })])).toEqual(["✗ the workspace could not be restored: git refused the restore", "  nothing changed in the conversation"])
+  })
+
+  test("a diagnostic of the engine is printed in full", () => {
+    const diagnostic: EphemeralEvent = {
+      type: "diagnostic",
+      sessionId: SES,
+      kind: "prefix_violation",
+      message: "session ses_test: the next request does not extend the previous one (params block 0 changed) and no event allows that",
+    }
+    const out = render([diagnostic], { columns: () => 50 }).split("\n").filter((line) => line !== "")
+    expect(out[0]).toBe("⚠ prompt cache: ")
+    expect(out.slice(1).join(" ").replace(/\s+/g, " ")).toContain("does not extend the previous one (params block 0 changed) and no event allows that")
+    expect(out.every((line) => displayWidth(line) <= 50)).toBe(true)
+  })
+
+  test("a model call that took too long is named as such in the retry line", () => {
+    const error = makeProviderError("transport", "The model call did not finish within 30 minutes", { reason: "timeout" })
+    const out = lines([...opening(), stepStarted("a1"), event("retry.scheduled", { messageId: m("a1"), attempt: 2, delayMs: 2000, error })], 120)
+    expect(out.at(-1)).toBe("↻ retrying in 2.0s (attempt 2) · the model call took too long: The model call did not finish within 30 minutes")
+  })
+
+  test("the status line says which checks are running and the last line of their output", () => {
+    const statuses: (string | null)[] = []
+    const renderer = new PrettyRenderer({ write: () => {}, color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false, status: (text) => statuses.push(text) })
+    const [started, checks] = stored([event("execution.started", { executionId: "exe_1" as never }), event("checks.started", { run: 1, checks: ["test", "lint"] })])
+    renderer.event(started!)
+    renderer.event(checks!)
+    renderer.event({ type: "checks.progress", sessionId: SES, run: 1, check: "test", text: "12 pass\n3 fail\n" })
+    expect(statuses.slice(-2)).toEqual(["⋯ running checks: test, lint", "⋯ running checks: test, lint · 3 fail"])
   })
 })

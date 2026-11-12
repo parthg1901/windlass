@@ -4,7 +4,7 @@
  * call's argument text and the tool's `display` data (see packages/core/src/tools),
  * falling back to the model-facing output for tools this file does not know.
  */
-import type { EventData, Json } from "@light-harness/core"
+import type { EventData, Json, VerificationOutcome } from "@light-harness/core"
 import { formatBytes, plural } from "./text.ts"
 
 /** The argument worth showing for a call, from its raw argument text (which may be malformed). */
@@ -28,6 +28,10 @@ export function callArgument(name: string, input: string): string {
     }
     case "shell":
       return str("command") ?? ""
+    case "report_check_failure": {
+      const checks = Array.isArray(args.checks) ? args.checks.filter((name) => typeof name === "string").join(", ") : ""
+      return [checks, str("reason")].filter((part) => part !== null && part !== "").join(": ")
+    }
     default: {
       const first = Object.values(args).find((value) => typeof value === "string")
       return typeof first === "string" ? first : ""
@@ -148,4 +152,57 @@ function parseObject(input: string): Record<string, unknown> | null {
 
 function asObject(value: Json | null): Record<string, Json> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, Json>) : null
+}
+
+// ---------------------------------------------------------------- checks and files
+
+type CheckEvidence = EventData<"checks.finished">["evidence"]["checks"][number]
+
+const CHECK_STATUS_ORDER = ["passed", "failed", "timed_out", "could_not_start", "interrupted"] as const
+const CHECK_STATUS_LABEL: Record<CheckEvidence["status"], string> = {
+  passed: "passed",
+  failed: "failed",
+  timed_out: "timed out",
+  could_not_start: "could not start",
+  interrupted: "stopped",
+}
+
+/** The counts of a run of checks: `2 passed`, or `1 failed, 1 passed` with what did not pass first. */
+export function checksSummary(checks: readonly CheckEvidence[]): string {
+  const counts = CHECK_STATUS_ORDER.flatMap((status) => {
+    const count = checks.filter((check) => check.status === status).length
+    return count === 0 ? [] : [{ status, text: `${count} ${CHECK_STATUS_LABEL[status]}` }]
+  })
+  const order = [...counts.filter((entry) => entry.status !== "passed"), ...counts.filter((entry) => entry.status === "passed")]
+  return order.length === 0 ? "none ran" : order.map((entry) => entry.text).join(", ")
+}
+
+/** One entry per check that did not pass: how it ended, its command, and where its full output is. */
+export function checkLines(checks: readonly CheckEvidence[]): { name: string; status: string; command: string; output: string | null }[] {
+  return checks
+    .filter((check) => check.status !== "passed")
+    .map((check) => ({
+      name: check.name,
+      status: check.status === "failed" ? (check.signal !== null ? `killed by ${check.signal}` : `exit ${check.exitCode ?? "?"}`) : CHECK_STATUS_LABEL[check.status],
+      command: check.command,
+      output: check.outputPath,
+    }))
+}
+
+/** Why a turn ended with checks still failing, as a sentence. */
+export function unresolvedReason(verification: Extract<VerificationOutcome, { status: "unresolved" }>): string {
+  switch (verification.reason) {
+    case "acknowledged":
+      return `the agent reported that it cannot make them pass: ${verification.acknowledgement?.reason ?? "no reason given"}`
+    case "max_rounds":
+      return `still failing after ${plural(verification.evidence.run, "run")}; the agent was sent back as often as verify.maxRounds allows`
+    case "report_mode":
+      return "verify.mode is report: failures are recorded and the agent is not sent back"
+  }
+}
+
+/** The first `limit` paths, then how many more there are. */
+export function fileList(paths: readonly string[], limit: number): string {
+  const shown = paths.slice(0, limit).join(", ")
+  return paths.length > limit ? `${shown} (+${paths.length - limit} more)` : shown
 }
