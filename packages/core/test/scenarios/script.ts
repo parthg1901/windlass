@@ -10,7 +10,10 @@
  */
 import type { ConfigFile } from "../../src/config/schema.ts"
 import { text } from "../../src/content.ts"
+import { buildCheckpoint } from "../../src/context/checkpoint.ts"
+import { type SummaryProblem, describeProblem, summaryPrompt, summaryRepairPrompt } from "../../src/context/summary.ts"
 import {
+  type CompactionMode,
   type NewEvent,
   type RestoreRecord,
   type SnapshotPoint,
@@ -48,6 +51,12 @@ export interface Scenario {
    * log holds none of their events.
    */
   readonly setup?: Setup
+  /**
+   * The context window the engine is told the model has, in tokens, for the
+   * scenarios about compaction. Without it nobody knows the window, and
+   * history is compacted only after the provider rejects a request.
+   */
+  readonly contextWindow?: number
   readonly phases: readonly Phase[]
 }
 
@@ -138,6 +147,8 @@ export const RESUME_CAP = 3
 export const STEP_LIMIT = 3
 
 export const usage = { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 50, reasoningTokens: 10 }
+/** What the provider measured for a call whose request had `inputTokens` tokens: what the compaction policy decides from. */
+export const measured = (inputTokens: number) => ({ inputTokens, cachedInputTokens: inputTokens - 200, outputTokens: 50, reasoningTokens: 10 })
 
 // ---------------------------------------------------------------- session and inbox
 
@@ -224,6 +235,9 @@ export const opening = (prompt = "Fix the failing test.") => [
 export const stepStarted = (id: string, attempt = 1, model = MODEL) => event("step.started", { messageId: m(id), attempt, model })
 export const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
   event("step.ended", { messageId: m(id), finish, usage })
+/** A step ends whose request the provider measured at `inputTokens` tokens. */
+export const stepEndedAt = (id: string, inputTokens: number, finish: "stop" | "tool_calls" | "length" = "stop") =>
+  event("step.ended", { messageId: m(id), finish, usage: measured(inputTokens) })
 export const stepFailed = (id: string, error: StepError) => event("step.failed", { messageId: m(id), error, usage: null })
 /**
  * The open step is closed as interrupted. `during` says where it was cut: in the model call (`"call"`, the
@@ -279,6 +293,79 @@ export const EFFECT_UNKNOWN =
 export const CRASH_READ = "Cut short by a restart before it finished. Nothing was changed; it is safe to call it again."
 export const CRASH_EFFECT_UNKNOWN =
   "Started, but the harness restarted before its result was recorded. It may or may not have taken effect: check the current state before repeating it."
+
+// ---------------------------------------------------------------- compaction
+
+/** The context window of the compaction scenarios: 10,000 tokens, of which 2,000 are kept free for the answer. */
+export const WINDOW = 10_000
+/** The prompt a summary request appends, as the loop freezes it into `compaction.started`. */
+export const SUMMARY_PROMPT = summaryPrompt()
+
+/** A summary of the required form. */
+export const SUMMARY = [
+  "## Goal",
+  "- Find out why the test fails and fix it.",
+  "## Instructions and constraints",
+  "- None.",
+  "## Decisions",
+  "- None.",
+  "## Work completed",
+  "- Read the files involved.",
+  "## In progress",
+  "- Looking for the wrong expectation.",
+  "Next step: fix the expectation in a.test.ts.",
+  "## Files",
+  "- a.test.ts: read.",
+  "## Commands",
+  "- None.",
+  "## Open questions",
+  "- None.",
+  "## Verbatim",
+  "- None.",
+].join("\n")
+/** An answer that is not a summary of the required form: prose, with none of the sections. */
+export const NOT_A_SUMMARY = "The user asked for a fix and some files were read."
+/** What is wrong with `NOT_A_SUMMARY`, as the validator lists it. */
+export const NOT_A_SUMMARY_PROBLEMS: readonly SummaryProblem[] = [
+  "Goal",
+  "Instructions and constraints",
+  "Decisions",
+  "Work completed",
+  "In progress",
+  "Files",
+  "Commands",
+  "Open questions",
+  "Verbatim",
+].map((heading) => ({ kind: "missing_section", heading }))
+
+/**
+ * A compaction begins. `keepFromSeq` is the cut: the first `seq` kept word
+ * for word (the compaction's own `seq` when nothing is kept). `tokensBefore`
+ * is a stand-in: the loop records its size estimate of the next request.
+ */
+export const compactionStarted = (id: string, keepFromSeq: number, trigger: "auto" | "overflow" = "auto", mode: CompactionMode = "normal") =>
+  event("compaction.started", { messageId: m(id), trigger, mode, keepFromSeq, prompt: SUMMARY_PROMPT, tokensBefore: 0 })
+/** The first answer was not usable: the loop records it and what it asks the model to fix. */
+export const compactionRepair = (id: string, answer: string, problems: readonly SummaryProblem[], attempt = 2) =>
+  event("compaction.repair_requested", { messageId: m(id), attempt, answer, prompt: summaryRepairPrompt(problems) })
+/**
+ * The checkpoint a compaction freezes: the summary (or, with `null`, the
+ * statement that there is none), the identifier index and the user's
+ * messages verbatim, exactly as `buildCheckpoint` renders them from the
+ * messages before the cut. `before` is every event of the scenario up to the
+ * compaction. `inProgress`: the cut left the turn's request out of the kept tail.
+ */
+export function checkpoint(before: readonly NewEvent[], keepFromSeq: number, summary: string | null = SUMMARY, inProgress = false): string {
+  const earlier = fold(null, before).messages.filter((message) => message.excluded === null && message.seq < keepFromSeq)
+  return buildCheckpoint({ summary, earlier, inProgress }).text
+}
+/** The compaction completes with its checkpoint. `tokensAfter` is a stand-in: the loop records its estimate of the next request. */
+export const compactionEnded = (id: string, checkpointText: string, source: "model" | "repaired" | "fallback" = "model", detail: string | null = null) =>
+  event("compaction.ended", { messageId: m(id), summary: checkpointText, source, detail, tokensAfter: 0, usage: null })
+export const compactionFailed = (id: string, error: StepError) => event("compaction.failed", { messageId: m(id), error })
+/** Why a compaction completed without a summary when both answers were unusable: `compaction.ended.detail`. */
+export const UNUSABLE = (problems: readonly SummaryProblem[]) =>
+  `the model's summary was unusable, also after it was asked to fix it: ${problems.slice(0, 2).map(describeProblem).join("; ")}${problems.length > 2 ? `; and ${problems.length - 2} more` : ""}`
 
 // ---------------------------------------------------------------- provider errors
 
@@ -454,6 +541,14 @@ export function describeEvent(item: NewEvent): string {
     case "execution.interrupt_requested":
     case "execution.interrupted":
       return `${item.type} ${d.executionId} ${d.reason}`
+    case "compaction.started":
+      return `compaction.started ${d.messageId} ${d.trigger} ${d.mode} keepFromSeq=${d.keepFromSeq}`
+    case "compaction.repair_requested":
+      return `compaction.repair_requested ${d.messageId} attempt=${d.attempt} ${quote(d.answer)}`
+    case "compaction.ended":
+      return `compaction.ended ${d.messageId} source=${d.source}${d.detail === null ? "" : ` (${String(d.detail).length > 70 ? `${String(d.detail).slice(0, 67)}...` : d.detail})`}`
+    case "compaction.failed":
+      return `compaction.failed ${d.messageId} ${errorText(item.data.error)}`
     default: {
       const id = d.executionId ?? d.messageId
       return id === undefined ? item.type : `${item.type} ${id}`

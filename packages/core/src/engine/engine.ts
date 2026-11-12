@@ -34,6 +34,15 @@
  *   it (the report that sends the model back, or the terminal event).
  * - A revert announces its restore (`revert.started`) before it touches a
  *   file, so a session opened after a crash finishes it instead of guessing.
+ * - Before every step the size of the request it would send is estimated
+ *   from the request ledger (the provider's own count for the last call plus
+ *   an estimate of what was appended since), and the compaction policy
+ *   (`context/policy.ts`) says whether to compact first. A compaction can
+ *   happen between any two steps, also in the middle of a turn. Everything
+ *   its summary request is built from is durable before the request is sent
+ *   (`compaction.started`), and it always completes: with the model's
+ *   summary, with the one it wrote when asked to repair it, or with a
+ *   checkpoint built without the model.
  */
 import { statSync } from "node:fs"
 import { realpath } from "node:fs/promises"
@@ -43,7 +52,14 @@ import { brand } from "../brand.ts"
 import { type LoadedConfig, loadConfig } from "../config/load.ts"
 import type { CheckConfig } from "../config/schema.ts"
 import { text } from "../content.ts"
+import { buildCheckpoint } from "../context/checkpoint.ts"
+import { ITEM_OVERHEAD, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool } from "../context/estimate.ts"
+import { HISTORY_READ, HISTORY_SEARCH } from "../context/history-tools.ts"
+import { type CompactionConfig, type CompactionDecision, DEFAULT_COMPACTION_CONFIG, decideAfterOverflow, decideCompaction } from "../context/policy.ts"
+import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPrompt, summaryRepairPrompt } from "../context/summary.ts"
+import { chooseTail } from "../context/tail.ts"
 import {
+  type CompactionMode,
   type NewEvent,
   type RestoreRecord,
   type SessionSettings,
@@ -61,12 +77,12 @@ import type { InstructionSource } from "../instructions/source.ts"
 import { instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
 import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonOf } from "../interrupt.ts"
 import { selectModelHistory } from "../message/history.ts"
-import { type AssistantMessage, type CompactionMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
+import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
 import type { Usage } from "../provider/usage.ts"
 import { type PrefixVerdict, checkPrefix } from "../request/build-break.ts"
-import { type CallOptions, buildCompactionRequest, buildRequest } from "../request/build.ts"
+import { CHECKPOINT_ORIGIN, type CallOptions, HARNESS_CLOSE, buildCompactionRequest, buildRequest, harnessOpen } from "../request/build.ts"
 import { canonicalJson } from "../request/canonical.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
 import type { ModelRequest } from "../request/request.ts"
@@ -87,7 +103,7 @@ import { selectChecks } from "../verify/select.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
 import { type Clock, systemClock } from "./clock.ts"
 import {
-  COMPACTION_PROMPT,
+  COMPACTION_TEXT,
   ENGINE_LIMITS,
   type EngineLimits,
   FAILURE_TEXT,
@@ -98,11 +114,15 @@ import {
   modelCallTimedOut,
   retryDelayMs,
 } from "./constants.ts"
+import { historyTools } from "./history.ts"
 import { recover } from "./recovery.ts"
 import {
   STOPPED,
   acknowledgementThisTurn,
+  atInputBoundary,
   claimOf,
+  compactionOutcome,
+  completedStepSinceCompaction,
   latestSpoken,
   note,
   notedThisTurn,
@@ -173,6 +193,10 @@ export type ProbePoint =
   | "checks.started"
   /** The checks returned; their results are not yet written. */
   | "checks.finished"
+  /** `compaction.started` is durable; the summary request has not been sent. */
+  | "compaction.started"
+  /** `compaction.ended` is durable; the baseline has not been set again. */
+  | "compaction.ended"
   /** `revert.started` (or `revert.undo_started`) is durable; no file was restored. */
   | "revert.started"
   /** The workspace is restored; the event that closes the revert is not yet written. */
@@ -290,6 +314,16 @@ export interface EngineOptions {
    * when the listing fails, a model is not checked before the first call.
    */
   readonly listModels?: () => Promise<readonly string[]>
+  /**
+   * The context window of a model, in input tokens, or `null` when nobody
+   * knows. Asked once per model. The compaction policy measures the next
+   * request against it before every step. Without it, or when it is `null`
+   * or cannot be had, nothing is compacted ahead of time: only a request the
+   * provider rejects as too large is.
+   */
+  readonly contextWindow?: (model: string) => number | null | Promise<number | null>
+  /** The compaction policy's numbers, where they differ from `DEFAULT_COMPACTION_CONFIG`. */
+  readonly compaction?: Partial<CompactionConfig>
 }
 
 /** What to do with files that were edited by hand after the point a restore goes back to. */
@@ -328,7 +362,11 @@ export interface RevertPlan {
 }
 
 export type RevertResult =
-  /** Nothing was looked at. `busy`: an execution or another revert is in progress (a revert happens only while idle). */
+  /**
+   * Nothing was looked at. `busy`: an execution or another revert is in
+   * progress (a revert happens only while idle). `compacted` is no longer
+   * given: a revert may go back before a compaction, which it then undoes.
+   */
   | { readonly kind: "refused"; readonly reason: "busy" | "nothing_to_revert" | "not_found" | "compacted"; readonly message: string }
   /** The answer to a dry run. */
   | { readonly kind: "preview"; readonly plan: RevertPlan }
@@ -487,6 +525,12 @@ interface Core {
   readonly tools: readonly AnyTool[]
   /** The tool the model reports an unfixable check failure with. In the runtime always; in a session's tool list when verification was on at its baseline. */
   readonly acknowledge: AnyTool
+  /** `history_search` and `history_read`: in the runtime and in every session's tool list. */
+  readonly history: readonly AnyTool[]
+  /** The context window of each model asked about so far; `null` when it is not known. */
+  readonly windows: Map<string, number | null>
+  readonly contextWindow: ((model: string) => number | null | Promise<number | null>) | undefined
+  readonly compaction: CompactionConfig
   readonly spillDir: string
   readonly openSnapshots: OpenSnapshots | null
   readonly loadConfig: ((cwd: string) => Promise<Pick<LoadedConfig, "config" | "projectDir">>) | null
@@ -511,8 +555,10 @@ export function createEngine(options: EngineOptions): Engine {
   const spillDir = options.spillDir ?? join(options.dataDir, "spill")
   // A build that brings its own tool of that name keeps it.
   const acknowledge = options.tools.find((tool) => tool.name === ACKNOWLEDGE_TOOL_NAME) ?? (acknowledgeTool() as unknown as AnyTool)
-  const runnable = [...options.tools.filter((tool) => tool !== acknowledge), acknowledge]
   const stores = "append" in options.store ? sharedSessionStores(options.store) : options.store
+  // The history tools read the store of the session that calls them. A build that brings its own tool of one of those names keeps it.
+  const history = historyTools((sessionId) => core.sessions.get(sessionId)?.history ?? null).filter((tool) => !options.tools.some((other) => other.name === tool.name))
+  const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, acknowledge]
   const core: Core = {
     stores,
     provider: options.provider,
@@ -521,6 +567,10 @@ export function createEngine(options: EngineOptions): Engine {
     touches: new Map(runnable.flatMap((tool) => (tool.touches === undefined ? [] : [[tool.name, tool.touches as (input: unknown) => readonly string[]] as const]))),
     tools: options.tools.filter((tool) => tool !== acknowledge),
     acknowledge,
+    history,
+    windows: new Map(),
+    contextWindow: options.contextWindow,
+    compaction: { ...DEFAULT_COMPACTION_CONFIG, ...options.compaction },
     spillDir,
     openSnapshots: options.snapshots === undefined ? (cwd) => openSnapshots(cwd, { dataDir: join(options.dataDir, "snapshots") }) : options.snapshots,
     loadConfig: options.loadConfig === undefined ? (cwd) => loadConfig({ cwd }) : options.loadConfig,
@@ -648,6 +698,25 @@ interface ModelCall {
   readonly cutOff: boolean
   /** The text of the response, for a compaction call, which records no output events. */
   readonly text: string
+  /** The loop stopped reading because the output passed the bound it was given (a summary that does not end). */
+  readonly overran: boolean
+}
+
+/** A request as the loop is about to send it, with the state it was built from. */
+interface Prepared {
+  readonly projection: Projection
+  readonly request: ModelRequest
+  readonly blocks: readonly BlockHash[]
+}
+
+/** What a compaction is asked to do: the policy's decision, as far as the loop acts on it. */
+interface CompactionPlan {
+  readonly trigger: "auto" | "overflow"
+  readonly mode: CompactionMode
+  /** Tokens of history to keep word for word (`chooseTail`). */
+  readonly tailBudget: number
+  /** The size estimate of the request that set it off. */
+  readonly tokensBefore: number
 }
 
 type StepResult =
@@ -690,6 +759,8 @@ class LiveSession implements EngineSession {
   private retaining: Promise<void> | null = null
   /** The directories each settled step's tool calls touched, by message. A cache of a pure function of the log. */
   private readonly touched = new Map<MessageId, readonly string[]>()
+  /** What no compaction can remove, in tokens: the instructions and the tool list of the baseline set at `seq`. A cache of a pure function of the log. */
+  private fixed: { readonly seq: number; readonly tokens: number } | null = null
 
   constructor(
     private readonly core: Core,
@@ -706,6 +777,11 @@ class LiveSession implements EngineSession {
 
   get working(): boolean {
     return this.run !== null
+  }
+
+  /** What the history tools search and read: this session's stored messages. */
+  get history(): Pick<Store, "searchMessages" | "readMessageAt"> {
+    return this.store
   }
 
   subscribe = (listener: (event: EngineEvent) => void) => {
@@ -999,18 +1075,25 @@ class LiveSession implements EngineSession {
       const before = this.projection()
       const latest = latestSpoken(before)
       if (latest?.kind === "assistant" && latest.status === "failed") {
-        // The only failed step the loop leaves unanswered is one that overflowed: compact once, then rebuild (retry rule 5).
-        const compaction = before.messages.findLast(
-          (message): message is CompactionMessage => message.kind === "compaction" && message.seq > latest.seq,
-        )
+        // The only failed step the loop leaves unanswered is one the provider rejected as too large: compact, then
+        // rebuild the request (retry rule 5). A compaction that was cut short (a crash, an interrupt) is made again.
         const overflowed = latest.error?.kind === "provider" && latest.error.error.kind === "context_overflow"
-        const retryable = compaction === undefined || compaction.error?.kind === "crashed" || compaction.error?.kind === "interrupted"
-        if (!overflowed || (compaction?.status !== "completed" && !retryable)) {
+        if (!overflowed) {
           this.write([event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.internal("the last step failed and was not retried") })])
           return
         }
-        if (compaction?.status !== "completed") {
-          if ((await this.compact(run)) === "done") return
+        if ((before.session.compaction?.seq ?? 0) < latest.seq) {
+          const window = await this.contextWindow(before.session.settings.model)
+          if (signal.aborted) return this.finishInterrupt(run)
+          const rejected = this.prepare(before, "auto")
+          const decision = this.afterOverflow(rejected, window)
+          const outcome = decision.kind === "now" ? await this.compact(run, { trigger: "overflow", mode: decision.mode, tailBudget: decision.tailBudget, tokensBefore: this.measure(rejected).total }) : "nothing"
+          if (outcome === "done") return
+          if (outcome === "nothing") {
+            // Nothing is left to take out, or the request built right after an aggressive compaction was rejected too.
+            this.write([event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.overflow })])
+            return
+          }
           continue
         }
       }
@@ -1077,17 +1160,105 @@ class LiveSession implements EngineSession {
         forbidden = true
       }
       // The tool list stays; only the choice changes, which is not part of the cached prefix.
-      if ((await this.step(run, forbidden ? "none" : "auto")) === "done") return
+      const toolChoice = forbidden ? "none" : "auto"
+      // How large would this request be? The policy decides from the estimate whether history is compacted first.
+      const window = await this.contextWindow(ready.session.settings.model)
+      if (signal.aborted) return this.finishInterrupt(run)
+      const next = this.prepare(this.projection(), toolChoice)
+      const decision = window === null ? null : this.beforeStep(next, window)
+      if (decision?.kind === "now") {
+        const outcome = await this.compact(run, { trigger: decision.trigger, mode: decision.mode, tailBudget: decision.tailBudget, tokensBefore: this.measure(next).total })
+        if (outcome === "done") return
+        // The baseline is set again and the request rebuilt at the top of the loop.
+        if (outcome === "compacted") continue
+        // Nothing could be taken out: the request is sent as it is.
+      }
+      if ((await this.step(run, next)) === "done") return
     }
   }
 
+  // ---- the context window ----
+
+  /**
+   * The context window of `model`, asked for once per engine. `null` when
+   * nobody knows it: then nothing is compacted ahead of time.
+   */
+  private async contextWindow(model: string): Promise<number | null> {
+    const windows = this.core.windows
+    const known = windows.get(model)
+    // No await when it is known: the loop goes straight on.
+    if (known !== undefined) return known
+    const asked = this.core.contextWindow === undefined ? null : await Promise.resolve(this.core.contextWindow(model)).catch(() => null)
+    const window = asked !== null && Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : null
+    windows.set(model, window)
+    return window
+  }
+
+  /** The request the next step sends, built from stored state. */
+  private prepare(projection: Projection, toolChoice: ModelRequest["toolChoice"]): Prepared {
+    const request = buildRequest(projection, { ...this.core.call, toolChoice })
+    return { projection, request, blocks: hashRequest(request) }
+  }
+
+  /**
+   * How many input tokens `prepared` will be: the provider's own count for
+   * the last step call, when this request extends it, plus an estimate of
+   * what was appended since; otherwise an estimate of all of it.
+   */
+  private measure(prepared: Prepared): SizeEstimate {
+    const last = this.store.lastRequest(this.id, "step")
+    const measured = last !== null && last.outcome === "ok" && last.usage !== null ? { blocks: last.blocks, usage: last.usage } : null
+    return estimateNextInput(prepared.request, measured, prepared.blocks)
+  }
+
+  /** Tokens no compaction can remove: the instructions and the tool list of the baseline in force. */
+  private fixedTokens(prepared: Prepared): number {
+    const seq = prepared.projection.baseline?.seq ?? 0
+    if (this.fixed?.seq !== seq)
+      this.fixed = { seq, tokens: estimateTokens(prepared.request.instructions) + prepared.request.tools.reduce((sum, tool) => sum + estimateTool(tool), 0) }
+    return this.fixed.tokens
+  }
+
+  /** What the policy is told about the window: its size and the part kept free for the answer. */
+  private windowInput(window: number | null) {
+    // With no known window the only thing known is that the rejected request was too large.
+    if (window === null) return { contextWindow: Number.MAX_SAFE_INTEGER, reservedOutput: 0 }
+    return { contextWindow: window, reservedOutput: Math.min(this.core.limits.reservedOutputTokens, Math.floor(window / 5)) }
+  }
+
+  /** The policy's decision before a step: send the request, or compact first. */
+  private beforeStep(prepared: Prepared, window: number): CompactionDecision {
+    return decideCompaction({
+      ...this.windowInput(window),
+      estimate: this.measure(prepared),
+      fixedTokens: this.fixedTokens(prepared),
+      lastCompaction: compactionOutcome(prepared.projection),
+      atUserBoundary: atInputBoundary(prepared.projection),
+      config: this.core.compaction,
+    })
+  }
+
+  /** The policy's decision after the provider rejected `prepared` as too large: compact aggressively, or give up. */
+  private afterOverflow(prepared: Prepared, window: number | null): CompactionDecision {
+    const compaction = prepared.projection.session.compaction
+    const checkpoint = compaction === null ? undefined : prepared.projection.messages.findLast((message) => message.id === compaction.messageId)
+    return decideAfterOverflow({
+      ...this.windowInput(window),
+      estimate: this.measure(prepared),
+      fixedTokens: this.fixedTokens(prepared),
+      lastCompaction: compactionOutcome(prepared.projection),
+      completedStepSinceCompaction: completedStepSinceCompaction(prepared.projection),
+      lastCompactionWasOverflow: checkpoint?.kind === "compaction" && checkpoint.trigger === "overflow",
+      config: this.core.compaction,
+    })
+  }
+
   /** One logical step: a model call with its single attempt budget (retry rule 1), then its tools. */
-  private async step(run: Run, toolChoice: ModelRequest["toolChoice"]): Promise<StepResult> {
+  private async step(run: Run, prepared: Prepared): Promise<StepResult> {
     const { limits, clock, ids } = this.core
     const signal = run.interrupt.signal
-    const start = this.projection()
-    const request = buildRequest(start, { ...this.core.call, toolChoice })
-    const blocks = hashRequest(request)
+    const { projection: start, request, blocks } = prepared
+    const toolChoice = request.toolChoice
     this.checkPrefix(start, blocks)
     const messageId = ids.message()
     let attempt = claimOf(start).nextAttempt
@@ -1149,7 +1320,7 @@ class LiveSession implements EngineSession {
         attempt += 1
         continue
       }
-      if (error.kind === "context_overflow" && !hasOutput && !this.compactedInVain(start)) {
+      if (error.kind === "context_overflow" && !hasOutput && this.afterOverflow(prepared, this.core.windows.get(start.session.settings.model) ?? null).kind === "now") {
         // Closed here; the loop compacts at the boundary and rebuilds the request.
         this.write([failed])
         this.probe("step.closed")
@@ -1254,6 +1425,14 @@ class LiveSession implements EngineSession {
       readonly request: ModelRequest
       readonly blocks: readonly BlockHash[]
       readonly purpose: RequestPurpose
+      /** The wall-clock limit of this call, instead of a step's. */
+      readonly limitMs?: number
+      /**
+       * Stop reading once the text passes this many characters, and take what
+       * arrived as the answer, cut short. The bound on a summary: this
+       * provider takes no output limit in the request.
+       */
+      readonly maxOutputChars?: number
     },
   ): Promise<ModelCall> {
     const { provider, ids } = this.core
@@ -1284,7 +1463,8 @@ class LiveSession implements EngineSession {
 
     // The request is stopped by an interrupt, and by the wall-clock limit of one call: a call that never ends
     // must not hold a turn for ever.
-    const limitMs = this.core.limits.modelCallTimeoutMs
+    const limitMs = input.limitMs ?? this.core.limits.modelCallTimeoutMs
+    let overran = false
     const request$ = new AbortController()
     const forward = () => request$.abort(signal.reason)
     if (signal.aborted) forward()
@@ -1323,6 +1503,12 @@ class LiveSession implements EngineSession {
           case "text.delta":
             partialText += item.text
             if (step) this.ephemeral({ type: "text.delta", sessionId: this.id, messageId, text: item.text })
+            if (input.maxOutputChars !== undefined && whole.length + partialText.length > input.maxOutputChars) {
+              // A summary that does not end: what arrived is the answer, cut here.
+              overran = true
+              end = { type: "finish", reason: "length" }
+              request$.abort()
+            }
             break
           case "text.end":
             partialText = ""
@@ -1380,16 +1566,17 @@ class LiveSession implements EngineSession {
       signal.removeEventListener("abort", forward)
       // Stops the request when the loop stopped reading first. After an abort or the time limit the provider is not waited for.
       const closed = iterator?.return?.().catch(() => {})
-      if (!signal.aborted && !timedOut) await closed
+      if (!signal.aborted && !timedOut && !overran) await closed
     }
     // No terminal event and nobody aborted: the stream broke.
     end ??= signal.aborted ? { type: "aborted" } : { type: "error", error: makeProviderError("incomplete_stream", INCOMPLETE_STREAM) }
     store.finishRequest(requestId, {
-      outcome: end.type === "finish" ? "ok" : end.type === "error" ? "error" : "aborted",
+      // A call the loop itself cut at the output bound did not finish: it was stopped.
+      outcome: overran ? "aborted" : end.type === "finish" ? "ok" : end.type === "error" ? "error" : "aborted",
       usage,
       errorKind: end.type === "error" ? end.error.kind : null,
     })
-    return { end, usage, partialText, cutOff: streaming.size > 0, text: whole }
+    return { end, usage, partialText, cutOff: streaming.size > 0, text: whole, overran }
   }
 
   /**
@@ -1493,71 +1680,153 @@ class LiveSession implements EngineSession {
   }
 
   /**
-   * Compacts after a context overflow: summarises everything before the
-   * latest user message and keeps that message and what follows verbatim.
-   * The request is the step request of the summarised part plus one prompt,
-   * so it reads that part from the cache (context rule 7).
+   * One compaction: replaces the older part of the model's view by a
+   * checkpoint and keeps the recent part word for word.
+   *
+   * 1. The cut. `chooseTail` keeps as much recent history as the plan's
+   *    budget allows, never splitting a step. It may fall inside the turn in
+   *    progress: then the turn's recent steps stay and the checkpoint carries
+   *    its request and where the work stands.
+   * 2. `compaction.started` records the cut, the mode, the size and the
+   *    prompt before anything is sent, so the summary request is a function
+   *    of the log.
+   * 3. The summary request is the step request of the part before the cut
+   *    plus that prompt, so it reads that part from the cache. Its answer is
+   *    bounded: the stream is cut at twice the summary's limit and the call at
+   *    `compactionCallTimeoutMs`.
+   * 4. An answer that is not usable (`resolveSummary`) is asked for once
+   *    more: the rejected answer and what to fix are recorded
+   *    (`compaction.repair_requested`) and appended to the request.
+   * 5. It always completes. When there is still no usable summary (invalid
+   *    twice, empty, a call that did not end, a part too large to summarise,
+   *    a refusal), the checkpoint is built without the model: the identifier
+   *    index, the user's messages verbatim and a statement that there is no
+   *    summary. Only a provider that cannot be used at all (signed out, the
+   *    plan's limit, failing again and again) fails the execution, as it
+   *    would fail a step; history is then unchanged.
+   *
+   * The checkpoint text is rendered once, here, and frozen in
+   * `compaction.ended`. Returns `nothing` when there is nothing before the
+   * cut to take out, and nothing was written.
    */
-  private async compact(run: Run): Promise<StepResult> {
-    const { limits, clock, ids } = this.core
+  private async compact(run: Run, plan: CompactionPlan): Promise<"compacted" | "nothing" | "done"> {
+    const { limits, clock, ids, compaction: config } = this.core
     const signal = run.interrupt.signal
     const start = this.projection()
-    const floor = start.session.compaction?.seq ?? 0
-    const visible = selectModelHistory(start).messages
-    const kept = visible.findLast((message) => message.kind === "user" && message.seq > floor)
-    const giveUp = (reason: string) => event("execution.failed", { executionId: run.executionId, message: reason })
-    if (!visible.some((message) => message.kind !== "compaction" && (kept === undefined || message.seq < kept.seq))) {
-      // Nothing older than the prompt itself: a summary cannot make this request fit.
-      this.write([giveUp(FAILURE_TEXT.overflow)])
+    const view = selectModelHistory(start).messages
+    const tail = chooseTail(view, { budget: plan.tailBudget, mandatory: plan.mode === "aggressive" ? "if_fits" : "always" })
+    if (tail.nothingToRemove) return "nothing"
+    const messageId = ids.message()
+    // Nothing kept: the cut is the compaction's own position in the log.
+    const keepFromSeq = tail.keepFromSeq ?? start.lastSeq + 1
+    this.write(
+      [event("compaction.started", { messageId, trigger: plan.trigger, mode: plan.mode, keepFromSeq, prompt: summaryPrompt(), tokensBefore: Math.round(plan.tokensBefore) })],
+      { expectedSeq: start.lastSeq },
+    )
+    this.probe("compaction.started")
+
+    const failed = (error: ProviderError, reason: string): "done" => {
+      this.write([
+        event("compaction.failed", { messageId, error: { kind: "provider", error } }),
+        event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.compaction(reason) }),
+      ])
       return "done"
     }
-    const messageId = ids.message()
-    const [started] = this.write([event("compaction.started", { messageId, trigger: "overflow" })])
-    const keepFromSeq = kept?.seq ?? started!.seq
-    const older = { ...start, messages: start.messages.filter((message) => message.seq < keepFromSeq || message.kind === "compaction") }
-    const request = buildCompactionRequest(older, COMPACTION_PROMPT, this.core.call)
-    const blocks = hashRequest(request)
+    let usage: Usage | null = null
+    let attempt = 1
+    /** The first answer, once a repair was asked for. */
+    let first: ResolvedSummary | null = null
+    let repairing = false
+    /** The summary to use and where it is from, or why there is none. */
+    let chosen: { readonly summary: string | null; readonly source: "model" | "repaired" | "fallback"; readonly detail: string | null } | null = null
 
-    for (let attempt = 1; ; attempt += 1) {
-      const call = await this.callModel(run, { messageId, attempt, request, blocks, purpose: "compaction" })
-      if (call.end.type === "aborted") {
-        this.finishInterrupt(run)
-        return "done"
-      }
-      if (call.end.type === "finish") {
-        const summary = (call.text + call.partialText).trim()
-        if (summary === "") {
-          this.write([
-            event("compaction.failed", { messageId, error: { kind: "internal", message: "the model returned an empty summary" } }),
-            giveUp(FAILURE_TEXT.compaction("the model returned an empty summary")),
-          ])
-          return "done"
-        }
-        this.write([event("compaction.ended", { messageId, summary, keepFromSeq, usage: call.usage })])
-        return "continue"
-      }
-      const error = call.end.error
-      if (error.retryable && attempt < limits.attemptBudget) {
-        // The log has no retry event for a compaction; the ledger row of each attempt is its record.
-        await clock.sleep(retryDelayMs(limits, attempt, error, this.core.random), signal)
-        if (signal.aborted) {
+    while (chosen === null) {
+      // Built from the log: the cut, the prompt and, the second time, the rejected answer with the request to fix it.
+      const request = buildCompactionRequest(this.projection(), this.core.call)
+      const blocks = hashRequest(request)
+      let answer: { readonly text: string; readonly complete: boolean } | { readonly unusable: string } | null = null
+      for (let tries = 1; answer === null; tries += 1, attempt += 1) {
+        const call = await this.callModel(run, {
+          messageId,
+          attempt,
+          request,
+          blocks,
+          purpose: "compaction",
+          limitMs: limits.compactionCallTimeoutMs,
+          maxOutputChars: summaryOutputCapChars(config.summaryMaxTokens),
+        })
+        usage = addUsage(usage, call.usage)
+        if (call.end.type === "aborted") {
           this.finishInterrupt(run)
           return "done"
         }
-        continue
+        if (call.end.type === "finish") {
+          answer = { text: call.text + call.partialText, complete: !call.overran && call.end.reason !== "length" }
+          break
+        }
+        const error = call.end.error
+        // A call that did not end is not asked again: another one would take as long.
+        if (error.kind === "transport" && error.reason === "timeout") answer = { unusable: COMPACTION_TEXT.timedOut(limits.compactionCallTimeoutMs) }
+        else if (error.kind === "context_overflow") answer = { unusable: COMPACTION_TEXT.tooLarge }
+        else if (error.kind === "content_policy") answer = { unusable: COMPACTION_TEXT.refused }
+        else if (error.retryable && tries < limits.attemptBudget) {
+          // The log has no retry event for a compaction; the ledger row of each attempt is its record.
+          await clock.sleep(retryDelayMs(limits, tries, error, this.core.random), signal)
+          if (signal.aborted) {
+            this.finishInterrupt(run)
+            return "done"
+          }
+        } else return failed(error, error.retryable ? FAILURE_TEXT.budget(tries, error) : failureText(error))
       }
-      this.write([event("compaction.failed", { messageId, error: { kind: "provider", error } }), giveUp(FAILURE_TEXT.compaction(error.message))])
-      return "done"
+      attempt += 1
+
+      if ("unusable" in answer) {
+        chosen = this.settle(first, null, repairing, answer.unusable)
+        break
+      }
+      const resolved = resolveSummary(answer.text, config.summaryMaxTokens, { complete: answer.complete })
+      if (resolved.ok) {
+        chosen = { summary: resolved.text, source: repairing ? "repaired" : "model", detail: resolved.salvaged ? COMPACTION_TEXT.repeated : null }
+        break
+      }
+      if (repairing || resolved.text === "") {
+        chosen = this.settle(first, resolved, repairing, resolved.text === "" ? COMPACTION_TEXT.empty : COMPACTION_TEXT.invalid(resolved.problems))
+        break
+      }
+      // One repair: the answer (its first copy, when the model repeated itself) and what is wrong with it.
+      first = resolved
+      repairing = true
+      this.write([event("compaction.repair_requested", { messageId, attempt, answer: resolved.text, prompt: summaryRepairPrompt(resolved.problems) })])
     }
+
+    const now = this.projection()
+    const baseline = now.baseline
+    // Every message before the cut that is not excluded, from the whole log: the index and the quotes cover earlier compactions too.
+    const earlier = now.messages.filter((message) => message.excluded === null && message.seq < keepFromSeq)
+    const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn })
+    const envelope = estimateTokens(`${harnessOpen(CHECKPOINT_ORIGIN)}\n\n${HARNESS_CLOSE}`)
+    const fixed = baseline === null ? 0 : estimateTokens(baseline.instructions) + baseline.tools.reduce((sum, tool) => sum + estimateTool(tool), 0)
+    const tokensAfter = REQUEST_OVERHEAD + fixed + ITEM_OVERHEAD + envelope + checkpoint.tokens + tail.keptTokens
+    this.write([event("compaction.ended", { messageId, summary: checkpoint.text, source: chosen.source, detail: chosen.detail, tokensAfter, usage })])
+    this.probe("compaction.ended")
+    return "compacted"
   }
 
-  /** Whether the request that just overflowed was already built from an overflow compaction: once is the limit. */
-  private compactedInVain(projection: Projection): boolean {
-    const compaction = projection.session.compaction
-    if (compaction === null) return false
-    const checkpoint = projection.messages.findLast((message) => message.id === compaction.messageId)
-    if (checkpoint?.kind !== "compaction" || checkpoint.trigger !== "overflow") return false
-    return !projection.messages.some((message) => message.kind === "assistant" && message.status === "completed" && message.seq > compaction.seq)
+  /**
+   * What a compaction uses when no answer was valid: the better of the two
+   * answers if it is merely too long or lacks a detail (it has every section
+   * once, in order, and is bounded), otherwise no summary at all.
+   */
+  private settle(first: ResolvedSummary | null, second: ResolvedSummary | null, repaired: boolean, why: string) {
+    const usable = (answer: ResolvedSummary | null): answer is Extract<ResolvedSummary, { ok: false }> => answer !== null && !answer.ok && answer.usable
+    // The repaired answer wins a tie: it is the one that was asked to be right.
+    const candidates = [
+      ...(usable(second) ? [{ answer: second, source: repaired ? ("repaired" as const) : ("model" as const) }] : []),
+      ...(usable(first) ? [{ answer: first, source: "model" as const }] : []),
+    ].sort((a, b) => a.answer.problems.length - b.answer.problems.length)
+    const best = candidates[0]
+    if (best === undefined) return { summary: null, source: "fallback" as const, detail: why }
+    return { summary: best.answer.text, source: best.source, detail: COMPACTION_TEXT.flawed(best.answer.problems) }
   }
 
   /**
@@ -1629,7 +1898,8 @@ class LiveSession implements EngineSession {
   // ---- the workspace ----
 
   /**
-   * The tool list a baseline built now freezes. The acknowledgement tool is
+   * The tool list a baseline built now freezes: the build's tools, the
+   * history tools, and the acknowledgement tool. The acknowledgement tool is
    * in it when verification was not off as the session's first baseline was
    * set, whether or not a check is configured yet, and it stays as it was
    * from then on: a baseline rebuilt after a compaction keeps the decision,
@@ -1641,7 +1911,9 @@ class LiveSession implements EngineSession {
       baseline === null
         ? this.config !== null && this.config.config.verify.mode !== "off"
         : baseline.tools.some((tool) => tool.name === ACKNOWLEDGE_TOOL_NAME)
-    return offered ? [...this.core.tools, this.core.acknowledge] : this.core.tools
+    // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
+    const tools = [...this.core.tools, ...this.core.history]
+    return offered ? [...tools, this.core.acknowledge] : tools
   }
 
   /** Whether one of the calls this step will run can change files, going by its tool's effect class. */
@@ -2054,9 +2326,8 @@ class LiveSession implements EngineSession {
     if (target === undefined)
       return options.messageId === undefined ? refused("nothing_to_revert", "there is no turn to go back before") : refused("not_found", `there is no message ${options.messageId}`)
     if (target.kind !== "user" || target.excluded !== null) return refused("not_found", `message ${target.id} is not a user message in the model's history`)
-    // The reducer holds this line too: what a compaction summarised cannot be taken out of the summary.
-    if (target.seq <= (projection.session.compaction?.seq ?? 0))
-      return refused("compacted", "that message is behind the latest compaction, and a revert cannot reach back past it")
+    // A target before a compaction is fine: the range then holds that compaction, and model history goes back to
+    // what it was before it (which fit the window when the target was delivered).
     const since = snapshotsSinceDelivery(this.store.readEvents(this.id), target.seq)
     const messages = projection.messages.filter((message) => message.seq >= target.seq && message.excluded === null).length
     return this.restoreTo({ kind: "revert", fromSeq: target.seq, messageId: target.id, messages }, since.target, since.timeline, options, since.timeline[0]?.seq ?? target.seq)
@@ -2320,6 +2591,18 @@ async function retainSnapshots(
     gc: "auto",
     ...(mode === "archived" ? { keepLast: 0 } : { keepLast: core.limits.snapshotKeepLast, olderThanMs: core.limits.snapshotMaxAgeMs }),
   })
+}
+
+/** The usage of several calls that served one thing, added up; `null` when none reported any. */
+function addUsage(total: Usage | null, next: Usage | null): Usage | null {
+  if (next === null) return total
+  if (total === null) return next
+  return {
+    inputTokens: total.inputTokens + next.inputTokens,
+    cachedInputTokens: total.cachedInputTokens + next.cachedInputTokens,
+    outputTokens: total.outputTokens + next.outputTokens,
+    reasoningTokens: total.reasoningTokens + next.reasoningTokens,
+  }
 }
 
 const ABORTED = Symbol("aborted")

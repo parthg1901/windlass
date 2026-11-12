@@ -239,11 +239,13 @@ const tampered = show("Not sent: request 4 again, built from the rewritten histo
 
 console.log("\nAn allowed break: the session is compacted, so history restarts at the checkpoint.")
 append(
-  event("compaction.started", { messageId: m("cmp_1"), trigger: "manual" }),
+  event("compaction.started", { messageId: m("cmp_1"), trigger: "manual", mode: "normal", keepFromSeq: seqOf("usr_3"), prompt: "Summarise the conversation so far.", tokensBefore: 0 }),
   event("compaction.ended", {
     messageId: m("cmp_1"),
     summary: "The user wants forecast temperatures in Celsius with one decimal. src/forecast.ts was edited; tests were not run.",
-    keepFromSeq: seqOf("usr_3"),
+    source: "model",
+    detail: null,
+    tokensAfter: 0,
     usage: null,
   }),
 )

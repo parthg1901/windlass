@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import {
+  CONTINUE_SENTENCE,
   DEFAULT_CHECKPOINT_LIMITS,
   HISTORY_SENTENCE,
+  LAST_WORDS_HEADING,
+  NO_SUMMARY_ADVICE,
+  NO_SUMMARY_STATEMENT,
   INDEX_HEADING,
   QUOTES_HEADING,
   buildCheckpoint,
@@ -136,5 +140,46 @@ describe("buildCheckpoint", () => {
     const script = new Script().checkpoint("old summary mentions src/ghost/file.ts", 1).user("hello")
     const checkpoint = buildCheckpoint({ summary: "s", earlier: script.messages })
     expect(checkpoint.index.files).toEqual([])
+  })
+})
+
+describe("a checkpoint without a summary", () => {
+  test("says so, and carries the assistant's last words, the index and the user's messages", () => {
+    const checkpoint = buildCheckpoint({ summary: null, earlier: session().messages })
+    const text = checkpoint.text
+    expect(text).toContain(NO_SUMMARY_STATEMENT)
+    expect(text).toContain(`${LAST_WORDS_HEADING}\n[seq 4] The crash is at src/importer/csv.ts:142. I fixed it in commit 3f9a2c1.`)
+    expect(text).toContain("- `bun test test/importer --bail` → exit 1, exit 0")
+    expect(text).toContain("> Thanks. Now use port 9417 for the mock server, not 8081.")
+    expect(text.endsWith(`${HISTORY_SENTENCE} ${NO_SUMMARY_ADVICE}`)).toBe(true)
+    // In the order: statement, last words, index, quotes, tools.
+    const order = [NO_SUMMARY_STATEMENT, LAST_WORDS_HEADING, INDEX_HEADING, QUOTES_HEADING, HISTORY_SENTENCE].map((part) => text.indexOf(part))
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(order.every((position) => position > 0)).toBe(true)
+  })
+
+  test("is deterministic and stays within the checkpoint's whole budget on a long session", () => {
+    const build = () => {
+      const script = new Script()
+      for (let turn = 0; turn < 60; turn += 1) {
+        script.user(`Request ${turn}: ${filler(120, turn)}`)
+        script.step({ text: filler(200, turn), calls: [read(`src/module-${turn}/index.ts`, filler(50, turn)), shell(`bun test test/module-${turn}`, `error: failure ${turn}\n${filler(40, turn)}`, 1)] })
+      }
+      return buildCheckpoint({ summary: null, earlier: script.messages })
+    }
+    const checkpoint = build()
+    expect(build().text).toBe(checkpoint.text)
+    expect(checkpoint.tokens).toBeLessThanOrEqual(DEFAULT_COMPACTION_CONFIG.summaryMaxTokens + DEFAULT_COMPACTION_CONFIG.checkpointExtraMaxTokens)
+    expect(checkpoint.unquoted).toBeGreaterThan(0)
+  })
+})
+
+describe("a checkpoint taken while the work was in progress", () => {
+  test("tells the model to carry on, after the quotes and before the tools", () => {
+    const text = buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages, inProgress: true }).text
+    expect(text).toContain(CONTINUE_SENTENCE)
+    expect(text.indexOf(QUOTES_HEADING)).toBeLessThan(text.indexOf(CONTINUE_SENTENCE))
+    expect(text.indexOf(CONTINUE_SENTENCE)).toBeLessThan(text.indexOf(HISTORY_SENTENCE))
+    expect(buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages }).text).not.toContain(CONTINUE_SENTENCE)
   })
 })

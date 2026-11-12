@@ -49,7 +49,7 @@ import {
   textEnded,
 } from "../store/scripted.ts"
 
-/** The prompt the stand-in loop appends for a compaction call. The log does not store it; the exporter is told. */
+/** What callers used to tell the exporter. The log stores each compaction's prompt now, and this one is deliberately another. */
 export const COMPACTION_PROMPT = "Summarise the conversation so far so that the work can continue from the summary alone."
 
 /** Builds a step request from a projection. The real builder unless a test seeds a bug. */
@@ -100,7 +100,7 @@ export class Loop {
   /** One model call, built from the state now stored, recorded in the ledger as the loop records it. */
   call(messageId: string, attempt: number, outcome: "ok" | "error" | "aborted" = "ok", purpose: "step" | "compaction" = "step") {
     const request =
-      purpose === "compaction" ? buildCompactionRequest(this.projection, COMPACTION_PROMPT) : this.builder(this.projection, { toolChoice: "auto" })
+      purpose === "compaction" ? buildCompactionRequest(this.projection, {}, m(messageId)) : this.builder(this.projection, { toolChoice: "auto" })
     const blocks = hashRequest(request)
     const id = `${this.id}_r${++this.calls}` as RequestId
     this.store.beginRequest({ id, sessionId: this.id, messageId: m(messageId), attempt, purpose, model: request.params.model, blocks })
@@ -156,8 +156,15 @@ export interface TraceScript {
   /** True when nothing in it may break the prefix: the report must name no harness-caused miss. */
   readonly clean: boolean
   readonly breaks: Readonly<Record<number, readonly string[]>>
-  /** The declared reasons `prefixlens report` must show as intentional breaks, by 0-based record. */
+  /** The reasons the records declare, by 0-based record. */
   readonly intentional: Readonly<Record<number, readonly string[]>>
+  /**
+   * The declared breaks `prefixlens report` must show as intentional, by
+   * 0-based record, when that is not all of `intentional`: a report lists a
+   * declared break only where a miss followed, and a summary request that
+   * leaves a tail out reads everything it shares with the request before it.
+   */
+  readonly reported?: Readonly<Record<number, readonly string[]>>
   readonly run: (loop: Loop) => void
 }
 
@@ -321,7 +328,7 @@ export const SCRIPTS: readonly TraceScript[] = [
   {
     name: "compaction",
     clean: false,
-    // Call 0 and 1 are the two turns, 2 is the compaction call (it extends call 1), 3 follows the compaction.
+    // Call 0 and 1 are the two turns, 2 is the compaction call (nothing is kept, so it extends call 1), 3 follows the compaction.
     breaks: { 3: ["compaction"] },
     intentional: { 3: ["compaction"] },
     run(loop) {
@@ -330,13 +337,49 @@ export const SCRIPTS: readonly TraceScript[] = [
       loop.answer("1", "a1", "Fixed the typo in the README.")
       loop.prompt("2", "Run the tests.")
       loop.answer("2", "a2", "The tests pass.")
-      loop.add(enqueue("u3", "Now update the changelog."), executionStarted("exe_3"), compactionStarted("c1"))
+      loop.add(enqueue("u3", "Now update the changelog."), executionStarted("exe_3"))
+      loop.add(compactionStarted("c1", loop.projection.lastSeq + 1))
       loop.call("c1", 1, "ok", "compaction")
-      loop.add(compactionEnded("c1", loop.seqOf("u2")))
+      loop.add(compactionEnded("c1"))
       // A new baseline after the compaction, with the instructions re-read.
       loop.add(baselineSet("You are a coding agent working in /work/demo. The changelog is CHANGES.md."))
       loop.add(deliver("u3"))
       loop.answer("3", "a3", "Added an entry to CHANGES.md.")
+    },
+  },
+  {
+    // A compaction in the middle of a turn that keeps the turn's last two steps, whose first summary is rejected
+    // and repaired. Calls 0 to 2 are the steps; 3 is the summary request, which fails in transport and has no
+    // record; 4 is the same request again, which leaves the kept steps out and says so; 5 is the repair, which
+    // extends it; 6 follows the compaction. (Keeping only the last step would need no declaration: the summary
+    // request is then the last step's own request plus the prompt.)
+    name: "compaction with a kept tail and a repair",
+    clean: false,
+    breaks: { 6: ["compaction"] },
+    intentional: { 3: ["compaction"], 5: ["compaction"] },
+    reported: { 5: ["compaction"] },
+    run(loop) {
+      opening(loop)
+      loop.add(enqueue("u1", `Find where the port is set. ${pasted("server.ts")}`), executionStarted("exe_1"), deliver("u1"))
+      loop.start("a1")
+      loop.read("a1", "call_1", "server.ts", pasted("server.ts"))
+      loop.add(stepEnded("a1", "tool_calls"))
+      loop.start("a2")
+      loop.read("a2", "call_1", "config.ts", pasted("config.ts"))
+      loop.add(stepEnded("a2", "tool_calls"))
+      loop.start("a3")
+      loop.read("a3", "call_1", "env.ts", pasted("env.ts"))
+      loop.add(stepEnded("a3", "tool_calls"))
+      // The cut is before the second step: the last two steps stay word for word.
+      loop.add(compactionStarted("c1", loop.seqOf("a2")))
+      loop.call("c1", 1, "error", "compaction")
+      loop.call("c1", 2, "ok", "compaction")
+      loop.add(event("compaction.repair_requested", { messageId: "c1" as MessageId, attempt: 3, answer: "The port is set in config.ts.", prompt: "That summary does not have the required form." }))
+      loop.call("c1", 3, "ok", "compaction")
+      loop.add(event("compaction.ended", { messageId: "c1" as MessageId, summary: "Checkpoint: the port is set in config.ts.", source: "repaired", detail: null, tokensAfter: 0, usage: null }))
+      loop.add(baselineSet())
+      loop.start("a4")
+      loop.add(textEnded("a4", "The port comes from env.ts."), stepEnded("a4"), executionSucceeded("exe_1"))
     },
   },
   {

@@ -16,6 +16,7 @@ import { type CheckConfig, type Config, type ConfigFile, resolveConfig } from ".
 import type { NewEvent, SessionSettings, StoredEvent } from "../../src/event/durable.ts"
 import type { EngineEvent } from "../../src/engine/channel.ts"
 import type { Clock } from "../../src/engine/clock.ts"
+import type { CompactionConfig } from "../../src/context/policy.ts"
 import type { EngineLimits } from "../../src/engine/constants.ts"
 import {
   type Diagnostic,
@@ -322,6 +323,10 @@ export interface HarnessOptions {
   readonly workspace?: FakeWorkspace
   /** The configuration file of the project. Without one there is no configuration and nothing is verified. */
   readonly config?: ConfigFile
+  /** The context window the engine is told every model has, in tokens. Without one nobody knows it, and nothing is compacted ahead of time. */
+  readonly contextWindow?: number
+  /** The compaction policy's numbers, where a test needs others than the defaults. */
+  readonly compaction?: Partial<CompactionConfig>
 }
 
 export class Harness {
@@ -377,7 +382,9 @@ export class Harness {
       clock: this.clock,
       random: this.options.random ?? (() => 0),
       // The manual clock's sleeps take no time, so a wall-clock limit would end every model call at once.
-      limits: { modelCallTimeoutMs: 0, ...this.options.limits },
+      limits: { modelCallTimeoutMs: 0, compactionCallTimeoutMs: 0, ...this.options.limits },
+      ...(this.options.contextWindow === undefined ? {} : { contextWindow: () => this.options.contextWindow! }),
+      ...(this.options.compaction === undefined ? {} : { compaction: this.options.compaction }),
       snapshots: this.workspace === null ? null : this.workspace.open,
       loadConfig: this.options.config === undefined ? null : async () => ({ config: this.config ?? resolveConfig({}), projectDir: "/repo" }),
       runChecks: this.checks.run,
@@ -567,6 +574,9 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  *   so "the same state as before" and "a new state" are compared.
  * - check evidence: `afterSeq`, and per check `durationMs`, `fingerprint`
  *   and `outputPath` (see `evidence` in the scenario vocabulary).
+ * - a compaction's sizes: `tokensBefore` and `tokensAfter` (the loop records
+ *   its own estimates of the request before and after). The cut, the mode,
+ *   the prompt, the repair and the checkpoint text are compared.
  */
 export function comparable(events: readonly NewEvent[]): Plain[] {
   const labels = new Map<string, string>()
@@ -591,6 +601,8 @@ export function comparable(events: readonly NewEvent[]): Plain[] {
     if (item.type === "checks.finished") data.evidence = plainEvidence(item.data.evidence)
     if ((item.type === "execution.succeeded" || item.type === "turn.ended") && "evidence" in item.data.verification)
       data.verification = { ...item.data.verification, evidence: plainEvidence(item.data.verification.evidence) }
+    if (item.type === "compaction.started") data.tokensBefore = 0
+    if (item.type === "compaction.ended") data.tokensAfter = 0
     if (item.type === "baseline.set") return { type: item.type, data: { sources: data.sources } }
     if (item.type === "instruction.appended") return { type: item.type, data: { messageId: data.messageId, source: data.source } }
     return { type: item.type, data }

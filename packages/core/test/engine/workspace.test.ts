@@ -14,11 +14,13 @@ import { firstDelivery, handEditedPaths, snapshotsAfter, snapshotsSinceDelivery 
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
 import type { Json } from "../../src/json.ts"
+import { selectModelHistory } from "../../src/message/history.ts"
 import { openSnapshots } from "../../src/snapshot/index.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
+import { SUMMARY } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, removeHarnessDirectories } from "./harness.ts"
 
 const scratch: string[] = []
@@ -332,13 +334,13 @@ describe("revert", () => {
       expect(files.get("a.ts")).toBe("2\n")
     }))
 
-  test("does not reach back past a compaction", async () => {
+  test("a revert to before a compaction undoes the compaction for the model, and its undo brings the checkpoint back", async () => {
     const h = new Harness({ workspace: new FakeWorkspace({ "a.ts": "1\n" }) })
     try {
       h.provider.enqueue(
         say("A long explanation."),
         [script.fail("context_overflow", { message: "The input exceeds the context window", status: 400 })],
-        say("The user asked; it was explained."),
+        say(SUMMARY),
         say("Second answer."),
         say("Third answer."),
       )
@@ -349,12 +351,36 @@ describe("revert", () => {
       h.session.send("Third.")
       await h.settled()
       const users = h.session.projection().messages.filter((message) => message.kind === "user")
-      // The first turn is in the summary. The second prompt was kept verbatim by the compaction, which was written after it.
-      for (const behind of [users[0]!, users[1]!])
-        expect(await h.session.revert({ messageId: behind.id })).toMatchObject({ kind: "refused", reason: "compacted" })
+      const compaction = h.session.projection().session.compaction
+      const view = () => selectModelHistory(h.session.projection()).messages.map((message) => message.kind)
+      expect(compaction).not.toBeNull()
+      expect(view()[0]).toBe("compaction")
+
+      // The last turn, after the compaction: as before.
       expect(await h.session.revert()).toMatchObject({ kind: "reverted", plan: { messageId: users[2]!.id } })
-      // Now the latest user message in history is the kept one, behind the compaction.
-      expect(await h.session.revert()).toMatchObject({ kind: "refused", reason: "compacted" })
+      expect(h.session.projection().session.compaction).toEqual(compaction)
+
+      // The second prompt is behind the compaction: it went into the checkpoint. Reverting to before it takes the
+      // compaction out too, and history is what it was before that prompt: the first turn, word for word.
+      expect(await h.session.revert()).toMatchObject({ kind: "reverted", plan: { messageId: users[1]!.id } })
+      expect(h.session.projection().session.compaction).toBeNull()
+      expect(view()).toEqual(["user", "assistant"])
+
+      // Undoing that revert puts the turn and the checkpoint back.
+      expect(await h.session.undoRevert()).toMatchObject({ kind: "reverted" })
+      expect(h.session.projection().session.compaction).toEqual(compaction)
+      expect(view()[0]).toBe("compaction")
+
+      // Reverted again, and work carries on from the uncompacted history: the next request is the first turn plus the new prompt.
+      expect(await h.session.revert()).toMatchObject({ kind: "reverted", plan: { messageId: users[1]!.id } })
+      h.provider.enqueue(say("Another answer."))
+      h.session.send("Something else.")
+      await h.settled()
+      const request = h.provider.requests.at(-1)!
+      expect(request.input.map((item) => item.type)).toEqual(["message", "assistant_text", "message"])
+      expect(JSON.stringify(request.input)).toContain("A long explanation.")
+      expect(JSON.stringify(request.input)).not.toContain("Checkpoint of the earlier conversation")
+      expect(h.diagnostics).toEqual([])
       h.verify()
     } finally {
       await h.dispose()

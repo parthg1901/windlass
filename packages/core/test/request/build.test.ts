@@ -21,6 +21,7 @@ import { requestBlocks } from "../../src/request/request.ts"
 import { sortTools } from "../../src/tool/tool.ts"
 import {
   BASELINE,
+  COMPACTION_PROMPT,
   ENCRYPTED,
   MODEL,
   OPTIONS,
@@ -523,7 +524,7 @@ describe("compaction", () => {
     s.step({ parts: [{ text: "One." }] })
     const before = canonicalJson(s.request())
     const messageId = "cmp_x" as MessageId
-    s.apply(event("compaction.started", { messageId, trigger: "manual" }))
+    s.apply(event("compaction.started", { messageId, trigger: "manual", mode: "normal", keepFromSeq: s.seq + 1, prompt: COMPACTION_PROMPT, tokensBefore: 0 }))
     expect(canonicalJson(s.request())).toBe(before)
     s.apply(event("compaction.failed", { messageId, error: { kind: "crashed" } }))
     expect(canonicalJson(s.request())).toBe(before)
@@ -538,15 +539,59 @@ describe("compaction", () => {
     expect(s.input()).toEqual([harness("compaction", "second summary")])
   })
 
+  const started = (id: string, keepFromSeq: number) =>
+    event("compaction.started", { messageId: id as MessageId, trigger: "auto", mode: "normal", keepFromSeq, prompt: COMPACTION_PROMPT, tokensBefore: 0 })
+
   test("the compaction request is the step request plus one developer prompt, with tool calls off", () => {
     const s = prompted()
     s.step({ parts: [{ call: "call_1" }] })
     const step = s.request()
-    const compaction = buildCompactionRequest(s.projection, "Summarise the conversation so far.")
+    // Nothing is kept: the cut is the compaction's own position.
+    s.apply(started("cmp_x", s.seq + 1))
+    const compaction = buildCompactionRequest(s.projection)
     expect(comparePrefix(hashRequest(step), hashRequest(compaction))).toEqual({ extension: true, appended: 1 })
-    expect(compaction.input.at(-1)).toEqual(developer("Summarise the conversation so far."))
+    expect(compaction.input.at(-1)).toEqual(developer(COMPACTION_PROMPT))
     expect(compaction.tools).toEqual(step.tools)
     expect(compaction.toolChoice).toBe("none")
+  })
+
+  test("with a kept tail it is the step request of the part before the cut, plus the prompt", () => {
+    const s = prompted("first")
+    s.step({ parts: [{ call: "call_1", output: "old" }] })
+    const before = s.request()
+    const kept = s.user("second")
+    s.step({ parts: [{ call: "call_1", output: "new" }] })
+    s.apply(started("cmp_x", kept))
+    const compaction = buildCompactionRequest(s.projection)
+    expect(compaction.input).toEqual([...before.input, developer(COMPACTION_PROMPT)])
+    expect(JSON.stringify(compaction.input)).not.toContain("second")
+  })
+
+  test("after a repair was asked for, the rejected answer and the follow-up prompt are appended, and the first request is its prefix", () => {
+    const s = prompted()
+    s.step({ parts: [{ text: "One." }] })
+    s.apply(started("cmp_x", s.seq + 1))
+    const first = buildCompactionRequest(s.projection)
+    s.apply(event("compaction.repair_requested", { messageId: "cmp_x" as MessageId, attempt: 2, answer: "## Goal\n- x", prompt: "Fix the form." }))
+    const second = buildCompactionRequest(s.projection)
+    expect(comparePrefix(hashRequest(first), hashRequest(second))).toEqual({ extension: true, appended: 2 })
+    expect(second.input.slice(-2)).toEqual([{ type: "assistant_text", text: "## Goal\n- x", providerData: null }, developer("Fix the form.")])
+    // Named, as the trace exporter does: it must be the one that is open.
+    expect(buildCompactionRequest(s.projection, {}, "cmp_x" as MessageId)).toEqual(second)
+    expect(() => buildCompactionRequest(s.projection, {}, "cmp_other" as MessageId)).toThrow("compaction cmp_other is not open")
+    // Once it has ended, history starts from its checkpoint and there is no summary request to build.
+    s.apply(event("compaction.ended", { messageId: "cmp_x" as MessageId, summary: "Checkpoint.", source: "repaired", detail: null, tokensAfter: 0, usage: null }))
+    expect(() => buildCompactionRequest(s.projection)).toThrow("no compaction is open")
+    expect(() => buildCompactionRequest(s.projection, {}, "cmp_x" as MessageId)).toThrow("compaction cmp_x is not open")
+  })
+
+  test("a second compaction's request starts from the first checkpoint", () => {
+    const s = prompted()
+    s.step({ parts: [{ text: "One." }] })
+    s.compact((seq) => seq, "first summary")
+    s.step({ parts: [{ text: "Two." }] })
+    s.apply(started("cmp_y", s.seq + 1))
+    expect(buildCompactionRequest(s.projection).input).toEqual([harness("compaction", "first summary"), { type: "assistant_text", text: "Two.", providerData: null }, developer(COMPACTION_PROMPT)])
   })
 })
 

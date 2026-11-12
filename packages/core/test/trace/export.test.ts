@@ -139,8 +139,9 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
       if (call.record === null) continue
       // Declared in the spec's own hint now (format 1.1), not in the extension field.
       expect(Object.keys(call.record.x_light_harness!)).not.toContain("prefix_break")
-      expect(call.record.hints?.filter((hint) => hint.kind === "prefix_break") ?? []).toEqual(call.declared as never)
-      if (call.breaks.length === 0) expect(call.declared).toEqual([])
+      expect(call.record.hints?.filter((hint) => hint.kind === "prefix_break") ?? []).toEqual(call.hinted as never)
+      // A summary request that leaves a kept tail out declares that itself; no event in the log is that break.
+      if (call.breaks.length === 0 && call.row.purpose !== "compaction") expect(call.declared).toEqual([])
     }
     const declared = Object.fromEntries(
       result.records.flatMap((entry, index) => {
@@ -212,10 +213,11 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
       const intentional = Object.fromEntries(
         missed.flatMap((turn) => (turn.declared_break?.intentional ? [[turn.turn - 1, turn.declared_break.reasons]] : [])),
       )
-      expect(intentional).toEqual(script.intentional as never)
+      const reported = script.reported ?? script.intentional
+      expect(intentional).toEqual(reported as never)
       // Every declaration was checked against two full requests, not taken at its word.
       for (const turn of missed) if (turn.declared_break) expect(turn.declared_break.checked).toBe(true)
-      expect(json.summary.intentional.breaks).toBe(Object.keys(script.intentional).length)
+      expect(json.summary.intentional.breaks).toBe(Object.keys(reported).length)
     },
   )
 })
@@ -299,13 +301,34 @@ describe("a request that cannot be shown to be the one sent", () => {
     local.close()
   })
 
-  test("a compaction call is usage-only, not a mismatch, when the compaction prompt is not given", () => {
+  test("a compaction call is rebuilt from the log alone: the prompt it was sent with is stored", () => {
     const { local, loop } = fresh("compaction")
-    const result = exportSession(local, loop.id)
-    expect(result.unverified.map((entry) => entry.reason)).toEqual(["compaction_prompt_unknown"])
-    const compaction = result.calls.find((call) => call.row.purpose === "compaction")!
-    expect(compaction.record).toMatchObject({ fidelity: "usage-only", hints: [{ kind: "compaction_call" }] })
+    // Nothing is told to the exporter, and what callers used to tell it is not used.
+    for (const options of [{}, { compactionPrompt: "another prompt" }]) {
+      const result = exportSession(local, loop.id, options)
+      expect(result.unverified).toEqual([])
+      const compaction = result.calls.find((call) => call.row.purpose === "compaction")!
+      expect(compaction.record).toMatchObject({ fidelity: "full-request", hints: [{ kind: "compaction_call" }] })
+      const last = compaction.request!.blocks.at(-1)!
+      expect(JSON.stringify(last.content)).toContain("Summarise the conversation so far.")
+    }
     local.close()
+  })
+
+  test("every attempt of a compaction's summary request is rebuilt: retries, and the repair with the rejected answer", () => {
+    const { result } = session("compaction with a kept tail and a repair")
+    expect(result.unverified).toEqual([])
+    const summary = result.calls.filter((call) => call.row.purpose === "compaction")
+    expect(summary.map((call) => [call.row.attempt, call.row.outcome, call.request === null ? null : call.request.blocks.length])).toEqual([
+      [1, "error", summary[1]!.request!.blocks.length],
+      [2, "ok", summary[1]!.request!.blocks.length],
+      [3, "ok", summary[1]!.request!.blocks.length + 2],
+    ])
+    // The retry is the same request; the repair is that request plus the rejected answer and the follow-up prompt.
+    expect(summary[1]!.request!.blocks.map((block) => block.hash)).toEqual(summary[0]!.request!.blocks.map((block) => block.hash))
+    expect(summary[2]!.request!.blocks.slice(0, -2).map((block) => block.hash)).toEqual(summary[1]!.request!.blocks.map((block) => block.hash))
+    expect(JSON.stringify(summary[2]!.request!.blocks.at(-2)!.content)).toContain("The port is set in config.ts.")
+    expect(JSON.stringify(summary[2]!.request!.blocks.at(-1)!.content)).toContain("That summary does not have the required form.")
   })
 
   test("a ledger written with other call options is reported, not exported as full-request", () => {
@@ -327,6 +350,24 @@ describe("hints", () => {
     ])
     expect(hints[0]).toEqual([])
     expect(hints[1]).toEqual([])
+  })
+
+  test("a summary request that leaves the kept tail out declares how much of the previous request it keeps", () => {
+    const { result } = session("compaction with a kept tail and a repair")
+    const hints = result.records.map((entry) => entry.hints ?? [])
+    // Records: steps 0 to 2, the summary request (its first attempt failed without usage and has no record), the repair, the step after.
+    const summary = result.calls.find((call) => call.row.purpose === "compaction" && call.record !== null)!
+    expect(hints[3]).toEqual([
+      { kind: "compaction_call" },
+      // Everything but the appended prompt is an unchanged prefix of the step request before it. No `compaction` hint: that would allow a break anywhere.
+      { kind: "prefix_break", reason: "compaction", after: summary.request!.blocks.length - 1, detail: "summary request of compaction c1: the kept tail is left out" },
+    ])
+    // The repair extends the summary request, so it declares nothing.
+    expect(hints[4]).toEqual([{ kind: "compaction_call" }])
+    expect(hints[5]).toEqual([
+      { kind: "compaction", detail: "compaction c1" },
+      { kind: "prefix_break", reason: "compaction", detail: "compaction c1" },
+    ])
   })
 
   test("a model change declares a model switch, an effort change a settings change", () => {

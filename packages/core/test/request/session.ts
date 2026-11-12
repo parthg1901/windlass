@@ -23,6 +23,9 @@ import { type BlockHash, hashRequest } from "../../src/request/prefix.ts"
 import type { InputItem, ModelRequest, RequestParams } from "../../src/request/request.ts"
 import type { ToolSpec } from "../../src/tool/tool.ts"
 
+/** The prompt the scripted compactions freeze into `compaction.started`. */
+export const COMPACTION_PROMPT = "Summarise the conversation so far."
+
 export const MODEL = "gpt-test"
 
 export const PARAMS: RequestParams = {
@@ -321,9 +324,10 @@ export class Script {
   compact(keep: (compactionSeq: number) => number, summary = "Summary so far."): number {
     this.claim()
     const messageId = this.id("cmp")
-    this.apply(event("compaction.started", { messageId, trigger: "auto" }))
-    const seq = this.seq
-    this.apply(event("compaction.ended", { messageId, summary, keepFromSeq: keep(seq), usage: null }))
+    // The cut is decided when the compaction starts; its own message gets the next seq.
+    const seq = this.seq + 1
+    this.apply(event("compaction.started", { messageId, trigger: "auto", mode: "normal", keepFromSeq: keep(seq), prompt: COMPACTION_PROMPT, tokensBefore: 0 }))
+    this.apply(event("compaction.ended", { messageId, summary, source: "model", detail: null, tokensAfter: 0, usage: null }))
     return seq
   }
 

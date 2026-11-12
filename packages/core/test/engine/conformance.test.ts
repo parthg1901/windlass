@@ -28,15 +28,18 @@ import {
   EFFECT_UNKNOWN,
   INTERRUPTED_READ,
   NOT_STARTED,
+  NOT_A_SUMMARY,
   RESUME_CAP,
   SESSION,
   STEP_LIMIT,
+  SUMMARY,
   type Scenario,
   allEvents,
   c,
   continuationNote,
   interruptMarker,
   m,
+  measured,
   usage,
 } from "../scenarios/script.ts"
 import { EDIT } from "../scenarios/revert.ts"
@@ -49,6 +52,12 @@ const U = script.usage(usage)
 const ENCRYPTED = { providerData: { encrypted_content: "gAAAA" } }
 const call = (callId: string, name: string, input: Json) => script.toolCall(callId, name, input)
 const answer = (value: string) => [script.text(value), U]
+/** A call the provider measured at `inputTokens` input tokens: a file read, or an answer. */
+const at = (inputTokens: number) => script.usage(measured(inputTokens))
+const readsAt = (path: string, inputTokens: number) => [call("call_1", "read", { path }), at(inputTokens)]
+const answersAt = (value: string, inputTokens: number) => [script.text(value), at(inputTokens)]
+/** What the model returns for a summary request: no usage is scripted, as for a stream that was only read for its text. */
+const summary = (value = SUMMARY) => [script.text(value)]
 
 /** The prompts the scenario's user types, in order. */
 const prompts = (scenario: Scenario) =>
@@ -397,24 +406,6 @@ const PLAYS: Record<string, Play> = {
     expect(h.provider.requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "auto", "none"])
     expect(h.provider.requests[3]!.tools).toEqual(h.provider.requests[0]!.tools)
     expect(h.provider.prefixBreaks()).toEqual([])
-  },
-
-  "Context overflow before any output: compact once and rebuild": async (h, say) => {
-    h.provider.enqueue(
-      answer("A long explanation."),
-      [script.fail("context_overflow", { message: "The input exceeds the context window", status: 400 })],
-      [script.text("The user asked about the architecture; it was explained.")],
-      answer("The reducer folds events."),
-    )
-    h.create().send(say[0]!)
-    await h.settled()
-    h.session.send(say[1]!)
-    await h.settled()
-    // The compaction request is the step request of what is summarised plus one prompt, with tools switched off.
-    const [first, , compaction] = h.provider.requests
-    expect(compaction!.toolChoice).toBe("none")
-    expect(compaction!.input.slice(0, -1)).toEqual([...first!.input, { type: "assistant_text", text: "A long explanation.", providerData: null }])
-    expect(compaction!.input.at(-1)).toMatchObject({ type: "message", role: "developer" })
   },
 
   // ---------------------------------------------------------------- refusal
@@ -769,6 +760,142 @@ const PLAYS: Record<string, Play> = {
     expect(await h.session.undoRevert()).toMatchObject({ kind: "reverted", plan: { messages: 3 } })
     expect(h.workspace!.files.get("notes.md")).toContain("reviewed")
   },
+
+  // ---------------------------------------------------------------- compaction
+
+  "A compaction that is due waits for the next user message": async (h, say) => {
+    h.provider.enqueue(readsAt("a.test.ts", 4800), answersAt("The expectation is wrong: 1 + 1 is 2.", 4900), summary(), answersAt("Changed the expectation to 2.", 1200))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    h.create().send(say[0]!)
+    await h.settled()
+    // Over the early threshold, and nothing was compacted in the middle of the turn.
+    expect(h.provider.calls).toHaveLength(2)
+    h.session.send(say[1]!)
+    await h.settled()
+    const [, second, compaction, after] = h.provider.requests
+    // The summary request is the first turn's last request plus that step's answer and one prompt, with tools switched off.
+    expect(compaction!.toolChoice).toBe("none")
+    expect(compaction!.tools).toEqual(second!.tools)
+    expect(compaction!.input.slice(0, second!.input.length)).toEqual([...second!.input])
+    expect(compaction!.input.at(-1)).toMatchObject({ type: "message", role: "developer" })
+    expect(JSON.stringify(compaction!.input)).not.toContain(say[1]!)
+    // The request after it: the checkpoint, the new message, nothing else.
+    expect(after!.input).toHaveLength(2)
+    expect(after!.input[1]).toEqual({ type: "message", role: "user", content: [{ type: "text", text: say[1]! }] })
+  },
+
+  "A compaction in the middle of a long turn": async (h, say) => {
+    h.provider.enqueue(
+      readsAt("build.ts", 3000),
+      readsAt("bundle.ts", 4000),
+      readsAt("compile.ts", 6000),
+      summary(),
+      answersAt("Every entry is compiled one after the other, and the cache is never read.", 1500),
+    )
+    h.tools.on("read", "await bundle(entries)", "for (const entry of entries) await compile(entry)", "const cache = new Map()")
+    h.create().send(say[0]!)
+    await h.settled()
+    const [, , third, compaction, after] = h.provider.requests
+    // Keeping only the last step, the summary request is that step's own request plus the prompt: all of it is read from the cache.
+    expect(compaction!.input.slice(0, -1)).toEqual([...third!.input])
+    // After it: the checkpoint, then the kept step's call and its result, word for word.
+    expect(after!.input.map((item) => item.type)).toEqual(["message", "tool_call", "tool_result"])
+    expect(after!.input[2]).toMatchObject({ output: "const cache = new Map()" })
+    const checkpointText = JSON.stringify(after!.input[0])
+    expect(checkpointText).toContain(say[0]!)
+    expect(checkpointText).toContain("The work was in progress when this checkpoint was taken.")
+  },
+
+  "The provider rejects a request as too large: compact aggressively and rebuild": async (h, say) => {
+    h.provider.enqueue(
+      answer("A long explanation."),
+      [script.fail("context_overflow", { message: "The input exceeds the context window", status: 400 })],
+      summary(),
+      answer("The reducer folds events."),
+    )
+    h.create().send(say[0]!)
+    await h.settled()
+    h.session.send(say[1]!)
+    await h.settled()
+    const [first, , compaction, rebuilt] = h.provider.requests
+    // The summary request is the step request of what is summarised (here everything, the new prompt included) plus one prompt.
+    expect(compaction!.toolChoice).toBe("none")
+    expect(compaction!.input.slice(0, -1)).toEqual([...first!.input, { type: "assistant_text", text: "A long explanation.", providerData: null }, { type: "message", role: "user", content: [{ type: "text", text: say[1]! }] }])
+    // The rebuilt request is the checkpoint alone; it quotes the prompt it replaced.
+    expect(rebuilt!.input).toHaveLength(1)
+    expect(JSON.stringify(rebuilt!.input)).toContain(say[1]!)
+  },
+
+  "A compaction that frees too little: the hold, one aggressive attempt, then nothing more": async (h, say) => {
+    h.provider.enqueue(
+      readsAt("migrations/0001.sql", 6000),
+      summary(),
+      readsAt("migrations/0002.sql", 5900),
+      readsAt("migrations/0003.sql", 7500),
+      summary(),
+      readsAt("migrations/0004.sql", 7500),
+      answersAt("Four migrations; the last one drops the index the third one made.", 7600),
+    )
+    h.tools.on("read", "CREATE TABLE ledger (id INTEGER)", "ALTER TABLE ledger ADD COLUMN total", "CREATE INDEX ledger_total", "DROP INDEX ledger_total")
+    h.create().send(say[0]!)
+    await h.settled()
+    // Two summary calls in seven: the hold and the last request cost none.
+    expect(h.provider.requests.map((request) => request.toolChoice)).toEqual(["auto", "none", "auto", "auto", "none", "auto", "auto"])
+  },
+
+  "An invalid summary is repaired": async (h, say) => {
+    h.provider.enqueue(readsAt("a.test.ts", 6000), summary(NOT_A_SUMMARY), summary(), answersAt("The expectation is wrong: 1 + 1 is 2.", 1300))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    h.create().send(say[0]!)
+    await h.settled()
+    const [, first, repair] = h.provider.requests
+    // The repair request is the first summary request plus the rejected answer and what to fix.
+    expect(repair!.input.slice(0, first!.input.length)).toEqual([...first!.input])
+    expect(repair!.input.slice(first!.input.length).map((item) => item.type)).toEqual(["assistant_text", "message"])
+    expect(repair!.input.at(-2)).toMatchObject({ text: NOT_A_SUMMARY })
+    // The ledger numbers the two calls as attempts of the compaction.
+    expect(h.store.readRequests(h.session.id).filter((row) => row.purpose === "compaction").map((row) => row.attempt)).toEqual([1, 2])
+  },
+
+  "A summary that is still invalid: the checkpoint is built without the model": async (h, say) => {
+    h.provider.enqueue(readsAt("a.test.ts", 6000), summary(NOT_A_SUMMARY), summary(NOT_A_SUMMARY), answersAt("The expectation is wrong: 1 + 1 is 2.", 1300))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    h.create().send(say[0]!)
+    await h.settled()
+    // No third summary call.
+    expect(h.provider.calls).toHaveLength(4)
+    const checkpointText = JSON.stringify(h.provider.requests[3]!.input[0])
+    expect(checkpointText).toContain("No summary of the earlier conversation could be produced")
+    expect(checkpointText).toContain(say[0]!)
+    expect(checkpointText).not.toContain(NOT_A_SUMMARY)
+  },
+
+  "Cancel while the summary is being written": async (h, say) => {
+    h.provider.enqueue(readsAt("a.test.ts", 6000), [script.text("## Goal\n- Find out", { partial: true }), script.hang()], summary(), answersAt("The expectation is wrong: 1 + 1 is 2.", 1300))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "compaction.started")
+    // The summary is streaming; nothing of it is shown or stored.
+    while (h.provider.calls.length < 2 || h.provider.calls[1]!.events.length < 2) await new Promise((resolve) => setTimeout(resolve, 1))
+    h.session.interrupt()
+    await h.settled()
+    expect(h.session.projection().session.execution).toBeNull()
+    h.session.send(say[1]!)
+    await h.settled()
+  },
+
+  "The process dies during a compaction": async (h, say) => {
+    h.provider.enqueue(readsAt("a.test.ts", 6000))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    // Dead the moment the compaction's start is durable: the summary request is never sent.
+    h.dieAt("compaction.started")
+    h.create().send(say[0]!)
+    await h.settled()
+    h.provider.enqueue(summary(), answersAt("The expectation is wrong: 1 + 1 is 2.", 1300))
+    h.restart()
+    await h.settled()
+    expect(h.provider.calls).toHaveLength(3)
+  },
 }
 
 /**
@@ -776,12 +903,6 @@ const PLAYS: Record<string, Play> = {
  * the exact difference. Everything else must match its scenario as written.
  */
 const DEVIATIONS: Record<string, { readonly why: string; readonly expected: (events: readonly NewEvent[]) => NewEvent[] | Promise<NewEvent[]> }> = {
-  "Context overflow before any output: compact once and rebuild": {
-    why:
-      "The loop writes `baseline.set` right after `compaction.ended`, because `prepareInstructions` returns one whenever a compaction is newer than the baseline (context rule 2: a compaction is the one place the frozen prefix is rebuilt). The scenario goes from `compaction.ended` straight to `step.started`.",
-    expected: (events) =>
-      events.flatMap((item): NewEvent[] => (item.type === "compaction.ended" ? [item, events.find((other) => other.type === "baseline.set")!] : [item])),
-  },
   "Malformed tool arguments": {
     why:
       "The text that answers malformed arguments is the tool runtime's, not the loop's: it names the tool, quotes what it received and says how to call again. The scenario's wording was written before the runtime existed. Outcome, order and every other event are the scenario's.",
@@ -814,6 +935,7 @@ describe("the loop writes each scenario's events", () => {
         limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET },
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
         ...(setup?.config === undefined ? {} : { config: setup.config }),
+        ...(scenario.contextWindow === undefined ? {} : { contextWindow: scenario.contextWindow }),
       })
       try {
         await play(h, prompts(scenario))
@@ -834,7 +956,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(58)
+    expect(scenarios).toHaveLength(65)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

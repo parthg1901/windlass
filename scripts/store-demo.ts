@@ -151,11 +151,13 @@ append(event("history.reverted", { fromSeq: seqOf("msg_u2"), restore: null }))
 append(
   event("inbox.enqueued", { messageId: m("msg_u3"), origin: null, delivery: "steer", content: [{ type: "text", text: "Just remove the offset." }] }),
   event("execution.started", { executionId: x("exe_3") }),
-  event("compaction.started", { messageId: m("msg_c1"), trigger: "auto" }),
+  event("compaction.started", { messageId: m("msg_c1"), trigger: "auto", mode: "normal", keepFromSeq: seqOf("msg_a2"), prompt: "Summarise the conversation so far.", tokensBefore: 0 }),
   event("compaction.ended", {
     messageId: m("msg_c1"),
     summary: "The forecast was off by a day because today() subtracts 24h (commit a1b2c3).",
-    keepFromSeq: seqOf("msg_a2"),
+    source: "model",
+    detail: null,
+    tokensAfter: 0,
     usage,
   }),
   event("inbox.delivered", { messageId: m("msg_u3") }),

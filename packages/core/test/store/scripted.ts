@@ -97,12 +97,16 @@ export const synthetic = (id: string, origin: string, value: string) =>
   event("synthetic.appended", { messageId: m(id), origin, content: text(value) })
 export const instruction = (id: string, source: string, value: string, fingerprint: string | null = `${source}:${value}`) =>
   event("instruction.appended", { messageId: m(id), source, text: value, fingerprint })
-export const compactionStarted = (id: string) => event("compaction.started", { messageId: m(id), trigger: "auto" })
-export const compactionEnded = (id: string, keepFromSeq: number) =>
+/** A compaction begins. `keepFromSeq` is the cut: the first `seq` kept word for word. */
+export const compactionStarted = (id: string, keepFromSeq: number) =>
+  event("compaction.started", { messageId: m(id), trigger: "auto", mode: "normal", keepFromSeq, prompt: "Summarise the conversation so far.", tokensBefore: 0 })
+export const compactionEnded = (id: string) =>
   event("compaction.ended", {
     messageId: m(id),
     summary: "The user asked for a README fix; it was edited and the tests pass.",
-    keepFromSeq,
+    source: "model",
+    detail: null,
+    tokensAfter: 0,
     usage,
   })
 export const compactionFailed = (id: string) =>
@@ -348,11 +352,11 @@ export const SCRIPTS: Record<string, Script> = {
     d.add(created(), baselineSet())
     exchange(d, "1", "Fix the typo in README.md.", "Fixed.")
     exchange(d, "2", "Now run the tests.", "All 40 tests pass.")
-    d.add(enqueue("u3", "Add a CHANGELOG entry."), executionStarted("exe_3"), compactionStarted("c1"))
+    d.add(enqueue("u3", "Add a CHANGELOG entry."), executionStarted("exe_3"), compactionStarted("c1", d.seqOf("u2")))
     d.request("r1", "c1", "compaction", "error")
-    d.add(compactionFailed("c1"), compactionStarted("c2"))
+    d.add(compactionFailed("c1"), compactionStarted("c2", d.seqOf("u2")))
     d.request("r2", "c2", "compaction", "ok")
-    d.add(compactionEnded("c2", d.seqOf("u2")))
+    d.add(compactionEnded("c2"))
     // The baseline may change only after a compaction.
     d.add(baselineSet("You are a coding agent working in /work/demo. Prefer small diffs."))
     d.add(deliver("u3"), stepStarted("a3"), textEnded("a3", "Added."), stepEnded("a3"), executionSucceeded("exe_3"))

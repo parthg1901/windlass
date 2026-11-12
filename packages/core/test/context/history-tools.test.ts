@@ -47,17 +47,25 @@ describe("rendering", () => {
     const text = renderSearchOutput({
       query: "port",
       matched: 3,
-      hits: [{ seq: 7, role: "user", tool: null, snippet: "use port 9417" }, { seq: 9, role: "tool", tool: "shell", snippet: "…listening on 9417" }],
+      hits: [
+        { seq: 7, role: "user", tool: null, snippet: "use port 9417", offset: 0 },
+        { seq: 9, role: "tool", tool: "shell", snippet: "…listening on 9417", offset: 31_250 },
+      ],
     })
     expect(text).toBe(
-      '3 messages match "port"; showing 2, best first.\n[seq 7] user: use port 9417\n[seq 9] tool (shell): …listening on 9417\nRead one in full with history_read and its seq.',
+      '3 messages match "port"; showing 2, best first.\n[seq 7] user: use port 9417\n[seq 9, offset 31250] tool (shell): …listening on 9417\nRead one with history_read and its seq; pass the offset to start at the match in a long message.',
     )
   })
 
   test("read output, whole and in parts", () => {
-    expect(renderReadOutput({ seq: 3, role: "user", tool: null, text: "hello", offset: 0, totalChars: 5, nextOffset: null })).toBe("[seq 3] user\nhello")
-    expect(renderReadOutput({ seq: 3, role: "assistant", tool: null, text: "abc", offset: 0, totalChars: 9, nextOffset: 3 })).toBe(
+    const alone = { previousSeq: null, nextSeq: null }
+    expect(renderReadOutput({ seq: 3, role: "user", tool: null, text: "hello", offset: 0, totalChars: 5, nextOffset: null, ...alone })).toBe("[seq 3] user\nhello")
+    expect(renderReadOutput({ seq: 3, role: "assistant", tool: null, text: "abc", offset: 0, totalChars: 9, nextOffset: 3, ...alone })).toBe(
       "[seq 3] assistant, characters 0-3 of 9\nabc\n[More: call history_read with offset 3.]",
+    )
+    // The messages around it are named, so the model can read on in either direction.
+    expect(renderReadOutput({ seq: 12, role: "user", tool: null, text: "hello", offset: 0, totalChars: 5, nextOffset: null, previousSeq: 9, nextSeq: 14 })).toBe(
+      "[seq 12] user\nhello\n[the message before it is seq 9; the one after it is seq 14.]",
     )
   })
 })

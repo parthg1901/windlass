@@ -50,6 +50,7 @@ function renderScenario(scenario: Scenario, number: number): string {
     scenario.description,
     `*Provider:* ${scenario.provider}.`,
     ...(scenario.setup === undefined ? [] : [describeSetup(scenario.setup)]),
+    ...(scenario.contextWindow === undefined ? [] : [`*Context window:* ${scenario.contextWindow.toLocaleString("en-US")} tokens.`]),
     ["```", ...lines, "```"].join("\n"),
     `*UI:* ${view(end).map(describeMessage).join(" · ")}. *Claim:* ${describeClaim(end)}.${end.inbox.length > 0 ? ` *Inbox:* ${end.inbox.map((item) => `${item.messageId} (${item.delivery})`).join(", ")}.` : ""}`,
     `*Model sees next:* ${historyIds(end).join(", ") || "nothing"}.`,

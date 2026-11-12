@@ -45,7 +45,10 @@
  * compaction cannot help and the execution fails (the rule the engine applies
  * today as `compactedInVain`).
  */
+import type { CompactionMode } from "../event/durable.ts"
 import type { SizeEstimate } from "./estimate.ts"
+
+export type { CompactionMode }
 
 export interface CompactionConfig {
   /** From this share of the usable window, compaction is due at the next user-message boundary. */
@@ -73,8 +76,6 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   summaryMaxTokens: 2_500,
   checkpointExtraMaxTokens: 3_500,
 }
-
-export type CompactionMode = "normal" | "aggressive"
 
 /** What the latest compaction of the session achieved. The engine derives it from the log. */
 export interface CompactionOutcome {

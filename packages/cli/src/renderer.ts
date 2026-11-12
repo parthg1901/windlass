@@ -108,7 +108,8 @@ export class PrettyRenderer implements Sink {
   private turn: Turn | null = null
   private executing = false
   private openStep: string | null = null
-  private compacting = false
+  /** The compaction in progress: the size it started from, and whether the model was asked to fix its summary. */
+  private compacting: { readonly tokensBefore: number; repairing: boolean } | null = null
   private retrying = false
   /** How the previous process left the current execution, for the resume line. */
   private cutOff: "crash" | "shutdown" | null = null
@@ -247,15 +248,32 @@ export class PrettyRenderer implements Sink {
         return
       }
       case "compaction.started":
-        this.compacting = true
+        this.compacting = { tokensBefore: event.data.tokensBefore, repairing: false }
         return
-      case "compaction.ended":
-        this.compacting = false
+      case "compaction.repair_requested":
+        if (this.compacting !== null) this.compacting.repairing = true
+        return
+      case "compaction.ended": {
+        const before = this.compacting?.tokensBefore ?? 0
+        this.compacting = null
         this.addUsage(event.data.usage)
-        this.line("info", [seg(`${SYMBOL.compact} `, "cyan"), seg("compacted the conversation"), seg(" · older messages are now a summary for the model", "dim")])
+        // The sizes are the harness's estimates of the next request, before and after.
+        const sizes = before > 0 && event.data.tokensAfter > 0 ? ` · about ${count(before)} → ${count(event.data.tokensAfter)} tokens` : ""
+        if (event.data.source === "fallback") {
+          // No summary could be had. The session carries on; the user is told what the model now works from.
+          this.line("info", [seg(`${SYMBOL.compact} `, "yellow"), seg("compacted the conversation without a summary", "yellow"), seg(sizes, "dim")])
+          for (const line of wrap(`Why: ${event.data.detail ?? "the model produced no usable summary"}.`, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+          for (const line of wrap("The model continues from a list of the files, commands and errors so far and your own messages, and can search the full conversation.", this.width - 2))
+            this.line("info", [seg(`  ${line}`, "dim")])
+          return
+        }
+        this.line("info", [seg(`${SYMBOL.compact} `, "cyan"), seg("compacted the conversation"), seg(sizes, "dim")])
+        for (const line of wrap("Earlier messages are now a checkpoint; the model can still search them.", this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+        if (event.data.detail !== null) for (const line of wrap(`Note: ${event.data.detail}.`, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
         return
+      }
       case "compaction.failed":
-        this.compacting = false
+        this.compacting = null
         this.setError(errorClass(event.data.error), event.data.error.kind === "provider" ? event.data.error.error.requestId : null)
         this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg(`compaction failed: ${stepErrorText(event.data.error)}`, "red")])
         return
@@ -680,7 +698,7 @@ export class PrettyRenderer implements Sink {
     this.continuing = false
     this.openStep = null
     this.retrying = false
-    this.compacting = false
+    this.compacting = null
     this.running.clear()
     this.open.clear()
     this.progress.clear()
@@ -792,7 +810,7 @@ export class PrettyRenderer implements Sink {
       return `⋯ ${what}${tail === undefined || this.stop === "shown" ? "" : ` · ${tail}`}`
     }
     if (this.stop === "shown") return "⋯ stopping"
-    if (this.compacting) return "⋯ compacting the conversation"
+    if (this.compacting !== null) return this.compacting.repairing ? "⋯ compacting the conversation · asking the model to fix its summary" : "⋯ compacting the conversation"
     if (this.retrying) return "⋯ waiting to retry"
     if (this.openStep !== null) {
       const reasoning = this.reasoningBuffers.get(this.openStep)
@@ -925,6 +943,11 @@ function trimLeadingDot(tail: readonly Segment[], text: string): Segment[] {
 function suffix(parts: readonly (string | null)[]): string {
   const present = parts.filter((part): part is string => part !== null && part !== "")
   return present.length === 0 ? "" : ` · ${present.join(" · ")}`
+}
+
+/** A token count as a person reads it: `41,200`. */
+function count(value: number): string {
+  return value.toLocaleString("en-US")
 }
 
 /** The token line of a turn; when `width` is too small for it, the short form without the cached and reasoning counts. */

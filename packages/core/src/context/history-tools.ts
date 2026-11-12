@@ -1,14 +1,18 @@
 /**
- * The two history tools the engine will add after a compaction, so the model
- * can recover exact details from the original messages, which the event log
- * keeps forever. This file defines their names, their model-facing
- * descriptions and schemas, the input and output shapes, and the text an
- * output is shown to the model as. Storage access is the engine's.
+ * The two history tools, with which the model recovers exact details from
+ * the original messages, which the event log keeps forever: also the ones a
+ * compaction took out of its view. This file defines their names, their
+ * model-facing descriptions and schemas, the input and output shapes, and the
+ * text an output is shown to the model as. The search itself is in
+ * `history-search.ts` and in the store (`Store.searchMessages`); the tools
+ * the engine offers are in `engine/history.ts`.
  *
  * Messages are addressed by their `seq`, the one ordering the log has. The
  * search covers every message that is not excluded (reverted or refused),
  * including those still in view; a compaction checkpoint is not searched,
- * because it is derived text.
+ * because it is derived text. A hit says where in the message the match is
+ * (`offset`), and a read names the messages before and after, so the model
+ * can read around a hit.
  */
 import type { Content } from "../content.ts"
 import type { Json } from "../json.ts"
@@ -48,6 +52,8 @@ export interface HistorySearchHit {
   readonly tool: string | null
   /** Text around the best match, at most `snippetChars`, with `…` where it was cut. */
   readonly snippet: string
+  /** Where the match starts in the message's text as `history_read` returns it: the `offset` to read from in a long message. */
+  readonly offset: number
 }
 
 export interface HistorySearchOutput {
@@ -75,16 +81,24 @@ export interface HistoryReadOutput {
   readonly totalChars: number
   /** Where the next part starts, or `null` when this part reaches the end. */
   readonly nextOffset: number | null
+  /** The `seq` of the message before this one and of the one after it, for reading around it; `null` at either end. */
+  readonly previousSeq: number | null
+  readonly nextSeq: number | null
 }
 
 export const historySearchTool: ToolSpec = {
   name: HISTORY_SEARCH,
   description:
-    "Search the full earlier conversation of this session, including the part replaced by the checkpoint, for exact text: file paths, commands and their output, error messages, values and what the user said. Returns the best matching messages with their seq and a snippet. Use history_read with a seq to read that message in full.",
+    "Search the full stored conversation of this session, including everything a compaction checkpoint replaced, for file paths, commands and their output, error messages, values and what the user said. Use it when you need an exact detail that is no longer in view; what is still in view needs no search. Returns the best matching messages, each with its seq, where in the message the match is, and a snippet. Use history_read with a seq to read that message.",
   inputSchema: {
     type: "object",
     properties: {
-      query: { type: "string", minLength: 1, description: 'Words to find; matching ignores case. Put an exact phrase in double quotes, e.g. "exit code 3".' },
+      query: {
+        type: "string",
+        minLength: 1,
+        description:
+          'Words to find; matching ignores case, and messages that hold more of the words rank higher. Identifiers work as written (src/config/schema.ts, ECONNRESET, a1b2c3d). Put an exact phrase in double quotes, e.g. "exit code 3".',
+      },
       role: { type: "string", enum: ["user", "assistant", "tool", "harness"], description: "Only search messages of this role. Default: all." },
       limit: { type: "integer", minimum: 1, maximum: HISTORY_LIMITS.maxHits, description: `How many hits to return. Default ${HISTORY_LIMITS.defaultHits}.` },
     },
@@ -96,12 +110,12 @@ export const historySearchTool: ToolSpec = {
 export const historyReadTool: ToolSpec = {
   name: HISTORY_READ,
   description:
-    "Read one message of the earlier conversation of this session in full, by the seq that history_search returned: its text, and for a step each tool call with its input and complete result. Long messages are returned in parts; pass the returned next offset to continue.",
+    "Read one message of the stored conversation of this session, by the seq that history_search returned: its text, and for a step each tool call with its input and complete result. Long messages are returned in parts: pass the offset a search hit gave to start at the match, or the returned next offset to continue. The result names the messages before and after, so you can read around it.",
   inputSchema: {
     type: "object",
     properties: {
       seq: { type: "integer", minimum: 1, description: "The seq of the message, from history_search." },
-      offset: { type: "integer", minimum: 0, description: "Character offset to start from. Default 0." },
+      offset: { type: "integer", minimum: 0, description: "Character offset to start from: the one a search hit gave, or the next offset of the previous part. Default 0." },
       limit: { type: "integer", minimum: 1, maximum: HISTORY_LIMITS.maxReadChars, description: `Characters to return. Default ${HISTORY_LIMITS.defaultReadChars}.` },
     },
     required: ["seq"],
@@ -157,8 +171,10 @@ export function parseHistoryReadInput(text: string): Parsed<HistoryReadInput> {
 export function renderSearchOutput(output: HistorySearchOutput): string {
   if (output.hits.length === 0) return `No earlier message matches ${JSON.stringify(output.query)}.`
   const head = `${output.matched} message${output.matched === 1 ? "" : "s"} match ${JSON.stringify(output.query)}; showing ${output.hits.length}, best first.`
-  const hits = output.hits.map((hit) => `[seq ${hit.seq}] ${hit.role}${hit.tool === null ? "" : ` (${hit.tool})`}: ${hit.snippet}`)
-  return [head, ...hits, `Read one in full with ${HISTORY_READ} and its seq.`].join("\n")
+  const hits = output.hits.map(
+    (hit) => `[seq ${hit.seq}${hit.offset > 0 ? `, offset ${hit.offset}` : ""}] ${hit.role}${hit.tool === null ? "" : ` (${hit.tool})`}: ${hit.snippet}`,
+  )
+  return [head, ...hits, `Read one with ${HISTORY_READ} and its seq; pass the offset to start at the match in a long message.`].join("\n")
 }
 
 /** The tool result text of a read. */
@@ -167,7 +183,12 @@ export function renderReadOutput(output: HistoryReadOutput): string {
   const range =
     output.offset === 0 && output.nextOffset === null ? "" : `, characters ${output.offset}-${end} of ${output.totalChars}`
   const more = output.nextOffset === null ? "" : `\n[More: call ${HISTORY_READ} with offset ${output.nextOffset}.]`
-  return `[seq ${output.seq}] ${output.role}${output.tool === null ? "" : ` (${output.tool})`}${range}\n${output.text}${more}`
+  const around = [
+    ...(output.previousSeq === null ? [] : [`the message before it is seq ${output.previousSeq}`]),
+    ...(output.nextSeq === null ? [] : [`the one after it is seq ${output.nextSeq}`]),
+  ]
+  const neighbours = around.length === 0 ? "" : `\n[${around.join("; ")}.]`
+  return `[seq ${output.seq}] ${output.role}${output.tool === null ? "" : ` (${output.tool})`}${range}\n${output.text}${more}${neighbours}`
 }
 
 function record(value: Json): { readonly [key: string]: Json } | null {

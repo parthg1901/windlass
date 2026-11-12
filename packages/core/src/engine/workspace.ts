@@ -114,8 +114,9 @@ export function coverageOf(snapshot: Pick<Snapshot, "skipped" | "nestedRepositor
  * retention therefore never removes:
  *
  * - the snapshot current when each user message was delivered that a revert
- *   can still go back to (in the model's history, after the latest
- *   compaction): what the workspace is restored to;
+ *   can still go back to (every one that is not excluded, also before a
+ *   compaction: a revert may go back past one): what the workspace is
+ *   restored to;
  * - everything recorded since the latest of those messages: an undo of the
  *   last turn tells the agent's changes from changes made by hand (or by
  *   another session) by comparing them. A revert further back, across
@@ -137,8 +138,7 @@ export function neededSnapshots(projection: Projection, events: readonly StoredE
   keep(session.workspace.snapshot?.id)
   keep(session.verification.verified?.snapshot)
   keep(session.verification.latest?.snapshot)
-  const floor = session.compaction?.seq ?? 0
-  const targets = projection.messages.filter((message) => message.kind === "user" && message.excluded === null && message.seq > floor)
+  const targets = projection.messages.filter((message) => message.kind === "user" && message.excluded === null)
   for (const message of targets) keep(snapshotsSinceDelivery(events, message.seq).target)
   const latest = targets.at(-1)
   if (latest !== undefined) for (const item of snapshotsSinceDelivery(events, latest.seq).timeline) keep(item.id)

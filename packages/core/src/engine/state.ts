@@ -7,6 +7,7 @@
 import type { Content } from "../content.ts"
 import { type NewEvent, HARNESS_ORIGIN, event } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
+import type { CompactionOutcome } from "../context/policy.ts"
 import { type AssistantMessage, type Message, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
 import type { ToolEffect } from "../tool/tool.ts"
 import { safeDecode } from "../validate.ts"
@@ -74,14 +75,14 @@ export function notedThisTurn(projection: Projection, origin: string): boolean {
  * turn, so the content that tripped the filter is not sent again (retry rule
  * 7). A turn begins with the first input delivered under the claim, and again
  * with every queued item, which is delivered only once the turn before it had
- * its answer. A range may not reach back past the latest compaction.
+ * its answer. The range may hold a compaction made in the middle of that turn:
+ * it is excluded with the turn, since its checkpoint quotes the turn's input.
  */
 export function refusedTurnStart(projection: Projection, refused: AssistantMessage): number {
   const startedSeq = claimOf(projection).startedSeq
   const inputs = projection.messages.filter((message) => message.seq > startedSeq && delivered(message))
   const start = inputs.findLast((message, index) => index === 0 || ("delivery" in message && message.delivery === "queue"))
-  const floor = (projection.session.compaction?.seq ?? 0) + 1
-  return Math.max(start?.seq ?? refused.seq, floor)
+  return start?.seq ?? refused.seq
 }
 
 /**
@@ -173,6 +174,48 @@ export function settledBy(messageId: MessageId, part: ToolCallPart, texts: Orpha
 /** A harness message of one of the loop's origins. */
 export function note(messageId: MessageId, origin: (typeof HARNESS_ORIGIN)[keyof typeof HARNESS_ORIGIN], value: string) {
   return event("synthetic.appended", { messageId, origin, content: [{ type: "text", text: value }] })
+}
+
+// ---------------------------------------------------------------- the context window
+
+/** Whether an assistant message put something into history: a completed step, or a failed one that had output. */
+function spoke(message: Message): boolean {
+  return message.kind === "assistant" && (message.status === "completed" || (message.status === "failed" && message.parts.length > 0))
+}
+
+/**
+ * Whether the next model call is the first after new input entered history:
+ * the model has said nothing since the latest delivered input that is still
+ * in history. This is where a compaction that is due "soon" happens.
+ */
+export function atInputBoundary(projection: Projection): boolean {
+  const messages = projection.messages.filter((message) => message.excluded === null)
+  const input = messages.findLastIndex(delivered)
+  return input !== -1 && !messages.slice(input + 1).some(spoke)
+}
+
+/**
+ * What the compaction in force achieved, for the policy: its mode, the size
+ * it started from, and the size of the first request after it, as the
+ * provider measured it once that call has run and as estimated until then.
+ */
+export function compactionOutcome(projection: Projection): CompactionOutcome | null {
+  const current = projection.session.compaction
+  if (current === null) return null
+  const checkpoint = projection.messages.findLast((message) => message.id === current.messageId)
+  if (checkpoint?.kind !== "compaction") return null
+  const measured = projection.messages.find((message) => message.kind === "assistant" && message.seq > current.seq && message.status === "completed" && message.usage !== null)
+  return {
+    mode: checkpoint.mode,
+    before: checkpoint.tokensBefore,
+    after: (measured?.kind === "assistant" ? measured.usage?.inputTokens : undefined) ?? checkpoint.tokensAfter ?? 0,
+  }
+}
+
+/** Whether a step completed after the compaction in force. When none did, the request about to be sent is the first built from it. */
+export function completedStepSinceCompaction(projection: Projection): boolean {
+  const current = projection.session.compaction
+  return current === null || projection.messages.some((message) => message.kind === "assistant" && message.seq > current.seq && message.status === "completed")
 }
 
 // ---------------------------------------------------------------- the verification gate

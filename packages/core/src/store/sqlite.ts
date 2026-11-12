@@ -57,6 +57,7 @@ import {
   oneOf,
 } from "../validate.ts"
 import { type BlobStore, createFileBlobStore, createMemoryBlobStore } from "./blobs.ts"
+import { createHistoryIndex } from "./history-index.ts"
 import { CONNECTION_PRAGMAS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema.ts"
 import { acquireWriterLock, isBusy } from "./sqlite-lock.ts"
 import {
@@ -93,11 +94,15 @@ export interface SqliteStoreOptions extends OpenStoreOptions {
   readonly parentLog?: (sessionId: SessionId, range: { readonly afterSeq: number; readonly limit: number }) => readonly StoredEvent[]
   /** Open without the writer lock and without writing anything, next to the process that writes the file. */
   readonly readOnly?: boolean
+  /** Search messages by scanning them, without the full-text index: what a SQLite build without FTS5 does. For tests. */
+  readonly disableFullTextSearch?: boolean
 }
 
 export interface SqliteStore extends Store {
   /** The connection, for tests and diagnostics. Never write through it: only `append` changes session state. */
   readonly database: Database
+  /** Whether `searchMessages` uses the full-text index; `false` when this SQLite build has no FTS5 or the store only reads. */
+  readonly fullTextSearch: () => boolean
 }
 
 /** The database was created by a different schema version, or is not a store database. A `StoreError` with code `schema_mismatch`. */
@@ -136,6 +141,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
   const writable = (what: string) => {
     if (readOnly) throw new StoreError("read_only", `${what}: ${options.path} is open for reading only`)
   }
+  const history = createHistoryIndex(database, { readOnly, decodeMessage, ...(options.disableFullTextSearch ? { disableFullText: true } : {}) })
   const cache = new Map<SessionId, Projection>()
   const listeners = new Set<(events: readonly StoredEvent[]) => void>()
 
@@ -358,6 +364,9 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
         .map((row) => decodeMessage(id, row.data)),
     readModelHistory,
     readInbox: (id) => sql.inbox.all(id).map((row) => decodeJson(inboxItem, row.data, `session ${id} inbox item`)),
+    searchMessages: (id, input) => history.search(id, input),
+    readMessageAt: (id, seq) => history.messageAt(id, seq),
+    fullTextSearch: history.fullText,
     beginRequest,
     finishRequest,
     lastRequest: (id, purpose) => {

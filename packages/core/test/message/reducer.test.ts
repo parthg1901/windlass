@@ -133,9 +133,11 @@ const synthetic = (id: string, origin = "interrupt", value = "The previous respo
   event("synthetic.appended", { messageId: m(id), origin, content: text(value) })
 const instruction = (id: string, value = "Today is Thursday.", fingerprint: string | null = "date-thursday") =>
   event("instruction.appended", { messageId: m(id), source: "date", text: value, fingerprint })
-const compactionStarted = (id: string) => event("compaction.started", { messageId: m(id), trigger: "auto" })
-const compactionEnded = (id: string, keepFromSeq: number) =>
-  event("compaction.ended", { messageId: m(id), summary: "Summary so far.", keepFromSeq, usage: null })
+/** A compaction begins. `keepFromSeq` is the cut: the first `seq` kept word for word. */
+const compactionStarted = (id: string, keepFromSeq = 1) =>
+  event("compaction.started", { messageId: m(id), trigger: "auto", mode: "normal", keepFromSeq, prompt: "Summarise the conversation so far.", tokensBefore: 0 })
+const compactionEnded = (id: string) =>
+  event("compaction.ended", { messageId: m(id), summary: "Summary so far.", source: "model", detail: null, tokensAfter: 0, usage: null })
 const reverted = (fromSeq: number) => event("history.reverted", { fromSeq, restore: null })
 
 /** A session with a delivered prompt `u1` and a running execution: seq 1..5. */
@@ -785,7 +787,7 @@ describe("interrupts", () => {
     expect(compaction.reject(interrupted("user"))).toBe("invalid_transition")
     compaction.apply(interruptRequested("shutdown"))
     expect(compaction.reject(interrupted("user"))).toBe("invalid_transition")
-    expect(compaction.reject(compactionEnded("c1", 5))).toBe("invalid_transition")
+    expect(compaction.reject(compactionEnded("c1"))).toBe("invalid_transition")
     expect(compaction.reject(event("compaction.failed", { messageId: m("c1"), error: { kind: "crashed" } }))).toBe(
       "invalid_transition",
     )
@@ -946,7 +948,7 @@ describe("going idle", () => {
     expect(log.reject(executionSucceeded())).toBe("accepted")
     // An instruction or a compaction is not something the model has to answer.
     const turn = finishedTurn()
-    turn.apply(executionStarted("exe_2"), instruction("i1"), compactionStarted("c1"), compactionEnded("c1", 15))
+    turn.apply(executionStarted("exe_2"), instruction("i1"), compactionStarted("c1", 15), compactionEnded("c1"))
     expect(turn.reject(executionSucceeded("exe_2"))).toBe("accepted")
   })
 })
@@ -1279,9 +1281,9 @@ describe("baseline and instructions", () => {
     const log = finishedTurn()
     const changed = event("baseline.set", { instructions: "New prompt.", tools: [], sources: [] })
     expect(log.reject(changed)).toBe("invalid_transition")
-    log.apply(executionStarted("exe_2"), compactionStarted("c1"))
+    log.apply(executionStarted("exe_2"), compactionStarted("c1", 13))
     expect(log.reject(changed)).toBe("invalid_transition")
-    log.apply(compactionEnded("c1", 13))
+    log.apply(compactionEnded("c1"))
     expect(log.apply(changed).baseline).toEqual({ seq: log.seq, instructions: "New prompt.", tools: [], sources: [] })
     expect(log.reject(changed)).toBe("invalid_transition")
   })
@@ -1311,7 +1313,7 @@ describe("compaction", () => {
   /** finishedTurn (u1@5, a1@6, a2@13), then a completed compaction c1 that keeps from a2. */
   function compacted(): Log {
     const log = finishedTurn()
-    log.apply(executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 13), executionSucceeded("exe_2"))
+    log.apply(executionStarted("exe_2"), compactionStarted("c1", 13), compactionEnded("c1"), executionSucceeded("exe_2"))
     return log
   }
 
@@ -1322,7 +1324,7 @@ describe("compaction", () => {
     expect(log.state!.session.open).toEqual({ kind: "compaction", messageId: m("c1") })
     expect(log.reject(stepStarted("a3"))).toBe("invalid_transition")
     expect(log.reject(executionSucceeded("exe_2"))).toBe("invalid_transition")
-    expect(log.reject(compactionEnded("a2", 13))).toBe("invalid_transition")
+    expect(log.reject(compactionEnded("a2"))).toBe("invalid_transition")
   })
 
   test("model history becomes the checkpoint, then the kept messages, then what follows", () => {
@@ -1351,34 +1353,54 @@ describe("compaction", () => {
       interruptRequested("user", "exe_2"),
       event("compaction.failed", { messageId: m("c1"), error: { kind: "interrupted", reason: "user" } }),
     )
-    expect(log.message("c1")).toMatchObject({ status: "failed", summary: null, keepFromSeq: null })
+    expect(log.message("c1")).toMatchObject({ status: "failed", summary: null, source: null, tokensAfter: null })
     expect(log.state!.session).toMatchObject({ compaction: null, open: null })
     expect(ids(selectModelHistory(log.state!).messages)).toEqual(before)
   })
 
   test("a second compaction replaces the first as the start of history", () => {
     const log = compacted()
-    log.apply(enqueue("u2"), executionStarted("exe_3"), deliver("u2"), compactionStarted("c2"))
-    const u2 = log.message("u2").seq
-    log.apply(compactionEnded("c2", u2))
+    log.apply(enqueue("u2"), executionStarted("exe_3"), deliver("u2"))
+    log.apply(compactionStarted("c2", log.message("u2").seq), compactionEnded("c2"))
     expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c2", "u2"])
   })
 
-  test("keepFromSeq must lie after the previous compaction and not after this one", () => {
+  test("the cut is decided when a compaction starts: not before the previous cut and not after the compaction itself", () => {
     const log = compacted()
-    log.apply(executionStarted("exe_3"), compactionStarted("c2"))
-    const own = log.message("c2").seq
-    expect(log.reject(compactionEnded("c2", 18))).toBe("invalid_range")
-    expect(log.reject(compactionEnded("c2", own + 1))).toBe("invalid_range")
-    expect(log.reject(compactionEnded("c2", 19))).toBe("accepted")
-    // Keeping nothing: history is the checkpoint alone.
-    log.apply(compactionEnded("c2", own))
+    log.apply(executionStarted("exe_3"))
+    const own = log.seq + 1
+    // What the first checkpoint replaced stays replaced.
+    expect(log.reject(compactionStarted("c2", 12))).toBe("invalid_range")
+    expect(log.reject(compactionStarted("c2", own + 1))).toBe("invalid_range")
+    // The cut may lie inside the tail the first compaction kept, before that compaction's own position.
+    expect(log.reject(compactionStarted("c2", 13))).toBe("accepted")
+    // Keeping nothing: the cut is the compaction's own seq, and history is the checkpoint alone.
+    log.apply(compactionStarted("c2", own))
+    expect(log.message("c2")).toMatchObject({ status: "running", keepFromSeq: own, mode: "normal", repair: null })
+    log.apply(compactionEnded("c2"))
     expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c2"])
+  })
+
+  test("a summary is repaired at most once, and only a repaired compaction ends as repaired", () => {
+    const log = finishedTurn()
+    const repair = event("compaction.repair_requested", { messageId: m("c1"), attempt: 2, answer: "## Goal\n- x", prompt: "That summary does not have the required form." })
+    const ended = (source: "model" | "repaired" | "fallback") =>
+      event("compaction.ended", { messageId: m("c1"), summary: "Checkpoint.", source, detail: null, tokensAfter: 10, usage: null })
+    // No compaction is open.
+    expect(log.reject(repair)).toBe("invalid_transition")
+    log.apply(executionStarted("exe_2"), compactionStarted("c1", 13))
+    expect(log.reject(ended("repaired"))).toBe("invalid_transition")
+    log.apply(repair)
+    expect(log.message("c1")).toMatchObject({ status: "running", repair: { attempt: 2, answer: "## Goal\n- x" } })
+    expect(log.reject(repair)).toBe("invalid_transition")
+    log.apply(ended("repaired"))
+    expect(log.message("c1")).toMatchObject({ status: "completed", source: "repaired", summary: "Checkpoint.", tokensAfter: 10 })
+    expect(log.state!.session.compaction).toEqual({ messageId: m("c1"), seq: log.message("c1").seq, keepFromSeq: 13 })
   })
 
   test("excluded messages stay excluded inside the kept range", () => {
     const log = finishedTurn()
-    log.apply(reverted(13), executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 6))
+    log.apply(reverted(13), executionStarted("exe_2"), compactionStarted("c1", 6), compactionEnded("c1"))
     expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a1"])
   })
 })
@@ -1403,13 +1425,38 @@ describe("revert", () => {
     expect(log.reject(reverted(5))).toBe("invalid_transition")
   })
 
-  test("the range must be inside the log and after the latest compaction", () => {
+  test("the range must be inside the log", () => {
     const log = finishedTurn()
     expect(log.reject(reverted(log.seq + 1))).toBe("invalid_range")
-    log.apply(executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 13), executionSucceeded("exe_2"))
-    expect(log.reject(reverted(13))).toBe("invalid_range")
-    expect(log.reject(reverted(18))).toBe("invalid_range")
-    expect(log.reject(reverted(19))).toBe("accepted")
+    expect(log.reject(reverted(log.seq))).toBe("accepted")
+  })
+
+  test("a revert to before a compaction undoes it for the model, and undoing the revert brings it back", () => {
+    const log = finishedTurn()
+    log.apply(executionStarted("exe_2"), compactionStarted("c1", 13), compactionEnded("c1"), executionSucceeded("exe_2"))
+    const compaction = log.state!.session.compaction
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a2"])
+    // The range holds the compaction: it is excluded like any message, and history starts where it did before it.
+    log.apply(reverted(13))
+    expect(log.message("c1").excluded).toBe("reverted")
+    expect(log.state!.session.compaction).toBeNull()
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["u1", "a1"])
+    log.apply(event("history.restored", { revertSeq: log.seq, restore: null }))
+    expect(log.message("c1").excluded).toBeNull()
+    expect(log.state!.session.compaction).toEqual(compaction)
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a2"])
+  })
+
+  test("a revert that holds the second of two compactions goes back to the first", () => {
+    const log = finishedTurn()
+    log.apply(executionStarted("exe_2"), compactionStarted("c1", 13), compactionEnded("c1"), executionSucceeded("exe_2"))
+    log.apply(enqueue("u2"), executionStarted("exe_3"), deliver("u2"))
+    const u2 = log.message("u2").seq
+    log.apply(compactionStarted("c2", u2), compactionEnded("c2"), stepStarted("a3"), stepEnded("a3"), executionSucceeded("exe_3"))
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c2", "u2", "a3"])
+    log.apply(reverted(u2))
+    expect(log.state!.session.compaction).toMatchObject({ messageId: m("c1") })
+    expect(ids(selectModelHistory(log.state!).messages)).toEqual(["c1", "a2"])
   })
 
   test("a refused message stays refused when it is later reverted", () => {
@@ -1467,7 +1514,7 @@ describe("fork", () => {
 
   test("a fork inherits the latest compaction", () => {
     const parent = finishedTurn()
-    parent.apply(executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 13), executionSucceeded("exe_2"))
+    parent.apply(executionStarted("exe_2"), compactionStarted("c1", 13), compactionEnded("c1"), executionSucceeded("exe_2"))
     const child = new Log("ses_2" as SessionId, parent.state)
     child.apply(forkCreated(parent.seq))
     expect(ids(selectModelHistory(child.state!).messages)).toEqual(["c1", "a2"])
@@ -1512,7 +1559,7 @@ describe("reducer properties", () => {
 
   test("folding the same log again gives an equal projection", () => {
     const log = finishedTurn()
-    log.apply(reverted(13), enqueue("u2"), executionStarted("exe_2"), compactionStarted("c1"), compactionEnded("c1", 6))
+    log.apply(reverted(13), enqueue("u2"), executionStarted("exe_2"), compactionStarted("c1", 6), compactionEnded("c1"))
     expect(reduceAll(log.events)).toEqual(log.state)
     expect(reduceAll([])).toBeNull()
   })
@@ -1523,8 +1570,8 @@ describe("reducer properties", () => {
       enqueue("u2", "more", "queue"),
       enqueue("s1", "wake", "steer", "timer"),
       executionStarted("exe_2"),
-      compactionStarted("c1"),
-      compactionEnded("c1", 13),
+      compactionStarted("c1", 13),
+      compactionEnded("c1"),
       stepStarted("a3"),
       called("a3", "call_1"),
       started("a3", "call_1"),

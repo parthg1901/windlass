@@ -8,6 +8,7 @@
  */
 import { blobRef, content } from "../content.ts"
 import {
+  compactionMode,
   delivery,
   finishReason,
   instructionFingerprint,
@@ -167,16 +168,32 @@ export const message = variant("kind", {
     /** Time of the terminal event. */
     endedAt: nullable(integer(0)),
   }),
-  /** A compaction and, once completed, its checkpoint text. */
+  /**
+   * A compaction and, once completed, its checkpoint text. Never excluded by
+   * itself; a revert or a refusal whose range holds it excludes it, and it
+   * then no longer applies.
+   */
   compaction: object({
     kind: literal("compaction"),
     ...base,
     trigger: oneOf(["auto", "manual", "overflow"]),
+    mode: compactionMode,
     status: oneOf(["running", "completed", "failed"]),
+    /** The cut: the first `seq` kept verbatim after the checkpoint. Decided before the summary is asked for. */
+    keepFromSeq: integer(1),
+    /** The prompt of the summary request, frozen. */
+    prompt: string,
+    /** The one repair of the summary: the rejected answer and the follow-up prompt, and the ledger attempt that first carries them. */
+    repair: nullable(object({ attempt: integer(2), answer: string, prompt: string })),
     /** The checkpoint text for the model, set when `status` is `completed`. */
     summary: nullable(string),
-    /** First `seq` kept verbatim after the checkpoint, set when `status` is `completed`. */
-    keepFromSeq: nullable(integer(1)),
+    /** Where the checkpoint's summary came from, set when `status` is `completed`. */
+    source: nullable(oneOf(["model", "repaired", "fallback"])),
+    /** Why it is a fallback, or what is still wrong with the summary that was used. */
+    detail: nullable(string),
+    /** The estimated size of the next request when the compaction was decided, and with its checkpoint in place. */
+    tokensBefore: integer(0),
+    tokensAfter: nullable(integer(0)),
     usage: nullable(usage),
     error: nullable(stepError),
     endedAt: nullable(integer(0)),
@@ -308,7 +325,7 @@ export const sessionState = object({
   ),
   /** The step, compaction, check run or restore that has started and not yet reached its terminal event. */
   open: nullable(openWork),
-  /** The latest completed compaction. Model history starts from it. */
+  /** The latest completed compaction that is not excluded. Model history starts from it. */
   compaction: nullable(object({ messageId, seq: integer(1), keepFromSeq: integer(1) })),
   /**
    * What the log says about the working tree.

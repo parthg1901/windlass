@@ -22,7 +22,9 @@
  * The only events after which the next request may not extend the previous
  * one are `compaction.ended` (with the `baseline.set` that follows it),
  * `history.reverted`, `step.refused` and `settings.changed`; see
- * `build-break.ts`.
+ * `build-break.ts`. A checkpoint is frozen text and the messages a compaction
+ * keeps render exactly as they did before it, so the request after the first
+ * one that follows a compaction extends it like any other.
  *
  * The `params` block comes from stored state too: `model` and
  * `reasoningEffort` are the session's settings (`session.created`,
@@ -43,7 +45,7 @@
  * | user message                             | `user` message, content verbatim |
  * | synthetic message (any origin, appended or delivered from the inbox, including the interrupt marker) | `user` message wrapped in `<harness origin="…">` … `</harness>` |
  * | instruction message                      | `developer` message, text verbatim; dropped when it is older than the baseline in force |
- * | compaction checkpoint                    | first item: `user` message, the summary wrapped in `<harness origin="compaction">`; then the kept messages by these same rules |
+ * | compaction checkpoint                    | first item: `user` message, the checkpoint text wrapped in `<harness origin="compaction">`; then the kept messages by these same rules |
  * | assistant, `running` or `refused`        | nothing |
  * | assistant text part                      | `assistant_text` |
  * | assistant reasoning part                 | `reasoning`, or nothing (rules below) |
@@ -94,6 +96,7 @@
  * text parts are skipped, and a message left with no content is skipped.
  */
 import { type Content, text } from "../content.ts"
+import type { MessageId } from "../id.ts"
 import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { AssistantMessage, Message, Projection } from "../message/message.ts"
 import type { InputItem, ModelRequest, RequestParams } from "./request.ts"
@@ -137,6 +140,8 @@ export type RequestBuildErrorCode =
   | "unsettled_call"
   /** The compaction that history starts from has no summary. The reducer never produces this. */
   | "checkpoint_without_summary"
+  /** A summary request was asked for and no compaction is open (or the one named does not exist). */
+  | "no_compaction"
 
 /** The stored state cannot be rendered as a valid request. Nothing is sent. */
 export class RequestBuildError extends Error {
@@ -170,13 +175,33 @@ export function buildRequestFromHistory(history: ModelHistory, options: BuildOpt
 }
 
 /**
- * The compaction request: the step request plus one prompt (context rule 7),
- * with tools kept and tool calls switched off. Because it extends the step
- * request, summarising reads the history from the cache.
+ * The summary request of a compaction: the step request of the part before
+ * the cut plus one prompt (context rule 7), with the tool list kept and tool
+ * calls switched off. Because it is that step request plus appended items, it
+ * reads the part it summarises from the provider's cache.
+ *
+ * Like every request it is a pure function of stored state. The cut, the
+ * prompt and, when the first answer was rejected, that answer with the
+ * follow-up prompt are fields of the compaction message (`compaction.started`
+ * and `compaction.repair_requested` froze them), so the request of any
+ * attempt can be rebuilt from the log: fold it to the event that began the
+ * attempt, and build. `projection` is the state while the compaction is
+ * open; `messageId` says which one is meant, and must be that one.
  */
-export function buildCompactionRequest(projection: Projection, prompt: string, options: CallOptions = {}): ModelRequest {
-  const request = buildRequest(projection, { ...options, toolChoice: "none" })
-  return { ...request, input: [...request.input, { type: "message", role: "developer", content: text(prompt) }] }
+export function buildCompactionRequest(projection: Projection, options: CallOptions = {}, messageId?: MessageId): ModelRequest {
+  const open = projection.session.open
+  const id = messageId ?? (open?.kind === "compaction" ? open.messageId : undefined)
+  const compaction = id === undefined ? undefined : projection.messages.findLast((message) => message.id === id)
+  // Only while it is open: once it has ended, the view starts from its own checkpoint.
+  if (compaction?.kind !== "compaction" || compaction.status !== "running")
+    throw new RequestBuildError("no_compaction", id === undefined ? "no compaction is open" : `compaction ${id} is not open`)
+  // What the model saw before the cut. Checkpoints stay in the list: the view may start from an earlier one.
+  const older = { ...projection, messages: projection.messages.filter((message) => message.seq < compaction.keepFromSeq || message.kind === "compaction") }
+  const request = buildRequest(older, { ...options, toolChoice: "none" })
+  const developer = (value: string): InputItem => ({ type: "message", role: "developer", content: text(value) })
+  const repair: InputItem[] =
+    compaction.repair === null ? [] : [{ type: "assistant_text", text: compaction.repair.answer, providerData: null }, developer(compaction.repair.prompt)]
+  return { ...request, input: [...request.input, developer(compaction.prompt), ...repair] }
 }
 
 export interface RenderContext {

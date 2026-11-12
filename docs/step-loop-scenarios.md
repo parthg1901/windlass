@@ -1051,41 +1051,9 @@ After 3 steps that each asked for tools, the loop appends a note that tools are 
 
 *Model sees next:* u1, a1, a2, a3, s1, a4.
 
-#### 34. Context overflow before any output: compact once and rebuild
-
-In the second turn the request no longer fits. No output had started, so the loop compacts once and rebuilds the request (retry rule 5). A compaction can start only at a boundary, so the overflowed attempt is first closed as failed, with an empty body, and stays in model history (gap G13). The checkpoint keeps the new prompt verbatim. A second overflow after this compaction would fail the execution.
-
-*Provider:* turn 2, attempt 1 fails with context_overflow before output; the compaction call returns a summary; the rebuilt call answers.
-
-```
--- first turn
-1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
-  6  step.started a1 attempt=1
-  7  text.ended a1 "A long explanation."
-  8  step.ended a1 finish=stop
-  9  execution.succeeded exe_1
--- second turn overflows
- 10  inbox.enqueued u2 steer "Now explain the reducer."
- 11  execution.started exe_2
- 12  inbox.delivered u2
- 13  step.started a2 attempt=1
- 14  step.failed a2 provider:context_overflow
--- compact once, then rebuild
- 15  compaction.started c1
- 16  compaction.ended c1
- 17  step.started a3 attempt=1
- 18  text.ended a3 "The reducer folds events."
- 19  step.ended a3 finish=stop
- 20  execution.succeeded exe_2
-```
-
-*UI:* u1 user · a1 completed · u2 user · a2 failed provider:context_overflow · c1 compaction · a3 completed. *Claim:* released.
-
-*Model sees next:* c1, u2, a2, a3.
-
 ### Refusal
 
-#### 35. A content-policy refusal
+#### 34. A content-policy refusal
 
 In the second turn the model reads a file and then the provider refuses. The refusal is never retried. The refused step stays in the log for the UI, and every message of the refused turn, from the prompt that started it, is excluded from model history, so the same content cannot trip the filter again on the next prompt. The execution fails. A third prompt is answered from the history before the refused turn.
 
@@ -1131,7 +1099,7 @@ In the second turn the model reads a file and then the provider refuses. The ref
 
 ### Crash recovery
 
-#### 36. The process dies while the model is streaming
+#### 35. The process dies while the model is streaming
 
 One text item had ended and was durable; the next was streaming. The streamed deltas were never durable, so they are simply gone. Recovery closes the step as crashed (its completed text stays), tells the model the response was cut short, records the resume and runs a fresh step.
 
@@ -1164,7 +1132,7 @@ One text item had ended and was durable; the next was streaming. The streamed de
 - after "at next start-up: the step is closed": `execution.resumed exe_1` (invalid_transition). The interrupt marker follows a crashed step before anything else.
 - after "at next start-up: the step is closed": `step.started a2 attempt=1` (invalid_transition). The model is told its response was cut short before the next step.
 
-#### 37. The process dies while a read-only tool is running
+#### 36. The process dies while a read-only tool is running
 
 A read had started. A read changes nothing, so recovery settles it as `error` with a note that it is safe to repeat; the model calls it again in the resumed step.
 
@@ -1201,7 +1169,7 @@ A read had started. A read changes nothing, so recovery settles it as `error` wi
 - after "the process dies while the read runs": `tool.settled a1/call_1 not_started "Not run: the response was stopped before this call starte..."` (invalid_transition). A call that was started cannot be settled as not started.
 - after "the process dies while the read runs": `tool.settled a1/call_1 effect_unknown "Started, but the harness restarted before its result was ..."` (invalid_transition). The start recorded effect class read, so recovery knows nothing can have changed.
 
-#### 38. The process dies while a side-effecting tool is running
+#### 37. The process dies while a side-effecting tool is running
 
 A migration command had started and a second call was recorded but not yet started. Nobody knows whether the migration ran, so recovery settles it as `effect_unknown`; the pending call provably never ran and settles as `not_started`. In the resumed step the model checks the state before doing anything else.
 
@@ -1236,7 +1204,7 @@ A migration command had started and a second call was recorded but not yet start
 
 *Model sees next:* u1, a1, s1, a2, a3.
 
-#### 39. The process dies while a tool runs that the next build no longer has
+#### 38. The process dies while a tool runs that the next build no longer has
 
 A `fetch` tool that talks to the network had started when the process died, and the build that starts next has no tool of that name (an upgrade renamed it). Its registry cannot say whether the call had a side effect, and recovery never asks it: the effect class was recorded with `tool.started`. A `network` call whose outcome nobody observed settles as `effect_unknown`, whatever the tool is called today.
 
@@ -1262,7 +1230,7 @@ A `fetch` tool that talks to the network had started when the process died, and 
 *The reducer rejects:*
 - after "the process dies while the request is in flight": `tool.settled a1/call_1 not_started "Not run: the response was stopped before this call starte..."` (invalid_transition). The start is durable, so the request may have been sent.
 
-#### 40. The process dies after a tool finished but before its result was written
+#### 39. The process dies after a tool finished but before its result was written
 
 The write completed on disk, but the process died before `tool.settled` was appended. The log is byte-for-byte the same as a crash while the tool was still running, so recovery must do the same thing: the result is lost and the outcome is `effect_unknown`. This is why the start is made durable before running, and why the model is asked to check rather than told it failed.
 
@@ -1285,7 +1253,7 @@ The write completed on disk, but the process died before `tool.settled` was appe
 
 *Model sees next:* u1, a1, s1.
 
-#### 41. The process dies in the middle of a user cancel
+#### 40. The process dies in the middle of a user cancel
 
 The user pressed stop while a shell command was running. The cancel was made durable at once; the shell was sent SIGTERM and the process died before it had stopped. Without the durable request the log would look like an ordinary crash and the next start would carry on with work the user had stopped. With it, recovery finishes the cancel: the orphaned call is settled from its recorded effect class, the step closes as interrupted for `user`, the model is told, and the claim is released. Nothing is resumed.
 
@@ -1318,7 +1286,7 @@ The user pressed stop while a shell command was running. The cancel was made dur
 - after "at next start-up the cancel is finished": `step.started a2 attempt=1` (invalid_transition). No work continues after a cancel.
 - after "the claim is released": `execution.resumed exe_1` (not_found). The claim is gone; the session is idle until the user prompts again.
 
-#### 42. The process dies between steps
+#### 41. The process dies between steps
 
 The step ended and its results are durable; the next model call had not started. Nothing was lost, so recovery has nothing to settle, no step to close and nothing to tell the model: it records the resume and the loop continues with the next step.
 
@@ -1344,7 +1312,7 @@ The step ended and its results are durable; the next model call had not started.
 
 *Model sees next:* u1, a1, a2.
 
-#### 43. The process dies after the answer, before the claim was released
+#### 42. The process dies after the answer, before the claim was released
 
 The last step ended with `stop` and nothing waits in the inbox, so the model is finished. Whether the execution may end as done is still the verification gate's decision, which recovery cannot make (it would have to run checks). So recovery resumes the execution like any other, and the loop, finding nothing left to do, goes through the gate and releases the claim. Here nothing is configured, so nothing is verified.
 
@@ -1366,7 +1334,7 @@ The last step ended with `stop` and nothing waits in the inbox, so the model is 
 
 *Model sees next:* u1, a1.
 
-#### 44. The resume cap: the same execution crashes 4 times
+#### 43. The resume cap: the same execution crashes 4 times
 
 Something in this turn kills the process every time (say, a tool that exhausts memory). Each start-up recovers and resumes, and `execution.resumed` events count the attempts durably. After 3 resumes, the next start-up closes the crashed step and fails the execution instead of resuming it again.
 
@@ -1400,7 +1368,7 @@ Something in this turn kills the process every time (say, a tool that exhausts m
 
 ### Shutdown
 
-#### 45. A graceful shutdown mid-step
+#### 44. A graceful shutdown mid-step
 
 The user quits the app while a test run is in progress. The shell is stopped the same way as on a cancel and reports its output so far; the step closes as interrupted for `shutdown`; the model is told; the claim is kept as suspended. While suspended nothing new can start or be delivered. At the next start the execution is resumed and the turn continues where it stopped.
 
@@ -1443,7 +1411,7 @@ The user quits the app while a test run is in progress. The shell is stopped the
 - after "the claim is kept": `execution.started exe_2` (invalid_transition). The suspended claim still belongs to exe_1.
 - after "the claim is kept": `step.started a2 attempt=1` (invalid_transition). No step runs under a suspended claim.
 
-#### 46. A graceful shutdown between steps
+#### 45. A graceful shutdown between steps
 
 No step is open, so nothing needs closing and nothing was cut short: no marker, only the suspended claim. The next start resumes and runs the next step.
 
@@ -1471,7 +1439,7 @@ No step is open, so nothing needs closing and nothing was cut short: no marker, 
 
 *Model sees next:* u1, a1, a2.
 
-#### 47. Shutdown resumes do not use up the crash-resume cap
+#### 46. Shutdown resumes do not use up the crash-resume cap
 
 A long turn spans two clean restarts of the app, and then the process really crashes. The two resumes after a shutdown are not counted, so the crash is the first of the 3 the cap allows, and the turn is resumed. Only a resume that finds the claim still `running`, which means the previous process died, counts.
 
@@ -1509,7 +1477,7 @@ A long turn spans two clean restarts of the app, and then the process really cra
 
 *Model sees next:* u1, a1, a2, a3, s1.
 
-#### 48. The process is killed while it is shutting down
+#### 47. The process is killed while it is shutting down
 
 The app is quit while a test run is in progress. The shutdown is made durable, the shell is asked to stop, and the process is killed before it has (a SIGKILL after the grace period). The log ends at the request. The next start does not treat this as a crash: it finishes the shutdown that was asked for, with the step interrupted for `shutdown` and the claim suspended, and then resumes as after any clean shutdown. The resume is not counted toward the crash-resume cap.
 
@@ -1540,7 +1508,7 @@ The app is quit while a test run is in progress. The shutdown is made durable, t
 
 ### Verification
 
-#### 49. The checks pass
+#### 48. The checks pass
 
 The model changes a file and says it is done. The harness records the workspace, runs the configured check and it passes, so the execution ends as done with the evidence. The check ran because `add.ts` differs between the snapshot the session started with and the one taken now.
 
@@ -1579,7 +1547,7 @@ The model changes a file and says it is done. The harness records the workspace,
 - after "the harness runs the checks": `execution.succeeded exe_1` (invalid_transition). The execution cannot end while its checks are running.
 - after "the harness runs the checks": `step.started a3 attempt=1` (invalid_transition). Nothing else happens until the run has its terminal event.
 
-#### 50. The checks fail, the model fixes the code, and they pass
+#### 49. The checks fail, the model fixes the code, and they pass
 
 The model's first fix leaves the test failing. The run and its report are appended together: the report is an ordinary harness message at the end of history, so the next request extends the previous one. The model fixes the code, says it is done again, and the second run passes.
 
@@ -1631,7 +1599,7 @@ The model's first fix leaves the test failing. The run and its report are append
 *The reducer rejects:*
 - after "the first run fails and the model is sent back": `execution.succeeded exe_1` (invalid_transition). The report is unanswered: the model has to act on it or say that it cannot.
 
-#### 51. The checks still fail after the last allowed round
+#### 50. The checks still fail after the last allowed round
 
 `verify.maxRounds` is 1 here: the model is sent back once. Its second attempt fails too, so the execution ends, as unresolved: the event names the failing check and the reason (`max_rounds`) and carries the evidence. The last report is appended in the same transaction so that whoever continues the session sees it; it is the one harness message that may stay unanswered.
 
@@ -1681,7 +1649,7 @@ The model's first fix leaves the test failing. The run and its report are append
 
 *Model sees next:* u1, a1, a2, r1, a3, a4, r2.
 
-#### 52. The model reports that it cannot make the checks pass
+#### 51. The model reports that it cannot make the checks pass
 
 After the report the model does not claim success: it calls `report_check_failure`, naming the check and the reason. That call is the acknowledgement; nothing is read out of its prose. The files did not change since the run, so the checks are not run again, and the execution ends as unresolved with what the model said.
 
@@ -1725,7 +1693,7 @@ After the report the model does not claim success: it calls `report_check_failur
 
 *Model sees next:* u1, a1, a2, r1, a3, a4.
 
-#### 53. No checks are configured
+#### 52. No checks are configured
 
 The project has no configuration file. The turn ends as done, and the event says that nothing was verified, so a client can tell this ending from one that rests on passing checks. The workspace is still recorded, so the turn can be undone.
 
@@ -1753,7 +1721,7 @@ The project has no configuration file. The turn ends as done, and the event says
 
 *Model sees next:* u1, a1, a2.
 
-#### 54. Cancel while the checks run
+#### 53. Cancel while the checks run
 
 The user cancels while the check command is running. The request is durable first; the command is stopped like a tool; the run is closed as interrupted, which says nothing about the code; the model is told and the claim is released. No result is recorded and nothing is reported.
 
@@ -1792,7 +1760,7 @@ The user cancels while the check command is running. The request is durable firs
 - after "the user cancels": `checks.finished run=1 test:passed` (invalid_transition). Once an interrupt is requested the run can only be closed as interrupted.
 - after "the user cancels": `execution.interrupted exe_1 user` (invalid_transition). The run of checks is closed before the execution is.
 
-#### 55. The process dies while the checks run
+#### 54. The process dies while the checks run
 
 `checks.started` was durable and the process died before any result. Recovery closes the run as crashed and resumes the execution (a crash counts toward the resume cap, so a check that kills the harness cannot be run for ever). The loop finds the model's answer still standing and no result for it, runs the checks again, and ends the execution on what they show.
 
@@ -1833,7 +1801,7 @@ The user cancels while the check command is running. The request is durable firs
 *The reducer rejects:*
 - after "the process dies while the checks run": `execution.resumed exe_1` (invalid_transition). Recovery closes the run before it records the resume.
 
-#### 56. A queued message waits for the checks
+#### 55. A queued message waits for the checks
 
 The user queues a follow-up while the model works. "After this turn" means after the turn is done, and done is what the verification gate says, so the gate runs before the queued message is delivered, exactly as it would before the execution ends. The first run fails and the model is sent back, with the follow-up still waiting. When the checks pass, the turn ends with that evidence (`turn.ended`) and the queued message is delivered in the same append. A steer is different: it redirects the model and is delivered at once, with no checks in between. Had the turn ended unresolved (acknowledged, out of rounds, report mode), `turn.ended` would say so and the follow-up would be delivered all the same.
 
@@ -1896,7 +1864,7 @@ The user queues a follow-up while the model works. "After this turn" means after
 
 ### Revert
 
-#### 57. Revert of the last turn
+#### 56. Revert of the last turn
 
 The user undoes the turn. The harness records the workspace as it is (so the revert itself can be undone), announces the restore, puts the files back as they were when the prompt was delivered, and records the restore together with the range that leaves history. The next request does not extend the previous one, which `history.reverted` allows.
 
@@ -1934,7 +1902,7 @@ The user undoes the turn. The harness records the workspace as it is (so the rev
 - after "the revert is announced": `execution.started exe_2` (invalid_transition). Nothing starts while a restore is in progress.
 - after "the revert is announced": `history.reverted fromSeq=6 restored=w0 changed=1` (invalid_transition). The record must be of the restore that was announced, with its undo point.
 
-#### 58. Revert, then undo the revert
+#### 57. Revert, then undo the revert
 
 The user reverts the turn and then changes their mind. Undoing the revert restores the workspace to the snapshot taken right before it and puts exactly the messages it excluded back into history. Only the latest revert can be undone, and only until new work starts.
 
@@ -1975,6 +1943,314 @@ The user reverts the turn and then changes their mind. Undoing the revert restor
 *The reducer rejects:*
 - after "the turn is reverted": `revert.undo_started revertSeq=19 target=w1 before=w0` (invalid_transition). An undo names the revert it undoes by the seq of its history.reverted.
 - after "the turn is reverted": `revert.undo_started revertSeq=21 target=w0 before=w0` (invalid_transition). The undo restores the snapshot taken before that revert.
+
+### Compaction
+
+#### 58. A compaction that is due waits for the next user message
+
+The first turn grows the request past the early threshold. That is not urgent, so nothing happens between its steps: a compaction in the middle of a turn costs the model the thread of what it was doing. When the user's next message is delivered, the request is still over the threshold, and now is the moment: the loop compacts before it calls the model. The cut is right before the new message, so the checkpoint replaces the first turn and the message stays word for word. `compaction.started` records the cut, the mode and the prompt before the summary request is sent; `compaction.ended` freezes the checkpoint (the summary, the identifier index, the user's earlier messages verbatim). The baseline is set again, and the next request is the checkpoint, the new message and nothing else.
+
+*Provider:* turn 1 is measured at 4,800 and 4,900 input tokens; the summary call returns a summary of the required form; turn 2 answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- first turn: over the early threshold, and nothing is compacted in the middle of it
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 10  step.ended a1 finish=tool_calls
+ 11  step.started a2 attempt=1
+ 12  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 13  step.ended a2 finish=stop
+ 14  execution.succeeded exe_1
+-- the next message is delivered: compact before the model is called
+ 15  inbox.enqueued u2 steer "Then fix it."
+ 16  execution.started exe_2
+ 17  inbox.delivered u2
+ 18  compaction.started c1 auto normal keepFromSeq=17
+-- the checkpoint, the baseline again, and the answer
+ 19  compaction.ended c1 source=model
+ 20  baseline.set
+ 21  step.started a3 attempt=1
+ 22  text.ended a3 "Changed the expectation to 2."
+ 23  step.ended a3 finish=stop
+ 24  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed · u2 user · c1 compaction · a3 completed. *Claim:* released.
+
+*Model sees next:* c1, u2, a3.
+
+*The reducer rejects:*
+- after "the next message is delivered: compact before the model is called": `step.started a3 attempt=1` (invalid_transition). The compaction is open: no step starts until it has ended.
+- after "the next message is delivered: compact before the model is called": `baseline.set` (invalid_transition). The baseline is set again only once the compaction has completed.
+
+#### 59. A compaction in the middle of a long turn
+
+One turn keeps reading files until the next request would be over the trigger. Waiting for a user message is no longer possible, so the loop compacts between two steps. The cut falls inside the turn: the last step, with its call and its result, is kept word for word, because the next model call answers it; the turn's request and its earlier steps go into the checkpoint, which quotes the request verbatim and ends by telling the model that the work was in progress and to carry on. The model continues the same turn from the checkpoint and the kept step.
+
+*Provider:* the three reading steps are measured at 3,000, 4,000 and 6,000 input tokens; the summary call returns a summary; the model then answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- three steps; after the third the next request is over the trigger
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"build.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "await bundle(entries)"
+ 10  step.ended a1 finish=tool_calls
+ 11  step.started a2 attempt=1
+ 12  tool.called a2/call_1 read {"path":"bundle.ts"}
+ 13  tool.started a2/call_1 effect=read
+ 14  tool.settled a2/call_1 success "for (const entry of entries) await compile(entry)"
+ 15  step.ended a2 finish=tool_calls
+ 16  step.started a3 attempt=1
+ 17  tool.called a3/call_1 read {"path":"compile.ts"}
+ 18  tool.started a3/call_1 effect=read
+ 19  tool.settled a3/call_1 success "const cache = new Map()"
+ 20  step.ended a3 finish=tool_calls
+-- compact between two steps, keeping the last one
+ 21  compaction.started c1 auto normal keepFromSeq=16
+ 22  compaction.ended c1 source=model
+ 23  baseline.set
+-- the turn carries on
+ 24  step.started a4 attempt=1
+ 25  text.ended a4 "Every entry is compiled one after the other, and the cach..."
+ 26  step.ended a4 finish=stop
+ 27  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed [read success] · a3 completed [read success] · c1 compaction · a4 completed. *Claim:* released.
+
+*Model sees next:* c1, a3, a4.
+
+*The reducer rejects:*
+- after "compact between two steps, keeping the last one": `compaction.started c2 auto normal keepFromSeq=15` (invalid_range). The cut only moves forward: a later compaction cannot keep what this one replaced.
+
+#### 60. The provider rejects a request as too large: compact aggressively and rebuild
+
+Nobody told the engine the model's context window, so nothing was compacted ahead of time, and in the second turn the provider rejects the request. That is a fact, not an estimate: the loop compacts aggressively (trigger `overflow`) and rebuilds the request (retry rule 5). A compaction can start only at a boundary, so the rejected attempt is first closed as failed, with an empty body, and stays in the log. An aggressive compaction keeps only what fits a small budget, and here nothing does: the new prompt itself goes into the checkpoint, quoted verbatim, with the sentence that the work continues. A second rejection right after this compaction fails the execution.
+
+*Provider:* turn 2, attempt 1 fails with context_overflow before output; the summary call returns a summary; the rebuilt call answers.
+
+```
+-- the second turn's request is rejected
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "A long explanation."
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+ 10  inbox.enqueued u2 steer "Now explain the reducer."
+ 11  execution.started exe_2
+ 12  inbox.delivered u2
+ 13  step.started a2 attempt=1
+ 14  step.failed a2 provider:context_overflow
+-- compact aggressively, then rebuild
+ 15  compaction.started c1 overflow aggressive keepFromSeq=13
+ 16  compaction.ended c1 source=model
+ 17  baseline.set
+ 18  step.started a3 attempt=1
+ 19  text.ended a3 "The reducer folds events."
+ 20  step.ended a3 finish=stop
+ 21  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed · u2 user · a2 failed provider:context_overflow · c1 compaction · a3 completed. *Claim:* released.
+
+*Model sees next:* c1, a2, a3.
+
+#### 61. A compaction that frees too little: the hold, one aggressive attempt, then nothing more
+
+The request is over the trigger and the loop compacts, but what must be kept is most of the context: the provider measures the first request after the compaction at almost the size before it. Compacting again at once would summarise a summary, so the policy holds: while the request still fits, the next steps are sent without a compaction, in the headroom between the trigger and the window. When a request would no longer fit at all, there is one aggressive compaction, which keeps nothing word for word. Here that frees too little as well, and nothing more is tried: the request is sent as it is. (Had the provider rejected it, the overflow rule would have ended the execution.) The loop never compacts in a circle.
+
+*Provider:* the first step is measured at 6,000 input tokens; the step after the first compaction at 5,900, so it freed too little; the next at 7,500, which with the next result no longer fits; the step after the aggressive compaction again at 7,500; then the model answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- over the trigger: a normal compaction, which keeps the last step
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"migrations/0001.sql"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "CREATE TABLE ledger (id INTEGER)"
+ 10  step.ended a1 finish=tool_calls
+ 11  compaction.started c1 auto normal keepFromSeq=6
+ 12  compaction.ended c1 source=model
+ 13  baseline.set
+-- it freed too little: the next two requests are over the trigger and are sent anyway (the hold)
+ 14  step.started a2 attempt=1
+ 15  tool.called a2/call_1 read {"path":"migrations/0002.sql"}
+ 16  tool.started a2/call_1 effect=read
+ 17  tool.settled a2/call_1 success "ALTER TABLE ledger ADD COLUMN total"
+ 18  step.ended a2 finish=tool_calls
+ 19  step.started a3 attempt=1
+ 20  tool.called a3/call_1 read {"path":"migrations/0003.sql"}
+ 21  tool.started a3/call_1 effect=read
+ 22  tool.settled a3/call_1 success "CREATE INDEX ledger_total"
+ 23  step.ended a3 finish=tool_calls
+-- the next request would not fit: one aggressive compaction, which keeps nothing
+ 24  compaction.started c2 auto aggressive keepFromSeq=24
+ 25  compaction.ended c2 source=model
+ 26  baseline.set
+-- that freed too little too: the request is sent as it is
+ 27  step.started a4 attempt=1
+ 28  tool.called a4/call_1 read {"path":"migrations/0004.sql"}
+ 29  tool.started a4/call_1 effect=read
+ 30  tool.settled a4/call_1 success "DROP INDEX ledger_total"
+ 31  step.ended a4 finish=tool_calls
+ 32  step.started a5 attempt=1
+ 33  text.ended a5 "Four migrations; the last one drops the index the third o..."
+ 34  step.ended a5 finish=stop
+ 35  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · c1 compaction · a2 completed [read success] · a3 completed [read success] · c2 compaction · a4 completed [read success] · a5 completed. *Claim:* released.
+
+*Model sees next:* c2, a4, a5.
+
+#### 62. An invalid summary is repaired
+
+The model's answer to the summary request does not have the required sections. The loop asks once more: it records the rejected answer and what is wrong with it (`compaction.repair_requested`), and the second request is the first one plus that answer and the request to fix it, so it still reads everything before it from the cache and can be rebuilt from the log. The second answer is valid, and the compaction ends with `source: repaired`.
+
+*Provider:* the first step is measured at 6,000 input tokens; the summary call returns prose without the sections; the repair call returns a summary of the required form; the model then answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- the first answer is not a summary
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 10  step.ended a1 finish=tool_calls
+ 11  compaction.started c1 auto normal keepFromSeq=6
+-- one repair is asked for
+ 12  compaction.repair_requested c1 attempt=2 "The user asked for a fix and some files were read."
+-- the repaired summary is used
+ 13  compaction.ended c1 source=repaired
+ 14  baseline.set
+ 15  step.started a2 attempt=1
+ 16  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 17  step.ended a2 finish=stop
+ 18  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · c1 compaction · a2 completed. *Claim:* released.
+
+*Model sees next:* c1, a1, a2.
+
+*The reducer rejects:*
+- after "the first answer is not a summary": `compaction.ended c1 source=repaired` (invalid_transition). A compaction ends as repaired only after a repair was asked for.
+- after "one repair is asked for": `compaction.repair_requested c1 attempt=3 "The user asked for a fix and some files were read."` (invalid_transition). A summary is repaired at most once.
+
+#### 63. A summary that is still invalid: the checkpoint is built without the model
+
+The answer to the repair request is not usable either. The loop does not ask a third time and does not give up: it builds the checkpoint without a summary. It says plainly that there is none, and carries what needs no model: the identifier index, the user's messages verbatim, the assistant's last words, and the pointer to the history tools, with which the model can read the original messages. `compaction.ended` says `source: fallback` and why, so a client can tell the user. A compaction therefore always completes, and the session is never lost to a model that cannot summarise.
+
+*Provider:* the first step is measured at 6,000 input tokens; the summary call and the repair call both return prose without the sections; the model then answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- the first answer and the repair are both unusable
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 10  step.ended a1 finish=tool_calls
+ 11  compaction.started c1 auto normal keepFromSeq=6
+ 12  compaction.repair_requested c1 attempt=2 "The user asked for a fix and some files were read."
+-- the compaction completes without a summary
+ 13  compaction.ended c1 source=fallback (the model's summary was unusable, also after it was asked to fix it...)
+ 14  baseline.set
+ 15  step.started a2 attempt=1
+ 16  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 17  step.ended a2 finish=stop
+ 18  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · c1 compaction · a2 completed. *Claim:* released.
+
+*Model sees next:* c1, a1, a2.
+
+#### 64. Cancel while the summary is being written
+
+The user cancels while the summary call is streaming. The compaction is closed as interrupted, the marker tells the model that it was stopped, and the claim is released. Nothing about history changed: a compaction that did not complete is only a row in the log. When the user sends the next message the request is as large as before, so the loop compacts again, now at a user-message boundary: the cut cannot fall between the marker and the step it follows, so that step, the marker and the new message are kept.
+
+*Provider:* the first step is measured at 6,000 input tokens; the summary call streams part of a summary and hangs; after the cancel, the second summary call returns a summary and the model answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- the user cancels during the summary call
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 10  step.ended a1 finish=tool_calls
+ 11  compaction.started c1 auto normal keepFromSeq=6
+ 12  execution.interrupt_requested exe_1 user
+ 13  compaction.failed c1 interrupted:user
+ 14  synthetic.appended s1 origin=interrupt "The user stopped the previous response before it finished."
+ 15  execution.interrupted exe_1 user
+-- the next message: the compaction is made again
+ 16  inbox.enqueued u2 steer "Go on."
+ 17  execution.started exe_2
+ 18  inbox.delivered u2
+ 19  compaction.started c2 auto normal keepFromSeq=6
+ 20  compaction.ended c2 source=model
+ 21  baseline.set
+ 22  step.started a2 attempt=1
+ 23  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 24  step.ended a2 finish=stop
+ 25  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed [read success] · c1 compaction · s1 synthetic · u2 user · c2 compaction · a2 completed. *Claim:* released.
+
+*Model sees next:* c2, a1, s1, u2, a2.
+
+#### 65. The process dies during a compaction
+
+The process dies after `compaction.started` and before the summary arrived. At the next start, recovery closes the compaction as crashed and takes the execution up again (which counts as a crash resume). No step was cut short, so there is no marker. History is what it was, the loop decides again from stored state, finds the request as large as before and compacts again, under a new compaction message.
+
+*Provider:* the first step is measured at 6,000 input tokens; the process dies before the summary call returns; after the restart the summary call returns a summary and the model answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- the process dies with the compaction open
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 10  step.ended a1 finish=tool_calls
+ 11  compaction.started c1 auto normal keepFromSeq=6
+-- at the next start: recovery closes it, and the loop compacts again
+ 12  compaction.failed c1 crashed
+ 13  execution.resumed exe_1
+ 14  compaction.started c2 auto normal keepFromSeq=6
+ 15  compaction.ended c2 source=model
+ 16  baseline.set
+ 17  step.started a2 attempt=1
+ 18  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 19  step.ended a2 finish=stop
+ 20  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · c1 compaction · c2 compaction · a2 completed. *Claim:* released.
+
+*Model sees next:* c2, a1, a2.
 
 <!-- scenarios:end -->
 

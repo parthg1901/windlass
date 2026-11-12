@@ -193,7 +193,7 @@ describe("modes and configuration", () => {
         h.create().send("Change a.ts.")
         await h.settled()
         expect(outcomes(h)).toEqual([{ status: "not_configured" }])
-        expect(h.provider.requests[0]!.tools.map((tool) => tool.name)).toEqual(["read", "shell", "write"])
+        expect(h.provider.requests[0]!.tools.map((tool) => tool.name)).toEqual(["history_read", "history_search", "read", "shell", "write"])
       },
       { config: { ...CHECKS, verify: { mode: "off" } } },
     ))
@@ -206,7 +206,7 @@ describe("modes and configuration", () => {
         h.create().send("Hi.")
         await h.settled()
         const tools = h.provider.requests[0]!.tools.map((tool) => tool.name)
-        expect(tools).toEqual(["read", "report_check_failure", "shell", "write"])
+        expect(tools).toEqual(["history_read", "history_search", "read", "report_check_failure", "shell", "write"])
         expect(outcomes(h)).toEqual([{ status: "not_configured" }])
 
         // Checks are added while the session is idle: they apply from the next turn, and the tool list is the same bytes.

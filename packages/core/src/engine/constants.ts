@@ -8,6 +8,7 @@
  * byte for byte from then on, so changing one here never changes a stored
  * session.
  */
+import { type SummaryProblem, describeProblem, summaryPrompt } from "../context/summary.ts"
 import type { ProviderError } from "../provider/error.ts"
 
 export interface EngineLimits {
@@ -47,6 +48,21 @@ export interface EngineLimits {
    */
   readonly modelCallTimeoutMs: number
   /**
+   * The longest one summary call of a compaction may take. Much shorter than
+   * a step's limit: a summary is a bounded piece of text, and a call that is
+   * still writing after this long is not going to end well (the first live
+   * run met one that wrote for fifteen minutes). A call still running then is
+   * not tried again: the compaction completes without a summary. `0` means
+   * no limit.
+   */
+  readonly compactionCallTimeoutMs: number
+  /**
+   * Input tokens of the context window the compaction policy leaves free for
+   * the model's answer. This provider takes no output limit, so it is the
+   * harness's own allowance, and never more than a fifth of the window.
+   */
+  readonly reservedOutputTokens: number
+  /**
    * Snapshot retention, per session: of the snapshots no revert or undo
    * could still need, the newest this many are kept ...
    */
@@ -66,6 +82,8 @@ export const ENGINE_LIMITS: EngineLimits = {
   maxToolCallsPerStep: 32,
   toolStopGraceMs: 10_000,
   modelCallTimeoutMs: 30 * 60_000,
+  compactionCallTimeoutMs: 5 * 60_000,
+  reservedOutputTokens: 32_000,
   snapshotKeepLast: 100,
   snapshotMaxAgeMs: 30 * 24 * 3600_000,
 }
@@ -134,6 +152,12 @@ export const FAILURE_TEXT = {
   internal: (message: string) => `The harness failed: ${message}`,
 } as const
 
+/** The first few problems of a summary, for a person: the rest are counted. */
+function listProblems(problems: readonly SummaryProblem[]): string {
+  const shown = problems.slice(0, 2).map(describeProblem)
+  return problems.length > shown.length ? `${shown.join("; ")}; and ${problems.length - shown.length} more` : shown.join("; ")
+}
+
 /** The message for a model call that failed with an error that is never retried. */
 export function failureText(error: ProviderError): string {
   if (error.kind === "auth") return FAILURE_TEXT.signedOut
@@ -155,15 +179,19 @@ export const modelCallTimedOut = (limitMs: number) => `The model call did not fi
 export const INCOMPLETE_STREAM = "The stream ended without a terminal event"
 
 /**
- * The one prompt a compaction request adds to the step request (context rule
- * 7). The answer is the checkpoint text, rendered once and stored.
+ * The one prompt a compaction's summary request adds to the step request
+ * (context rule 7). It is frozen into `compaction.started` when a compaction
+ * begins, so a stored session keeps the prompt it was summarised with.
  */
-export const COMPACTION_PROMPT = [
-  "The conversation above is about to be replaced by a summary, because it no longer fits the context window. Write that summary now. Do not call tools.",
-  "Whoever continues will see only your summary and the messages after it, so include everything they need:",
-  "- what the user asked for, and every instruction or preference they gave, in their own words where it matters;",
-  "- what was done: files read or changed (with paths), commands run and what they showed, decisions and why;",
-  "- the current state: what works, what fails (with exact error text), what was being done when the summary was taken;",
-  "- what is left to do.",
-  "Be specific and plain. Do not address the user and do not add a preamble.",
-].join("\n")
+export const COMPACTION_PROMPT = summaryPrompt()
+
+/** Why a compaction completed without a model-written summary, or with one that is not quite right: `compaction.ended.detail`, for a person. */
+export const COMPACTION_TEXT = {
+  timedOut: (limitMs: number) => `the model did not finish its summary within ${duration(limitMs)}`,
+  tooLarge: "the part to summarise is itself too large for the model",
+  refused: "the provider refused to summarise the conversation",
+  empty: "the model returned an empty summary",
+  invalid: (problems: readonly SummaryProblem[]) => `the model's summary was unusable, also after it was asked to fix it: ${listProblems(problems)}`,
+  flawed: (problems: readonly SummaryProblem[]) => `the summary is used although ${listProblems(problems)}`,
+  repeated: "the model repeated its summary; its first copy is used",
+} as const

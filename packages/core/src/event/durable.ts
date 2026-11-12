@@ -112,6 +112,10 @@ export const stepError = variant("kind", {
 })
 export type StepError = Infer<typeof stepError>
 
+/** How hard a compaction cuts: see `compaction.started`. */
+export const compactionMode = oneOf(["normal", "aggressive"])
+export type CompactionMode = Infer<typeof compactionMode>
+
 /**
  * A workspace snapshot: the hash of the git tree the snapshot module recorded
  * in its private repository. Equal IDs mean equal workspace contents.
@@ -388,7 +392,9 @@ export const durableEvents = {
   /**
    * The provider refused. The step stays in the log, but every message from
    * `excludeFromSeq` up to this event is excluded from model history, so the
-   * refused content cannot trip the filter again (retry rule 7). `message` is
+   * refused content cannot trip the filter again (retry rule 7). A compaction
+   * in that range is excluded with it: its checkpoint may quote what was
+   * refused, and history goes back to what it was before it. `message` is
    * the refusal text for display.
    */
   "step.refused": define(
@@ -456,14 +462,70 @@ export const durableEvents = {
 
   // ---- compaction ----
 
-  /** A compaction began under compaction message `messageId`. */
-  "compaction.started": define(1, object({ messageId, trigger: oneOf(["auto", "manual", "overflow"]) })),
+  /**
+   * A compaction began under compaction message `messageId`, and everything
+   * its summary request is built from is recorded here, so that request can
+   * be rebuilt from the log like any other.
+   * - `trigger`: `auto` (the size estimate of the next request crossed the
+   *   policy's threshold), `overflow` (the provider rejected a request as too
+   *   large) or `manual`.
+   * - `mode`: how hard. `normal` aims for the policy's target; `aggressive`
+   *   (after an overflow, or when a normal one freed too little) keeps a much
+   *   shorter tail. The policy needs it the next time it decides.
+   * - `keepFromSeq`: the cut. Model-visible messages from this `seq` on are
+   *   kept word for word; what is visible before it is what the summary
+   *   request shows the model. Equal to this event's own `seq` when nothing
+   *   is kept. It may lie inside the turn in progress.
+   * - `prompt`: the one prompt the summary request appends to the step
+   *   request of the part before the cut, frozen.
+   * - `tokensBefore`: the size (input tokens) the next request was estimated
+   *   at when this was decided: what the compaction started from.
+   */
+  "compaction.started": define(
+    1,
+    object({
+      messageId,
+      trigger: oneOf(["auto", "manual", "overflow"]),
+      mode: compactionMode,
+      keepFromSeq: integer(1),
+      prompt: string,
+      tokensBefore: integer(0),
+    }),
+  ),
+  /**
+   * The model's answer to the summary request was not usable, and it is
+   * asked once more: from ledger attempt `attempt` on, the summary request is
+   * the first one plus `answer` (the rejected answer as it is replayed, cut
+   * at the output bound) and `prompt` (what to fix), both frozen here. At
+   * most one per compaction.
+   */
+  "compaction.repair_requested": define(1, object({ messageId, attempt: integer(2), answer: string, prompt: string })),
   /**
    * The compaction produced its checkpoint. From now on model history is
-   * `summary` (rendered once, frozen here) followed by the messages from
-   * `keepFromSeq` on. Earlier messages stay in the log and in the UI.
+   * `summary` (the whole checkpoint text, rendered once and frozen here: the
+   * summary, the identifier index, the user's messages verbatim) followed by
+   * the messages from the `keepFromSeq` of `compaction.started` on. Earlier
+   * messages stay in the log, in the UI and within reach of the history tools.
+   * - `source`: where the summary part came from. `model`: the first answer;
+   *   `repaired`: the answer to the repair request; `fallback`: no usable
+   *   summary could be had, and the checkpoint was built without the model
+   *   (index, verbatim user messages and a statement that there is no summary).
+   * - `detail`: for a person, why it is a fallback, or what is still wrong
+   *   with a summary that was used anyway; `null` when there is nothing to say.
+   * - `tokensAfter`: the size the next request is estimated at with the
+   *   checkpoint in place. `tokensBefore - tokensAfter` is what was freed.
    */
-  "compaction.ended": define(1, object({ messageId, summary: string, keepFromSeq: integer(1), usage: nullable(usage) })),
+  "compaction.ended": define(
+    1,
+    object({
+      messageId,
+      summary: string,
+      source: oneOf(["model", "repaired", "fallback"]),
+      detail: nullable(string),
+      tokensAfter: integer(0),
+      usage: nullable(usage),
+    }),
+  ),
   /** The compaction did not complete. Model history is unchanged. */
   "compaction.failed": define(1, object({ messageId, error: stepError })),
 
@@ -525,7 +587,10 @@ export const durableEvents = {
   "revert.started": define(1, object({ fromSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) })),
   /**
    * The user rewound the session: every message from `fromSeq` up to this
-   * event is excluded from model history. The rows stay. `restore` is what
+   * event is excluded from model history. The rows stay. A compaction in
+   * that range is excluded like any message, and model history then starts
+   * from the latest compaction that is not excluded: reverting to before a
+   * compaction undoes it for the model. `restore` is what
    * happened to the workspace: `null` when no file was restored (no snapshot
    * was current at that point), otherwise the record of the restore that
    * `revert.started` announced.

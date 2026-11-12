@@ -8,6 +8,7 @@
  * order of two statements, with no await between them to get wrong.
  */
 import type { BlobRef } from "../content.ts"
+import type { HistorySearchInput, HistorySearchOutput } from "../context/history-tools.ts"
 import type { NewEvent, StoredEvent } from "../event/durable.ts"
 import type { MessageId, RequestId, SessionId } from "../id.ts"
 import type { ModelHistory } from "../message/history.ts"
@@ -203,6 +204,26 @@ export interface Store {
    * `inbox.delivered`); there are no other inbox writes.
    */
   readonly readInbox: (sessionId: SessionId) => readonly InboxItem[]
+
+  // ---- history, for the history tools ----
+
+  /**
+   * Searches the session's stored messages for words, identifiers and quoted
+   * phrases: every message that is not excluded (reverted or refused),
+   * including the ones a compaction took out of the model's view; a
+   * checkpoint is derived text and is not searched. Best match first. The
+   * SQLite store keeps a full-text index in the session's own database and
+   * brings it up to date when asked, so an append costs nothing for it
+   * (`history-index.ts`).
+   */
+  readonly searchMessages: (sessionId: SessionId, input: HistorySearchInput) => HistorySearchOutput
+
+  /**
+   * The message created at `seq`, when it can be read (it exists, is not
+   * excluded, is not a checkpoint or a step still running), and the `seq` of
+   * the nearest readable messages before and after it.
+   */
+  readonly readMessageAt: (sessionId: SessionId, seq: number) => { readonly message: Message | null; readonly previousSeq: number | null; readonly nextSeq: number | null }
 
   // ---- request ledger ----
 

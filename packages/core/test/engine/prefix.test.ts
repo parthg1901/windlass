@@ -9,6 +9,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { NOT_A_SUMMARY, SUMMARY, measured } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, removeHarnessDirectories } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
@@ -90,7 +91,7 @@ describe("every step request extends the previous one except at a legitimate bre
       h.tools.on("read", "secret")
       h.session.send("Read the secret.")
       await h.settled()
-      h.provider.enqueue([script.fail("context_overflow", { status: 400 })], [script.text("Summary of everything so far.")], answer("Done."), answer("Still here."))
+      h.provider.enqueue([script.fail("context_overflow", { status: 400 })], [script.text(SUMMARY)], answer("Done."), answer("Still here."))
       h.session.send("One more thing.")
       await h.settled()
       h.session.send("And another.")
@@ -140,6 +141,120 @@ describe("every step request extends the previous one except at a legitimate bre
       expect(comparePrefix(rows[0]!.blocks, rows[1]!.blocks)).toMatchObject({ extension: true })
       // The cache key is the session's root ID on every request.
       expect(h.provider.requests.map((request) => request.params.cacheKey)).toEqual([h.session.id, h.session.id])
+    } finally {
+      await h.dispose()
+    }
+  })
+})
+
+describe("a compaction is a legitimate break, once, and nothing around it is", () => {
+  const at = (inputTokens: number) => script.usage(measured(inputTokens))
+  const readAt = (path: string, inputTokens: number) => [script.toolCall("call_1", "read", { path }), at(inputTokens)]
+  const answerAt = (value: string, inputTokens: number) => [script.text(value), at(inputTokens)]
+
+  test("at a user-message boundary, in the middle of a turn, repaired, without a summary, held, and reverted", async () => {
+    // A window of 10,000 tokens: due from 5,200, compacted from 6,400 (see the compaction scenarios).
+    const h = new Harness({ contextWindow: 10_000 })
+    try {
+      h.tools.on("read", "one", "two", "three", "four", "five", "six")
+
+      // Turn 1 crosses the early threshold; turn 2's message is where it is compacted. A steer arrives during the summary call.
+      h.provider.enqueue(
+        readAt("a.ts", 4800),
+        answerAt("Read a.", 4900),
+        () => {
+          h.session.send("And c.ts.")
+          return [script.text(SUMMARY)]
+        },
+        readAt("b.ts", 1500),
+        answerAt("Read b and c.", 1700),
+      )
+      h.create().send("Read a.ts.")
+      await h.settled()
+      h.session.send("Now b.ts.")
+      await h.settled()
+
+      // Turn 3 is one long turn: compacted between two of its steps, with a summary that needs the repair.
+      h.provider.enqueue(readAt("d.ts", 3000), readAt("e.ts", 6500), [script.text(NOT_A_SUMMARY)], [script.text(SUMMARY)], readAt("f.ts", 1800), answerAt("Read d, e and f.", 2000))
+      h.session.send("Now d.ts, e.ts and f.ts.")
+      await h.settled()
+
+      // Turn 4: compacted without a usable summary. The request after it is measured almost as large as before, so
+      // the next steps are held, and each still extends the one before it.
+      h.provider.enqueue(readAt("g.ts", 6500), [script.text(NOT_A_SUMMARY)], [script.text("Still not one.")], readAt("h.ts", 6400), answerAt("Read g and h.", 6500))
+      h.tools.on("read", "seven", "eight")
+      h.session.send("Now g.ts and h.ts.")
+      await h.settled()
+
+      // Turn 4 is reverted: the range holds its compaction, which is undone with it. Turn 5 follows turn 3.
+      expect(await h.session.revert()).toMatchObject({ kind: "reverted" })
+      h.provider.enqueue(answerAt("Nothing else.", 2100))
+      h.session.send("Anything else?")
+      await h.settled()
+
+      expect(h.diagnostics).toEqual([])
+      expect(h.provider.remaining).toBe(0)
+      expect(h.log().filter((item) => item.type === "compaction.ended").map((item) => item.data.source)).toEqual(["model", "repaired", "fallback"])
+      expect(verdicts(h)).toEqual([
+        "first",
+        "extension",
+        // turn 2: compacted before its first step; the steer that arrived meanwhile is in that first request
+        "break:compaction",
+        "extension",
+        // turn 3: two steps, the compaction between steps, two more
+        "extension",
+        "extension",
+        "break:compaction",
+        "extension",
+        // turn 4: one step, the compaction, then two held steps
+        "extension",
+        "break:compaction",
+        "extension",
+        // turn 5, after the revert that took turn 4 and its compaction out
+        "break:revert",
+      ])
+      // Every summary request reads what it summarises from the cache: it extends the request before it (that step's
+      // output and the prompt are appended; a repair appends the answer and the follow-up), or, when a tail is kept,
+      // all of it but the prompt is a prefix of that request.
+      const rows = h.store.readRequests(h.session.id)
+      const summaries = rows.filter((row) => row.purpose === "compaction")
+      expect(summaries).toHaveLength(5)
+      for (const row of summaries) {
+        const previous = rows[rows.indexOf(row) - 1]!
+        const extends_ = comparePrefix(previous.blocks, row.blocks).extension
+        const prefixOf = row.blocks.slice(0, -1).every((block, index) => previous.blocks[index]?.hash === block.hash)
+        expect(extends_ || prefixOf).toBe(true)
+      }
+      // The first request after each compaction starts with the checkpoint, and the one after that extends it byte for byte.
+      const steps = rows.filter((row) => row.purpose === "step")
+      for (const index of [2, 6, 9]) expect(comparePrefix(steps[index]!.blocks, steps[index + 1]!.blocks)).toMatchObject({ extension: true })
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("a refusal in a turn that was compacted in the middle takes the checkpoint out with the turn", async () => {
+    const h = new Harness({ contextWindow: 10_000 })
+    try {
+      h.tools.on("read", "one", "secret")
+      h.provider.enqueue(answerAt("Hello.", 1000), readAt("s.txt", 6500), [script.text(SUMMARY)], readAt("t.txt", 1500), [script.fail("content_policy", { message: "No." })], answerAt("Yes.", 1200))
+      h.create().send("Hi.")
+      await h.settled()
+      h.session.send("Read the secret files.")
+      await h.settled()
+      // The refused turn is excluded from its first message on, and the compaction made inside it with it: its checkpoint quotes the turn.
+      const projection = h.session.projection()
+      expect(projection.session.compaction).toBeNull()
+      expect(projection.messages.filter((message) => message.kind === "compaction").map((message) => message.excluded)).toEqual(["refused"])
+      h.session.send("Still there?")
+      await h.settled()
+      const last = h.provider.requests.at(-1)!
+      expect(JSON.stringify(last.input)).not.toContain("secret")
+      expect(last.input.map((item) => item.type)).toEqual(["message", "assistant_text", "message"])
+      expect(verdicts(h)).toEqual(["first", "extension", "break:compaction", "extension", "break:refusal"])
+      expect(h.diagnostics).toEqual([])
+      h.verify()
     } finally {
       await h.dispose()
     }

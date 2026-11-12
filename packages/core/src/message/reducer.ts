@@ -26,7 +26,10 @@
  *   crashed) is followed at once by the interrupt marker.
  * - A step calls the model the session's settings name; settings change only
  *   at a step boundary.
- * - Revert and refusal ranges never reach back past the latest compaction.
+ * - A compaction's cut never reaches back past the cut of the one before it.
+ *   A revert or refusal range may hold a compaction: that compaction is then
+ *   excluded like any message, and model history starts from the latest one
+ *   that is not.
  * - Checks start only when the session would otherwise go idle, and a run has
  *   one terminal event. An execution ends as done with what the gate found.
  * - A revert and its undo happen only while idle; one that restores files is
@@ -188,6 +191,7 @@ const SCOPE = {
   "tool.called": "work",
   "tool.started": "work",
   "compaction.started": "work",
+  "compaction.repair_requested": "work",
   "compaction.ended": "work",
   "history.reverted": "work",
   // A snapshot is a fact about the working tree, whatever the execution is doing.
@@ -344,11 +348,14 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     atBoundary()
     return current
   }
-  /** Checks that an exclusion range starts after the latest compaction and not after `last`. */
+  /** Checks that an exclusion range starts no later than `last`. It may reach back past a compaction, which it then excludes. */
   const range = (fromSeq: number, last: number) => {
-    const floor = state.session.compaction?.seq ?? 0
-    if (fromSeq <= floor || fromSeq > last)
-      fail("invalid_range", `the range must start after seq ${floor} and no later than seq ${last}`)
+    if (fromSeq > last) fail("invalid_range", `the range must start no later than seq ${last}`)
+  }
+  /** The compaction that is open under `id`. */
+  const compacting = (id: MessageId) => {
+    const open = state.session.open
+    if (open === null || open.kind !== "compaction" || open.messageId !== id) fail("invalid_transition", `compaction ${id} is not open`)
   }
   const created = { seq: event.seq, time: event.time, excluded: null }
 
@@ -608,7 +615,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         range(event.data.excludeFromSeq, message.seq)
         return { ...message, status: "refused", refusal: event.data.message, usage: event.data.usage }
       })
-      return { ...closed, messages: exclude(closed.messages, event.data.excludeFromSeq, "refused") }
+      return recompacted({ ...closed, messages: exclude(closed.messages, event.data.excludeFromSeq, "refused") })
     }
     case "retry.scheduled": {
       const current = claimed()
@@ -699,14 +706,25 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     case "compaction.started": {
       claimed()
       based()
+      // The cut only moves forward: what an earlier checkpoint replaced stays replaced. Nothing kept is the event's own seq.
+      const floor = state.session.compaction?.keepFromSeq ?? 1
+      if (event.data.keepFromSeq < floor || event.data.keepFromSeq > event.seq)
+        fail("invalid_range", `the cut must be from seq ${floor} to seq ${event.seq}`)
       const started = add({
         kind: "compaction",
         id: event.data.messageId,
         ...created,
         trigger: event.data.trigger,
+        mode: event.data.mode,
         status: "running",
+        keepFromSeq: event.data.keepFromSeq,
+        prompt: event.data.prompt,
+        repair: null,
         summary: null,
-        keepFromSeq: null,
+        source: null,
+        detail: null,
+        tokensBefore: event.data.tokensBefore,
+        tokensAfter: null,
         usage: null,
         error: null,
         endedAt: null,
@@ -716,11 +734,15 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         session: { ...started.session, open: { kind: "compaction", messageId: event.data.messageId } },
       }
     }
+    case "compaction.repair_requested":
+      compacting(event.data.messageId)
+      return edit(event.data.messageId, "compaction", (message) => {
+        if (message.repair !== null) fail("invalid_transition", `compaction ${message.id} already asked for one repair`)
+        return { ...message, repair: { attempt: event.data.attempt, answer: event.data.answer, prompt: event.data.prompt } }
+      })
     case "compaction.ended":
     case "compaction.failed": {
-      const open = state.session.open
-      if (open === null || open.kind !== "compaction" || open.messageId !== event.data.messageId)
-        fail("invalid_transition", `compaction ${event.data.messageId} is not open`)
+      compacting(event.data.messageId)
       if (event.type === "compaction.failed") {
         closing(event.data.error)
         const failed = edit(event.data.messageId, "compaction", (message) => ({
@@ -732,23 +754,27 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         return { ...failed, session: { ...failed.session, open: null } }
       }
       const ended = edit(event.data.messageId, "compaction", (message) => {
-        range(event.data.keepFromSeq, message.seq)
+        // A summary the model wrote is the first answer, or the answer to the one repair that was asked for.
+        if (event.data.source === "repaired" && message.repair === null)
+          fail("invalid_transition", `compaction ${message.id} asked for no repair (compaction.repair_requested comes first)`)
         return {
           ...message,
           status: "completed",
           summary: event.data.summary,
-          keepFromSeq: event.data.keepFromSeq,
+          source: event.data.source,
+          detail: event.data.detail,
+          tokensAfter: event.data.tokensAfter,
           usage: event.data.usage,
           endedAt: event.time,
         }
       })
-      const seq = ended.messages.findLast((message) => message.id === event.data.messageId)!.seq
+      const checkpoint = ended.messages.findLast((message) => message.id === event.data.messageId)!
       return {
         ...ended,
         session: {
           ...ended.session,
           open: null,
-          compaction: { messageId: event.data.messageId, seq, keepFromSeq: event.data.keepFromSeq },
+          compaction: { messageId: event.data.messageId, seq: checkpoint.seq, keepFromSeq: (checkpoint as Extract<Message, { kind: "compaction" }>).keepFromSeq },
         },
       }
     }
@@ -822,11 +848,11 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         after: event.data.restore?.after ?? null,
         excluded,
       }
-      return {
+      return recompacted({
         ...state,
         session: { ...state.session, open: null, reverts: [...state.session.reverts, entry] },
         messages: exclude(state.messages, event.data.fromSeq, "reverted"),
-      }
+      })
     }
     case "revert.undo_started": {
       idle()
@@ -846,11 +872,11 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (last.before !== null && event.data.restore === null)
         fail("invalid_transition", "that revert restored files, so undoing it restores them too")
       const back = new Set(last.excluded)
-      return {
+      return recompacted({
         ...state,
         session: { ...state.session, open: null, reverts: state.session.reverts.slice(0, -1) },
         messages: state.messages.map((message) => (back.has(message.seq) && message.excluded === "reverted" ? { ...message, excluded: null } : message)),
-      }
+      })
     }
     case "revert.failed": {
       const open = state.session.open
@@ -861,6 +887,20 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     default:
       return event satisfies never
   }
+}
+
+/**
+ * After messages were excluded or put back: the compaction model history
+ * starts from is the latest completed one that is not excluded. A revert to
+ * before a compaction therefore undoes it for the model, and undoing that
+ * revert brings it back. The session object keeps its identity when nothing changed.
+ */
+function recompacted(state: Projection): Projection {
+  const latest = state.messages.findLast((message) => message.kind === "compaction" && message.status === "completed" && message.excluded === null)
+  const current = state.session.compaction
+  if ((latest?.id ?? null) === (current?.messageId ?? null)) return state
+  const compaction = latest?.kind === "compaction" ? { messageId: latest.id, seq: latest.seq, keepFromSeq: latest.keepFromSeq } : null
+  return { ...state, session: { ...state.session, compaction } }
 }
 
 /** Marks every not-yet-excluded message from `fromSeq` on. Untouched messages keep their identity. */

@@ -14,6 +14,16 @@
  * 4. one sentence saying that the full earlier conversation is available
  *    through `history_search` and `history_read`.
  *
+ * When the model could not produce a usable summary (`summary: null`), the
+ * checkpoint is built without one: a plain statement that there is none, the
+ * last things the assistant said before the cut, and the index and the
+ * quotes with the summary's budget added to theirs. It needs no model, so a
+ * compaction can always complete.
+ *
+ * When the kept tail does not hold the latest user message (the cut fell
+ * inside the turn in progress), `inProgress` adds one sentence telling the
+ * model to carry on instead of starting over.
+ *
  * Everything but the summary is deterministic and bounded, so the same inputs
  * always give byte-identical text and the size is known before the model is
  * asked. Pass every non-excluded message before the cut from the whole log,
@@ -65,34 +75,71 @@ export interface Checkpoint {
 }
 
 export interface CheckpointInput {
-  readonly summary: string
+  /** The model-written summary, or `null` when none could be produced: the checkpoint then says so and carries more of the mechanical parts. */
+  readonly summary: string | null
   /** Every non-excluded message before the cut, in `seq` order. Compaction messages are ignored. */
   readonly earlier: readonly Message[]
   readonly limits?: CheckpointLimits
   /** Whether the session offers `history_search` and `history_read`, so the last sentence may name them. Default `true`. */
   readonly historyTools?: boolean
+  /** Whether the work was in progress and the request is not in the kept tail (`TailChoice.midTurn`). Default `false`. */
+  readonly inProgress?: boolean
 }
 
 export const CHECKPOINT_HEADER = "Checkpoint of the earlier conversation, which was compacted to save space."
 export const INDEX_HEADING = "## Exact identifiers from the earlier conversation (extracted mechanically)"
 export const QUOTES_HEADING = "## The user's messages, verbatim (oldest first)"
 export const HISTORY_SENTENCE = `The full earlier conversation is still stored: ${HISTORY_SEARCH} finds exact text in it, and ${HISTORY_READ} reads a message in full by its seq.`
+export const NO_SUMMARY_STATEMENT =
+  "No summary of the earlier conversation could be produced, so nothing here says what the work means or where it stands. What follows was extracted mechanically from it."
+export const NO_SUMMARY_ADVICE = `Before you rely on anything from the earlier conversation, look it up with ${HISTORY_SEARCH} and ${HISTORY_READ}.`
+export const LAST_WORDS_HEADING = "## The assistant's last messages before this checkpoint (verbatim, oldest first)"
+export const CONTINUE_SENTENCE =
+  "The work was in progress when this checkpoint was taken. Continue it from where it stood; do not start over, and do not ask the user to repeat what is quoted above."
+
+/** With no summary, its token budget goes to the mechanical parts. */
+export const FALLBACK_CHECKPOINT_LIMITS: CheckpointLimits = {
+  ...DEFAULT_CHECKPOINT_LIMITS,
+  indexTokens: 2_500,
+  userTokens: 2_600,
+}
+/** Tokens of the assistant's last words in a checkpoint without a summary. */
+const LAST_WORDS_TOKENS = 600
 
 export function buildCheckpoint(input: CheckpointInput): Checkpoint {
-  const limits = input.limits ?? DEFAULT_CHECKPOINT_LIMITS
+  const tools = input.historyTools !== false
+  const limits = input.limits ?? (input.summary === null ? FALLBACK_CHECKPOINT_LIMITS : DEFAULT_CHECKPOINT_LIMITS)
   const messages = input.earlier.filter((message) => message.kind !== "compaction")
   const index = extractIdentifiers(messages, limits)
-  const quotes = quoteUserMessages(messages, limits, input.historyTools !== false)
+  const quotes = quoteUserMessages(messages, limits, tools)
   const text = [
     CHECKPOINT_HEADER,
-    input.summary.trim(),
+    ...(input.summary === null ? [NO_SUMMARY_STATEMENT, lastWords(messages)] : [input.summary.trim()]),
     renderIndex(index),
     quotes.text,
-    input.historyTools === false ? "" : HISTORY_SENTENCE,
+    input.inProgress === true ? CONTINUE_SENTENCE : "",
+    tools ? (input.summary === null ? `${HISTORY_SENTENCE} ${NO_SUMMARY_ADVICE}` : HISTORY_SENTENCE) : "",
   ]
     .filter((part) => part !== "")
     .join("\n\n")
   return { text, tokens: estimateTokens(text), index, quoted: quotes.quoted, unquoted: quotes.unquoted }
+}
+
+/** The last pieces of text the assistant wrote, newest first until the budget is spent, printed oldest first. */
+function lastWords(messages: readonly Message[]): string {
+  const said = messages.flatMap((message) =>
+    message.kind === "assistant" ? messagePieces(message).flatMap((piece) => (piece.role === "assistant" ? [{ seq: message.seq, text: piece.text.trim() }] : [])) : [],
+  )
+  const chosen: string[] = []
+  let spent = estimateTokens(LAST_WORDS_HEADING)
+  for (const entry of said.reverse()) {
+    const block = `[seq ${entry.seq}] ${clip(entry.text, 1_200)}`
+    const cost = estimateTokens(block) + 1
+    if (spent + cost > LAST_WORDS_TOKENS) break
+    spent += cost
+    chosen.unshift(block)
+  }
+  return chosen.length === 0 ? "" : [LAST_WORDS_HEADING, ...chosen].join("\n")
 }
 
 // ---- the identifier index ----

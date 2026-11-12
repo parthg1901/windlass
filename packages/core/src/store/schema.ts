@@ -24,8 +24,13 @@
  * 3: one database per session: media left for the shared blob store (no `blob`
  *    table); `turn.ended`, check results that are carried over, the directories a
  *    session has worked in.
+ * 4: compaction with a checkpoint: `compaction.started` carries the cut, the
+ *    prompt and the size, `compaction.repair_requested` is new, and a
+ *    compaction message holds them. (The history tools' full-text index is
+ *    not part of this schema: it is derived data in tables `history-index.ts`
+ *    creates when a session is first searched.)
  */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /**
  * Run on every connection, before anything else.

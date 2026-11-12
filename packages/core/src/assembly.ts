@@ -33,6 +33,22 @@ export const DEFAULT_MODEL = "gpt-6.1-sol"
 export const DEFAULT_EFFORT: string | null = null
 /** Where tool output that is too long for the model is written in full, under the data directory. */
 export const SPILL_DIRECTORY = "spill"
+/**
+ * A test setting, never a user's: an environment variable that lowers the
+ * context window the compaction policy works with to the given number of
+ * tokens, so that a test or an evaluation run compacts after tens of
+ * thousands of tokens instead of hundreds of thousands. It can only lower
+ * the window, the harness says so on its log when it is set, and no
+ * configuration file has a key for it.
+ */
+export const TEST_CONTEXT_WINDOW_ENV = `${brand.directory.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_TEST_CONTEXT_WINDOW`
+
+/** The window `TEST_CONTEXT_WINDOW_ENV` asks for, or `null` when it is not set to a whole number of tokens. */
+export function testContextWindow(env: Record<string, string | undefined> = process.env): number | null {
+  const value = env[TEST_CONTEXT_WINDOW_ENV]
+  if (value === undefined || !/^[1-9]\d{0,8}$/.test(value.trim())) return null
+  return Number(value.trim())
+}
 
 /** One model the account offers. */
 export interface ModelEntry {
@@ -114,6 +130,18 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     mkdirSync(dataDir, { recursive: true })
     const sessions = openSessionDirectory({ dataDir, notice: log })
     const spillDir = join(dataDir, SPILL_DIRECTORY)
+    // The context window the compaction policy measures against: the provider's, per model, asked for once.
+    let catalogue: Promise<readonly { readonly slug: string; readonly contextWindow: number | null }[]> | null = null
+    const providerWindow = async (model: string) => {
+      catalogue ??= listModels({ accessToken, listedOnly: false }).catch(() => [])
+      return (await catalogue).find((entry) => entry.slug === model)?.contextWindow ?? null
+    }
+    const lowered = testContextWindow()
+    if (lowered !== null) log(`${TEST_CONTEXT_WINDOW_ENV} is set: the context window is taken to be at most ${lowered} tokens (a test setting)`)
+    const contextWindow = async (model: string) => {
+      const real = options.provider === undefined ? await providerWindow(model) : ((await options.engine?.contextWindow?.(model)) ?? null)
+      return lowered === null ? real : real === null ? lowered : Math.min(real, lowered)
+    }
     const provider =
       options.provider ??
       new OpenAIResponsesProvider({
@@ -139,6 +167,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         : {}),
       log,
       ...options.engine,
+      // With a provider of the caller's the window is the caller's to give; the test setting lowers either.
+      ...(options.provider === undefined || options.engine?.contextWindow !== undefined || lowered !== null ? { contextWindow } : {}),
       store: sessions,
       provider,
       tools: options.tools ?? createStandardTools({ spillDir }),

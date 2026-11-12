@@ -503,3 +503,47 @@ describe("verification, the workspace and reverts", () => {
     expect(statuses.slice(-2)).toEqual(["⋯ running checks: test, lint", "⋯ running checks: test, lint · 3 fail"])
   })
 })
+
+describe("compaction", () => {
+  const messageId = "cmp_1" as never
+  const started = event("compaction.started", { messageId, trigger: "auto", mode: "normal", keepFromSeq: 1, prompt: "Summarise.", tokensBefore: 191_400 })
+  const ended = (source: "model" | "repaired" | "fallback", detail: string | null) =>
+    event("compaction.ended", { messageId, summary: "Checkpoint.", source, detail, tokensAfter: 48_250, usage: null })
+  const lines = (...events: Parameters<typeof stored>[0]) => render(stored(events)).split("\n").filter((line) => line !== "")
+
+  test("says how much smaller the next request is, and that the earlier messages can still be searched", () => {
+    expect(lines(started, ended("model", null))).toEqual([
+      "⇣ compacted the conversation · about 191,400 → 48,250 tokens",
+      "  Earlier messages are now a checkpoint; the model can still search them.",
+    ])
+  })
+
+  test("a summary that was used although something is off says what", () => {
+    expect(lines(started, ended("repaired", "the model repeated its summary; its first copy is used")).at(-1)).toBe("  Note: the model repeated its summary; its first copy is used.")
+  })
+
+  test("without a summary the user is told why and what the model works from", () => {
+    expect(lines(started, ended("fallback", "the model did not finish its summary within 5 minutes"))).toEqual([
+      "⇣ compacted the conversation without a summary · about 191,400 → 48,250 tokens",
+      "  Why: the model did not finish its summary within 5 minutes.",
+      "  The model continues from a list of the files, commands and errors so far and",
+      "  your own messages, and can search the full conversation.",
+    ])
+  })
+
+  test("the status line says that it is compacting, and when the model was asked to fix its summary", () => {
+    let out = ""
+    const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => 80, live: true, showReasoning: false, echoPrompts: true })
+    const [claimed, first, repair] = stored([
+      event("execution.started", { executionId: "exe_1" as never }),
+      started,
+      event("compaction.repair_requested", { messageId, attempt: 2, answer: "No.", prompt: "Fix it." }),
+    ])
+    renderer.event(claimed!)
+    renderer.event(first!)
+    expect(out).toContain("⋯ compacting the conversation")
+    out = ""
+    renderer.event(repair!)
+    expect(out).toContain("⋯ compacting the conversation · asking the model to fix its summary")
+  })
+})

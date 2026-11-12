@@ -432,55 +432,6 @@ export const stepLimit: Scenario = {
   ],
 }
 
-const overflow = providerError("context_overflow", "The input exceeds the context window", 400)
-
-export const contextOverflow: Scenario = {
-  title: "Context overflow before any output: compact once and rebuild",
-  description:
-    "In the second turn the request no longer fits. No output had started, so the loop compacts once and rebuilds the request (retry rule 5). A compaction can start only at a boundary, so the overflowed attempt is first closed as failed, with an empty body, and stays in model history (gap G13). The checkpoint keeps the new prompt verbatim. A second overflow after this compaction would fail the execution.",
-  provider: "turn 2, attempt 1 fails with context_overflow before output; the compaction call returns a summary; the rebuilt call answers",
-  phases: [
-    {
-      label: "first turn",
-      events: [...opening("Explain the architecture."), stepStarted("a1"), say("a1", "A long explanation."), stepEnded("a1"), executionSucceeded()],
-    },
-    {
-      label: "second turn overflows",
-      events: [
-        enqueue("u2", "Now explain the reducer."),
-        executionStarted("exe_2"),
-        deliver("u2"),
-        stepStarted("a2"),
-        stepProviderFailed("a2", overflow),
-      ],
-      expect: { open: null },
-    },
-    {
-      label: "compact once, then rebuild",
-      events: [
-        event("compaction.started", { messageId: m("c1"), trigger: "overflow" }),
-        event("compaction.ended", { messageId: m("c1"), summary: "The user asked about the architecture; it was explained.", keepFromSeq: 12, usage: null }),
-        stepStarted("a3"),
-        say("a3", "The reducer folds events."),
-        stepEnded("a3"),
-        executionSucceeded("exe_2"),
-      ],
-      expect: {
-        ui: [
-          { id: "u1" },
-          { id: "a1" },
-          { id: "u2" },
-          { id: "a2", status: "failed", error: "provider:context_overflow", text: "" },
-          { id: "c1", kind: "compaction", status: "completed" },
-          { id: "a3" },
-        ],
-        history: ["c1", "u2", "a2", "a3"],
-        execution: null,
-      },
-    },
-  ],
-}
-
 export const retryScenarios = [
   retryBeforeOutput,
   retryAfterPartialText,
@@ -494,5 +445,4 @@ export const retryScenarios = [
   emptyResponse,
   identicalCallGuard,
   stepLimit,
-  contextOverflow,
 ]

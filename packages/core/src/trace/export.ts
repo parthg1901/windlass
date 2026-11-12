@@ -19,6 +19,17 @@
  * are declared on the later call with `prefix_break` hints (SPEC 6.1), so
  * prefixlens reports the miss that follows as an intentional break.
  *
+ * A compaction's summary calls are rebuilt like every other call: the cut,
+ * the prompt and the repair of a compaction are in the log
+ * (`compaction.started`, `compaction.repair_requested`), and the request of
+ * each ledger attempt is a function of the state at whichever of the two
+ * began it. A summary request is the step request of the part before the
+ * cut plus a prompt. When the compaction keeps a tail, that is not an
+ * extension of the step request before it (the tail is left out), so the
+ * call declares its own break: everything but its appended items is an
+ * unchanged prefix of the previous request, and only the part after that
+ * may differ.
+ *
  * Nothing from the sign-in is read. The only header written is `session-id`,
  * which is the session's prompt-cache key (the ID of its root session).
  */
@@ -46,9 +57,8 @@ import {
 
 export interface ExportOptions {
   /**
-   * The prompt the step loop appends for a compaction call. The log does not
-   * store it, so without it a compaction call cannot be rebuilt and is
-   * exported usage-only (with the reason).
+   * Not used any more: the log stores the prompt of every compaction
+   * (`compaction.started`). Kept so that callers that still pass it compile.
    */
   readonly compactionPrompt?: string
   /** The harness-wide call options the requests were built with. Defaults to the request builder's defaults. */
@@ -76,7 +86,7 @@ export interface Unverified {
     | "build_failed"
     /** The log could not be folded (the reducer rejected an event). */
     | "fold_failed"
-    /** A compaction call, and no `compactionPrompt` was given. Not a mismatch: the request is just not reproducible. */
+    /** Not given any more: the log stores every compaction's prompt. Kept for callers that still compare with it. */
     | "compaction_prompt_unknown"
     /** A blob the request refers to is not in the store. */
     | "blob_missing"
@@ -100,8 +110,19 @@ export interface ExportedCall {
   readonly unverified: Unverified | null
   /** Legitimate prefix breaks among the events since the previous call's start event. */
   readonly breaks: readonly PrefixBreakCause[]
-  /** What the record declares for them (SPEC 6.1). A `settings.changed` that changed nothing declares nothing. */
+  /**
+   * What the call declares against the call before it (SPEC 6.1): the breaks
+   * of `breaks`, and a summary request's own. A `settings.changed` that
+   * changed nothing declares nothing.
+   */
   readonly declared: readonly PrefixBreakHint[]
+  /**
+   * What the call's record carries: `declared`, after the declarations of
+   * the calls before it that have no record (an aborted call, a failed
+   * attempt). A reader compares a record with the record before it, so a
+   * break that happened in between is declared where it can be read.
+   */
+  readonly hinted: readonly PrefixBreakHint[]
   /** The trace record, or `null` when the call has no usage to report (it is in `skipped`). */
   readonly record: TraceRecord | null
 }
@@ -124,32 +145,30 @@ export function exportSession(store: Store, sessionId: SessionId, options: Expor
   const starts = startPoints(events)
   // The first call has nothing before it to break; later ones look at the events since the previous call started.
   let previousStart: StartPoint | null = null
-  // The call prefixlens compares with: the previous one that has a record in the lane.
-  let previousRecorded: ExportedCall | null = null
+  // The request each call is compared with: the one of the call before it that could be rebuilt.
+  let previousRequest: CanonicalTraceRequest | null = null
+  // Declarations of calls that have no record, waiting for the next record.
+  let carried: PrefixBreakHint[] = []
   const calls = rows.map((row, index): ExportedCall => {
-    const start = starts.points.get(startKey(row.purpose, row.messageId, row.attempt)) ?? null
+    const start = starts.get(row)
     const before = previousStart
     const since = start === null || before === null ? [] : events.filter((event) => event.seq > before.seq && event.seq <= start.seq)
     if (start !== null) previousStart = start
     const breaks = prefixBreakCauses(since)
-    const declared = declare(since, { row, start }, { row: rows[index - 1] ?? null, start: before }, previousRecorded?.request ?? null)
     const rebuilt = rebuild(store, row, start, starts.failure, options)
+    const request = "request" in rebuilt ? rebuilt.request : null
+    const declared = [...declare(since, { row, start }, { row: rows[index - 1] ?? null, start: before }, previousRequest), ...summaryBreak(row, start, request, previousRequest)]
+    if (request !== null) previousRequest = request
+    const hinted = [...carried, ...declared]
     const hints: TraceHint[] = [
       ...(row.purpose === "compaction" ? [{ kind: "compaction_call" as const }] : []),
-      ...declared.filter((hint) => hint.reason === "compaction").map((hint) => ({ kind: "compaction" as const, detail: hint.detail })),
-      ...declared,
+      // A `compaction` hint allows a break anywhere, so the summary call's own declaration, which keeps a prefix, gets none.
+      ...hinted.filter((hint) => hint.reason === "compaction" && hint.after === undefined).map((hint) => ({ kind: "compaction" as const, detail: hint.detail })),
+      ...hinted,
     ]
-    const call: ExportedCall = {
-      row,
-      startSeq: start?.seq ?? null,
-      request: "request" in rebuilt ? rebuilt.request : null,
-      unverified: "unverified" in rebuilt ? rebuilt.unverified : null,
-      breaks,
-      declared,
-      record: row.usage === null ? null : toRecord(row, rebuilt, hints, options, sessionId),
-    }
-    if (call.record !== null) previousRecorded = call
-    return call
+    const record = row.usage === null ? null : toRecord(row, rebuilt, hints, options, sessionId)
+    carried = record === null ? hinted : []
+    return { row, startSeq: start?.seq ?? null, request, unverified: "unverified" in rebuilt ? rebuilt.unverified : null, breaks, declared, hinted, record }
   })
   return {
     sessionId,
@@ -180,17 +199,23 @@ export function describeUnverified(result: ExportResult): string[] {
 interface StartPoint {
   readonly seq: number
   readonly projection: Projection
+  /** For a compaction's summary call: how many input items the call appends to the step request of the part before the cut. */
+  readonly appended?: number
 }
 
 /**
  * The projection at the event that began each call: `step.started` for an
  * attempt's first call, `retry.scheduled` for a transparent retry (before any
- * output, the step continues under the same message with the next attempt),
- * `compaction.started` for a compaction call. Folding stops at the first
+ * output, the step continues under the same message with the next attempt).
+ * A compaction's summary calls begin at `compaction.started`, and from the
+ * attempt a `compaction.repair_requested` names, at that event; the attempts
+ * in between are retries of the same request. Folding stops at the first
  * event the reducer rejects; later calls then have no start point.
  */
 function startPoints(events: readonly StoredEvent[]) {
-  const points = new Map<string, StartPoint>()
+  const steps = new Map<string, StartPoint>()
+  /** Per compaction message: the points its summary request changed at, with the first ledger attempt each applies to. */
+  const summaries = new Map<string, { readonly fromAttempt: number; readonly point: StartPoint }[]>()
   let state: Projection | null = null
   let failure: string | null = null
   for (const event of events) {
@@ -201,15 +226,21 @@ function startPoints(events: readonly StoredEvent[]) {
       break
     }
     const point = { seq: event.seq, projection: state }
-    if (event.type === "step.started") points.set(startKey("step", event.data.messageId, event.data.attempt), point)
-    if (event.type === "compaction.started") points.set(startKey("compaction", event.data.messageId, 1), point)
+    if (event.type === "step.started") steps.set(startKey("step", event.data.messageId, event.data.attempt), point)
+    if (event.type === "compaction.started") summaries.set(event.data.messageId, [{ fromAttempt: 1, point: { ...point, appended: 1 } }])
+    if (event.type === "compaction.repair_requested")
+      summaries.get(event.data.messageId)?.push({ fromAttempt: event.data.attempt, point: { ...point, appended: 3 } })
     if (event.type === "retry.scheduled") {
       const message = state.messages.findLast((candidate) => candidate.id === event.data.messageId)
       if (message?.kind === "assistant" && message.status === "running")
-        points.set(startKey("step", event.data.messageId, event.data.attempt), point)
+        steps.set(startKey("step", event.data.messageId, event.data.attempt), point)
     }
   }
-  return { points, failure }
+  const get = (key: { readonly purpose: string; readonly messageId: string; readonly attempt: number }): StartPoint | null =>
+    key.purpose === "compaction"
+      ? (summaries.get(key.messageId)?.findLast((entry) => entry.fromAttempt <= key.attempt)?.point ?? null)
+      : (steps.get(startKey(key.purpose, key.messageId, key.attempt)) ?? null)
+  return { get, failure }
 }
 
 function startKey(purpose: string, messageId: string, attempt: number) {
@@ -234,11 +265,9 @@ function rebuild(
     return foldFailure !== null
       ? fail("fold_failed", `cannot rebuild: ${foldFailure}`)
       : fail("no_start_event", `no event starts ${row.purpose} call ${row.messageId} attempt ${row.attempt}`)
-  if (row.purpose === "compaction" && options.compactionPrompt === undefined)
-    return fail("compaction_prompt_unknown", "a compaction call: the log does not store the compaction prompt, so the request cannot be rebuilt")
   const built = attempt(() =>
     row.purpose === "compaction"
-      ? buildCompactionRequest(start.projection, options.compactionPrompt!, options.callOptions)
+      ? buildCompactionRequest(start.projection, options.callOptions, row.messageId)
       : (options.buildStep ?? buildRequest)(start.projection, { ...options.callOptions, toolChoice: "auto" }),
   )
   if ("error" in built) return fail("build_failed", `the request builder failed: ${built.error}`)
@@ -379,6 +408,22 @@ function declare(
     return []
   })
   return [...removals, ...(since.some((event) => event.type === "settings.changed") ? settingsChanges(current, previous) : [])]
+}
+
+/**
+ * The break a compaction's summary call makes by itself. Its request is the
+ * step request of the part before the cut plus the items it appends (the
+ * prompt; with a repair, the rejected answer and the follow-up too). When
+ * the compaction keeps a tail, the previous request went on where this one
+ * has its prompt, so the call is not an extension, on purpose. It declares
+ * that everything before its appended items is unchanged: a difference
+ * earlier than that is not excused.
+ */
+function summaryBreak(row: RequestRecord, start: StartPoint | null, request: CanonicalTraceRequest | null, previous: CanonicalTraceRequest | null): PrefixBreakHint[] {
+  if (row.purpose !== "compaction" || start === null || request === null || previous === null) return []
+  const extends_ = previous.blocks.length <= request.blocks.length && previous.blocks.every((block, index) => block.hash === request.blocks[index]!.hash)
+  if (extends_) return []
+  return [{ kind: "prefix_break", reason: "compaction", after: request.blocks.length - (start.appended ?? 1), detail: `summary request of compaction ${row.messageId}: the kept tail is left out` }]
 }
 
 /**

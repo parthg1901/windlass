@@ -4,6 +4,7 @@
  * packages import this module as `@light-harness/core/testing/scenarios`.
  */
 import { cancelScenarios } from "./cancel.ts"
+import { compactionScenarios } from "./compaction.ts"
 import { crashScenarios } from "./crash.ts"
 import { happyPaths } from "./happy.ts"
 import { refusalScenarios } from "./refusal.ts"
@@ -26,4 +27,5 @@ export const families: Record<string, readonly Scenario[]> = {
   Shutdown: shutdownScenarios,
   Verification: verificationScenarios,
   Revert: revertScenarios,
+  Compaction: compactionScenarios,
 }

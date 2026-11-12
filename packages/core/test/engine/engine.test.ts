@@ -5,11 +5,12 @@
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { type EngineEvent, EventChannel } from "../../src/engine/channel.ts"
-import { FAILURE_TEXT, NOTE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
+import { COMPACTION_TEXT, FAILURE_TEXT, NOTE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
 import { EngineError, createEngine } from "../../src/engine/engine.ts"
 import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
+import { SUMMARY } from "../scenarios/script.ts"
 import { Harness, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
@@ -488,7 +489,7 @@ describe("model output the scenarios leave open", () => {
   test("a second overflow right after the compaction fails the execution instead of compacting again", () =>
     withHarness(async (h) => {
       const overflow = () => [script.fail("context_overflow", { message: "too long", status: 400 })]
-      h.provider.enqueue([script.text("One.")], overflow(), [script.text("A summary.")], overflow())
+      h.provider.enqueue([script.text("One.")], overflow(), [script.text(SUMMARY)], overflow())
       h.create().send("First.")
       await h.settled()
       h.session.send("Second.")
@@ -498,13 +499,34 @@ describe("model output the scenarios leave open", () => {
       h.verify()
     }))
 
-  test("an overflow with nothing older to summarise fails without a compaction", () =>
+  test("a first prompt that is itself too large is compacted too: without a summary when it cannot be summarised either", () =>
     withHarness(async (h) => {
-      h.provider.enqueue([script.fail("context_overflow", { message: "too long", status: 400 })])
+      const overflow = () => [script.fail("context_overflow", { message: "too long", status: 400 })]
+      // The prompt is rejected; so is the request to summarise it; then the checkpoint alone is answered.
+      h.provider.enqueue(overflow(), overflow(), [script.text("It is a log of a failed deploy.")])
       h.create().send("A prompt that is itself too long.")
       await h.settled()
+      expect(types(h).slice(5)).toEqual(["step.started", "step.failed", "compaction.started", "compaction.ended", "baseline.set", "step.started", "text.ended", "step.ended", "execution.succeeded"])
+      expect(h.log().find((item) => item.type === "compaction.ended")).toMatchObject({ data: { source: "fallback", detail: COMPACTION_TEXT.tooLarge } })
+      // What the model is shown instead: the prompt quoted in the checkpoint, and where to read all of it.
+      const shown = JSON.stringify(h.provider.requests[2]!.input)
+      expect(h.provider.requests[2]!.input).toHaveLength(1)
+      expect(shown).toContain("A prompt that is itself too long.")
+      expect(shown).toContain("history_read")
+      h.verify()
+    }))
+
+  test("an overflow with nothing in view to take out fails without a compaction", () =>
+    withHarness(async (h) => {
+      const overflow = () => [script.fail("context_overflow", { message: "too long", status: 400 })]
+      h.provider.enqueue(overflow(), overflow(), overflow())
+      h.create().send("A prompt that is itself too long.")
+      await h.settled()
+      // The request built from the fallback checkpoint alone is rejected too: nothing more can be done.
+      expect(h.log().filter((item) => item.type === "compaction.started")).toHaveLength(1)
       expect(types(h).slice(-2)).toEqual(["step.failed", "execution.failed"])
       expect(h.log().at(-1)).toMatchObject({ data: { message: FAILURE_TEXT.overflow } })
+      h.verify()
     }))
 
   test("a cancel during the compaction closes it as interrupted and releases the claim", () =>

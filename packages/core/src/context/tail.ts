@@ -13,14 +13,24 @@
  * - before an interrupt marker, which refers to the response right before it.
  *
  * Rules, in order:
- * 1. The latest user message and everything after it are always kept, even
- *    over budget (`overBudget` says so; the policy's aggressive mode is what
- *    reacts to it).
+ * 1. What the next model call answers is the mandatory part: at a
+ *    user-message boundary, the input that arrived since the model last
+ *    spoke; in the middle of a turn, the last step (its calls and their
+ *    results) and whatever the harness said after it. A `normal` compaction
+ *    keeps it even over budget (`overBudget` says so; the policy's aggressive
+ *    mode is what reacts to it). An `aggressive` one keeps it only when it
+ *    fits: the checkpoint and the history tools then stand in for it, which
+ *    is what lets a request that was rejected as too large fit again.
  * 2. A leading checkpoint (the previous compaction) is never kept: it is what
  *    the new summary replaces.
  * 3. Among the allowed cuts whose suffix fits the budget, the one that keeps
  *    the most is the candidate; a cut right before a user message is preferred
  *    when it keeps at least `preferUserShare` of what the candidate keeps.
+ *
+ * A cut may therefore fall inside the turn in progress, between two of its
+ * steps: a single turn that outgrows the window keeps its most recent steps
+ * and the checkpoint carries the turn's request (quoted verbatim) and where
+ * the work stands. `midTurn` says when that happened.
  */
 import { HARNESS_ORIGIN } from "../event/durable.ts"
 import type { Message } from "../message/message.ts"
@@ -33,6 +43,12 @@ export interface TailOptions {
   readonly cost?: (message: Message) => number
   /** Default 0.5. */
   readonly preferUserShare?: number
+  /**
+   * Whether the mandatory part (rule 1) is kept even when it is over budget.
+   * `always` is the default (a normal compaction); `if_fits` is what an
+   * aggressive compaction uses.
+   */
+  readonly mandatory?: "always" | "if_fits"
 }
 
 export interface TailChoice {
@@ -52,6 +68,13 @@ export interface TailChoice {
   readonly overBudget: boolean
   /** Nothing but a previous checkpoint (or nothing at all) is before the cut, so compacting cannot free anything. */
   readonly nothingToRemove: boolean
+  /**
+   * The latest user message is before the cut (or there is none in view), so
+   * the kept tail does not say what was asked for: the cut fell inside the
+   * turn in progress, or an aggressive compaction dropped the request itself.
+   * The checkpoint then has to say that the work continues.
+   */
+  readonly midTurn: boolean
 }
 
 export function chooseTail(messages: readonly Message[], options: TailOptions): TailChoice {
@@ -67,18 +90,24 @@ export function chooseTail(messages: readonly Message[], options: TailOptions): 
   const kept = (index: number) => suffix[index] ?? 0
 
   const latestUser = messages.findLastIndex((message) => message.kind === "user")
-  const mandatory = latestUser === -1 ? messages.length : latestUser
-  const first = messages[0]?.kind === "compaction" ? 1 : 0
-  const candidates = Array.from({ length: mandatory + 1 }, (_, index) => index).filter(
-    (index) => index >= first && allowedCut(messages, index),
+  // The last time the model said something: a step that failed before any output, or was refused, renders nothing.
+  const lastStep = messages.findLastIndex(
+    (message) => message.kind === "assistant" && message.status !== "running" && message.status !== "refused" && message.parts.length > 0,
   )
+  const first = messages[0]?.kind === "compaction" ? 1 : 0
+  // Rule 1: at a user-message boundary everything since the model last spoke, otherwise the last step and what follows it.
+  const unanswered = latestUser > lastStep ? lastStep + 1 : lastStep === -1 ? messages.length : lastStep
+  const allowed = Array.from({ length: messages.length + 1 }, (_, index) => index).filter((index) => index >= first && allowedCut(messages, index))
+  // The mandatory part starts at the latest allowed cut that does not split it.
+  const mandatory = allowed.findLast((index) => index <= Math.max(first, unanswered)) ?? first
+  const candidates = allowed.filter((index) => index <= mandatory || options.mandatory === "if_fits")
   const fitting = candidates.filter((index) => kept(index) <= options.budget)
   const best = fitting[0]
   const bestUser = fitting.find((index) => messages[index]?.kind === "user")
   const keepFrom =
     best === undefined
-      ? // Nothing fits: keep only what must be kept (the last candidate, which is `mandatory` when that is a user message).
-        (candidates[candidates.length - 1] ?? mandatory)
+      ? // Nothing fits: keep only what must be kept.
+        mandatory
       : bestUser !== undefined && kept(bestUser) >= preferUserShare * kept(best)
         ? bestUser
         : best
@@ -91,6 +120,7 @@ export function chooseTail(messages: readonly Message[], options: TailOptions): 
     removedTokens: total - kept(keepFrom),
     overBudget: best === undefined,
     nothingToRemove: !removed.some((message) => message.kind !== "compaction"),
+    midTurn: keepFrom > latestUser,
   }
 }
 

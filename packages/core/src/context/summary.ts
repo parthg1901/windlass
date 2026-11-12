@@ -8,8 +8,17 @@
  * and fit `maxTokens`. `validateSummary` checks that; when it fails, the
  * engine may ask once more by appending the failed answer as assistant text
  * and `summaryRepairPrompt(problems)` as another `developer` message (the
- * prefix still extends, so the retry is cached too), and keep the better
- * answer if the repair fails as well.
+ * prefix still extends, so the retry is cached too).
+ *
+ * A model does not always stop where it should. The first live run of the
+ * recall evaluation got summaries that repeated every section several times,
+ * and one that was still writing after fifteen minutes. So the answer is
+ * bounded twice: `summaryOutputCapChars` is where the engine stops reading a
+ * runaway stream (this provider rejects `max_output_tokens`), and
+ * `resolveSummary` first tries the answer as it is and then with everything
+ * from the first repeated heading on removed (`salvageSummary`). What is
+ * still unusable after the one repair is not used at all: the engine builds
+ * the checkpoint without a summary (`buildCheckpoint` with `summary: null`).
  *
  * The summary is only the part of the checkpoint that needs a model. Exact
  * identifiers and the user's own words are added mechanically by
@@ -89,6 +98,67 @@ export function validateSummary(summary: string, maxTokens: number): SummaryChec
   if (progress !== undefined && !progress.body.includes(NEXT_STEP_MARKER)) problems.push({ kind: "no_next_step" })
   if (tokens > maxTokens) problems.push({ kind: "too_long", tokens, maxTokens })
   return problems.length === 0 ? { ok: true, tokens } : { ok: false, tokens, problems }
+}
+
+/** Where the engine stops reading a summary that does not end: twice the token limit, in characters. */
+export function summaryOutputCapChars(maxTokens: number): number {
+  return maxTokens * 8
+}
+
+/**
+ * Cuts a summary at the first heading that names a section already seen, and
+ * drops a last line that was cut in the middle. A summary the model repeated
+ * (or that the engine stopped while it was being repeated) is its first copy.
+ */
+export function salvageSummary(summary: string, complete = true): string {
+  const seen = new Set<string>()
+  const kept: string[] = []
+  const lines = summary.split("\n")
+  // A stream that was cut ends in the middle of a line.
+  if (!complete) lines.pop()
+  for (const line of lines) {
+    const heading = /^#{1,3}\s+(.+?)\s*$/.exec(line)
+    if (heading !== null) {
+      const name = sectionName(heading[1]!)
+      if (seen.has(name)) break
+      seen.add(name)
+    }
+    kept.push(line)
+  }
+  return kept.join("\n").trim()
+}
+
+/** Problems that leave a summary usable: it has every section once, in order. */
+const SOFT: readonly SummaryProblem["kind"][] = ["too_long", "no_next_step", "empty_section"]
+
+export type ResolvedSummary =
+  /** `text` is the summary to use: the answer, or its first copy when the model repeated itself. */
+  | { readonly ok: true; readonly text: string; readonly tokens: number; readonly salvaged: boolean }
+  /**
+   * Not valid. `text` is the better of the answer and its salvaged form;
+   * `usable` says that only soft problems are left (too long but within
+   * `hardMaxTokens`, no "Next step:" line, an empty section), so it may be
+   * used when a repair does no better.
+   */
+  | { readonly ok: false; readonly text: string; readonly tokens: number; readonly problems: readonly SummaryProblem[]; readonly usable: boolean }
+
+/**
+ * Decides what an answer to the summary request is worth. `complete` is
+ * `false` when the engine stopped the stream (the output cap or the time
+ * limit), so the text ends wherever it was cut.
+ */
+export function resolveSummary(answer: string, maxTokens: number, options: { readonly complete?: boolean; readonly hardMaxTokens?: number } = {}): ResolvedSummary {
+  const complete = options.complete ?? true
+  const hardMaxTokens = options.hardMaxTokens ?? maxTokens * 2
+  const whole = answer.trim()
+  const direct = complete ? validateSummary(whole, maxTokens) : null
+  if (direct?.ok) return { ok: true, text: whole, tokens: direct.tokens, salvaged: false }
+  const salvaged = salvageSummary(answer, complete)
+  const second = validateSummary(salvaged, maxTokens)
+  if (second.ok) return { ok: true, text: salvaged, tokens: second.tokens, salvaged: salvaged !== whole }
+  // The salvaged form is never worse: it only removes repeats and a cut last line.
+  const usable = second.problems.every((problem) => SOFT.includes(problem.kind)) && second.tokens <= hardMaxTokens && salvaged !== ""
+  return { ok: false, text: salvaged, tokens: second.tokens, problems: second.problems, usable }
 }
 
 /** The one follow-up prompt that asks for a fixed summary. */

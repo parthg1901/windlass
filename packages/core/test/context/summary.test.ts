@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { SUMMARY_SECTIONS, summaryPrompt, summaryRepairPrompt, validateSummary } from "../../src/context/summary.ts"
+import { SUMMARY_SECTIONS, resolveSummary, salvageSummary, summaryOutputCapChars, summaryPrompt, summaryRepairPrompt, validateSummary } from "../../src/context/summary.ts"
 import { filler } from "./fixtures.ts"
 
 const good = [
@@ -80,5 +80,51 @@ describe("validateSummary", () => {
     const prompt = summaryRepairPrompt([{ kind: "missing_section", heading: "Files" }, { kind: "no_next_step" }])
     expect(prompt).toContain('"## Files" is missing')
     expect(prompt).toContain('"Next step:"')
+  })
+})
+
+describe("a summary the model did not stop writing", () => {
+  test("repeated several times over, its first copy is the summary", () => {
+    const repeated = [good, good, good].join("\n")
+    expect(validateSummary(repeated, 2_500)).toMatchObject({ ok: false })
+    expect(salvageSummary(repeated)).toBe(good)
+    expect(resolveSummary(repeated, 2_500)).toEqual({ ok: true, text: good, tokens: validateSummary(good, 2_500).tokens, salvaged: true })
+  })
+
+  test("a valid answer is used as it is", () => {
+    expect(resolveSummary(`${good}\n`, 2_500)).toMatchObject({ ok: true, text: good, salvaged: false })
+  })
+
+  test("cut by the engine in the middle of the second copy, the first copy is still whole", () => {
+    const cut = `${good}\n${good.slice(0, 180)}`
+    expect(resolveSummary(cut, 2_500, { complete: false })).toMatchObject({ ok: true, text: good, salvaged: true })
+    // Cut inside the first copy, sections are missing: not usable.
+    const short = resolveSummary(good.slice(0, 200), 2_500, { complete: false })
+    expect(short).toMatchObject({ ok: false, usable: false })
+    // The line that was being written when the stream was cut is dropped.
+    expect(short.text.endsWith("0 to")).toBe(false)
+  })
+
+  test("copying the prompt's description into each heading is tolerated, also when repeated", () => {
+    const described = good.replace("## Goal", "## Goal: what the user wants overall, in one or two sentences.")
+    expect(resolveSummary(`${described}\n${described}`, 2_500)).toMatchObject({ ok: true, salvaged: true })
+  })
+
+  test("too long but complete, or without the next-step line, is usable when a repair does no better; a missing section is not", () => {
+    const long = good.replace("- Round down to whole cents, because the ledger stores integers.", `- ${filler(300)}`)
+    const tight = validateSummary(long, 2_500).tokens - 10
+    expect(resolveSummary(long, tight)).toMatchObject({ ok: false, usable: true, problems: [{ kind: "too_long" }] })
+    // Past twice the limit it is not bounded any more.
+    expect(resolveSummary(long, Math.floor(tight / 2) - 20)).toMatchObject({ ok: false, usable: false })
+    expect(resolveSummary(good.replace("Next step:", "Then:"), 2_500)).toMatchObject({ ok: false, usable: true, problems: [{ kind: "no_next_step" }] })
+    expect(resolveSummary(good.replace("## Files", "## Other"), 2_500)).toMatchObject({ ok: false, usable: false })
+    expect(resolveSummary("", 2_500)).toMatchObject({ ok: false, usable: false, text: "" })
+    expect(resolveSummary("I cannot summarise this.", 2_500)).toMatchObject({ ok: false, usable: false })
+  })
+
+  test("the engine stops reading at twice the token limit, counted in characters", () => {
+    expect(summaryOutputCapChars(2_500)).toBe(20_000)
+    // A summary at the limit is well inside it.
+    expect(good.length).toBeLessThan(summaryOutputCapChars(2_500))
   })
 })
