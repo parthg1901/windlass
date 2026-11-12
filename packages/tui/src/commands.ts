@@ -21,6 +21,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "clear-taint", args: "", description: "say you trust the untrusted content in the conversation" },
   { name: "diff", args: "", description: "per-file diffs of the selected step or turn (the latest by default)" },
   { name: "mcp", args: "[approve <server>]", description: "the MCP servers: state, tools, where each is defined; approve one the project names" },
+  { name: "hooks", args: "[approve <hook>]", description: "the hooks: when each runs, its command, its state, where it is defined; approve one the project names" },
+  { name: "lsp", args: "[approve <server>]", description: "the language servers that add diagnostics to edits: state, the files each serves, where it is defined; approve one the project names", aliases: ["diagnostics"] },
   { name: "skills", args: "", description: "the skills the model can load here, and the ones that could not be loaded" },
   { name: "wakeups", args: "[cancel|secret <id>]", description: "this session's wake-ups; cancel one, or show a webhook's secret", aliases: ["wake"] },
   { name: "memory", args: "[confirm|reject|renew|forget <id>]", description: "the notes later sessions are given, and the ones waiting for your confirmation" },

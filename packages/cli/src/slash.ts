@@ -46,6 +46,8 @@ export const BUILTIN_COMMANDS: CommandSource = {
     { name: "approval", args: "[ask|auto|full]", description: "say the approval mode, or switch it from the next tool call", aliases: ["mode"], when: "any" },
     { name: "clear-taint", args: "", description: "say you trust the untrusted content in this conversation", when: "any" },
     { name: "mcp", args: "[approve <server>]", description: "the MCP servers: state, tools, where each is defined; approve one the project names", when: "any" },
+    { name: "hooks", args: "[approve <hook>]", description: "the hooks: when each runs, its command, its state, where it is defined; approve one the project names", when: "any" },
+    { name: "lsp", args: "[approve <server>]", description: "the language servers that add diagnostics to edits: state, the files each serves, where it is defined; approve one the project names", aliases: ["diagnostics"], when: "any" },
     { name: "skills", args: "", description: "the skills the model can load here, and the ones that could not be loaded", when: "any" },
     { name: "wakeups", args: "[cancel|secret <id>]", description: "this session's wake-ups; cancel one, or show a webhook's secret", aliases: ["wake"], when: "any" },
     { name: "memory", args: "[confirm|reject|renew|forget <id>]", description: "the notes later sessions are given, and the ones waiting for your confirmation", when: "any" },

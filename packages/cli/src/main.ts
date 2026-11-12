@@ -419,6 +419,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
             if (found.rest !== "") return renderer.notice("/compact takes nothing after it", "warn")
             return void compactNow(session, renderer)
           case "mcp":
+          case "hooks":
+          case "lsp":
           case "skills":
           case "wakeups":
           case "memory":

@@ -22,7 +22,7 @@ import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend,
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
 import { agentProblemLines, compactText, requestsText } from "./cli.ts"
-import { COPY_NOTE, changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { hookAsk, hookAskId, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
@@ -603,6 +603,10 @@ export class App {
         return session?.fork !== undefined
       case "mcp":
         return session?.mcp !== undefined
+      case "hooks":
+        return session?.hooks !== undefined
+      case "lsp":
+        return session?.lsp !== undefined
       case "skills":
         return session?.skills !== undefined
       case "wakeups":
@@ -674,6 +678,8 @@ export class App {
         case "fork":
           return await this.fork(rest)
         case "mcp":
+        case "hooks":
+        case "lsp":
         case "skills":
         case "wakeups":
         case "memory":
@@ -1122,7 +1128,7 @@ export class App {
   }
 
   /** `/mcp`, `/skills`, `/wakeups`, `/memory`, `/remember`, `/forget`: the line CLI's words, as a note in the conversation. */
-  private async featureCommand(name: "mcp" | "skills" | "wakeups" | "memory" | "remember" | "forget", rest: string): Promise<void> {
+  private async featureCommand(name: "mcp" | "hooks" | "lsp" | "skills" | "wakeups" | "memory" | "remember" | "forget", rest: string): Promise<void> {
     const session = this.session
     if (session === null) return this.say(`/${name} needs an open session`, "warn")
     const missing = () => this.say(`/${name} is not available with this engine (${this.options.backend.label})`, "warn")
@@ -1138,6 +1144,28 @@ export class App {
           if (server === undefined) return this.say(`there is no MCP server "${words[1]}" in this session; /mcp lists them`, "warn")
           if (server.state !== "awaiting_approval" || server.question === null) return this.say(`the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
           return this.askFeature(this.mcpQuestion(session, server))
+        }
+        case "hooks": {
+          if (session.hooks === undefined) return missing()
+          const state = await session.hooks()
+          if (words.length === 0) return this.showLines(hooksLines(state))
+          if (words[0] !== "approve" || words.length !== 2) return this.say("/hooks takes nothing (the listing) or approve <hook>", "warn")
+          const named = state.hooks.filter((candidate) => candidate.name === words[1])
+          if (named.length === 0) return this.say(`there is no hook "${words[1]}" in this session; /hooks lists them`, "warn")
+          const waiting = named.filter((hook) => hook.state === "awaiting_approval" && hook.question !== null)
+          if (waiting.length === 0) return this.say(`the hook "${words[1]}" does not wait for an approval: it is ${named[0]!.origin === "user" ? "your own and runs without one" : "approved already"}`)
+          for (const hook of waiting) this.askFeature(this.hookQuestion(session, hook))
+          return
+        }
+        case "lsp": {
+          if (session.lsp === undefined) return missing()
+          const state = await session.lsp()
+          if (words.length === 0) return this.showLines(lspLines(state))
+          if (words[0] !== "approve" || words.length !== 2) return this.say("/lsp takes nothing (the listing) or approve <server>", "warn")
+          const server = state.servers.find((candidate) => candidate.name === words[1])
+          if (server === undefined) return this.say(`there is no language server "${words[1]}" in this session; /lsp lists them`, "warn")
+          if (server.state !== "awaiting_approval" || server.question === null) return this.say(`the language server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
+          return this.askFeature(this.lspQuestion(session, server))
         }
         case "skills":
           if (session.skills === undefined) return missing()

@@ -268,6 +268,10 @@ At the prompt (/help lists every command; a /word that is not one is never sent,
                           checkpoint; says the sizes, or why there was nothing to compact
   /mcp [approve <name>]   the MCP servers: state, tools, where each is defined; a server
                           this project's configuration names is asked about first
+  /hooks [approve <name>] the hooks: when each runs, its command, its state (in force,
+                          waiting for your approval, failed and why), where it is defined
+  /lsp [approve <name>]   the language servers that add diagnostics to the agent's edits:
+                          state, the files each serves, where it is defined
   /skills                 the skills the model can load here, and the ones that failed
   /wakeups [cancel|secret <id>]  this session's wake-ups; a webhook's secret
   /memory, /remember <text>, /forget <id>  notes for later sessions (memory is off

@@ -1,6 +1,6 @@
 /**
  * The line CLI's commands for the features the engine runs for a session
- * (`/mcp`, `/skills`, `/wakeups`, `/memory`, `/remember`,
+ * (`/mcp`, `/hooks`, `/lsp`, `/skills`, `/wakeups`, `/memory`, `/remember`,
  * `/forget`), and what it says about them unasked (`FeatureWatch`): an MCP
  * server, a hook or a language server the project's configuration names is
  * put to the user as a question at the prompt (or, in a run with nobody to
@@ -25,7 +25,7 @@ import {
   wakeLines,
   webhookSecretLines,
 } from "./features.ts"
-import { hookQuestionLines, hooksUnattendedText, lspQuestionLines, lspUnattendedText } from "./hooks.ts"
+import { hookQuestionLines, hooksLines, hooksUnattendedText, lspLines, lspQuestionLines, lspUnattendedText } from "./hooks.ts"
 
 export interface FeatureOutput {
   lines(lines: readonly Line[]): void
@@ -38,7 +38,7 @@ export interface FeatureIo {
   readonly ask: ((question: string, print: () => void) => Promise<string | null>) | null
 }
 
-export const FEATURE_COMMANDS = ["mcp", "skills", "wakeups", "memory", "remember", "forget"] as const
+export const FEATURE_COMMANDS = ["mcp", "hooks", "lsp", "skills", "wakeups", "memory", "remember", "forget"] as const
 export type FeatureCommand = (typeof FEATURE_COMMANDS)[number]
 
 const MCP_ANSWERS = "[y] start it · [N] not now › "
@@ -62,6 +62,32 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
         if (server.state !== "awaiting_approval" || server.question === null) return out.notice(`the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
         if (io.ask === null) return out.notice("nobody can answer here; run this interactively", "warn")
         return void (await askMcpServer(server, session, io))
+      }
+      case "hooks": {
+        if (session.hooks === undefined) return missing("hooks")
+        const words = rest.trim().split(/\s+/).filter((word) => word !== "")
+        const state = await session.hooks()
+        if (words.length === 0) return out.lines(hooksLines(state))
+        if (words[0] !== "approve" || words.length !== 2) return out.notice("/hooks takes nothing (the listing) or approve <hook>", "warn")
+        const named = state.hooks.filter((candidate) => candidate.name === words[1])
+        if (named.length === 0) return out.notice(`there is no hook "${words[1]}" in this session; /hooks lists them`, "warn")
+        const waiting = named.filter((hook) => hook.state === "awaiting_approval" && hook.question !== null)
+        if (waiting.length === 0) return out.notice(`the hook "${words[1]}" does not wait for an approval: it is ${named[0]!.origin === "user" ? "your own and runs without one" : "approved already"}`)
+        if (io.ask === null) return out.notice("nobody can answer here; run this interactively", "warn")
+        for (const hook of waiting) await askHook(hook, session, io)
+        return
+      }
+      case "lsp": {
+        if (session.lsp === undefined) return missing("lsp")
+        const words = rest.trim().split(/\s+/).filter((word) => word !== "")
+        const state = await session.lsp()
+        if (words.length === 0) return out.lines(lspLines(state))
+        if (words[0] !== "approve" || words.length !== 2) return out.notice("/lsp takes nothing (the listing) or approve <server>", "warn")
+        const server = state.servers.find((candidate) => candidate.name === words[1])
+        if (server === undefined) return out.notice(`there is no language server "${words[1]}" in this session; /lsp lists them`, "warn")
+        if (server.state !== "awaiting_approval" || server.question === null) return out.notice(`the language server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
+        if (io.ask === null) return out.notice("nobody can answer here; run this interactively", "warn")
+        return void (await askLspServer(server, session, io))
       }
       case "skills":
         if (session.skills === undefined) return missing("skills")
