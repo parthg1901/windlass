@@ -414,6 +414,8 @@ export class App {
     if (trimmed === "") return
     this.remember(text)
     this.setInput("")
+    // Sent: the user is no longer typing, and a question that comes next may take the keys.
+    this.lastTyped = 0
     const command = parseCommand(trimmed)
     if (command !== null) return void this.command(command.spec, command.name, command.rest)
     this.send(text, this.transcript.activity.executing ? this.mode : "steer")

@@ -195,6 +195,7 @@ describe("the safety states in the conversation", () => {
     expect(frame).toContain("⚠ untrusted content is in the conversation: Content from a command that ran with")
     expect(frame).toContain("/clear-taint when you trust what is there")
     expect(frame).toContain("⊘ shell curl -s https://example.com/next · not allowed by you")
+    expect(frame).toContain("the agent was told you declined")
     expect(frame).toContain("trust  untrusted · /clear-taint")
     expect(frame).not.toContain("waiting for your answer")
   })

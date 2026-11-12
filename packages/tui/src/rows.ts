@@ -116,7 +116,9 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
       if (last !== undefined) lines.push([span(`${INDENT}${truncate(last, columns - INDENT.length)}`, "dim")])
     }
     const approval = row.approval
-    if (approval?.state === "denied" && approval.reason === "unattended")
+    if (approval?.state === "declined" && approval.note !== null) lines.push(...wrapLine([span(`${INDENT}your note to the agent: `, "dim"), span(approval.note)], columns, [span(INDENT)]))
+    else if (approval?.state === "declined") lines.push([span(`${INDENT}the agent was told you declined`, "dim")])
+    else if (approval?.state === "denied" && approval.reason === "unattended")
       lines.push(...wrapLine([span(`${INDENT}it needs ${approval.needs.join(", ")}${approval.stop ? "; the run ends here" : ""}`, "warn")], columns, [span(INDENT)]))
     else if (row.phase === "settled" && row.outcome === "error") for (const detail of detailLines(row.name, settledData(row)).slice(-3)) lines.push([span(`${INDENT}${truncate(detail, columns - INDENT.length)}`, "dim")])
     return lines
@@ -199,7 +201,7 @@ function approvalMark(row: ToolRow): Span[] {
 function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: string } {
   const data = settledData(row)
   const approval = row.approval
-  if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: `not allowed by you${approval.note === null ? "" : ` · your note: ${approval.note}`}` }
+  if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: "not allowed by you" }
   if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }
   switch (row.outcome) {
     case "success":
