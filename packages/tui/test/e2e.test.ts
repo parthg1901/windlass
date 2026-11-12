@@ -158,7 +158,7 @@ describe("against the scripted demo engine", () => {
 })
 
 describe("against lh acp with a scripted model", () => {
-  test("undo asks before it overwrites a file edited by hand", async () => {
+  test("undo asks before it overwrites a file changed outside the session", async () => {
     const space = workspace(WRITE_TURN)
     const term = await start(["--cwd", space.cwd], { env: space.env })
     await term.waitFor(READY, { timeoutMs: 20_000 })
@@ -169,7 +169,7 @@ describe("against lh acp with a scripted model", () => {
     writeFileSync(join(space.cwd, "notes.md"), "first\nsecond\nmine\n")
     term.type("/undo")
     term.keys("Enter")
-    const question = await term.waitFor("Undo: 1 file edited by hand since the turn")
+    const question = await term.waitFor("Undo: 1 file changed outside this session since the turn")
     // Each choice says what it does to the file: keep leaves the agent's change in it too.
     expect(question).toContain("[y] Overwrite: it goes back to before the turn")
     expect(question).toContain("[2] Keep: it stays exactly as now")
