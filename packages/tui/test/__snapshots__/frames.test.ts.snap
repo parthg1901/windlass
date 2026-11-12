@@ -20,7 +20,7 @@ exports[`the showcase turn 60x20 1`] = `
     tokens · 44,746 in · 78% cached · 396 out
 ● ready
 ›
-Enter send · / commands · Ctrl-O expand · Ctrl-P panel"
+the demo is over · Ctrl-D quit"
 `;
 
 exports[`the showcase turn 100x30 1`] = `
@@ -53,7 +53,7 @@ exports[`the showcase turn 100x30 1`] = `
     tokens · 44,746 in · 78% cached · 396 out                 │
 ● ready
 ›
-Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
+the demo has played all its messages · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
 `;
 
 exports[`the showcase turn 200x50 1`] = `
@@ -106,5 +106,5 @@ exports[`the showcase turn 200x50 1`] = `
                                                                                                                                                       │
 ● ready
 ›
-Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
+the demo has played all its messages · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
 `;

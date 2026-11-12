@@ -10,6 +10,7 @@ import { MODELS_RETRY_MS } from "../src/app.ts"
 import { panelLines, panelWidth } from "../src/panel.ts"
 import { Theme } from "../src/theme.ts"
 import type { CallUsage } from "../src/transcript.ts"
+import type { DemoBackend } from "../src/demo-backend.ts"
 import { type Mounted, ScriptBackend, mount, playAll } from "./helpers.ts"
 
 const SIZES = [
@@ -165,6 +166,26 @@ describe("a command a demo cannot run", () => {
     mounted = await mount({ width: 120, height: 30, scenario: "find-and-fix-a-failing-test" })
     await mounted.settle()
     expect((await mounted.frame()).replace(/\s*│[^\n]*/g, "").replace(/\s+/g, " ")).toContain("This is a demo: a recorded session, replayed without a model. Its prompt is in the input: press Enter to play it. /help lists keys.")
+  })
+
+  test("between a demo's turns the hint says Enter plays its next message, and after the last that it is over", async () => {
+    mounted = await mount({ width: 120, height: 30, scenario: "two-turns-in-one-session" })
+    await mounted.settle()
+    const hint = async () => (await mounted!.frame()).split("\n").at(-1)!
+    expect(await hint()).toContain("Enter plays the demo's next message")
+    const backend = mounted.backend as DemoBackend
+    mounted.setup.mockInput.pressEnter()
+    await mounted.settle()
+    await backend.current!.idle()
+    await mounted.settle()
+    expect(backend.current!.remaining).toBe(1)
+    expect(await hint()).toContain("Enter plays the demo's next message")
+    await playAll(mounted)
+    expect(await hint()).toContain("the demo has played all its messages")
+    // Typing something else gives the usual keys back.
+    await mounted.setup.mockInput.typeText("x")
+    await mounted.settle()
+    expect(await hint()).toContain("Enter send")
   })
 })
 

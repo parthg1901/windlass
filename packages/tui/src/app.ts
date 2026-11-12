@@ -2064,14 +2064,26 @@ export class App {
       const brief = "Ctrl-X stop this call · Ctrl-C stop the turn"
       return [[span(truncate(textWidth(full) <= columns ? full : brief, columns), "dim")]]
     }
+    // A demo says when its next message waits in the input, and when it has played them all.
+    const demo = !running && this.options.suggest !== undefined ? this.demoHint() : null
     // The long form when it fits whole, else the short one: a hint is never cut in the middle of a key.
-    const [long, short] = running
+    const [long, short] = demo !== null ? demo : running
       ? this.mode === "steer"
         ? ["Enter steers the running turn (seen after the current step) · Ctrl-T: queue instead · Ctrl-C stop", "Enter steers · Ctrl-T queue · Ctrl-C stop"]
         : ["Enter queues for after this turn · Ctrl-T: steer instead · Ctrl-C stop", "Enter queues · Ctrl-T steer · Ctrl-C stop"]
       : ["Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit", "Enter send · / commands · Ctrl-O expand · Ctrl-P panel"]
     const hint = textWidth(long) <= columns ? long : short
     return [[span(truncate(hint, columns), "dim")]]
+  }
+
+  /** The hint of an idle demo: its next message is in the input, or it has none left. `null`: the usual hint. */
+  private demoHint(): [string, string] | null {
+    const next = this.options.suggest?.() ?? null
+    if (next !== null && this.input.plainText === next)
+      return ["Enter plays the demo's next message · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit", "Enter plays the demo's next message · Ctrl-D quit"]
+    if (next === null && this.transcript.turns.turns.length > 0 && this.input.plainText === "")
+      return ["the demo has played all its messages · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit", "the demo is over · Ctrl-D quit"]
+    return null
   }
 
   private panelContent(columns: number, rows: number): Span[][] {
