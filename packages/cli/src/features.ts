@@ -397,7 +397,8 @@ export function wakeMessageSummary(text: string, origin: string): { readonly hea
   const body = marker >= 0 ? text.slice(marker + "The message set up with the wake-up:\n".length) : notice >= 0 ? text.slice(notice + "Its message was:\n".length) : null
   const message = body === null ? null : (body.split("\n\n", 1)[0] ?? "").trim() || null
   const why = origin === "wake_webhook" ? "a webhook request arrived" : stopped ? "it stopped" : "it fired"
-  return { head: `wake-up${id === null ? "" : ` ${id}`}: ${why}${match?.[3] === undefined ? "" : ` (${localTimes(match[3])})`} · not typed by you`, message }
+  // The engine's own brackets inside (`after 1m (at …)`) become a comma: one pair of brackets, not two.
+  return { head: `wake-up${id === null ? "" : ` ${id}`}: ${why}${match?.[3] === undefined ? "" : ` (${localTimes(match[3]).replace(/ \(([^()]*)\)/g, ", $1")})`} · not typed by you`, message }
 }
 
 // ---------------------------------------------------------------- watches on a background command's output
