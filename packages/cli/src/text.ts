@@ -65,11 +65,28 @@ export function renderLine(segments: readonly Segment[], max: number, color: boo
   return out
 }
 
-/** Word-wraps one line of text to `width` columns; a word longer than a line is cut. */
+/**
+ * Word-wraps one line of prose to `width` columns; a word longer than a line
+ * is cut. The line's own indent is kept on its first row. Not for
+ * preformatted text (a diff, a command, code), where spaces mean something:
+ * that is `hardWrap`.
+ */
 export function wrap(text: string, width: number): string[] {
   const out: string[] = []
-  let current = ""
-  for (const word of text.split(" ")) {
+  const lead = text.slice(0, text.length - text.trimStart().length)
+  let current = lead.length < width / 2 ? lead : ""
+  let first = true
+  for (const word of text.trimStart().split(" ")) {
+    if (first) {
+      first = false
+      if (displayWidth(current + word) <= width) {
+        current += word
+        continue
+      }
+      if (current !== "") out.push(current.trimEnd())
+      current = truncate(word, width)
+      continue
+    }
     const next = current === "" ? word : `${current} ${word}`
     if (displayWidth(next) <= width) current = next
     else {
@@ -78,7 +95,32 @@ export function wrap(text: string, width: number): string[] {
     }
   }
   if (current !== "") out.push(current)
-  return out
+  return out.filter((row) => row.trim() !== "" || out.length === 1)
+}
+
+/**
+ * Preformatted text (a line of a diff, a command) as rows of `width`
+ * columns: every character kept, nothing reflowed, a tab as four spaces. A
+ * row that is cut continues on the next, from the very next character.
+ */
+export function hardWrap(text: string, width: number): string[] {
+  const line = text.replace(/\t/g, "    ")
+  if (displayWidth(line) <= width) return [line]
+  const rows: string[] = []
+  let current = ""
+  let used = 0
+  for (const { segment } of graphemes.segment(line)) {
+    const w = displayWidth(segment)
+    if (used + w > Math.max(1, width)) {
+      rows.push(current)
+      current = ""
+      used = 0
+    }
+    current += segment
+    used += w
+  }
+  if (current !== "" || rows.length === 0) rows.push(current)
+  return rows
 }
 
 /**

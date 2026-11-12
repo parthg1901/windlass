@@ -168,7 +168,7 @@ describe("tool calls", () => {
       }),
     ])
     expect(render(events)).toBe(
-      ["▸ shell make", "  ✗ exit 2 · 100ms", "    … 26 earlier lines", "    line 27", "    line 28", "    line 29", "    line 30", "    output capped · 3,000 lines in full: /tmp/spill/make.log", ""].join("\n"),
+      ["▸ shell make", "  ✗ exit 2 · 100ms", "    … 26 earlier lines", "    line 27", "    line 28", "    line 29", "    line 30", "    output capped · 3,000 lines in full:", "      /tmp/spill/make.log", ""].join("\n"),
     )
   })
 })
@@ -397,14 +397,24 @@ describe("verification, the workspace and reverts", () => {
     expect(out).toEqual([
       "✗ checks: 2 failed, 1 timed out, 1 could not start, 1 passed · 100ms",
       "  ✗ test · exit 1 · bun test",
-      "    output: /data/spill/checks/check-test-0a.log",
+      "    full output:",
+      "      /data/spill/checks/check-test-0a.log",
       "  ✗ types · timed out · bun types",
-      "    output: /data/spill/checks/check-types-0a.log",
+      "    full output:",
+      "      /data/spill/checks/check-types-0a.log",
       "  ✗ build · could not start · bun build",
-      "    output: /data/spill/checks/check-build-0a.log",
+      "    full output:",
+      "      /data/spill/checks/check-build-0a.log",
       "  ✗ e2e · killed by SIGKILL · bun e2e",
-      "    output: /data/spill/checks/check-e2e-0a.log",
+      "    full output:",
+      "      /data/spill/checks/check-e2e-0a.log",
     ])
+  })
+
+  test("a path is never broken: on its own line, from the first column when it is wider than the terminal", () => {
+    const long = `/home/someone/.local/share/${brand.directory}/spill/checks/check-test-0123456789abcdef.log`
+    const out = lines([event("checks.started", { run: 1, checks: ["test"] }), finished(check("test", "failed", { outputPath: long }))], 60)
+    expect(out.slice(-2)).toEqual(["    full output:", long])
   })
 
   test("the three endings of a turn that the engine calls done are told apart", () => {
@@ -558,5 +568,49 @@ describe("compaction", () => {
     out = ""
     renderer.event(repair!)
     expect(out).toContain("⋯ compacting the conversation · asking the model to fix its summary")
+  })
+})
+
+describe("preformatted text is never reflowed", () => {
+  const diffFile = (patch: string) => ({ path: "src/a.ts", status: "modified" as const, binary: false, omitted: false, truncated: false, added: 1, removed: 1, patch })
+  const shown = (columns: number, patch: string) => {
+    let out = ""
+    const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => columns, live: false, showReasoning: false, echoPrompts: false })
+    renderer.diff([diffFile(patch) as never])
+    return out.split("\n").filter((line) => line !== "")
+  }
+
+  test("/diff keeps the indentation of context, added and removed lines", () => {
+    const patch = ["--- a/src/a.ts", "+++ b/src/a.ts", "@@ -1,4 +1,4 @@", " function f() {", "   if (x) {", "-    return  1", "+    return  2", "   }", "\tdone()"].join("\n")
+    expect(shown(80, patch)).toEqual([
+      "src/a.ts · +1 -1",
+      "  --- a/src/a.ts",
+      "  +++ b/src/a.ts",
+      "  @@ -1,4 +1,4 @@",
+      "   function f() {",
+      "     if (x) {",
+      "  -    return  1",
+      "  +    return  2",
+      "     }",
+      "      done()",
+    ])
+  })
+
+  test("a diff line wider than the terminal continues on the next row with every character", () => {
+    const line = `+${"  word".repeat(12)}`
+    const rows = shown(30, ["@@ -1 +1 @@", line].join("\n")).slice(2)
+    expect(rows.every((row) => displayWidth(row) <= 30)).toBe(true)
+    expect(rows.map((row) => row.slice(2)).join("")).toBe(line)
+  })
+
+  test("a large paste is echoed as its first lines and a count, and sent whole", () => {
+    let out = ""
+    const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false })
+    const paste = Array.from({ length: 2000 }, (_, index) => `line ${index} ${"x".repeat(50)}`).join("\n")
+    renderer.prompt(paste)
+    const rows = out.split("\n").filter((line) => line !== "")
+    expect(rows.length).toBe(7)
+    expect(rows[0]).toStartWith("› line 0 ")
+    expect(rows.at(-1)).toBe(`  … 2,000 lines, ${(new TextEncoder().encode(paste).length / 1024).toFixed(1)} KB in all; the agent gets all of it`)
   })
 })

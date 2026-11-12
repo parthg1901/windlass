@@ -11,7 +11,7 @@ import { type EventData, type ProviderError, type SessionSettings, type StepErro
 import type { EngineEvent } from "./engine.ts"
 import type { DiffFile } from "@light-harness/acp/extensions"
 import { callArgument, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
-import { type Segment, type Tone, displayWidth, flatten, formatDuration, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
+import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
 
 export interface Sink {
   event(event: EngineEvent): void
@@ -47,6 +47,10 @@ export interface PrettyOptions {
 }
 
 type Block = "prompt" | "text" | "reasoning" | "info" | "summary"
+
+/** A prompt echoed in more rows than this is shown as its first `PROMPT_HEAD` rows and a count. */
+const PROMPT_ROWS = 12
+const PROMPT_HEAD = 6
 
 interface Call {
   readonly name: string
@@ -165,7 +169,8 @@ export class PrettyRenderer implements Sink {
       for (const text of (file.patch ?? "").split("\n")) {
         if (text === "" || /^(diff --git |index |new file mode |deleted file mode )/.test(text)) continue
         const tone = text.startsWith("+++") || text.startsWith("---") ? "dim" : text.startsWith("+") ? "green" : text.startsWith("-") ? "red" : text.startsWith("@@") ? "cyan" : "dim"
-        for (const line of wrap(sanitize(text), this.width - 2)) this.line("info", [seg(`  ${line}`, tone)])
+        // A diff is never reflowed: its spaces are the indentation it shows.
+        for (const line of hardWrap(sanitize(text), this.width - 2)) this.line("info", [seg(`  ${line}`, tone)])
       }
       if (file.truncated) this.line("info", [seg("  … cut: the change is larger than the per-file limit", "dim")])
     }
@@ -185,12 +190,21 @@ export class PrettyRenderer implements Sink {
     this.endLine()
   }
 
-  /** Echoes a prompt as if typed: `› text`. */
+  /** Echoes a prompt as if typed: `› text`. A long one (a large paste) is its first lines and a count of the rest. */
   prompt(text: string): void {
     this.endLine()
     this.gap("prompt")
-    const lines = text.split("\n").flatMap((line) => wrap(flatten(line), this.width - 2))
-    lines.forEach((line, index) => this.writeLine([seg(index === 0 ? `${SYMBOL.prompt} ` : "  ", "dim"), seg(line, "bold")]))
+    const source = text.split("\n")
+    const lines: string[] = []
+    // Wrapped only as far as is shown: a 100 KB paste is not laid out to be thrown away.
+    for (const line of source) {
+      if (lines.length > PROMPT_ROWS) break
+      lines.push(...wrap(flatten(line), this.width - 2))
+    }
+    const cut = lines.length > PROMPT_ROWS
+    const shown = cut ? lines.slice(0, PROMPT_HEAD) : lines
+    shown.forEach((line, index) => this.writeLine([seg(index === 0 ? `${SYMBOL.prompt} ` : "  ", "dim"), seg(line, "bold")]))
+    if (cut) this.writeLine([seg(`  … ${plural(source.length, "line")}, ${formatBytes(new TextEncoder().encode(text).length)} in all; the agent gets all of it`, "dim")])
   }
 
   /** Call before an interactive prompt is drawn: finishes the line and leaves one blank line. Returns what to write. */
@@ -285,7 +299,7 @@ export class PrettyRenderer implements Sink {
         const question = event.data.question
         this.asking = key(event.data.messageId, event.data.callId)
         this.line("info", [seg("? ", ["yellow", "bold"]), seg(flatten(question.title), "bold")])
-        for (const part of question.subject.split("\n")) for (const line of wrap(sanitize(part), this.width - 4)) this.line("info", [seg(`    ${line}`)])
+        for (const part of question.subject.split("\n")) for (const line of hardWrap(sanitize(part), this.width - 4)) this.line("info", [seg(`    ${line}`)])
         for (const detail of question.details) for (const line of wrap(flatten(detail), this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
         for (const choice of question.choices)
           if (choice.remembers !== null) for (const line of wrap(`${choice.label} remembers ${flatten(choice.remembers)}`, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
@@ -539,8 +553,7 @@ export class PrettyRenderer implements Sink {
         this.line("info", [seg(`${failed ? SYMBOL.fail : SYMBOL.ok} `, failed ? "red" : "green"), seg(`checks: ${checksSummary(checks)}`, failed ? "red" : undefined), seg(suffix([took]), "dim")])
         for (const detail of checkLines(checks)) {
           this.lineWithArg("info", [seg(`  ${SYMBOL.fail} `, "red"), seg(detail.name, "bold"), seg(` · ${detail.status}`, "red"), seg(" · ", "dim")], detail.command, [])
-          // A path is for copying: it is written whole and left to the terminal to wrap.
-          if (detail.output !== null) this.uncut("info", `    output: ${detail.output}`, "dim")
+          if (detail.output !== null) this.pathLines("    full output:", detail.output)
         }
         return
       }
@@ -685,8 +698,9 @@ export class PrettyRenderer implements Sink {
     else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · ", "dim"), ...tail])
     for (const detail of detailLines(call.name, data)) this.line("info", [seg(`    ${detail}`, "dim")])
     if (data.truncation !== null) {
-      const where = data.truncation.spillPath === null ? "" : `: ${data.truncation.spillPath}`
-      this.line("info", [seg(`    output capped · ${plural(data.truncation.originalLines, "line")} in full${where}`, "dim")])
+      const spill = data.truncation.spillPath
+      if (spill === null) this.line("info", [seg(`    output capped · ${plural(data.truncation.originalLines, "line")} in full`, "dim")])
+      else this.pathLines(`    output capped · ${plural(data.truncation.originalLines, "line")} in full:`, spill)
     }
   }
 
@@ -810,7 +824,7 @@ export class PrettyRenderer implements Sink {
       // A question waits for the user: said in full (what would run, what each answer remembers), wrapped, never cut.
       const question = event.data.question
       wrap(`? ${child.label} asks: ${flatten(question.title)}`, this.width - 6).forEach((line, index) => this.line("info", [seg(`    ${index === 0 ? "" : "  "}${line}`, ["yellow", "bold"])]))
-      for (const part of question.subject.split("\n")) for (const line of wrap(sanitize(part), this.width - 8)) this.line("info", [seg(`        ${line}`)])
+      for (const part of question.subject.split("\n")) for (const line of hardWrap(sanitize(part), this.width - 8)) this.line("info", [seg(`        ${line}`)])
       for (const detail of question.details) for (const line of wrap(flatten(detail), this.width - 6)) this.line("info", [seg(`      ${line}`, "dim")])
       for (const choice of question.choices)
         if (choice.remembers !== null) for (const line of wrap(`${choice.label} remembers ${flatten(choice.remembers)}`, this.width - 6)) this.line("info", [seg(`      ${line}`, "dim")])
@@ -927,6 +941,18 @@ export class PrettyRenderer implements Sink {
     const fixed = [...before, ...after].reduce((sum, part) => sum + displayWidth(flatten(part.text)), 0)
     const room = Math.max(8, this.width - fixed)
     this.line(kind, [...before, seg(truncate(arg, room)), ...after])
+  }
+
+  /**
+   * A label, then a path on a line of its own: a path is for copying, so it is
+   * never cut or broken by the renderer. Indented under the label when it fits
+   * the width, otherwise from the first column, where the terminal's own wrap
+   * keeps it in one piece for most terminals' copy.
+   */
+  private pathLines(label: string, path: string): void {
+    this.line("info", [seg(label, "dim")])
+    const indent = label.length - label.trimStart().length + 2
+    this.uncut("info", displayWidth(path) + indent <= this.width ? `${" ".repeat(indent)}${path}` : path, "dim")
   }
 
   /** A whole line that is never shortened, whatever the terminal width. */

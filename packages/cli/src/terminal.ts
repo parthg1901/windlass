@@ -18,7 +18,7 @@
  * prompt and gives it the next entry as the answer.
  */
 import { type CommandIo, type RevertableSession, runSessionCommand, sessionCommand } from "./commands.ts"
-import { type Segment, displayWidth, renderLine, renderWrapped, seg, stripAnsi, truncate } from "./text.ts"
+import { type Segment, displayWidth, formatBytes, plural, renderLine, renderWrapped, seg, stripAnsi, truncate } from "./text.ts"
 
 export interface ScreenOptions {
   readonly write: (text: string) => void
@@ -32,6 +32,10 @@ export type EditorAction =
   | { readonly kind: "eof" }
 
 const ESC = "\x1b"
+/** An entry taller than this many rows (a large paste) is shown in the input as its first lines and a count. */
+export const FOOTER_ROWS = 10
+/** The lines a tall entry shows before its count. */
+const FOOTER_HEAD = 3
 const PASTE_START = `${ESC}[200~`
 const PASTE_END = `${ESC}[201~`
 
@@ -378,6 +382,29 @@ export class Screen {
     let cursorRow = 0
     let cursorCol = 0
     let offset = 0
+    const tall = lines.reduce((sum, line) => sum + Math.floor((promptWidth + displayWidth(line)) / cols) + 1, 0) > FOOTER_ROWS
+    if (tall) {
+      // A large paste is not drawn whole: it would push everything above it into the scrollback. Its first lines, cut
+      // to a row each, and what else it holds; the cursor rests after the count, and the entry is sent whole.
+      const head = lines.slice(0, FOOTER_HEAD)
+      head.forEach((line, index) => {
+        out += `${paintSegment(seg(index === 0 ? this.prompt : indent, "dim"), this.options.color)}${truncate(line, cols - promptWidth - 1)}\r\n`
+        rows += 1
+      })
+      const hidden = lines.length - head.length
+      // As many of its parts as fit, whole: the count first.
+      const parts = [`… ${hidden > 0 ? `${plural(hidden, "more line")} · ` : ""}${formatBytes(new TextEncoder().encode(this.buffer).length)} in all`, "Enter sends all of it", "Ctrl-C clears it"]
+      let more = truncate(parts[0]!, cols - promptWidth - 1)
+      for (const part of parts.slice(1)) if (displayWidth(`${more} · ${part}`) <= cols - promptWidth - 1) more = `${more} · ${part}`
+      out += `${indent}${paintSegment(seg(more, "dim"), this.options.color)}`
+      cursorRow = rows
+      cursorCol = promptWidth + displayWidth(more)
+      rows += 1
+      out += `\r${cursorCol > 0 ? `${ESC}[${cursorCol}C` : ""}`
+      this.options.write(out)
+      this.drawn = { rows, cursorRow, belowPartial }
+      return
+    }
     lines.forEach((line, index) => {
       const lead: Segment = seg(index === 0 ? this.prompt : indent, "dim")
       const body = index === 0 && this.buffer === "" && hint !== "" ? [lead, seg(hint, "dim")] : [lead, seg(line)]

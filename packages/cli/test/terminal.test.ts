@@ -125,6 +125,20 @@ describe("the footer", () => {
     expect(vt.text).toBe("line one\nline two")
   })
 
+  test("a large paste shows its first lines and a count, so the output above stays where it is; it is sent whole", async () => {
+    const { vt, screen } = setup(40)
+    screen.write("line one\n")
+    screen.show("› ")
+    const paste = Array.from({ length: 300 }, (_, index) => `row ${index} of the pasted file`).join("\n")
+    screen.input(`\x1b[200~${paste}\x1b[201~`)
+    expect(vt.text.split("\n")).toEqual(["line one", "› row 0 of the pasted file", "  row 1 of the pasted file", "  row 2 of the pasted file", "  … 297 more lines · 7.8 KB in all"])
+    expect(vt.cursor.row).toBe(4)
+    screen.write("line two\n")
+    await settle()
+    expect(vt.text.split("\n").slice(0, 3)).toEqual(["line one", "line two", "› row 0 of the pasted file"])
+    expect(screen.input("\r")).toEqual([{ kind: "submit", text: paste }])
+  })
+
   test("text that is still streaming continues on its own line, above the footer", async () => {
     const { vt, screen } = setup(20)
     screen.show("› ")
