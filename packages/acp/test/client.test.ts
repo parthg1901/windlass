@@ -314,6 +314,6 @@ describe("as a child process", () => {
     )
     expect(refused).toBeInstanceOf(ClientError)
     expect(refused?.reason).toBe("closed")
-    expect(refused?.message).toBe("the engine process exited with code 3 before it was ready: no data directory")
+    expect(refused?.message).toBe("the engine could not start: no data directory (its process exited with code 3)")
   })
 })
