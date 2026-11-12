@@ -45,8 +45,8 @@ packages/core/src
                   revert), history.ts (the history tools as the loop offers them),
                   recovery.ts (start-up recovery), replay.ts (what a replay may change, its changed baseline),
                   spawn.ts (the subagent and background tools, what is read off a child's log),
-                  worktree.ts (a subagent's git worktree and the merge back), skills.ts, mcp.ts, wake.ts, memory.ts
-                  and agents.ts (those five modules as the loop offers them), state.ts (what the loop reads off the projection),
+                  worktree.ts (a subagent's git worktree and the merge back), skills.ts, mcp.ts, wake.ts, memory.ts,
+                  agents.ts, hooks.ts and lsp.ts (those seven modules as the loop offers them), state.ts (what the loop reads off the projection),
                   workspace.ts (what it reads off the log about snapshots), constants.ts (limits and frozen texts),
                   channel.ts (the event stream), clock.ts
   snapshot/       the working tree as git tree objects in a private git directory: take, diff, restore, prune
@@ -72,6 +72,11 @@ packages/core/src
                   the `memory` configuration section
   agents/         agents (modes): definitions as files, discovery, restrictions, the list for the model, what using
                   one means, the `agents` configuration section
+  hooks/          hooks: the `hooks` configuration section and each hook's fingerprint, which hooks apply to a call,
+                  the answer format, the decision per point and every text the model is shown, who may run and how,
+                  the event a hook is given, the runner
+  lsp/            language-server diagnostics: the `lsp` configuration section, the server process and its JSON-RPC
+                  connection, one LSP session, the before/after comparison, the note, the registry
 ```
 
 Naming: a lowercase export such as `message` or `usage` is a validator; the PascalCase export of the same name is its
@@ -100,10 +105,11 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
 | Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
-| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
+| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
-| Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.settled` |
+| Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.settled` (for an edit a language server was asked about also `diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts) |
+| Hooks | `hook.ran` (one per hook that applied: the point, the call for a before or after hook, which hook and whose, how it ran, what it answered, the text that reached the model, what it printed for the user, and whether that text is a taint source) |
 | Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run; `agent` when the policy that refused it is the restrictions of the agent the session runs as), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
 | Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge) |
 | Replay | `replay.call` (per call: matched, normalised, dropped, diverged or off the recording; whether the tool ran for real), `replay.diverged` (the copy the replay carries on in, and the snapshot it was restored from), `replay.ended` (the outcome, the reason, the report) |
@@ -199,6 +205,13 @@ is a new version with a decoder for the old one.
     after that message, which must be an instruction message of source `agent`. That message and the switch need a step boundary
     and no claim: they are written the moment the user switches while the session is idle, and at the next
     boundary of a turn that runs. A call is refused in an agent's name only by the agent the session runs as.
+  - *Hooks.* `hook.ran` needs a running claim. A before or after hook's record names a call of the open step
+    that has no result yet (an after hook's, one that started); a stop hook's names none and is written at a
+    boundary. A record says `skipped` exactly when the hook did not run for want of the user's approval, and only
+    a hook that answered no has text that reached the model. While an interrupt is wound down the records of the
+    hooks that had finished are still accepted. An ending names unsatisfied stop hooks only when there is one,
+    each once. The message a stop hook sends the model back with is a harness message like any other: it must be
+    answered before the execution can end.
   - *Who verifies.* The ending of a subagent's turn (`execution.succeeded`, `turn.ended`) says `left_to_parent`
     and nothing else, and no other session's ending says it.
   - *Forks.* Only a fork's `session.created` carries `inherited`, and what it carries lies at or before the
@@ -319,6 +332,11 @@ is a new version with a decoder for the old one.
   and the step loop records it in `tool.started`.
 - A tool returns the text for the model once. After `tool.settled` is written that text is replayed byte for byte;
   `truncation` records that it was capped and where the full output is.
+- Between a tool's return and the cap there is one step in which the caller may append to the result
+  (`RunHooks.afterExecute`): it is given the tool, the validated input and the result, and what it returns begins
+  with the tool's output byte for byte. The engine uses it for the notes of after hooks and, after them, the
+  diagnostics of an edit. The result is still capped once and stored once (a tool that capped itself keeps what
+  is added after its capped text), and the step is not taken for a tool that threw, was refused or never started.
 - The context carries the abort signal with its reason. A tool that is aborted returns what it observed.
 - The context carries `putBlob`, which stores bytes in the blob table and returns the reference a tool lists in its
   result's `attachments`. The tool runtime supplies it from its options (`store.putBlob`), so a tool never sees the store.
@@ -359,7 +377,10 @@ is a new version with a decoder for the old one.
   before anything was sent, is not), and an admitted input records `untrusted` (a wake-up's firing with a webhook's
   body or a networked check's output), which is a source from the admission on. A third is `background_output` showing a running subagent's words:
   its `display.subagent.tainted` says the subagent's conversation was tainted then, and the result is a source
-  like the subagent's answer. `taint.noticed` records that the
+  like the subagent's answer. Two more are records, not results: a hook's
+  `hook.ran` says in `taint` when its text reached the model and the hook ran with the network by the user's
+  grant, or is a project's in a repository the user marked untrusted; and a result's `diagnostics.untrusted` says
+  the note in it holds the messages of a language server the project chose, in such a repository. `taint.noticed` records that the
   user was told, and is what a client shows; a fork inherits it, a revert and a compaction leave it.
 - Redaction is applied by the loop to every tool result before `tool.settled` is written (the text, and every
   string of the structured `display` data), and to a check report. A check's own output is redacted as it
@@ -387,9 +408,10 @@ is a new version with a decoder for the old one.
 - `loadConfig` reads the user and project files with strict validation: an unknown key is an error. The
   `approval` section is the one key that is not merged: each file's section is handed on as written, and
   `resolveApprovalConfig` lets the project's only tighten the user's. The sections `mcp`, `skills`, `wake`,
-  `memory` and `agents` are validated by the modules that own them, and `LoadedConfig.files` hands on both files
+  `memory`, `agents`, `hooks` and `lsp` are validated by the modules that own them, and `LoadedConfig.files` hands on both files
   apart, because for each of them it matters who wrote a value (see "Skills, MCP servers, wake-ups, memory and
-  agents"). `loadConfigSync` is the same loader without a turn of the event loop, for the two things that cannot
+  agents" and "Hooks and language-server diagnostics"). The project's file is validated as the project's:
+  only the user's own may run a hook outside the sandbox. `loadConfigSync` is the same loader without a turn of the event loop, for the two things that cannot
   wait for an execution to read the files: how a session's calls are decided, asked before its first turn, and
   the agent a new session starts as.
 - `decideGate` is pure: finish, run these checks, report and continue, or finish unresolved. `renderReport` is the
@@ -406,7 +428,8 @@ is a new version with a decoder for the old one.
   given: a reused ID is a duplicate and writes nothing), `start`, `interrupt`, `setSettings` (model and effort, at the next step
   boundary), `withdraw` (a prompt that was not delivered yet), `readEvents` (its stored log, for a client that
   replays history), `revert`, `undoRevert`, `rename` (`session.renamed`, at any time), `compact` (a compaction
-  the user asks for, see "Compaction"), `setAgent`, `agent` and `agents` (see "Agents"), an event stream and
+  the user asks for, see "Compaction"), `setAgent`, `agent` and `agents` (see "Agents"), `hooks`, `approveHook`,
+  `lsp` and `approveLspServer` (see "Hooks and language-server diagnostics"), an event stream and
   `close`. Closing a session closes that session:
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
   other sessions carry on.
@@ -809,7 +832,7 @@ client opened it meanwhile.
   and cut them short when it exits (they stay resumable, and resume when their session is next opened). What a
   process that does not fire sets up fires in the next one that does.
 - *Shutdown.* `Engine.close()` stops the listener and the scheduler first, then the sessions, then the MCP
-  servers, then closes the wake store.
+  servers and the language servers, then closes the wake store.
 - *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so it is
   decided exactly as that command would be; the question adds that it acts later, unattended, and how often. What
   the call ran under becomes the most the wake-up's check may run with. Before each run the scheduler asks what
@@ -865,6 +888,77 @@ Markdown file: instructions, and optionally a model, an effort and restrictions.
 - *For clients.* `Engine.listAgents(cwd)`, `EngineSession.agents()`, `agent()` and `setAgent()`. Problems
   (a definition that was skipped or shadowed, a restriction that names a tool that does not exist, a model that
   is not offered, a project's `agents.default`) are `diagnostic` events of kind `agents`.
+
+## Hooks and language-server diagnostics
+
+Two more modules that were built apart (`hooks/`, `lsp/`; each has a README) and are wired into the loop by
+`engine/hooks.ts` and `engine/lsp.ts`. Neither brings a tool, and neither has anything in a request's prefix:
+which hooks and servers exist is configuration the model is never told. What they say reaches the model inside
+something that is appended anyway: the result of a call, or a harness message. `EngineOptions.commandHooks` and
+`lsp` switch them on; `createHarness` passes both. **With no hook and no language server configured a session's
+requests and its log are byte for byte those of an engine without either** (`test/engine/hooks.test.ts` holds
+this): the two call sites below are not even entered, so a call is decided, run and capped exactly as before.
+
+**The three points of a hook.** The configuration is read when an execution starts, so a change takes effect at the
+next turn. Hooks of a point run one after another, the user's first, then the project's.
+
+- *Before a call is decided.* After the calls the loop itself refuses and the agent's restrictions, in the
+  runtime's `authorize`, before the approval layer: the before hooks that apply to the call are run with its
+  validated arguments. The first that objects settles the call from `pending` as an error with its reason (no
+  question is asked, nothing starts); one that cannot answer refuses too, unless it says `onError: "allow"`. A
+  hook that does not object approves nothing: the approval layer decides next, unchanged. The order rules of a
+  step hold: a read's hooks run when the read is decided, a side-effecting call's when its turn in the line comes.
+- *After a tool ran.* In the runtime's `afterExecute`, before the cap: each after hook that applies is shown the
+  result as the model will be shown it (redacted) and may add a note after the tool's own output. A hook that
+  fails adds nothing. Then the language servers (below). A refused or denied call, and a tool that threw, have none.
+- *When a turn may end.* After the verification gate said so (`finish`), also when a queued message waits behind
+  the turn: the stop hooks are asked. One that objects sends the model back with its message, a harness message of
+  origin `stop_hook`, appended with the records and with whatever the gate was about to write (a run's
+  `checks.finished`) in one append. The rounds are counted from those messages in the log (`stopRoundsSent`),
+  never kept in memory. At `maxStopRounds` the turn ends anyway: its ending carries `hooks.unsatisfied`, and the
+  user is told by a `diagnostic` of kind `hooks`. A stop hook that cannot answer lets the turn end. Gate first,
+  then hooks: a turn the gate sends back is not asked about, and after a stop hook's round that changed files the
+  gate runs again before the hooks do. A subagent's turn runs no stop hooks (its parent's turn does, as with the
+  checks), nor does an execution that has no answer to end on.
+
+**What is recorded.** One `hook.ran` per hook that applied, in the append of what it decided: before the
+`tool.settled` of its call, with the stop message, or with the turn's ending. A project's hook nobody approved is
+recorded as `skipped`. An interrupt reaches a running hook through the execution's signal (its process group is
+killed); the call is then `not_started`, a result goes on without the notes not yet given, and the wind-down
+writes the records of the hooks that had finished before it settles the calls.
+
+**How a hook runs.** Through the checks' runner, so in its own process group, with a timeout, and with its
+output redacted as it arrives (`hooks/run.ts`). Like the model's own commands: in the sandbox, offline, in `ask`
+and `auto` and in `full` once the session is tainted; a user's hook with `sandbox: false` always outside it; a
+project's hook never where there is no sandbox (for a before hook that refuses the call). With the approval layer
+off a hook runs as it is, as every call does.
+
+**Language servers** (`engine/lsp.ts`). The engine has one hub with one registry per working directory and
+configuration, shared by the sessions that work there, created when the first of them reads its configuration
+and stopped when the last lets go or the engine closes. Creating one starts nothing: a server starts, in the
+background, at the first file it serves.
+
+- *After a read* of a file a server serves, the file's text from disk is shown to the server (`observe`), which
+  never waits: the diagnostics from before the next edit are then ready when it comes.
+- *After an edit.* For a `write`-class call that names one file a server serves: once the call may run, the
+  file's text is read (`null`: it does not exist); after the tool returned successfully, and after the after
+  hooks (a formatter may have rewritten the file), the text is read again and the servers are asked what the
+  edit made worse (`diagnose`). That returns within `lsp.waitMs` whatever the servers do; the loop adds no wait
+  and never asks twice. A note, when there is one, follows the tool's output and the hooks' notes after a blank
+  line. `tool.settled.diagnostics` records what the servers said. Why an edit got none (still starting, too
+  slow, crashed, not approved) is a `diagnostic` of kind `lsp`, once per server and reason; the model is told nothing.
+- The note gates nothing. The verification gate runs as before, whatever notes were shown.
+
+**A project's hook and a project's server.** As with a project's MCP server: what the user's own file names
+runs; what the project's file names (a hook; a server it names or changes in any field) waits for the user's
+approval of exactly that definition, remembered for the project like any approval (`approval/grants.ts`: a
+`tool` rule, `hook:<fingerprint>` or `lsp-server:<name>:<fingerprint>`, in `approvals/<workspace hash>.json`, 30
+days). The question is not about a tool call, so it is not an `approval.requested` event and nothing waits for
+it: until a client puts it, the hook is skipped (and recorded as skipped) and the server is not started, the
+user is told once by a `diagnostic`, and nothing of it reaches the model. `EngineSession.hooks()` gives the hooks
+in force and the ones that wait, each with the question word for word; `approveHook(fingerprint)` records the
+approval, in force from the next call. `lsp()` gives the started servers and the ones that wait;
+`approveLspServer(name, fingerprint)` records the approval, and the server starts at the next file it serves.
 
 ## Replay
 
@@ -938,6 +1032,15 @@ These are the shapes the scenarios spell out event by event.
 - **An MCP call.** `tool.called` · the approval layer's decision (a question by the server's tool, or a refusal) ·
   `tool.started` (`network`, origin `mcp`) · `tool.settled` (`display.mcp`: server, tool, untrusted, outcome) ·
   `taint.noticed` the first time such a result is untrusted.
+- **A call a hook refuses.** `tool.called` · `hook.ran` (`beforeTool`, `no`) · `tool.settled` (`error`, the
+  reason), the last two in one append. No `tool.started`. A hook that did not object: its `hook.ran` (`yes`) is
+  written with the call's `tool.settled`, after the tool ran or after the approval layer refused it.
+- **A result with a hook's note or a server's.** `tool.called` · `tool.started` · the tool · the after hooks ·
+  the language servers · in one append `hook.ran` per after hook and `tool.settled` (the tool's output, the
+  notes, the diagnostics note; `diagnostics` when a server was asked).
+- **A stop hook's round.** The answer · the gate · in one append what the gate wrote (`checks.finished`),
+  `hook.ran` (`stop`, `no`) and `synthetic.appended stop_hook` · the next step. At the bound: `hook.ran` ·
+  `execution.succeeded` (or, with a queued message, `turn.ended`) with `hooks.unsatisfied`.
 - **A wake-up's firing.** `inbox.enqueued` (the firing's key as the message ID, origin `wake` or `wake_webhook`,
   delivery `queue`, `untrusted` when it carries outside content) · `taint.noticed` when that is new · if idle and
   the delivery is `wake`, `execution.started` · `inbox.delivered` · the turn's steps. While a turn runs: the item
@@ -970,7 +1073,8 @@ sessions/<session id>.db-holder   the process holding the lock, for the error me
 ../<data dir>-work/               beside the data directory: workspaces/ (a fork's copy), worktrees/ (a subagent's
                                   git worktree), replays/ (a replay's copy): where sandboxed commands must run
 approvals/<workspace hash>.json   approvals remembered for a project (30 days), keyed by its real path; also the
-                                  approvals of the MCP servers the project's file names
+                                  approvals of the MCP servers, the hooks and the language servers the
+                                  project's file names
 wake/                             the wake-ups of every session: one SQLite file all processes share, the owners' locks
 memory/                           notes (user/, projects/<name>-<hash>/) and the usage log; only with memory enabled
 index.db                          the listing cache; can be deleted at any time

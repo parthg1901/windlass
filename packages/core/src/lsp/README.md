@@ -5,7 +5,8 @@ edit, what a full check run tells the agent a minute later: this name does not e
 type. This module adds that as a short note to the file tool's result, limited to what **this edit made worse**.
 The note is optional. It never gates the turn, and it never waits longer than a short, fixed time.
 
-A leaf: nothing in core imports it, and it defines no durable events (it lists what should be recorded). It imports
+The step loop calls it from `engine/lsp.ts` (see "As wired into the engine" at the end, which says where that
+differs from the proposal under "For the engine integrator"). It imports
 `config/schema.ts` (`ConfigError`, `mergeConfigFiles`), `mcp/config.ts` (`BASE_ENV`, `serverEnvironment`),
 `validate.ts`, `json.ts` and `brand.ts`. The process handling in `transport.ts` (own process group, guard process,
 close stdin, SIGTERM, SIGKILL) is **copied** from `mcp/stdio.ts`, not imported. That channel frames messages by
@@ -301,3 +302,22 @@ network (downloading type stubs) is not detected, like unsandboxed commands.
   which is why files over 2 MiB are skipped.
 - No `workspace/didChangeWatchedFiles`: a server that depends on other files (types defined in a file the agent
   changed with a shell command) may be out of date until those files are opened.
+
+## As wired into the engine
+
+`engine/lsp.ts` and `engine/engine.ts` do what "For the engine integrator" asks for, with these details:
+
+- **Lifetime.** `LspHub` holds one registry per working directory and configuration (who approved what is not
+  part of the key: an approval given later is told to the registry that exists), shared by the sessions that
+  work there. A session takes hold of it when an execution reads its configuration, and lets go when it closes
+  or its configuration names no server any more; the last release stops it, and `Engine.close()` stops all.
+- **The calls.** `observe` after a successful `read`-class call that names one file a server serves; the
+  file's text before an edit is read in the runtime's `authorize`, once the call may run; `diagnose` in
+  `RunHooks.afterExecute`, after the after hooks, with the text read from disk again. Nothing is read for a file
+  no enabled server serves.
+- **The record** is `tool.settled.diagnostics` as proposed, plus `untrusted: true` when the note holds a
+  project server's messages in a repository the user marked untrusted; the taint fold reads that field
+  (a `diagnostics_note` entry, source kind `lsp-untrusted-project`).
+- **Approval.** `EngineSession.lsp()` gives the started servers and the ones that wait;
+  `approveLspServer(name, fingerprint?)` writes the project grant and calls `approve(key)`. Until then the user
+  is told once by a `diagnostic` of kind `lsp`, as for every notice of the registry.

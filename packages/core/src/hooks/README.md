@@ -12,7 +12,8 @@ something is wrong. They are built so that they cannot break what the rest of th
 - a slow hook is killed at its timeout and a broken one has a defined, safe outcome;
 - a stop hook sends the model back a bounded number of times per turn, then the turn ends.
 
-A leaf module: nothing in core imports it, and it defines no durable events (it lists what should be recorded).
+The module itself decides and renders; the step loop calls it from `engine/hooks.ts` (see "As wired into the
+engine" at the end, which says where that differs from the proposal under "For the engine integrator").
 
 | File | What |
 | --- | --- |
@@ -22,7 +23,7 @@ A leaf module: nothing in core imports it, and it defines no durable events (it 
 | `decide.ts` | the decision per point, the stop bound, and every text the model is shown (pure) |
 | `trust.ts` | which hooks may run and how (sandbox, approval), the approval question, what taints (pure) |
 | `event.ts` | the event a hook is given on stdin and in its environment, bounded (pure) |
-| `run.ts` | the runner: the hook's command through the checks' runner (`../verify/run.ts`), sandboxed, capped, redacted |
+| `run.ts` | the runner: the hook's command through the checks' runner (`../verify/run.ts`), sandboxed, capped, redacted as its output arrives |
 | `points.ts` | the three points put together: plan, run, parse, decide, and the records to store |
 
 `bun scripts/hooks-demo.ts` runs real hooks at each point and prints what the model would see.
@@ -283,3 +284,28 @@ turn winds down as any interrupt. Records of hooks that had finished are still w
 4. `approval/taint.ts`: the `hook_output` history entry.
 5. The approval store: remembered approvals of project hooks by fingerprint.
 6. `engine/engine.ts`: the three call sites and the question at execution start.
+
+## As wired into the engine
+
+`engine/hooks.ts` and `engine/engine.ts` do what the section above asks for, with these differences:
+
+- **The question about a project's hook is put the way a project's MCP server's is**, not as
+  `approval.requested`: it is about configuration, not about a call, so the log does not change and nothing waits.
+  `EngineSession.hooks()` gives the hooks in force and the ones that wait (`awaiting`: name, point, fingerprint,
+  command, and the question word for word); `approveHook(fingerprint)` writes the project grant
+  (`{ kind: "tool", tool: "hook:<fingerprint>" }`, 30 days) and the hook runs from the next call. Until then the
+  hook is skipped, recorded as skipped, and the user is told once by a `diagnostic` of kind `hooks`.
+- **The event is `hook.ran`**, with `HookRecord`'s fields and the call (`messageId`, `callId`; both `null` for a
+  stop hook). `forUser` is cut to its last 2,048 characters. The unsatisfied ending is `hooks: { unsatisfied }`
+  on `execution.succeeded` and `turn.ended`.
+- **`RunHooks.afterExecute`** is given the tool, the input and the result, as proposed. The engine shows an after
+  hook the result as the model will be shown it (redacted), and appends what the hook added to the tool's own,
+  unredacted output, which is redacted once with the rest, as before.
+- **Stop hooks are not run for a subagent's turn** (its parent's turn runs them, as with the checks), nor for an
+  execution that has no answer to end on.
+- **Taint** is folded from `hook.ran.taint` (`approval/record.ts`: a `hook_output` entry; source kinds
+  `hook-network` and `hook-untrusted-project`).
+- **The wrapper** sends the hook's stderr out on the wrapper's own stdout as it is written, and ends the answer
+  with a second marker line, so that the answer is exactly what lies between the two lines whatever order two
+  pipes are read in and whatever length a replaced credential leaves. The output is redacted as it arrives
+  (`RunCheckOptions.redact`), before it is kept, cut or read back.
