@@ -38,7 +38,13 @@ const INDENT = "    "
 
 export function layoutRow(row: Row, columns: number, context: LayoutContext): Span[][] {
   // A turn `/undo` took out of the conversation is one dim line where its prompt was; the rest of it is not shown.
-  if (isUndoneRow(row)) return row.kind === "user" && row.delivered === null ? undoneLines(row, columns) : []
+  if (isUndoneRow(row)) {
+    if (row.kind !== "user") return []
+    // A steer is drawn undone only where an undo went back to (the latest one that took it out): inside a turn
+    // that was undone whole, the turn's own line says it.
+    if (row.delivered === "steer") return row.cutBy.has(Math.max(...row.undoneBy)) ? undoneLines(row, columns) : []
+    return undoneLines(row, columns)
+  }
   switch (row.kind) {
     case "user":
       return userLines(row, columns)
@@ -96,7 +102,7 @@ function userLines(row: UserRow, columns: number): Span[][] {
 }
 
 function undoneLines(row: UserRow, columns: number): Span[][] {
-  const head = `↶ undone${row.turn === null ? "" : ` turn ${row.turn}`}: `
+  const head = row.delivered === "steer" ? "↶ undone steer: " : `↶ undone${row.turn === null ? "" : ` turn ${row.turn}`}: `
   const text = (row.command?.typed ?? row.text).split("\n").find((line) => line.trim() !== "") ?? ""
   // The prompt comes first; the explanation is shortened before it is.
   const want = Math.min(textWidth(text), 30)

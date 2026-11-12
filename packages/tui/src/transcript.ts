@@ -44,6 +44,8 @@ export interface UserRow extends RowBase {
   /** The command file that produced `text` (`command.expanded`): the row shows the entry as typed, and `text` when expanded. */
   command: CommandNote | null
   expanded: boolean
+  /** The reverts that went back to just before this message (a steer): its row says it was undone, and what followed it. */
+  readonly cutBy: Set<number>
 }
 
 /** What a row says about the command file its message came from: the entry as typed, the file, and what expansion reported. */
@@ -844,7 +846,7 @@ export class Transcript {
         }
         if (item === undefined || !item.midTurn) return
         const turnOfQueued = this.turns.turns.findLast((turn) => turn.messageSeq === event.seq)?.number ?? null
-        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery, turn: turnOfQueued, command, expanded: false }, replay)
+        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery, turn: turnOfQueued, command, expanded: false, cutBy: new Set() }, replay)
         return
       }
       case "inbox.cancelled": {
@@ -966,24 +968,34 @@ export class Transcript {
         const undone = event.type === "history.reverted"
         const record = event.data.restore
         // The rows of the turns it takes out of the conversation, or puts back: they look undone until a /redo.
+        // An undo that goes back to before a steer, in the middle of its turn: the steer's row says so.
+        let steer: UserRow | null = null
         if (event.type === "history.reverted") {
           for (const row of this.rows)
             if (row.seq >= event.data.fromSeq && row.seq < event.seq) this.touch(row, () => row.undoneBy.add(event.seq))
+          const cut = this.rows.find((row) => row.kind === "user" && row.seq >= event.data.fromSeq && row.seq < event.seq) as UserRow | undefined
+          if (cut?.delivered === "steer") {
+            steer = cut
+            this.touch(cut, () => cut.cutBy.add(event.seq))
+          }
         } else {
           const revert = event.data.revertSeq
+          steer = (this.rows.find((row) => row.kind === "user" && row.cutBy.has(revert)) as UserRow | undefined) ?? null
           for (const row of this.rows) if (row.undoneBy.has(revert)) this.touch(row, () => row.undoneBy.delete(revert))
         }
         // The turns this /undo took out: not one an earlier /undo had taken already.
         const turns = undone ? this.turns.turns.filter((turn) => turn.undoneBy.has(event.seq) && turn.undoneBy.size === 1) : this.redone
-        const which = turnsLabel(turns)
+        const which = turnsLabel(turns) ?? (steer === null ? null : `your steer "${oneLine(steer.text).slice(0, 40)}${oneLine(steer.text).length > 40 ? "…" : ""}" and what followed it`)
         const head = which === null ? (undone ? "went back" : "brought back") : undone ? `undone: ${which} · out of the conversation` : `redone: ${which} · back in the conversation`
+        // Files restored to before a steer are as they were before the steer, not before the turn.
+        const files = (changed: number) => (turns.length === 0 && steer !== null ? `${plural(changed, "file")} ${undone ? (changed === 1 ? "as it was before the steer" : "as they were before the steer") : changed === 1 ? "as the steer's work left it" : "as the steer's work left them"}` : restoredFiles(changed, undone))
         const what =
           record === null
             ? undone
               ? " · no file was restored · /redo brings it back"
               : " · no file was restored"
             : // A turn that changed no file: nothing was restored, which "0 files as they were" says badly.
-              ` · ${record.changed === 0 ? "no file needed to change" : restoredFiles(record.changed, undone)}${undone ? " · /redo brings it back" : ""}`
+              ` · ${record.changed === 0 ? "no file needed to change" : files(record.changed)}${undone ? " · /redo brings it back" : ""}`
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
@@ -1158,7 +1170,7 @@ export class Transcript {
     // The title the server derives for a session without one: the first line of its first message.
     if (this.session.title === null) this.session.title = deriveTitle(sanitize(text))
     if (!midTurn) {
-      this.userRows.set(data.messageId, this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null, turn: null, command: null, expanded: false }, replay))
+      this.userRows.set(data.messageId, this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null, turn: null, command: null, expanded: false, cutBy: new Set() }, replay))
       return
     }
     this.pending.push({ messageId: data.messageId, text: sanitize(text), delivery: data.delivery })

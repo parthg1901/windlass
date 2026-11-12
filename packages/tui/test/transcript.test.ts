@@ -297,6 +297,27 @@ describe("a steered message", () => {
   })
 })
 
+describe("an undo that goes back to before a steer", () => {
+  test("the steer's row says it was undone, and the line after the undo names it and what followed it", () => {
+    const transcript = play([...opening("start"), stepStarted("a1")])
+    const stored = (data: object, seq: number) => ({ ...(data as never as object), sessionId: "s" as never, seq, time: CLOCK_START }) as never
+    transcript.apply(stored(event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: [{ type: "text", text: "do not change the tests" }] }), 100))
+    transcript.apply(stored(event("inbox.delivered", { messageId: m("u2") }), 101))
+    transcript.apply(stored(stepStarted("a2"), 102))
+    transcript.apply(stored(event("text.ended", { messageId: m("a2"), text: "Fixed src.", providerData: null }), 103))
+    const restore = { target: "a".repeat(40), before: "b".repeat(40), after: "a".repeat(40), written: 2, removed: 0, changed: 2, kept: [], keptOmitted: 0 }
+    transcript.apply(stored(event("history.reverted", { fromSeq: 101, restore } as never), 110))
+    const lines = transcript.rows.flatMap((row) => layoutRow(row, 160, { now: CLOCK_START, debug: false, color: false })).map((line) => line.map((part) => part.text).join("").trimEnd())
+    expect(lines).toContain('↶ undone steer: "do not change the tests" · out of the conversation · /redo brings it back')
+    expect(lines).not.toContain("Fixed src.")
+    expect(lines.at(-1)).toBe('↶ undone: your steer "do not change the tests" and what followed it · out of the conversation · 2 files as they were before the steer · /redo brings it back')
+    transcript.apply(stored(event("history.restored", { revertSeq: 110, restore } as never), 111))
+    const back = transcript.rows.flatMap((row) => layoutRow(row, 160, { now: CLOCK_START, debug: false, color: false })).map((line) => line.map((part) => part.text).join("").trimEnd())
+    expect(back).toContain("Fixed src.")
+    expect(back.at(-1)).toBe('↷ redone: your steer "do not change the tests" and what followed it · back in the conversation · 2 files as the steer\'s work left them')
+  })
+})
+
 describe("a message with indented lines", () => {
   test("an indented line goes on under its own text when it wraps", () => {
     const transcript = play([...opening("start")])
