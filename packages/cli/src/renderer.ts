@@ -8,7 +8,7 @@
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
 import { type AgentRecord, type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
-import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
+import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
 import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
@@ -151,6 +151,8 @@ export class PrettyRenderer implements Sink {
   private settings: SessionSettings | null = null
   /** The instruction files of the latest baseline, so an unchanged list is not shown again. */
   private instructionFiles = ""
+  /** The instruction updates shown so far, by source: the version (its fingerprint; `null`: removed) last said. */
+  private readonly instructionsShown = new Map<string, string | null>()
   /** The stop of the running execution: asked for by this CLI (with the exit hint pending), shown, or neither. */
   private stop: "hint" | "shown" | null = null
   /** The call whose approval question waits for the user's answer. */
@@ -172,7 +174,7 @@ export class PrettyRenderer implements Sink {
    */
   private readonly spawned = new Map<
     string,
-    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; readonly background: boolean; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string }> }
+    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; readonly background: boolean; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string; started?: boolean; hooks?: HookRecord[]; refused?: string }> }
   >()
   /** How the latest spawned work ended, for the line about the message that tells the agent. */
   private lastSpawnEnd: { readonly outcome: string; readonly detail: string } | null = null
@@ -331,7 +333,9 @@ export class PrettyRenderer implements Sink {
         if (work.kind === "subagent") {
           const label = `subagent ${shortId(work.sessionId)}`
           this.spawned.set(event.data.spawnId, { kind: "subagent", label, startedAt: event.time, background: event.data.background, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
-          this.line("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(` started${where.length === 0 ? "" : ` ${where.join(", ")}`}`, "dim")])
+          // Which agent it runs as is part of what it is: its instructions and what it may do are that agent's.
+          const as = work.agent === undefined ? "" : ` as the agent ${work.agent}`
+          this.line("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(` started${as}${where.length === 0 ? "" : ` ${where.join(", ")}`}`, "dim")])
         } else {
           const label = `background ${event.data.spawnId}`
           this.spawned.set(event.data.spawnId, { kind: "command", label, startedAt: event.time, background: true, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
@@ -442,7 +446,7 @@ export class PrettyRenderer implements Sink {
         // The agent's own rule, not the approval policy: said on the call's line, which follows.
         if (event.data.agent !== undefined) {
           const id = key(event.data.messageId, event.data.callId)
-          this.agentRefusals.set(id, agentRefusal(event.data.agent, this.agent?.name === event.data.agent ? this.agent.restrictions : null, this.calls.get(id)?.name ?? "this tool"))
+          this.agentRefusals.set(id, agentRefused(event.data.agent, this.agent?.name === event.data.agent ? this.agent.restrictions : null, this.calls.get(id)?.name ?? "this tool"))
           return
         }
         if (event.data.reason === "unattended" && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
@@ -554,6 +558,9 @@ export class PrettyRenderer implements Sink {
         // An agent's instructions arrive with the switch, whose own line (`agent.switched`, next) says it.
         if (event.data.source === "agent") return
         const source = sourceLabel(event.data.source)
+        // The same update again (every compaction appends the instructions anew) is not news: said once.
+        if (this.instructionsShown.get(event.data.source) === event.data.fingerprint && this.instructionsShown.has(event.data.source)) return
+        this.instructionsShown.set(event.data.source, event.data.fingerprint)
         if (event.data.fingerprint === null) this.line("info", [seg(`${SYMBOL.note} instructions removed: ${source}`, "dim")])
         else this.line("info", [seg(`${SYMBOL.note} instructions updated (${source}): `, "dim"), seg(flatten(event.data.text), "dim")])
         return
@@ -901,14 +908,14 @@ export class PrettyRenderer implements Sink {
       return
     }
     // Refused by the agent the session runs as: the agent's rule, in the user's words, instead of the text the model got.
+    // Drawn as a hook's refusal is: refused, and by whom.
     const refusal = this.agentRefusals.get(id)
     if (refusal !== undefined) {
       this.agentRefusals.delete(id)
-      const text = `not run: ${refusal}`
-      if (adjacent) wrap(text, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.notRun} ` : "    ", "yellow"), seg(line, "yellow")]))
+      if (adjacent) wrap(refusal, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.refused} ` : "    ", "yellow"), seg(line, "yellow")]))
       else {
-        this.lineWithArg("info", [seg(`  ${SYMBOL.notRun} `, "yellow"), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [])
-        for (const line of wrap(text, this.width - 4)) this.line("info", [seg(`    ${line}`, "yellow")])
+        this.lineWithArg("info", [seg(`  ${SYMBOL.refused} `, "yellow"), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [])
+        for (const line of wrap(refusal, this.width - 4)) this.line("info", [seg(`    ${line}`, "yellow")])
       }
       return
     }
@@ -1078,11 +1085,25 @@ export class PrettyRenderer implements Sink {
       child.tools += 1
       child.calls.set(key(event.data.messageId, event.data.callId), { name: event.data.name, arg: flatten(callArgument(event.data.name, event.data.input)) })
     }
+    // Who kept one of its calls from running: a hook, or the agent it runs as.
+    if (event.type === "tool.started") {
+      const call = child.calls.get(key(event.data.messageId, event.data.callId))
+      if (call !== undefined) call.started = true
+    }
+    if (event.type === "hook.ran" && event.data.messageId !== null && event.data.callId !== null) {
+      const call = child.calls.get(key(event.data.messageId, event.data.callId))
+      if (call !== undefined) call.hooks = [...(call.hooks ?? []), event.data]
+    }
+    if (event.type === "approval.denied" && event.data.agent !== undefined) {
+      const call = child.calls.get(key(event.data.messageId, event.data.callId))
+      if (call !== undefined) call.refused = agentRefused(event.data.agent, null, call.name)
+    }
     if (event.type === "tool.settled") {
       const id = key(event.data.messageId, event.data.callId)
       const call = child.calls.get(id) ?? { name: "tool", arg: "" }
       child.calls.delete(id)
-      const outcome = describeOutcome(call.name, event.data)
+      const refused = call.refused ?? (event.data.outcome === "error" ? (hookRefusal(call.hooks ?? [], call.started === true, event.data.output)?.head ?? null) : null)
+      const outcome = refused == null ? describeOutcome(call.name, event.data) : { symbol: SYMBOL.refused, tone: "yellow" as const, text: refused }
       this.lineWithArg(
         "info",
         [seg(`    ${SYMBOL.inbox} ${child.label} `, "dim"), seg(`${outcome.symbol} `, outcome.tone), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")],

@@ -264,7 +264,8 @@ function runLines(row: ToolRow, columns: number): Span[][] {
 }
 
 function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[] {
-  const name = span(row.name || "tool", undefined, { bold: true })
+  // A subagent's row names the agent it runs as: its instructions and what it may do are that agent's.
+  const name = span(`${row.name || "tool"}${row.subagent?.agent == null ? "" : ` (${row.subagent.agent})`}`, undefined, { bold: true })
   const fit = (before: Span[], after: Span[]) => {
     const fixed = textWidth([...before, ...after].map((part) => part.text).join(""))
     const room = Math.max(8, columns - fixed)
@@ -319,7 +320,7 @@ function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: stri
   const data = settledData(row)
   const approval = row.approval
   if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: "not allowed by you" }
-  if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: `not run: ${approval.refusal}` }
+  if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: approval.refusal }
   if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }
   // A before hook kept the call from running: the hook's name, instead of the text the model was given.
   const refused = hookRefused(row)

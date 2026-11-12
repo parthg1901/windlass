@@ -197,10 +197,10 @@ export function hookRefusal(records: readonly HookRecord[], started: boolean, ou
   if (started) return null
   const before = records.filter((record) => record.point === "beforeTool")
   const refused = before.find((record) => record.answer === "no")
-  if (refused !== undefined) return { head: `not run: the hook "${refused.name}" refused it`, reason: refused.toModel }
+  if (refused !== undefined) return { head: `refused by the hook "${refused.name}"`, reason: refused.toModel }
   const failed = before.find((record) => record.answer === "failed")
   // A hook that could not answer refuses the call unless it says `onError: "allow"`; the refusal names the hook.
-  if (failed !== undefined && output.includes(`"${failed.name}"`)) return { head: `not run: the hook "${failed.name}" could not answer (${hookFailureWords(failed)}), and a call it must allow is refused`, reason: null }
+  if (failed !== undefined && output.includes(`"${failed.name}"`)) return { head: `refused: the hook "${failed.name}" must allow it and could not answer (${hookFailureWords(failed)})`, reason: null }
   return null
 }
 

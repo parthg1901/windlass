@@ -109,7 +109,7 @@ describe("a project's hook", () => {
       type("/hooks\r")
       await waitFor("no-secrets · in force")
       type("write the secret\r")
-      await waitFor('not run: the hook "no-secrets" refused it')
+      await waitFor('refused by the hook "no-secrets"')
       await waitFor("✓ done")
       // The same hook with another command is another hook: the next turn reads it and it is asked about again.
       writeFileSync(projectFile(cwd), JSON.stringify(hook("exit 0")))
@@ -151,7 +151,7 @@ describe("a project's hook", () => {
     expect(flat.match(/Approving the hook "no-secrets" needs someone at the terminal/g)).toHaveLength(1)
     expect(flat).toContain(`run \`${brand.binary}\` in this directory and answer the question it asks (or type /hooks approve no-secrets)`)
     // Skipped: the call went through.
-    expect(flat).not.toContain("refused it")
+    expect(flat).not.toContain("refused by the hook")
     expect(flat).toContain("✓ done")
   })
 })
@@ -178,7 +178,7 @@ describe("what a hook did", () => {
     const run = await runCli(["--cwd", cwd, "write both files"], { engine: engineFor(provider, join(root, `data-did-${count}`)), env: { NO_COLOR: "1" } })
     const out = run.out + run.err
     const flat = out.replace(/\s+/g, " ")
-    expect(flat).toContain('⊘ not run: the hook "no-secrets" refused it Secrets are not written here.')
+    expect(flat).toContain('⊘ refused by the hook "no-secrets" Secrets are not written here.')
     expect(flat).toContain('note from the hook "reminder", added to the result: Run the formatter before you finish.')
     // A hook that could not answer is said once, in the engine's words, with what that means.
     expect(flat.match(/could not answer/g)).toHaveLength(1)
@@ -208,7 +208,7 @@ describe("what a hook did", () => {
         settled({ outcome: "error", output: 'This call was not run: the hook "guard" is failing (timed out after 10 s).' }),
       ]),
     )
-    expect(out.replace(/\s+/g, " ")).toContain('⊘ not run: the hook "guard" could not answer (timed out after 10 s), and a call it must allow is refused')
+    expect(out.replace(/\s+/g, " ")).toContain('⊘ refused: the hook "guard" must allow it and could not answer (timed out after 10 s)')
   })
 
   test("an edit whose result got diagnostics says how many and from which server; one that got none says nothing on its row", () => {

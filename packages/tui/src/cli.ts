@@ -45,7 +45,7 @@ export {
   stopHookSentBack,
   unsatisfiedText,
 } from "../../cli/src/hooks.ts"
-export { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentLines, agentProblemLines, agentRefusal, agentSwitchText, compactText, requestsText, taskLines, tasksOf, tasksProgress } from "../../cli/src/agents.ts"
+export { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentLines, agentProblemLines, agentRefusal, agentRefused, agentSwitchText, compactText, requestsText, taskLines, tasksOf, tasksProgress } from "../../cli/src/agents.ts"
 export { usageText } from "../../cli/src/renderer.ts"
 export { COMMAND_SCOPE, commandProblemLines, commandSent, unusableCommandLines } from "../../cli/src/slash.ts"
 export { FakeEngine, type FakeOptions, type FakeSession } from "../../cli/src/fake-engine.ts"

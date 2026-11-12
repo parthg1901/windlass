@@ -35,6 +35,17 @@ export function agentRefusal(agent: string, restrictions: AgentRestrictions | nu
   return `${who} may not use ${tool}`
 }
 
+/**
+ * What a call's row says when the agent's restrictions refused it: that it
+ * was refused, by whom, and the rule ("refused by the reviewer agent: it may
+ * not change files"). The same shape as a hook's refusal, so both read as
+ * what they are: a call somebody did not let run, never a failure.
+ */
+export function agentRefused(agent: string, restrictions: AgentRestrictions | null, tool: string): string {
+  const who = `the ${agent} agent`
+  return `refused by ${who}: it${agentRefusal(agent, restrictions, tool).slice(who.length)}`
+}
+
 /** The switch of the agent a session runs as, for the transcript: the line, and what the new agent may do. */
 export function agentSwitchText(from: string | null, to: AgentRecord | null): { readonly head: string; readonly detail: string | null } {
   if (to === null) return { head: from === null ? "no agent" : `no agent: the instructions and restrictions of ${from} no longer apply`, detail: null }

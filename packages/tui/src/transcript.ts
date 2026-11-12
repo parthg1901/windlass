@@ -12,7 +12,7 @@ import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } fr
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type AgentRecord, type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack, unsatisfiedText } from "./cli.ts"
-import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, callArgument, commandSent, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -115,6 +115,8 @@ export interface SubagentView {
   readonly background: boolean
   /** The first line of its task. */
   title: string | null
+  /** The agent it runs as (`spawn.started`'s `agent`); `null`: none. */
+  readonly agent: string | null
   /** Its own conversation: its steps, tool rows and answer, folded from its forwarded events like any session's. */
   readonly transcript: Transcript
   state: "running" | "completed" | "failed" | "stopped" | "lost"
@@ -318,6 +320,8 @@ export class Transcript {
   /** The rows of user messages not delivered yet, by message: their delivery is where `/undo` cuts. */
   private readonly userRows = new Map<string, UserRow>()
   private instructionFiles = ""
+  /** The instruction updates shown so far, by source: the version (its fingerprint; `null`: removed) last said. */
+  private readonly instructionsShown = new Map<string, string | null>()
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -349,6 +353,7 @@ export class Transcript {
     this.sentBack = 0
     this.stopAsked = false
     this.instructionFiles = ""
+    this.instructionsShown.clear()
     this.turns = new TurnTracker()
     this.lastSeq = 0
     this.userRows.clear()
@@ -482,7 +487,7 @@ export class Transcript {
         }
         if (work.kind !== "subagent") return
         const row = this.tools.get(key(event.data.messageId, event.data.callId)) ?? this.toolRow(event.data.messageId, event.data.callId, "subagent", "", replay)
-        const view: SubagentView = { sessionId: work.sessionId, spawnId: event.data.spawnId, background: event.data.background, title: null, transcript: new Transcript(this.now), state: "running", detail: null, asking: false, steps: 0 }
+        const view: SubagentView = { sessionId: work.sessionId, spawnId: event.data.spawnId, background: event.data.background, title: null, agent: work.agent ?? null, transcript: new Transcript(this.now), state: "running", detail: null, asking: false, steps: 0 }
         this.touch(row, () => (row.subagent = view))
         this.children.set(work.sessionId, row)
         return
@@ -631,7 +636,7 @@ export class Transcript {
         const data = event.data
         const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
         // Refused by the agent's restrictions: the agent's own rule, not the approval policy.
-        const refusal = data.agent === undefined ? null : agentRefusal(data.agent, this.agentRecord?.name === data.agent ? this.agentRecord.restrictions : null, row.name)
+        const refusal = data.agent === undefined ? null : agentRefused(data.agent, this.agentRecord?.name === data.agent ? this.agentRecord.restrictions : null, row.name)
         this.touch(row, () => (row.approval = { state: "denied", reason: data.reason, needs: data.needs.map(describeNeed), stop: data.stop, refusal }))
         return
       }
@@ -740,6 +745,9 @@ export class Transcript {
         // An agent's instructions arrive with the switch, whose own row (`agent.switched`, next) says it.
         if (event.data.source === "agent") return
         const source = sourceLabel(event.data.source)
+        // The same update again (every compaction appends the instructions anew) is not news: said once.
+        if (this.instructionsShown.has(event.data.source) && this.instructionsShown.get(event.data.source) === event.data.fingerprint) return
+        this.instructionsShown.set(event.data.source, event.data.fingerprint)
         if (event.data.fingerprint === null) this.notice(SYMBOL.note, "dim", [span(`instructions removed: ${source}`, "dim")], [], replay, "work")
         else this.notice(SYMBOL.note, "dim", [span(`instructions updated (${source}): `, "dim"), span(oneLine(event.data.text), "dim")], [], replay, "work")
         return

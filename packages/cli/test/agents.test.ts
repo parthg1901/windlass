@@ -33,7 +33,7 @@ describe("what the renderer says", () => {
       { columns: () => 120 },
     )
     expect(out).toContain("⇄ working as the agent reviewer (read only)\n  Only tools that read (effects: read).\n")
-    expect(out).toContain("▸ write note.txt\n  ○ not run: the reviewer agent may not change files\n")
+    expect(out).toContain("▸ write note.txt\n  ⊘ refused by the reviewer agent: it may not change files\n")
     expect(out).not.toContain("approval policy")
     expect(out).not.toContain("you are working as")
     expect(out).toContain("⇄ no agent: the instructions and restrictions of reviewer no longer apply · from the next step\n")
@@ -73,7 +73,7 @@ describe("as a user types them", () => {
       await waitFor("Definitions with problems:")
       await waitFor(/broken\.md\n\s+not loaded: .*description/)
       type("write note.txt\r")
-      await waitFor("not run: the reviewer agent may not change files")
+      await waitFor("⊘ refused by the reviewer agent: it may not change files")
       await waitFor("I may not write as the reviewer.")
       await waitFor(/✓ done/)
       type("/agent docs\r")

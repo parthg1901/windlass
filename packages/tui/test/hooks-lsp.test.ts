@@ -207,7 +207,7 @@ describe("what a hook did, and what the language servers said", () => {
     )
     await mounted!.settle()
     const frame = flat(await mounted!.frame())
-    expect(frame).toContain('⊘ shell git push origin main · not run: the hook "no-push" refused it')
+    expect(frame).toContain('⊘ shell git push origin main · refused by the hook "no-push"')
     expect(frame).toContain("Pushing is not allowed here. Commit locally and tell the user.")
     expect(frame).not.toContain("This call was not run")
     expect(frame).toContain("2 new diagnostics from typescript")

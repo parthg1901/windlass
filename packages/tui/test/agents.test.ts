@@ -71,7 +71,7 @@ describe("agents", () => {
     expect(frame).toContain("⇄ working as the agent reviewer (read only)")
     expect(frame).toContain("Only tools that read (effects: read).")
     expect(frame).toContain("agent reviewer")
-    expect(frame).toContain("⊘ write note.txt · not run: the reviewer agent may not change files")
+    expect(frame).toContain("⊘ write note.txt · refused by the reviewer agent: it may not change files")
     expect(frame).not.toContain("approval policy")
     expect(frame).not.toContain("you are working as")
     session.emit(event("agent.switched", { messageId: m("i1"), from: "reviewer", to: null }))

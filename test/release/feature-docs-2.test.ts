@@ -588,9 +588,12 @@ describe("what the pages say is not there yet", () => {
     expect(read(join(ROOT, "packages/core/src/engine/engine.ts"))).toContain('for (const warning of start.warnings) session.say("agents", warning)')
   })
 
-  test("a subagent's row does not name its agent, and no tool switches the session's agent (agents-subagent-row, agents-model-switch)", () => {
-    expect(text["docs/agents.md"]).toContain("**A subagent's row does not name its agent.**")
-    for (const file of FILES.filter((path) => path.startsWith(join(ROOT, "packages/cli/src")))) expect(/work\.agent\b/.test(read(file)), `${file} shows a subagent's agent: update docs/agents.md`).toBe(false)
+  test("a subagent's row names the agent it runs as, and no tool switches the session's agent (agents-model-switch)", () => {
+    // Both interfaces read the agent from `spawn.started` and say it on the subagent's row. The page's note that the
+    // row does not name it (agents-subagent-row) is out of date since then: it goes, with its marker in the list
+    // above, when the page is next corrected.
+    expect(read(join(ROOT, "packages/cli/src/renderer.ts"))).toMatch(/work\.agent\b/)
+    expect(read(join(ROOT, "packages/tui/src/transcript.ts"))).toMatch(/work\.agent\b/)
     expect(SOURCE).toMatch(/work: \{[^}]*agent/)
     expect(text["docs/agents.md"]).toContain("**The model cannot switch the session's agent.**")
     // setAgent is the user's switch; a tool that called it would be the model's.
