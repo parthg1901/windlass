@@ -130,3 +130,14 @@ Reading a result:
 - Text typed into the line interface before its first `›` is not sent although it looks sent. Under load (load average 11 on two cores) start-up took over 3 s: wait for `^›` before typing.
 - An interactive start that sends nothing, and `/fork` in a new TUI session, leave empty `(untitled)` sessions that `--list-sessions` shows and `-c` may pick.
 - Timing on this machine depends on other agents' load: say the load average with any start-up figure (`uptime`).
+
+## After the second engine pass (2026-11-12)
+
+- The frozen tool list has 20 tools, about 3,300 estimated tokens (`bun scripts/tool-block.ts` prints it); a session's first request is about 4,550 tokens.
+- Wake-ups fire in the server of an interactive run (`lh`, `lh tui`, an editor's `lh acp`), never in a one-prompt run, a listing or a subcommand (the CLI sets `LH_WAKE=off` for those). List pending wake-ups before starting an interactive session in a data directory with old ones: they fire at once, late.
+- A question asked after a hand edit ends "nothing to check"; the next turn that edits a file runs the checks on everything unverified, the hand edit included, and the model may then repair the user's file.
+- The CLI has no `--agent` yet: test an agent with `agents.default` in a throwaway `XDG_CONFIG_HOME`.
+- In tmux, wait for the `›` prompt before sending keys: under load a fixed 6-second wait lost the Enter.
+- Under heavy load (five agents on two cores: load average 15 to 20) tests time out at the default 5 s. Re-run a timeout alone, or with `--timeout 60000`, before believing it.
+- prefixlens is a separate repository that may be changing under you: a failing `packages/core/test/trace/export.test.ts` can mean the sibling checkout moved (its trace format, how it records images), not that the harness broke. Check `git -C ../prefixlens log` first.
+
