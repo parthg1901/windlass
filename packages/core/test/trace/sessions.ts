@@ -12,7 +12,8 @@
  * after the first, and a break shows up as a miss, as it would live.
  */
 import { HARNESS_ORIGIN, type NewEvent, event } from "../../src/event/durable.ts"
-import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
+import { renderWatchFired } from "../../src/engine/spawn.ts"
+import type { CallId, MessageId, RequestId, SessionId } from "../../src/id.ts"
 import type { Json } from "../../src/json.ts"
 import type { Projection } from "../../src/message/message.ts"
 import { blobRefs, encodeRequest } from "../../src/provider/openai-responses-encode.ts"
@@ -354,6 +355,44 @@ export const SCRIPTS: readonly TraceScript[] = [
         deliver("msg_wk_5c3a9e21b7d4_1"),
       )
       loop.answer("2", "a3", "The build is green.")
+    },
+  },
+  {
+    // One call stopped by itself, and a watch on a background command's output. The request to stop is a fact
+    // about the call and never part of a request: the model reads the call's result. A watch tells the model
+    // nothing until it fires, and a firing is an appended message. Every request extends the one before.
+    name: "a call stopped by the user and a watch that fires",
+    clean: true,
+    breaks: {},
+    intentional: {},
+    run(loop) {
+      const watch = { pattern: "listening on", regex: false, ignoreCase: false }
+      const line = "Server listening on http://localhost:3000"
+      opening(loop)
+      loop.prompt("1", "Start the dev server and run the tests.")
+      loop.start("a1")
+      loop.add(
+        called("a1", "call_1", "shell", '{"command":"bun run dev","background":true}'),
+        called("a1", "call_2", "shell", '{"command":"bun test"}'),
+        started("a1", "call_1", "exec"),
+        event("spawn.started", { spawnId: "bg_1", messageId: m("a1"), callId: "call_1" as CallId, background: true, work: { kind: "command", command: "bun run dev", logPath: null } }),
+        settled("a1", "call_1", "success", "Started in the background as bg_1."),
+        started("a1", "call_2", "exec"),
+        // The user sets a watch while the turn runs, and stops the test run that hangs.
+        event("watch.started", { watchId: "bg_1.w1", spawnId: "bg_1", ...watch, limit: 1 }),
+        event("tool.cancel_requested", { messageId: m("a1"), callId: "call_2" as CallId }),
+        settled("a1", "call_2", "error", "12 pass\n[Stopped by the user. The command and its child processes were stopped; the output above is everything it printed before that.]"),
+        stepEnded("a1", "tool_calls"),
+      )
+      loop.start("a2")
+      loop.add(textEnded("a2", "The server is starting. You stopped the test run after 12 tests."), stepEnded("a2"), executionSucceeded("exe_1"))
+      // Idle. The server prints the line: the message and the record of the firing are one append, and it starts a turn.
+      loop.store.append(loop.id, [
+        enqueue("s1", renderWatchFired("bg_1", { command: "bun run dev", watch, firing: 1, limit: 1, line }), "steer", HARNESS_ORIGIN.backgroundWatch),
+        event("watch.fired", { watchId: "bg_1.w1", spawnId: "bg_1", firing: 1, line, messageId: m("s1") }),
+      ])
+      loop.add(executionStarted("exe_2"), deliver("s1"))
+      loop.answer("2", "a3", "The server is up on port 3000.")
     },
   },
   {

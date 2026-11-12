@@ -22,7 +22,7 @@ packages/core/src
   validate.ts     tiny runtime validators; every stored type is declared once and its TypeScript type is inferred
   id.ts           branded IDs: SessionId, MessageId, ExecutionId, RequestId, CallId
   content.ts      text and media parts; BlobRef into the content-addressed blob table
-  interrupt.ts    the abort token with an explicit InterruptReason
+  interrupt.ts    the abort token with an explicit InterruptReason, and the token of one tool call
   event/          durable.ts (the event schema), ephemeral.ts (streaming deltas), decode.ts (the SQLite boundary)
   message/        message.ts (projection types), reducer.ts (state + event -> state), history.ts (model view, row diff)
   store/          store.ts (the Store and SessionStores interfaces), schema.ts (SQLite DDL), sqlite.ts (one
@@ -114,10 +114,10 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
-| Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.settled` (for an edit a language server was asked about also `diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts) |
+| Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.cancel_requested` (the user asked for this one running call to stop; the turn goes on), `tool.settled` (for an edit a language server was asked about also `diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts) |
 | Hooks | `hook.ran` (one per hook that applied: the point, the call for a before or after hook, which hook and whose, how it ran, what it answered, the text that reached the model, what it printed for the user, and whether that text is a taint source) |
 | Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run; `agent` when the policy that refused it is the restrictions of the agent the session runs as), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
-| Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge) |
+| Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge), `watch.started` (the user's watch on a running command's output: text or a regular expression a line must match, and how often it may fire), `watch.fired` (the line, the count, and the message that tells the model), `watch.ended` (a watch that could still fire ended: removed, with its command, or lost with it) |
 | Replay | `replay.call` (per call: matched, normalised, dropped, diverged or off the recording; whether the tool ran for real), `replay.diverged` (the copy the replay carries on in, and the snapshot it was restored from), `replay.ended` (the outcome, the reason, the report) |
 | Compaction | `compaction.started` (the trigger: `auto`, `overflow`, or `manual` when the user asked; the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after, and `calls`: how many summary requests it took, retries and the repair included), `compaction.failed` (with `calls` too) |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
@@ -170,7 +170,10 @@ is a new version with a decoder for the old one.
   - *Tool calls.* A call is `pending`, then optionally `running`, then `settled` exactly once. From `pending` it
     settles as `not_started` or `error`; from `running` as `success`, `error` or `effect_unknown`. `tool.started`
     records the tool's effect class, and a `read` call never settles as `effect_unknown`. Calls are keyed by
-    (assistant message, provider call ID), because providers reuse call IDs.
+    (assistant message, provider call ID), because providers reuse call IDs. `tool.cancel_requested` (the user
+    stops one call) is accepted only for a call of the open step that is `running`, once, under a running claim
+    and while no interrupt is requested; it is recorded on the call (`cancel`) and changes nothing about how the
+    call may settle.
   - *Retries.* `retry.scheduled` is accepted only for a retryable provider error and only for the step in progress:
     on the open step before it has any durable output (the retry is transparent), or on the latest message of the
     execution after it failed with that kind of error (the retry runs under a new message). Attempts count up by
@@ -203,6 +206,12 @@ is a new version with a decoder for the old one.
   - *Spawned work.* `spawn.started` is written by a tool call that is running, once per piece of work, and never
     for a child that is still running; `spawn.ended` only for work that is running. A fork is created only at a
     step boundary of its parent, at exactly the seq it names.
+  - *Watches.* `watch.started` names a background command that is running (never a subagent, never work that
+    has ended), an ID no watch has, and a limit of at most `WATCH_LIMITS.maxFirings`; a command has at most
+    `WATCH_LIMITS.perCommand` watches that can still fire. `watch.fired` counts up by one, never past the limit,
+    and names the `background_watch` message admitted right before it (the two are one append). `watch.ended`
+    is accepted only for a watch that could still fire. `spawn.ended` is rejected for a command while a watch on
+    it could still fire: the watch is ended first, with the reason, so none is ever silently gone.
   - *Replay.* `replay.call`, `replay.diverged` and `replay.ended` are accepted only in a replay session; a matched
     call names the recorded call it matched and only a matched call does; a replay leaves its recording once, never
     under the `stop` policy, and ends once.
@@ -230,7 +239,8 @@ is a new version with a decoder for the old one.
     announced first (`revert.started`), nothing starts while it is open, and its record must be of the announced
     restore. Only the latest revert can be undone, until an execution starts; the undo puts back exactly the
     messages that revert excluded.
-- The session state also holds what the session spawned (`spawned`: the work that is running, every child it
+- The session state also holds what the session spawned (`spawned`: the work that is running, with the watches
+  set on a command's output and how often each fired, every child it
   ever started, and what the children's model calls cost, added up from each `spawn.ended`) and, for a replay,
   the copy it carries on in and how it ended (`replay`).
 - The session state also holds what the loop decides from: the latest snapshot and what snapshots leave out; the
@@ -350,7 +360,14 @@ is a new version with a decoder for the old one.
   with the tool's output byte for byte. The engine uses it for the notes of after hooks and, after them, the
   diagnostics of an edit. The result is still capped once and stored once (a tool that capped itself keeps what
   is added after its capped text), and the step is not taken for a tool that threw, was refused or never started.
-- The context carries the abort signal with its reason. A tool that is aborted returns what it observed.
+- The context carries the abort signal with its reason. The signal is the call's own (`createCallStop`): it
+  follows the execution's, and can be fired for that call alone. `callStopReasonOf(signal)` says which: `user`
+  or `shutdown` when the turn is interrupted, `call` when the user stopped this call and the turn goes on. A
+  tool that is aborted returns what it observed, and says who stopped it: the shell ends its output with
+  `[Interrupted by the user. ...]` or `[Stopped by the user. ...]`. A tool that cannot stop midway finishes.
+- A background command hands the session its output a line at a time (`BackgroundCommand.lines`): the lines
+  still in memory, then each further line as it completes, as the log holds them (redacted where the output
+  is). That is what a watch reads; the command is never polled.
 - The context carries `putBlob`, which stores bytes in the blob table and returns the reference a tool lists in its
   result's `attachments`. The tool runtime supplies it from its options (`store.putBlob`), so a tool never sees the store.
 - A tool that stands for many says which one a call means (`Tool.subject`: `mcp_call` names the server's tool, so an
@@ -465,6 +482,30 @@ is a new version with a decoder for the old one.
   length of the log (see `getProjection` under "Store"), so the time of a step does not grow with the session. Events that are decided together are appended in one transaction.
 - `tool.called` is durable when the call finishes streaming and `tool.started` right before the tool runs, both
   before any side effect. An interrupt is durable (`execution.interrupt_requested`) before anything is aborted.
+- *Stopping one call.* `session.cancelCall({ callId, messageId?, sessionId? })` stops one running call as the
+  user and lets the turn go on (`sessionId` names a subagent whose call it is). `tool.cancel_requested` is
+  durable first; then that call's signal fires with the reason `call`, and the tool has the grace period an
+  interrupt gives every tool (`toolStopGraceMs`). The execution is not interrupted: the call settles like any
+  running call, the step continues with its other calls (the next call in the line starts), and the model reads
+  the result in its next request, where nothing else says that a call was stopped. What the result is, by what
+  the tool could do about it:
+  - a command (`exec`): the shell stops the process group and returns what was printed and a line that says the
+    user stopped it, so the call settles as `error` with that output;
+  - a subagent call: the child is interrupted as by its own user and winds down by the usual rules; `spawn.ended`
+    says `stopped`, and the call settles as `error` with a result that says the user stopped this call and
+    quotes the child's last words. The child's conversation stays;
+  - a read, or a write (one rename), which cannot be stopped midway: the tool finishes and the call settles with
+    its ordinary result. The request stays on record with the call;
+  - any tool that reports nothing in time, or throws while it is being stopped: the loop settles the call from
+    the effect class it started with, as it does for a call an interrupt reached (`error` for a `read`,
+    `effect_unknown` otherwise), with a text that says the user stopped this call; what the tool returns later
+    is dropped. An MCP call (`network`) observes the abort: the bridge cancels the request, and the call settles
+    as `error` with the bridge's text, which says the server may or may not have finished the work.
+
+  It is refused (it returns `false` and writes nothing) for a call that has not started (a question about it is
+  declined instead, and a call waiting in the line cannot be stopped ahead of its turn), one that has its
+  result, one already asked to stop, while the turn is being interrupted (everything stops then), and in a
+  replay. An interrupt after the request winds the call down by the interrupt's rules.
 - *The order of the calls of one step.* Calls the loop itself refuses are settled first. Reads are decided at
   once and run side by side. Every call that can change something (a write, a command, a network or MCP tool)
   keeps its place in one line: it is decided when the one before it in the line has its result, and runs alone.
@@ -678,7 +719,8 @@ writes. `createHarness` switches them on (`EngineOptions.spawn`); an engine buil
 
 **The tools.** Three are in a session's frozen tool list from its first baseline, with fixed specs: `subagent`
 (`task`, and optionally `session`, `background`, `worktree`, `agent`), `background_output` and `background_stop`
-(`id`). The shell tool has a `background` argument.
+(`id`). The shell tool has a `background` argument. Watching a command's output and stopping one call are not
+tools: a client asks the engine for them (`watchOutput`, `cancelCall`).
 
 **What a subagent is.** A real session (`lineage.kind = "spawn"`: its parent, the spawned work that started it, its
 depth, its worktree). It starts with a fresh conversation: its own baseline (the same base prompt, the project's
@@ -708,6 +750,9 @@ parent's approval settings and, by default, the parent's workspace. It has a cac
 - *Verification.* The gate applies to the parent's turn. Children do not run it (their `execution.succeeded` says `left_to_parent`, whatever the project configures, and they are not offered the acknowledgement tool): several children each running the whole
   check suite in one workspace would mostly report each other's unfinished work, and the parent's turn is verified
   once their work is in.
+- *Stopping the call.* A call that waits for a subagent can be stopped by itself (`cancelCall`): the child is
+  interrupted, its work is recorded as `stopped`, and the call's result says that the user stopped this call.
+  The parent's turn goes on.
 - *Interrupts.* Interrupting or closing a session stops everything it spawned, after its own interrupt is durable:
   background commands are killed, children are interrupted (as by their user) and wind down by the usual rules.
   Each end is recorded (`stopped`); a background child's end waits in the inbox for the next prompt and wakes nothing.
@@ -746,8 +791,44 @@ directory as it arrives. `background_output` shows the output so far, `backgroun
 `spawn.ended` (with the exit code) and a harness message (`background_command`) with the end of its output are one
 append, and the message wakes the session if it is idle. It has no time limit unless one is given.
 
+**Watches on a command's output.** A background command wakes the session when it exits, and a server or a
+file watcher does not exit. `session.watchOutput(id, { pattern, regex?, ignoreCase?, limit? })` sets a watch
+on a running command: text a line must contain, or a regular expression a line must match, and how often it
+may fire (once by default, `WATCH_LIMITS.maxFirings` at most; a command has at most `WATCH_LIMITS.perCommand`
+watches that can still fire). `session.unwatchOutput(watchId)` removes one.
+
+- *Who asks.* The user, through a client, as with an interrupt or a stop of one call. The model cannot: the
+  tool list is final, so there is no argument for it to pass, and a convention inside a command's text would
+  change what a tool's input means without its description saying so. It is also the safer owner: a watch
+  turns a command's output into a message that starts a turn, and neither the model nor the command's own
+  output should be able to arrange that. The model is not told that a watch was set; it is told when it fires.
+- *What it looks at.* The command's output a line at a time (`BackgroundCommand.lines`), as the log holds it:
+  first what is still in memory of what the command already printed (the last 64 KiB), so a line that came
+  before the watch was set is not missed, then each further line as it completes. A line longer than 16 KiB is
+  matched on its beginning. Nothing is polled, and nothing is kept for a command nobody watches.
+- *A firing.* A harness message (`background_watch`) and `watch.fired` are one append. The message names the
+  command and the watch, says how many firings are left, and quotes the matching line (cut at
+  `WATCH_LIMITS.lineChars` characters) inside a fence longer than any run of backticks in the line, labelled
+  `output` and introduced as output of the command, not instructions. The text is redacted like all command
+  output and frozen in the event. It is a steer: delivered at the next step boundary, and it wakes the session
+  if it is idle, exactly as the command's end does. A command that is being stopped reports its end, not what
+  it prints on the way down.
+- *Its end.* A watch is over when it has fired `limit` times. One that could still fire is ended on record
+  (`watch.ended`): `removed` by the user; `command_ended` when its command ends, in the same append and right
+  before `spawn.ended`, and the message about the command's end says that the watch had not fired; `lost` when
+  the harness restarted (see Recovery). The reducer rejects a command's end while a watch on it could still fire.
+- *Refusals.* `watchOutput` throws `EngineError` `invalid_request`, with a sentence for the user, and writes
+  nothing: no such command runs (it ended, or is unknown), the ID names a subagent, the pattern is empty, has
+  a line break, is longer than `WATCH_LIMITS.patternChars` or is not a regular expression, the limit is out of
+  range, or the command has its fill of watches.
+
+A watch lives in the process that runs its command, so it does not outlive that process, and neither does the
+command.
+
 **Recovery.** A session that is opened with spawned work its log says is running, and that nobody in this process
-runs, lost it to a restart (`reapSpawned`). A command is recorded as `lost` (its guard killed it). A subagent is
+runs, lost it to a restart (`reapSpawned`). A command is recorded as `lost` (its guard killed it), and each
+watch on it that could still fire is recorded as `lost` right before it, in the same append; the message that
+tells the model that the command is gone says that the watch will not fire. A subagent is
 looked at: one that had finished on its own (it was opened and ran on while its parent was gone) delivers its
 answer now, and its worktree is merged now; one that was cut off has its turn ended (its claim is released as an
 interrupt) and is recorded as `lost`, with what it had done committed to its branch. Either way a harness message
@@ -1088,6 +1169,11 @@ These are the shapes the scenarios spell out event by event.
 - **A cancel or a shutdown.** `execution.interrupt_requested`, written the moment the abort fires · the visible
   partial text · one `tool.settled` per unsettled call · `step.failed` as interrupted · the interrupt marker ·
   `execution.interrupted`. A `user` interrupt releases the claim; a `shutdown` keeps it suspended for the next start.
+- **One call stopped.** `tool.cancel_requested`, written before that call's signal fires · the call's
+  `tool.settled` (what its tool observed, or the outcome its effect class gives) · the step's other calls and
+  its `step.ended`, as ever · the next `step.started`. No interrupt, no marker.
+- **A watch firing.** In one append `inbox.enqueued` (`background_watch`, a steer) and `watch.fired` · if the
+  session is idle `execution.started` · `inbox.delivered` at the boundary · the model's steps.
 - **A provider failure.** Before durable output: `retry.scheduled` and the next attempt under the same message.
   After output: `step.failed` · `retry.scheduled` · a `continuation` note asking the model to carry on where it
   stopped · `step.started` under a new message with the scheduled attempt.
