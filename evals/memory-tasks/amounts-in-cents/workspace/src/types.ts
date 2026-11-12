@@ -30,6 +30,3 @@ export interface Receipt {
   readonly lines: readonly string[]
   readonly total: number
 }
-
-// Money: every price, subtotal, fee and total in this codebase is an integer number of cents (1999 is $19.99).
-// Convert to dollars only for display, in src/ui/format.ts.

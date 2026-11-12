@@ -1,4 +1,4 @@
-// Every amount is integer cents (said at the end of src/types.ts; src/ui/format.ts divides by 100 for display).
+// Every amount is integer cents (said at the top of src/ui/format.ts, which divides by 100 for display).
 // shippingFee must charge 499 below 5000 and nothing from 5000, and orderTotal must include it. Whether shipping is
 // taxed is left open: the total may be subtotal + tax + fee or subtotal + tax on (subtotal + fee) + fee.
 import { fail, importFrom, pass, workspaceArg } from "../../grader.ts"
