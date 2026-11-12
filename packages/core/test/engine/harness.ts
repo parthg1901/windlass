@@ -9,9 +9,10 @@
  * same file. (`crash.test.ts` does the same with a real process and SIGKILL.)
  */
 import { expect } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { brand } from "../../src/brand.ts"
 import { type CheckConfig, type Config, type ConfigFile, resolveConfig } from "../../src/config/schema.ts"
 import type { NewEvent, SessionSettings, StoredEvent } from "../../src/event/durable.ts"
 import type { EngineEvent } from "../../src/engine/channel.ts"
@@ -457,12 +458,12 @@ export class Harness {
       loadConfig:
         this.options.config === undefined && this.options.userConfig === undefined
           ? null
-          : async () => ({ config: this.config ?? resolveConfig({}), projectDir: this.cwd, files: this.files }),
+          : async (cwd: string) => ({ config: this.config ?? resolveConfig({}), projectDir: this.projectDirOf(cwd), files: this.files }),
       // The same files, for what is read without waiting: the agent a session starts as, the approval mode before a first turn.
       loadConfigSync:
         this.options.config === undefined && this.options.userConfig === undefined
           ? null
-          : () => ({ config: this.config ?? resolveConfig({}), projectDir: this.cwd, files: this.files, approval: { user: this.files.user?.approval ?? null, project: this.files.project?.approval ?? null } }),
+          : (cwd: string) => ({ config: this.config ?? resolveConfig({}), projectDir: this.projectDirOf(cwd), files: this.files, approval: { user: this.files.user?.approval ?? null, project: this.files.project?.approval ?? null } }),
       ...(this.options.agents === undefined ? {} : { agents: this.options.agents }),
       ...(this.options.models === undefined ? {} : { listModels: async () => this.options.models! }),
       runChecks: this.checks.run,
@@ -539,6 +540,15 @@ export class Harness {
       for (const waiter of ready) waiter.resolve(item)
     })
     return session
+  }
+
+  /**
+   * Where the project's file is for a session working in `cwd`, as the real loader finds it: in that directory
+   * when the file is there on disk (a worktree has its own copy), else in the harness's directory (the file is
+   * above a subdirectory, or the test never wrote one).
+   */
+  private projectDirOf(cwd: string): string {
+    return existsSync(join(cwd, `.${brand.directory}`, "config.json")) ? cwd : this.cwd
   }
 
   /** Calls `action` at the `nth` time the loop reaches `point` in this process (1 is the first). */

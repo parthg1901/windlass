@@ -8,7 +8,7 @@
  */
 import { mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, relative, sep } from "node:path"
 import { type CallFacts } from "../approval/decide.ts"
 import { type Escalation, escalationFacts, escalationRequest, sandboxHint } from "../approval/escalation.ts"
 import { type Grant, PROJECT_GRANT_TTL_MS, grant } from "../approval/grants.ts"
@@ -100,6 +100,32 @@ export interface FactContext {
   /** The session's temp directory, when sandboxed commands of this session use one. */
   readonly temp: TempDirectory | undefined
   readonly approvals: Approvals
+}
+
+/**
+ * The directory the approvals of what a project's configuration file names
+ * are kept under: its hooks, its MCP servers, its language servers. It is
+ * the project's own directory, where the file is, and not the directory a
+ * session happens to work in:
+ *
+ * - a session started in a subdirectory of the project reads the same file,
+ *   so it is under the same approvals;
+ * - a session in a worktree of the harness's own (a subagent with
+ *   `worktree`, and whatever works in that worktree after it) reads the
+ *   worktree's copy of the file. It is the same project, so the directory
+ *   is the one the worktree's stands for in the repository it belongs to.
+ *
+ * An approval is the user's answer about a project. Were it kept under the
+ * working directory, a choice the model makes (a worktree, a subdirectory)
+ * would move a session out from under it: a hook the user approved would be
+ * skipped as "not approved", and the call it guards would run.
+ */
+export function projectApprovalHome(input: { readonly cwd: string; readonly projectDir: string | null; readonly worktree: { readonly path: string; readonly repository: string } | null }): string {
+  const own = realWorkspace(input.projectDir ?? input.cwd)
+  if (input.worktree === null) return own
+  const inside = relative(realWorkspace(input.worktree.path), own)
+  if (inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return own
+  return realWorkspace(join(input.worktree.repository, inside))
 }
 
 /** The session's working directory with links followed, or as given when it does not exist. */

@@ -1116,7 +1116,13 @@ background, at the first file it serves.
 runs; what the project's file names (a hook; a server it names or changes in any field) waits for the user's
 approval of exactly that definition, remembered for the project like any approval (`approval/grants.ts`: a
 `tool` rule, `hook:<fingerprint>` or `lsp-server:<name>:<fingerprint>`, in `approvals/<workspace hash>.json`, 30
-days). The question is not about a tool call, so it is not an `approval.requested` event and nothing waits for
+days). These three kinds of approval are kept under the project's own directory, where its file is, not under
+the directory a session works in (`projectApprovalHome` in `engine/approval.ts`): a session started in a
+subdirectory is under the same approvals, and so is a subagent in a worktree of its own, which reads the
+worktree's copy of the file and is looked up under the repository the worktree belongs to. Otherwise a choice
+the model makes (`worktree: true`) would move a call out from under a hook the user approved. The approvals of
+tool calls remembered for a project stay under the working directory: a session elsewhere is asked again.
+The question is not about a tool call, so it is not an `approval.requested` event and nothing waits for
 it: until a client puts it, the hook is skipped (and recorded as skipped) and the server is not started, the
 user is told once by a `diagnostic`, and nothing of it reaches the model. `EngineSession.hooks()` gives the hooks
 in force and the ones that wait, each with the question word for word; `approveHook(fingerprint)` records the
@@ -1343,7 +1349,8 @@ sessions/<session id>.db-holder   the process holding the lock, for the error me
                                   git worktree), replays/ (a replay's copy): where sandboxed commands must run
 approvals/<workspace hash>.json   approvals remembered for a project (30 days), keyed by its real path; also the
                                   approvals of the MCP servers, the hooks and the language servers the
-                                  project's file names
+                                  project's file names, keyed by the real path of the project's directory
+                                  (a worktree's is its repository's)
 wake/                             the wake-ups of every session: one SQLite file all processes share, the owners' locks
 memory/                           notes (user/, projects/<name>-<hash>/) and the usage log; only with memory enabled
 index.db                          the listing cache; can be deleted at any time

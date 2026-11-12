@@ -19,7 +19,9 @@
  * environment to an address, that the repository chose. Such a server waits
  * until the user approved it, and the approval is a remembered approval for
  * the project like any other (`approval/grants.ts`: a `tool` rule, kept
- * under the data directory for 30 days, keyed by the workspace's real path),
+ * under the data directory for 30 days, keyed by the real path of the
+ * project's directory, which for a worktree is its repository's:
+ * `projectApprovalHome`),
  * for exactly this definition of the server: the rule names the server and
  * the fingerprint of its merged configuration, so an edited command is a new
  * question. Nobody present, nothing starts: there is no unattended default.

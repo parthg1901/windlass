@@ -137,7 +137,7 @@ import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
-import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
+import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents } from "./agents.ts"
 import { SessionTrace, type TelemetrySetup, type TelemetryState, TelemetryHub } from "./telemetry.ts"
 import { type CommandExpansion, type CommandPlaces, type CommandsSetup, type SentCommand, commandPlaces, commandUseOf, expandNamed, findCommands } from "./commands.ts"
@@ -5299,7 +5299,7 @@ class LiveSession implements EngineSession {
     const plan = this.mcpPlan.find((item) => item.config.name === name && !item.approved && item.config.enabled && (fingerprint === undefined || item.fingerprint === fingerprint))
     if (plan === undefined) return false
     const now = this.core.clock.now()
-    addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [serverGrant(plan, now)], now)
+    addProjectGrants(this.core.grantsDir, this.approvalHome(), [serverGrant(plan, now)], now)
     this.attachMcp()
     return true
   }
@@ -5317,7 +5317,7 @@ class LiveSession implements EngineSession {
     const cwd = this.projection().session.cwd
     let plans: McpServerPlan[]
     try {
-      plans = planServers(this.files(), readProjectGrants(this.core.grantsDir, realWorkspace(cwd), this.core.clock.now()), this.core.clock.now())
+      plans = planServers(this.files(), readProjectGrants(this.core.grantsDir, this.approvalHome(), this.core.clock.now()), this.core.clock.now())
     } catch (error) {
       this.say("mcp", `The MCP servers of the configuration could not be read: ${describe(error)}`)
       return
@@ -5368,7 +5368,7 @@ class LiveSession implements EngineSession {
     if (!this.hooksRead) this.attachHooks()
     if (!hookQuestions(this.hookConfig, this.hookApproved).some((question) => question.fingerprint === fingerprint)) return false
     const now = this.core.clock.now()
-    addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [hookGrant(fingerprint, now)], now)
+    addProjectGrants(this.core.grantsDir, this.approvalHome(), [hookGrant(fingerprint, now)], now)
     this.hookApproved = new Set([...this.hookApproved, fingerprint])
     this.featureChanged("hooks")
     return true
@@ -5403,7 +5403,7 @@ class LiveSession implements EngineSession {
     for (const ignored of config.ignored) this.say("hooks", `The project's configuration asks for more than yours allows and was not followed: ${ignored}.`)
     if (!hasHooks(config)) return
     const now = this.core.clock.now()
-    this.hookApproved = approvedHooks(readProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), now), now)
+    this.hookApproved = approvedHooks(readProjectGrants(this.core.grantsDir, this.approvalHome(), now), now)
     for (const question of hookQuestions(config, this.hookApproved)) this.say("hooks", skippedHookNotice(question))
   }
 
@@ -5425,6 +5425,29 @@ class LiveSession implements EngineSession {
       signal: run.interrupt.signal,
       untrustedRepository: this.untrustedProject(),
     }
+  }
+
+  /**
+   * Where the approvals of what this session's project file names are kept (`projectApprovalHome`): under the
+   * project's directory, with a worktree taken back to its repository. The worktree is this session's own, or
+   * the one an ancestor was given and this session works in too (a subagent of a subagent shares its parent's).
+   */
+  private approvalHome(): string {
+    const session = this.projection().session
+    let worktree: WorktreeRecord | null = null
+    let lineage = session.lineage
+    for (let hops = 0; lineage?.kind === "spawn" && hops < 32; hops += 1) {
+      if (lineage.worktree !== null) {
+        worktree = lineage.worktree
+        break
+      }
+      try {
+        lineage = this.core.stores.get(lineage.parentSessionId)?.session.lineage ?? null
+      } catch {
+        break
+      }
+    }
+    return projectApprovalHome({ cwd: session.cwd, projectDir: this.currentConfig()?.projectDir ?? null, worktree })
   }
 
   /** Whether the project's configuration file is content the user marked untrusted (`approval.untrustedPaths`): what it chose to run is then a taint source. */
@@ -5552,7 +5575,7 @@ class LiveSession implements EngineSession {
     const question = held?.registry.awaitingApproval().find((item) => item.name === name && (fingerprint === undefined || item.fingerprint === fingerprint))
     if (held === null || question === undefined) return false
     const now = this.core.clock.now()
-    addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [lspGrant(question.key, now)], now)
+    addProjectGrants(this.core.grantsDir, this.approvalHome(), [lspGrant(question.key, now)], now)
     held.registry.approve(question.key)
     return true
   }
@@ -5636,7 +5659,7 @@ class LiveSession implements EngineSession {
     try {
       const now = this.core.clock.now()
       const files = this.files()
-      plan = files?.user?.lsp === undefined && files?.project?.lsp === undefined ? null : planLanguageServers(files, readProjectGrants(this.core.grantsDir, realWorkspace(cwd), now), now)
+      plan = files?.user?.lsp === undefined && files?.project?.lsp === undefined ? null : planLanguageServers(files, readProjectGrants(this.core.grantsDir, this.approvalHome(), now), now)
     } catch (error) {
       this.say("lsp", `The language servers of the configuration could not be read: ${describe(error)}`)
       return drop()
