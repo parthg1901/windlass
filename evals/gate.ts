@@ -10,11 +10,14 @@
  *
  * Three kinds of rule (the thresholds and why they are what they are are in RULES below):
  * - hard: harness bugs, judged on every run regardless of the baseline. One run is enough to fail.
- * - statistical: pass rate and cost against the baseline, only with at least MIN_REPEATS runs of a task on each
+ * - statistical: pass rate and cost against the baseline, only with at least `minRepeats` runs of a task on each
  *   side, and only when the configuration (model, effort) matches. Otherwise "not enough data", never a pass.
+ *   Pass rate is judged against the baseline's runs pooled over its batches; cost against the spread its batches
+ *   showed, which takes at least `minBatches` of them. Against a baseline with one batch, cost above it is a
+ *   warning: printed, counted in the last line, and not part of the verdict.
  * - report-only: wall time and cached share, printed for the reader, never failing.
  */
-import { BASELINE_FILE, type Baseline, type Results, buildBaseline, byTask, configurationOf, loadResults, median, statsOf, writeBaseline } from "./baseline.ts"
+import { BASELINE_FILE, type Baseline, type BatchStats, type Results, type TaskBaseline, buildBaseline, byTask, configurationOf, loadResults, median, statsOf, writeBaseline } from "./baseline.ts"
 import type { RunResult } from "./run-agent.ts"
 import { loadTask } from "./run-check.ts"
 
@@ -38,19 +41,34 @@ export const RULES = {
    */
   perfectMajority: true,
   /**
-   * Cost per task (median input tokens, median steps): a regression only when the new median exceeds the baseline
-   * median by the ratio AND by the absolute floor. Medians of >= 3 runs ignore a single long run; the ratio of 1.5
-   * is beyond the step spread of these short tasks (4-9 steps), and the floors keep tiny tasks (4 -> 6 steps,
-   * 8k -> 12k tokens) from flapping on one extra tool call.
+   * Cost per task (input tokens, steps). What a task costs the model differs between batches (sittings at different
+   * times of day) by more than between the runs of one batch: the same code took a median of 16 steps / 181k
+   * tokens on one task in one batch and 24 to 39 steps / 300k to 508k in another. A batch is therefore one
+   * observation of that spread, and the cost rules need `minBatches` baseline batches that each hold `minRepeats`
+   * runs of the task. A task's cost is a regression only when both of these hold:
+   * - size: the new median is above the highest of the baseline's batch medians by the ratio AND by the absolute
+   *   floor. The highest batch median is the most expensive sitting the baseline has seen. The 1.5 on top of it
+   *   leaves room for a sitting more expensive than any recorded (with two batches a third is the most expensive
+   *   of the three one time in three) and still catches a doubling. The floors keep tiny tasks (4 -> 6 steps,
+   *   8k -> 12k tokens) from flapping on one extra tool call.
+   * - consistency: every new run costs more than the most expensive baseline run of any batch. Two long runs move
+   *   a three-run median; a change that makes the task more expensive shows in all of them. With 6 baseline runs
+   *   and 3 new ones, that ordering happens 1 time in 84 if the nine runs are alike.
+   * The price: a regression smaller than the spread between the baseline's batches is not detected.
+   * A task with fewer baseline batches than `minBatches` (a baseline recorded from one directory, or a file from
+   * before batches were recorded) is compared with that batch alone and the finding is a warning, never a
+   * regression: how much the task varies between batches is not known.
    */
+  minBatches: 2,
   tokenRatio: 1.5,
   tokenFloor: 5000,
   stepRatio: 1.5,
   stepFloor: 2,
   /**
-   * Across all tasks with enough data (at least 3 of them), the median of the per-task input-token ratios. Noise
-   * pushes tasks both ways and cancels in the median; a shift of 25% in the middle task is a systematic change (a
-   * longer system prompt, a tool output no longer truncated).
+   * Across all tasks with enough data (at least 3 of them), the median of the per-task ratios of the new median
+   * input tokens to the highest baseline batch median. Noise pushes tasks both ways and cancels in the median; the
+   * middle task 25% above the most expensive batch on record is a systematic change (a longer system prompt, a tool
+   * output no longer truncated). Like the per-task rule it is a warning while the baseline has one batch.
    */
   overallTokenRatio: 1.25,
   overallMinTasks: 3,
@@ -58,7 +76,8 @@ export const RULES = {
   overrunFactor: 1.5,
 } as const
 
-export type Level = "fail" | "regression" | "no-data" | "unchecked" | "info"
+/** `warning` is a cost finding the baseline cannot back (one batch): shown and counted, never part of the verdict. */
+export type Level = "fail" | "regression" | "warning" | "no-data" | "unchecked" | "info"
 
 export interface Finding {
   readonly level: Level
@@ -140,7 +159,7 @@ function statisticalFindings(results: readonly Results[], baseline: Baseline | n
     return { findings: [{ level: "no-data" as const, rule: "configuration", scope: "overall", message: `results are for ${label(configuration)}, the baseline for ${label(baseline.configuration)}: not comparable` }], passed }
 
   const groups = byTask(results)
-  const compared: { task: string; base: Baseline["tasks"][string]; next: ReturnType<typeof statsOf> }[] = []
+  const compared: { task: string; base: TaskBaseline; next: ReturnType<typeof statsOf>; runs: readonly RunResult[] }[] = []
   for (const [task, runs] of groups) {
     const base = baseline.tasks[task]
     if (base === undefined) {
@@ -151,21 +170,38 @@ function statisticalFindings(results: readonly Results[], baseline: Baseline | n
       findings.push({ level: "no-data", rule: "repeats", scope: task, message: `baseline ${base.runs} run(s), new ${runs.length}; pass rate, tokens and steps need ${RULES.minRepeats} on each side` })
       continue
     }
-    compared.push({ task, base, next: statsOf(runs) })
+    compared.push({ task, base, next: statsOf(runs), runs })
   }
   for (const task of Object.keys(baseline.tasks).filter((id) => !groups.has(id)))
     findings.push({ level: "info", rule: "missing-task", scope: task, message: "in the baseline but not in these results" })
 
-  for (const { task, base, next } of compared) {
+  // A task's baseline batches that can stand for its cost, and the tasks whose cost is only warned about.
+  const batchesOf = new Map(compared.map((entry) => [entry.task, costBatches(entry.base)]))
+  const single = compared.filter((entry) => batchesOf.get(entry.task)!.length === 1)
+  if (single.length > 0)
+    findings.push({
+      level: "info",
+      rule: "baseline-batches",
+      scope: "overall",
+      message: `the baseline has one batch${single.length === compared.length ? "" : ` of ${single.length} of ${compared.length} tasks`}, so their cost is not gated: above that batch it is a warning. Record a second batch at another time of day`,
+    })
+
+  for (const { task, base, next, runs } of compared) {
+    // Pass counts are pooled over the baseline's batches: a task that passed 3/3 in one and 0/3 in another is 3/6.
     const drop = passRateRegression(base.passes, base.runs, next.passes, next.runs)
-    if (drop) findings.push({ level: "regression", rule: "pass-rate", scope: task, message: `passed ${base.passes}/${base.runs} in the baseline, ${next.passes}/${next.runs} now (${drop})` })
+    const perBatch = base.batches !== undefined && base.batches.length > 1 ? ` (${base.batches.map((batch) => `${batch.passes}/${batch.runs}`).join(", ")} by batch)` : ""
+    if (drop) findings.push({ level: "regression", rule: "pass-rate", scope: task, message: `passed ${base.passes}/${base.runs} in the baseline${perBatch}, ${next.passes}/${next.runs} now (${drop})` })
     else passed += 1
-    if (next.medianInputTokens > base.medianInputTokens * RULES.tokenRatio && next.medianInputTokens - base.medianInputTokens > RULES.tokenFloor)
-      findings.push({ level: "regression", rule: "input-tokens", scope: task, message: `median input ${count(base.medianInputTokens)} -> ${count(next.medianInputTokens)} (over ${RULES.tokenRatio}x and +${count(RULES.tokenFloor)})` })
-    else passed += 1
-    if (next.medianSteps > base.medianSteps * RULES.stepRatio && next.medianSteps - base.medianSteps > RULES.stepFloor)
-      findings.push({ level: "regression", rule: "steps", scope: task, message: `median steps ${base.medianSteps} -> ${next.medianSteps} (over ${RULES.stepRatio}x and +${RULES.stepFloor})` })
-    else passed += 1
+    const batches = batchesOf.get(task)!
+    if (batches.length === 0) {
+      findings.push({ level: "no-data", rule: "batches", scope: task, message: `no baseline batch has ${RULES.minRepeats} runs of it (${(base.batches ?? []).map((batch) => batch.runs).join(", ")}); tokens and steps need ${RULES.minBatches} such batches` })
+      continue
+    }
+    for (const cost of COSTS) {
+      const finding = costFinding(cost, batches, runs)
+      if (finding) findings.push({ ...finding, rule: cost.rule, scope: task })
+      else if (batches.length >= RULES.minBatches) passed += 1
+    }
   }
 
   if (compared.length === 0) findings.push({ level: "no-data", rule: "pass-rate", scope: "overall", message: `no task has ${RULES.minRepeats} runs on both sides` })
@@ -177,15 +213,72 @@ function statisticalFindings(results: readonly Results[], baseline: Baseline | n
       findings.push({ level: "regression", rule: "pass-rate", scope: "overall", message: `${percent(base.passes / base.runs)} -> ${percent(next.passes / next.runs)} over ${compared.length} task(s) (Fisher one-sided p=${p.toFixed(3)})` })
     else passed += 1
   }
-  if (compared.length < RULES.overallMinTasks)
-    findings.push({ level: "no-data", rule: "input-tokens", scope: "overall", message: `${compared.length} task(s) with enough data; the overall cost check needs ${RULES.overallMinTasks}` })
+  // Each task's new median against its most expensive baseline batch; gated on the tasks with enough batches when
+  // there are enough of those, otherwise a warning over the tasks with any.
+  const ratios = compared
+    .map((entry) => ({ batches: batchesOf.get(entry.task)!, next: entry.next.medianInputTokens }))
+    .filter((entry) => entry.batches.length > 0)
+    .map((entry) => ({ gated: entry.batches.length >= RULES.minBatches, ceiling: Math.max(...entry.batches.map((batch) => batch.medianInputTokens)), next: entry.next }))
+    .filter((entry) => entry.ceiling > 0)
+  const gated = ratios.filter((entry) => entry.gated)
+  const pool = gated.length >= RULES.overallMinTasks ? gated : ratios
+  if (pool.length < RULES.overallMinTasks)
+    findings.push({ level: "no-data", rule: "input-tokens", scope: "overall", message: `${pool.length} task(s) with enough data; the overall cost check needs ${RULES.overallMinTasks}` })
   else {
-    const ratio = median(compared.filter((entry) => entry.base.medianInputTokens > 0).map((entry) => entry.next.medianInputTokens / entry.base.medianInputTokens))
-    if (ratio > RULES.overallTokenRatio)
-      findings.push({ level: "regression", rule: "input-tokens", scope: "overall", message: `median per-task input-token ratio ${ratio.toFixed(2)} (over ${RULES.overallTokenRatio})` })
-    else passed += 1
+    const ratio = median(pool.map((entry) => entry.next / entry.ceiling))
+    const message = `median per-task input-token ratio ${ratio.toFixed(2)} against each task's most expensive baseline batch (over ${RULES.overallTokenRatio})`
+    if (ratio <= RULES.overallTokenRatio) passed += pool === gated ? 1 : 0
+    else if (pool === gated) findings.push({ level: "regression", rule: "input-tokens", scope: "overall", message })
+    else findings.push({ level: "warning", rule: "input-tokens", scope: "overall", message: `${message}; ${ONE_BATCH}` })
   }
   return { findings, passed }
+}
+
+/** A baseline batch as the cost rules read it. A file from before batches were recorded has no samples. */
+type CostBatch = Pick<BatchStats, "runs" | "medianSteps" | "medianInputTokens"> & Partial<Pick<BatchStats, "steps" | "inputTokens">>
+
+/** The baseline batches of a task with enough runs to stand as one observation of its cost. */
+function costBatches(base: TaskBaseline): CostBatch[] {
+  const batches: readonly CostBatch[] = base.batches ?? [base]
+  return batches.filter((batch) => batch.runs >= RULES.minRepeats)
+}
+
+interface Cost {
+  readonly rule: string
+  readonly name: string
+  readonly ratio: number
+  readonly floor: number
+  readonly show: (value: number) => string
+  readonly median: (batch: CostBatch) => number
+  readonly samples: (batch: CostBatch) => readonly number[] | undefined
+  readonly of: (run: RunResult) => number
+}
+
+const COSTS: readonly Cost[] = [
+  { rule: "input-tokens", name: "input", ratio: RULES.tokenRatio, floor: RULES.tokenFloor, show: count, median: (batch) => batch.medianInputTokens, samples: (batch) => batch.inputTokens, of: (run) => run.metrics.tokens.input },
+  { rule: "steps", name: "steps", ratio: RULES.stepRatio, floor: RULES.stepFloor, show: String, median: (batch) => batch.medianSteps, samples: (batch) => batch.steps, of: (run) => run.metrics.steps },
+]
+
+const ONE_BATCH = "the baseline has one batch, so how much this varies between batches is unknown: a warning, not a regression"
+
+/**
+ * One cost of a task against its baseline batches (at least one): the size and consistency conditions of RULES.
+ * A regression with `minBatches` batches, a warning with fewer, `null` when the cost is within what they showed.
+ */
+function costFinding(cost: Cost, batches: readonly CostBatch[], runs: readonly RunResult[]): { level: "regression" | "warning"; message: string } | null {
+  const medians = batches.map(cost.median)
+  const ceiling = Math.max(...medians)
+  const next = runs.map(cost.of)
+  const middle = median(next)
+  if (!(middle > ceiling * cost.ratio && middle - ceiling > cost.floor)) return null
+  const samples = batches.flatMap((batch) => cost.samples(batch) ?? [])
+  const top = samples.length === 0 ? null : Math.max(...samples)
+  const cheapest = Math.min(...next)
+  if (top !== null && cheapest <= top) return null
+  const size = `over ${cost.ratio}x and +${cost.show(cost.floor)}`
+  const every = top === null ? "" : `, every run above the baseline's most expensive (${cost.show(cheapest)} or more against ${cost.show(top)})`
+  if (batches.length < RULES.minBatches) return { level: "warning", message: `median ${cost.name} ${cost.show(ceiling)} -> ${cost.show(middle)} (${size})${every}; ${ONE_BATCH}` }
+  return { level: "regression", message: `median ${cost.name} ${cost.show(middle)} against batch medians of ${medians.map(cost.show).join(", ")} in the baseline (${size} on the highest)${every}` }
 }
 
 /** Why the new pass count is a regression from the baseline's, or `null`. */
@@ -227,13 +320,13 @@ function reportOnly(results: readonly Results[], baseline: Baseline | null): Fin
 }
 
 export function formatGate(result: GateResult): string {
-  const order: Level[] = ["fail", "regression", "unchecked", "no-data", "info"]
+  const order: Level[] = ["fail", "regression", "warning", "unchecked", "no-data", "info"]
   const lines = result.findings.toSorted((a, b) => order.indexOf(a.level) - order.indexOf(b.level)).map((finding) => `${finding.level.toUpperCase().padEnd(10)} ${finding.rule.padEnd(20)} ${finding.scope}: ${finding.message}`)
   const tally = (level: Level) => result.findings.filter((finding) => finding.level === level).length
   return [
     ...lines,
     "",
-    `gate: ${result.verdict.toUpperCase()}  ${tally("fail")} hard failure(s), ${tally("regression")} regression(s), ${tally("no-data") + tally("unchecked")} without enough data, ${result.passedChecks} check(s) passed`,
+    `gate: ${result.verdict.toUpperCase()}  ${tally("fail")} hard failure(s), ${tally("regression")} regression(s), ${tally("warning")} warning(s), ${tally("no-data") + tally("unchecked")} without enough data, ${result.passedChecks} check(s) passed`,
   ].join("\n")
 }
 
@@ -283,7 +376,7 @@ if (import.meta.main) {
     }
     const next = buildBaseline(results)
     await writeBaseline(next, baselineFile)
-    console.error(`baseline updated: ${Object.keys(next.tasks).length} tasks, ${next.repeats} repeat(s), commit ${next.commit} -> ${baselineFile}`)
+    console.error(`baseline updated: ${Object.keys(next.tasks).length} tasks, ${next.repeats} repeat(s) over ${results.length} batch(es), commit ${next.commit} -> ${baselineFile}`)
     process.exit(0)
   }
   process.exit(result.exitCode)

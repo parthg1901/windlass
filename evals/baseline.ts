@@ -4,9 +4,12 @@
  *
  *   bun evals/baseline.ts <results-dir> [<results-dir> ...] [--out evals/baseline.json] [--commit <sha>] [--note <text>]
  *
- * Runs are pooled by task across the directories, so `--repeat 5` in one go and five separate runs give the same
- * baseline. All directories must share one configuration. The commit is the one the runs recorded; results from
- * before the runner recorded it need `--commit`.
+ * Each directory is one batch: the runs of one sitting. The model's cost on a task varies between sittings (time of
+ * day) by more than it varies inside one, so a baseline that is to gate cost needs at least two batches recorded at
+ * different times: the gate judges cost against what the batches themselves showed (`RULES` in gate.ts). Per task the
+ * baseline keeps every batch's samples (steps and input tokens per run) and its medians, next to the numbers pooled
+ * over all batches, which the pass-rate rules use. All directories must share one configuration. The commit is the
+ * one the runs recorded; results from before the runner recorded it, or from several commits, need `--commit`.
  */
 import { join, resolve } from "node:path"
 import type { Report, RunResult } from "./run-agent.ts"
@@ -24,6 +27,25 @@ export interface TaskStats {
   readonly cachedShare: number | null
 }
 
+/** One batch's runs of one task: one results directory, so one sitting. */
+export interface BatchStats {
+  /** The directory's name, as in `Baseline.batches`. */
+  readonly source: string
+  readonly runs: number
+  readonly passes: number
+  /** One value per run, ascending: the samples the gate's cost rules compare with. */
+  readonly steps: readonly number[]
+  readonly inputTokens: readonly number[]
+  readonly medianSteps: number
+  readonly medianInputTokens: number
+}
+
+/** A task in the baseline: its numbers pooled over every batch, and each batch on its own. */
+export interface TaskBaseline extends TaskStats {
+  /** Absent in a file written before batches were recorded; the gate reads such a task as one batch without samples. */
+  readonly batches?: readonly BatchStats[]
+}
+
 export interface Baseline {
   readonly note: string
   readonly configuration: { readonly model: string | null; readonly effort: string | null }
@@ -33,8 +55,10 @@ export interface Baseline {
   /** The fewest runs any task has: what the statistical comparisons can lean on. */
   readonly repeats: number
   readonly sources: readonly string[]
+  /** One entry per results directory, in `sources` order, with when its runs started. Absent in older files. */
+  readonly batches?: readonly { readonly source: string; readonly startedAt: string; readonly runs: number }[]
   readonly summary: TaskStats
-  readonly tasks: Readonly<Record<string, TaskStats>>
+  readonly tasks: Readonly<Record<string, TaskBaseline>>
 }
 
 /** A results directory, read back. Older files lack fields added since; the gate treats those as unknown. */
@@ -93,19 +117,41 @@ export function buildBaseline(results: readonly Results[], options: { readonly c
   if (commit === null) throw new Error(commits.length > 1 ? `results come from several commits (${commits.join(", ")}); pass --commit` : "the results do not record a commit; pass --commit <sha>")
   const repeats = Math.min(...[...groups.values()].map((runs) => runs.length))
   const date = results.map((entry) => entry.report.startedAt).toSorted()[0]!.slice(0, 10)
+  const sources = results.map((entry) => entry.dir.split("/").at(-1)!)
+  const ascending = (values: readonly number[]) => values.toSorted((a, b) => a - b)
+  const batchesOf = (task: string): BatchStats[] =>
+    results.flatMap((entry, index) => {
+      const runs = entry.report.results.filter((run) => run.task === task)
+      if (runs.length === 0) return []
+      const stats = statsOf(runs)
+      return [
+        {
+          source: sources[index]!,
+          runs: stats.runs,
+          passes: stats.passes,
+          steps: ascending(runs.map((run) => run.metrics.steps)),
+          inputTokens: ascending(runs.map((run) => run.metrics.tokens.input)),
+          medianSteps: stats.medianSteps,
+          medianInputTokens: stats.medianInputTokens,
+        },
+      ]
+    })
   return {
     note:
       options.note ??
       (repeats < 3
         ? `${repeats}-repeat baseline: too few runs per task for the statistical comparisons, which report "not enough data" until it is regenerated from at least 3 repeats.`
-        : `${repeats} repeats per task.`),
+        : results.length === 1
+          ? `${repeats} repeats per task in one batch: cost above it is a warning, not a regression, until a second batch recorded at another time is added.`
+          : `${repeats} repeats per task over ${results.length} batches.`),
     configuration,
     date,
     commit,
     repeats,
-    sources: results.map((entry) => entry.dir.split("/").at(-1)!),
+    sources,
+    batches: results.map((entry, index) => ({ source: sources[index]!, startedAt: entry.report.startedAt, runs: entry.report.results.length })),
     summary: statsOf(results.flatMap((entry) => entry.report.results)),
-    tasks: Object.fromEntries([...groups].map(([task, runs]) => [task, statsOf(runs)])),
+    tasks: Object.fromEntries([...groups].map(([task, runs]) => [task, { ...statsOf(runs), batches: batchesOf(task) }])),
   }
 }
 
@@ -148,5 +194,8 @@ if (import.meta.main) {
   })
   const out = resolve(values.get("--out") ?? BASELINE_FILE)
   await writeBaseline(baseline, out)
-  console.log(`baseline for ${baseline.configuration.model ?? "(default model)"} / ${baseline.configuration.effort ?? "(default effort)"}: ${Object.keys(baseline.tasks).length} tasks, ${baseline.repeats} repeat(s), commit ${baseline.commit} -> ${out}`)
+  const batches = baseline.batches ?? []
+  console.log(`baseline for ${baseline.configuration.model ?? "(default model)"} / ${baseline.configuration.effort ?? "(default effort)"}: ${Object.keys(baseline.tasks).length} tasks, ${baseline.repeats} repeat(s) over ${batches.length} batch(es), commit ${baseline.commit} -> ${out}`)
+  for (const batch of batches) console.log(`  batch ${batch.source}: ${batch.runs} run(s), started ${batch.startedAt}`)
+  if (batches.length < 2) console.log("  one batch: the gate reports cost above it as a warning, not a regression; add a second directory recorded at another time of day")
 }

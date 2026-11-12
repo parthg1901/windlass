@@ -58,10 +58,10 @@ function runOf(task: string, attempt: number, change: Partial<RunResult> & { ste
 }
 
 const dirs = { count: 0 }
-async function resultsDir(results: RunResult[], config: { model?: string | null; effort?: string | null; sha?: string } = {}) {
+async function resultsDir(results: RunResult[], config: { model?: string | null; effort?: string | null; sha?: string; startedAt?: string } = {}) {
   const out = join(scratch.dir, `results-${++dirs.count}`)
   const report: Report = {
-    startedAt: "2026-11-12T10:00:00.000Z",
+    startedAt: config.startedAt ?? "2026-11-12T10:00:00.000Z",
     commit: { sha: config.sha ?? "abc1234", dirty: false },
     cli: ["windlass"],
     model: config.model === undefined ? "gpt-test" : config.model,
@@ -91,8 +91,13 @@ function repeats(tasks: readonly string[], n: number, shape: { fails?: Record<st
 }
 
 const TASKS = ["alpha", "beta", "gamma", "delta"]
-async function baselineOf(runs: RunResult[]) {
-  return buildBaseline(await loadResults([await resultsDir(runs)]))
+/** A baseline with one batch per argument: each is one results directory. */
+async function baselineOf(...batches: RunResult[][]) {
+  return buildBaseline(await loadResults(await Promise.all(batches.map((runs) => resultsDir(runs)))))
+}
+/** One task's runs of one batch, from what each run cost. */
+function samples(task: string, runs: readonly { steps: number; input: number; pass?: boolean }[]) {
+  return runs.map((run, index) => runOf(task, index + 1, { steps: run.steps, input: run.input, pass: run.pass ?? true, status: run.pass === false ? "failed" : "passed" }))
 }
 async function judge(runs: RunResult[], baseline: Baseline | null, options: { hardOnly?: boolean } = {}) {
   return gate(await loadResults([await resultsDir(runs)]), baseline, options)
@@ -120,7 +125,7 @@ describe("statistics", () => {
 
 describe("a clean run against a matching baseline", () => {
   test("passes with exit 0 when every check has its data", async () => {
-    const baseline = await baselineOf(repeats(TASKS, 3))
+    const baseline = await baselineOf(repeats(TASKS, 3), repeats(TASKS, 3))
     const result = await judge(repeats(TASKS, 3), baseline)
     expect(rules(result, "fail")).toEqual([])
     expect(rules(result, "regression")).toEqual([])
@@ -128,7 +133,7 @@ describe("a clean run against a matching baseline", () => {
     expect(result.verdict).toBe("pass")
     expect(result.exitCode).toBe(0)
     expect(rules(result, "info")).toEqual(["wall-time overall", "cached-share overall"])
-    expect(formatGate(result)).toMatch(/gate: PASS {2}0 hard failure\(s\), 0 regression\(s\), 0 without enough data, \d+ check\(s\) passed/)
+    expect(formatGate(result)).toMatch(/gate: PASS {2}0 hard failure\(s\), 0 regression\(s\), 0 warning\(s\), 0 without enough data, \d+ check\(s\) passed/)
   })
 
   test("model noise does not flap it: one failure per task, 1.4x tokens, two extra steps", async () => {
@@ -250,22 +255,31 @@ describe("statistical comparisons", () => {
   })
 
   test("input tokens and steps outside the tolerance band", async () => {
-    const baseline = await baselineOf(repeats(TASKS, 3))
+    const baseline = await baselineOf(repeats(TASKS, 3), repeats(TASKS, 3))
     const result = await judge(repeats(TASKS, 3, { input: { alpha: 16_000 }, steps: { beta: 9 } }), baseline)
     expect(rules(result, "regression")).toEqual(["input-tokens alpha", "steps beta"])
-    expect(result.findings.find((finding) => finding.rule === "input-tokens")!.message).toBe("median input 10.0k -> 16.0k (over 1.5x and +5.0k)")
+    expect(result.findings.find((finding) => finding.rule === "input-tokens")!.message).toBe(
+      "median input 16.0k against batch medians of 10.0k, 10.0k in the baseline (over 1.5x and +5.0k on the highest), every run above the baseline's most expensive (16.0k or more against 10.0k)",
+    )
   })
 
   test("the absolute floors keep small tasks from flapping", async () => {
-    const baseline = await baselineOf(repeats(TASKS, 3, { input: { alpha: 4000 }, steps: { beta: 2 } }))
-    const result = await judge(repeats(TASKS, 3, { input: { alpha: 8000 }, steps: { beta: 4 } }), baseline)
+    const small = () => repeats(TASKS, 3, { input: { alpha: 4000 }, steps: { beta: 2 } })
+    const result = await judge(repeats(TASKS, 3, { input: { alpha: 8000 }, steps: { beta: 4 } }), await baselineOf(small(), small()))
     expect(rules(result, "regression")).toEqual([])
+    expect(result.exitCode).toBe(0)
   })
 
   test("a cost shift across every task is caught overall even when each task stays inside its band", async () => {
-    const baseline = await baselineOf(repeats(TASKS, 3))
+    const baseline = await baselineOf(repeats(TASKS, 3), repeats(TASKS, 3))
     const result = await judge(repeats(TASKS, 3, { input: { alpha: 13_000, beta: 13_000, gamma: 13_000, delta: 13_000 } }), baseline)
     expect(rules(result, "regression")).toEqual(["input-tokens overall"])
+    expect(result.findings.find((finding) => finding.level === "regression")!.message).toBe("median per-task input-token ratio 1.30 against each task's most expensive baseline batch (over 1.25)")
+    // Against one batch the same shift is a warning, and the verdict stands.
+    const warned = await judge(repeats(TASKS, 3, { input: { alpha: 13_000, beta: 13_000, gamma: 13_000, delta: 13_000 } }), await baselineOf(repeats(TASKS, 3)))
+    expect(rules(warned, "regression")).toEqual([])
+    expect(rules(warned, "warning")).toEqual(["input-tokens overall"])
+    expect(warned.exitCode).toBe(0)
   })
 
   test("another configuration is not comparable", async () => {
@@ -291,11 +305,115 @@ describe("statistical comparisons", () => {
   })
 })
 
+// The numbers of the first nightly run. One task, same code: a median of 16 steps / 181k input tokens in the batch
+// the baseline was recorded from, 24 to 39 steps / 300k to 508k the same evening. Another flipped 3/3 to 0/3.
+describe("cost and pass rate against the baseline's batches", () => {
+  const AUDIT = "audit-every-handler"
+  const cheap = () => [...repeats(TASKS, 3), ...samples(AUDIT, [{ steps: 14, input: 160_000 }, { steps: 16, input: 181_000 }, { steps: 19, input: 204_000 }])]
+  const expensive = () => [...repeats(TASKS, 3), ...samples(AUDIT, [{ steps: 24, input: 300_000 }, { steps: 31, input: 402_000 }, { steps: 39, input: 508_000 }])]
+  const against = (runs: { steps: number; input: number }[]) => [...repeats(TASKS, 3), ...samples(AUDIT, runs)]
+
+  test("the same code on an expensive evening passes against a baseline with a cheap and an expensive batch", async () => {
+    const baseline = await baselineOf(cheap(), expensive())
+    expect(baseline.tasks[AUDIT]).toMatchObject({ runs: 6, passes: 6, medianSteps: 21.5 })
+    expect(baseline.tasks[AUDIT]!.batches!.map((batch) => [batch.medianSteps, Math.round(batch.medianInputTokens / 1000)])).toEqual([[16, 181], [31, 402]])
+    const control = await judge(against([{ steps: 26, input: 318_000 }, { steps: 33, input: 421_000 }, { steps: 37, input: 489_000 }]), baseline)
+    expect(control.findings.filter((finding) => finding.level !== "info")).toEqual([])
+    expect(control.verdict).toBe("pass")
+    expect(control.exitCode).toBe(0)
+    // An evening more expensive than either batch on record, within the margin.
+    const dearer = await judge(against([{ steps: 30, input: 380_000 }, { steps: 39, input: 508_000 }, { steps: 45, input: 590_000 }]), baseline)
+    expect(dearer.findings.filter((finding) => finding.level !== "info")).toEqual([])
+    expect(dearer.exitCode).toBe(0)
+  })
+
+  test("a median over the margin is not a regression while one run is no more expensive than the baseline's worst", async () => {
+    const result = await judge(against([{ steps: 35, input: 480_000 }, { steps: 50, input: 640_000 }, { steps: 56, input: 700_000 }]), await baselineOf(cheap(), expensive()))
+    expect(result.findings.filter((finding) => finding.level !== "info")).toEqual([])
+    expect(result.exitCode).toBe(0)
+  })
+
+  test("every run twice the most expensive baseline batch is a regression", async () => {
+    const result = await judge(against([{ steps: 48, input: 600_000 }, { steps: 62, input: 804_000 }, { steps: 78, input: 1_016_000 }]), await baselineOf(cheap(), expensive()))
+    expect(rules(result, "regression")).toEqual([`input-tokens ${AUDIT}`, `steps ${AUDIT}`])
+    expect(result.findings.filter((finding) => finding.level === "regression").map((finding) => finding.message)).toEqual([
+      "median input 804.0k against batch medians of 181.0k, 402.0k in the baseline (over 1.5x and +5.0k on the highest), every run above the baseline's most expensive (600.0k or more against 508.0k)",
+      "median steps 62 against batch medians of 16, 31 in the baseline (over 1.5x and +2 on the highest), every run above the baseline's most expensive (48 or more against 39)",
+    ])
+    expect(result.verdict).toBe("fail")
+    expect(result.exitCode).toBe(1)
+  })
+
+  test("against a baseline with one batch the expensive evening is a warning, and the verdict stands", async () => {
+    const baseline = await baselineOf(cheap())
+    const result = await judge(expensive(), baseline)
+    expect(rules(result, "regression")).toEqual([])
+    expect(rules(result, "warning")).toEqual([`input-tokens ${AUDIT}`, `steps ${AUDIT}`])
+    expect(result.findings.find((finding) => finding.rule === "steps")!.message).toBe(
+      "median steps 16 -> 31 (over 1.5x and +2), every run above the baseline's most expensive (24 or more against 19); the baseline has one batch, so how much this varies between batches is unknown: a warning, not a regression",
+    )
+    expect(result.findings.find((finding) => finding.rule === "baseline-batches")).toMatchObject({ level: "info", scope: "overall" })
+    expect(result.verdict).toBe("pass")
+    expect(result.exitCode).toBe(0)
+    expect(formatGate(result)).toMatch(/^WARNING {4}steps {16}audit-every-handler: median steps 16 -> 31/m)
+    expect(formatGate(result)).toMatch(/gate: PASS {2}0 hard failure\(s\), 0 regression\(s\), 2 warning\(s\), 0 without enough data/)
+  })
+
+  test("a baseline file from before batches were recorded loads as one batch", async () => {
+    const { batches: _batches, ...recorded } = await baselineOf(cheap())
+    const old: Baseline = { ...recorded, tasks: Object.fromEntries(Object.entries(recorded.tasks).map(([task, { batches: _samples, ...stats }]) => [task, stats])) }
+    const result = await judge(expensive(), old)
+    expect(rules(result, "regression")).toEqual([])
+    expect(rules(result, "warning")).toEqual([`input-tokens ${AUDIT}`, `steps ${AUDIT}`])
+    expect(result.findings.find((finding) => finding.rule === "steps")!.message).toStartWith("median steps 16 -> 31 (over 1.5x and +2); the baseline has one batch")
+    expect(result.exitCode).toBe(0)
+  })
+
+  test("a batch with too few runs of a task does not count: cost is then without data, never a pass", async () => {
+    // Three baseline runs of each task, but as 2 + 1: no batch can stand for the task's cost.
+    const result = await judge(repeats(TASKS, 3, { steps: { beta: 30 } }), await baselineOf(repeats(TASKS, 2), repeats(TASKS, 1)))
+    expect(rules(result, "regression")).toEqual([])
+    expect(rules(result, "no-data")).toEqual(["batches alpha", "batches beta", "batches delta", "batches gamma", "input-tokens overall"])
+    expect(result.findings.find((finding) => finding.rule === "batches")!.message).toBe("no baseline batch has 3 runs of it (2, 1); tokens and steps need 2 such batches")
+    expect(result.exitCode).toBe(3)
+    // Two full batches and a thin one: the thin one is left out of the cost comparison, its runs still count for pass rate.
+    const mixed = await judge(repeats(TASKS, 3, { steps: { beta: 30 } }), await baselineOf(repeats(TASKS, 3), repeats(TASKS, 3), repeats(TASKS, 1, { steps: { beta: 40 } })))
+    expect(rules(mixed, "regression")).toEqual(["steps beta"])
+    expect(mixed.findings.find((finding) => finding.rule === "steps")!.message).toContain("against batch medians of 5, 5 in the baseline")
+  })
+
+  test("a task that flips between 3/3 and 0/3 from batch to batch is judged against its pooled count", async () => {
+    const FLIP = "answer-question"
+    const all = (pass: boolean) => [...repeats(TASKS, 3), ...samples(FLIP, [{ steps: 4, input: 20_000, pass }, { steps: 4, input: 20_000, pass }, { steps: 4, input: 20_000, pass }])]
+    const flaky = await baselineOf(all(true), all(false))
+    expect(flaky.tasks[FLIP]).toMatchObject({ runs: 6, passes: 3, passRate: 0.5 })
+    expect(passRateRegression(3, 6, 0, 3)).toBeNull()
+    const again = await judge(all(false), flaky)
+    expect(rules(again, "regression")).toEqual([])
+    expect(again.exitCode).toBe(0)
+    // Never failed in either batch, and now fails every run.
+    const solid = await judge(all(false), await baselineOf(all(true), all(true)))
+    // (Three failures in 15 runs against 30 clean baseline runs also moves the pooled rate.)
+    expect(rules(solid, "regression")).toEqual([`pass-rate ${FLIP}`, "pass-rate overall"])
+    expect(solid.findings.find((finding) => finding.level === "regression")!.message).toBe("passed 6/6 in the baseline (3/3, 3/3 by batch), 0/3 now (never failed in the baseline, now fails in a majority)")
+  })
+})
+
 describe("the baseline", () => {
-  test("pools runs by task across directories, with the commit and date they recorded", async () => {
-    const first = await resultsDir(repeats(TASKS, 2, { fails: { alpha: 1 }, steps: { beta: 3 } }))
-    const second = await resultsDir(repeats(TASKS, 1, { steps: { beta: 9 } }))
+  test("pools runs by task across directories and keeps each directory as a batch, with the commit and date they recorded", async () => {
+    const first = await resultsDir(repeats(TASKS, 2, { fails: { alpha: 1 }, steps: { beta: 3 } }), { startedAt: "2026-11-12T22:00:00.000Z" })
+    const second = await resultsDir(repeats(TASKS, 1, { steps: { beta: 9 } }), { startedAt: "2026-11-12T09:00:00.000Z" })
     const baseline = buildBaseline(await loadResults([first, second]))
+    const [one, two] = [first, second].map((dir) => dir.split("/").at(-1)!)
+    expect(baseline.batches).toEqual([
+      { source: one!, startedAt: "2026-11-12T22:00:00.000Z", runs: 8 },
+      { source: two!, startedAt: "2026-11-12T09:00:00.000Z", runs: 4 },
+    ])
+    expect(baseline.tasks.beta!.batches).toEqual([
+      { source: one!, runs: 2, passes: 2, steps: [3, 3], inputTokens: [9999, 9999], medianSteps: 3, medianInputTokens: 9999 },
+      { source: two!, runs: 1, passes: 1, steps: [9], inputTokens: [9999], medianSteps: 9, medianInputTokens: 9999 },
+    ])
+    expect(baseline.tasks.alpha!.batches!.map((batch) => `${batch.passes}/${batch.runs}`)).toEqual(["1/2", "1/1"])
     expect(baseline.configuration).toEqual({ model: "gpt-test", effort: "low" })
     expect(baseline.commit).toBe("abc1234")
     expect(baseline.date).toBe("2026-11-12")
@@ -305,7 +423,8 @@ describe("the baseline", () => {
     expect(baseline.tasks.alpha!.passRate).toBeCloseTo(2 / 3)
     expect(baseline.tasks.beta!.medianSteps).toBe(3)
     expect(baseline.summary).toMatchObject({ runs: 12, passes: 11, medianWallMs: 20_000, cachedShare: 0 })
-    expect(baseline.note).toBe("3 repeats per task.")
+    expect(baseline.note).toBe("3 repeats per task over 2 batches.")
+    expect(buildBaseline(await loadResults([await resultsDir(repeats(TASKS, 3))])).note).toBe("3 repeats per task in one batch: cost above it is a warning, not a regression, until a second batch recorded at another time is added.")
   })
 
   test("says when it is too thin, and refuses mixed configurations or an unknown commit", async () => {
@@ -348,6 +467,26 @@ describe("the command", () => {
     expect(JSON.parse(json.stdout)).toMatchObject({ verdict: "fail", exitCode: 1 })
     expect(cli([dir, "--hard-only", "--baseline", baselineFile]).code).toBe(0)
     expect(cli([]).code).toBe(2)
+  })
+
+  test("the baseline command records one batch per directory and says when there is only one", async () => {
+    const record = (args: string[]) => {
+      const proc = Bun.spawnSync(["bun", join(import.meta.dir, "baseline.ts"), ...args], { stdout: "pipe", stderr: "pipe" })
+      return { code: proc.exitCode, stdout: proc.stdout.toString() }
+    }
+    const evening = await resultsDir(repeats(TASKS, 3), { startedAt: "2026-11-12T21:00:00.000Z" })
+    const morning = await resultsDir(repeats(TASKS, 3, { steps: { alpha: 9 } }), { startedAt: "2026-11-13T08:00:00.000Z" })
+    const out = join(scratch.dir, "recorded-baseline.json")
+    const two = record([evening, morning, "--out", out])
+    expect(two.code).toBe(0)
+    expect(two.stdout).toContain("4 tasks, 6 repeat(s) over 2 batch(es), commit abc1234")
+    expect(two.stdout).toContain(`batch ${morning.split("/").at(-1)}: 12 run(s), started 2026-11-13T08:00:00.000Z`)
+    expect(two.stdout).not.toContain("one batch")
+    const written = (await Bun.file(out).json()) as Baseline
+    expect(written.tasks.alpha!.batches!.map((batch) => batch.medianSteps)).toEqual([5, 9])
+    expect(written.date).toBe("2026-11-12")
+    const one = record([evening, "--out", out])
+    expect(one.stdout).toContain("one batch: the gate reports cost above it as a warning, not a regression")
   })
 
   test("--update-baseline writes the new baseline, but never over a hard failure", async () => {
