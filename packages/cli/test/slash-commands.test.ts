@@ -12,7 +12,7 @@ import { brand, event } from "@windlass/core"
 import { FakeProvider, script } from "@windlass/core/testing"
 import { m, opening } from "@windlass/core/testing/scenarios"
 import type { CommandsResult } from "@windlass/acp/extensions"
-import { BUILTIN_COMMANDS, clientCommands, commandSent, helpLines, lookup, unknownCommandText, unusableCommandLines, userCommands } from "../src/slash.ts"
+import { BUILTIN_COMMANDS, clientCommands, commandSent, helpLines, lookup, unknownCommandText, unusableCommandLines, unusedArgumentsNote, userCommands } from "../src/slash.ts"
 import { PrettyRenderer } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { typedSessions } from "./typed.ts"
@@ -110,6 +110,17 @@ describe("what the transcript says", () => {
     const out = render(stored([...events.slice(0, at + 1), event("command.expanded", { ...use, messageId: admitted.data.messageId }), ...events.slice(at + 1)]), { columns: () => 100 })
     expect(out).toContain("· /release-notes 1.4 · the text of a command file was sent (2 lines)\n  from this project:\n    /w/.claude/commands/release-notes.md\n  ⚠ argument 2 was not given: it is empty in the text that was sent\n")
     expect(out).toContain("  ⚠ !`git status` (line 3) was left as text: a command file runs nothing when it is used; the agent\n    can run it with its shell tool, which asks as usual\n")
+  })
+
+  test("an argument that was typed and that the file has no place for is said under the message: it is not in the text that was sent", () => {
+    expect(unusedArgumentsNote({ unused: [] })).toBeNull()
+    expect(unusedArgumentsNote({ unused: [3] })).toBe("argument 3 was not used: the command file has no place for it, so it is not in the text that was sent")
+    expect(unusedArgumentsNote({ unused: [3, 4] })).toBe("arguments 3, 4 were not used: the command file has no place for them, so they are not in the text that was sent")
+    const events = opening("Draft the release notes for version 1.4.\nLook at the commits since 1.3.")
+    const at = events.findIndex((item) => item.type === "inbox.enqueued")
+    const admitted = events[at] as { data: { messageId: typeof use.messageId } }
+    const out = render(stored([...events.slice(0, at + 1), event("command.expanded", { ...use, arguments: "1.4 1.3 extra", missing: [], unused: [3], unsupported: [], messageId: admitted.data.messageId }), ...events.slice(at + 1)]), { columns: () => 100 })
+    expect(out).toContain("· /release-notes 1.4 1.3 extra · the text of a command file was sent (2 lines)\n  from this project:\n    /w/.claude/commands/release-notes.md\n  ⚠ argument 3 was not used: the command file has no place for it, so it is not in the text that was\n    sent\n")
   })
 })
 

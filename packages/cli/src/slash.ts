@@ -185,3 +185,15 @@ export function commandSent(use: Pick<EventData<"command.expanded">, "name" | "a
   const unsupported = use.unsupported.map((construct) => `${construct.text} (line ${construct.line}) was left as text: ${LEFT_AS_TEXT[construct.kind]}`)
   return { typed, head: `the text of a command file was sent${size}`, where: COMMAND_SCOPE[use.scope], path: use.path, notes: [...missing, ...unsupported] }
 }
+
+/**
+ * What the line interface adds under a command file's message when arguments were typed that the file has no
+ * place for (`command.expanded`'s `unused`): they are not in the text that was sent. `null` when every argument
+ * was used.
+ */
+export function unusedArgumentsNote(use: Pick<EventData<"command.expanded">, "unused">): string | null {
+  const unused = use.unused
+  if (unused.length === 0) return null
+  const one = unused.length === 1
+  return `${one ? `argument ${unused[0]} was` : `arguments ${unused.join(", ")} were`} not used: the command file has no place for ${one ? "it" : "them"}, so ${one ? "it is" : "they are"} not in the text that was sent`
+}

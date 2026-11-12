@@ -412,9 +412,10 @@ describe("command files, run (docs/commands.md)", () => {
     expect(doubled.code).toBe(0)
     expect(sent(doubled.out)).toEqual([{ type: "text", text: "/etc is odd" }] as never)
     expect(events(doubled.out).some((event) => event.type === "command.expanded")).toBe(false)
-    expect(page).toContain("**An argument the text does not use is not reported.**")
+    // An argument the file has no place for is not in the text that was sent, and that is said under the message.
     const extra = await at.run(["/release-notes 1.4 1.3 extra"], [say("Drafted.")])
-    expect(extra.flat).not.toMatch(/extra was|unused|not used/)
+    expect(extra.flat).toContain("⚠ argument 3 was not used: the command file has no place for it, so it is not in the text that was sent")
+    expect(page).toContain("argument 3 was not used: the command file has no place for it, so it is not in the text that was sent")
   }, 90_000)
 })
 
