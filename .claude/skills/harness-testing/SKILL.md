@@ -238,3 +238,20 @@ Reading a result:
 
 - A `/word` typed while a question waits (an approval, a project's hook or server, `/undo`'s question) answers nothing and runs nothing: `a question is waiting for your answer, so /mcp was not run; …`, and the question stays. `//word` answers with the text `/word`.
 - The next question about a project's hook, language server or MCP server is put only after the answer before it was carried out and its `approved: …` / `not allowed: …` line printed. To test the order, compare the positions of that line and of the next `? …` in the capture.
+
+## The line interface as a user, interactively (2026-11-12)
+
+- Count ending rows with `^(✓|✗|■) (done|stopped|failed)`; `^✓ ` also matches `✓ allowed once` and `✓ checks:`. An interrupted turn ends `■ interrupted`, which that pattern does not match.
+- A turn with a queued message prints one ending row; take the count before sending and wait for one more.
+- A question's prompt and the answer typed are not kept in the scrollback; read the tail of the pane (`capture-pane -p` without `-J`). An approval's footer reads `[a]llow once · this [s]ession · [N]o ›`. Slash commands typed at the prompt are not echoed into the scrollback either; only messages are (`› …`).
+- A wait on a pattern matches the scrollback too: an earlier turn's `▸ shell sleep 30` satisfies a wait for the next one. Count the matches first and wait for one more.
+- Two shell calls in one step cannot show the `/stop` list: the second starts only when the first ends (seen live: 7 s apart). A shell call and a subagent call in one step do run together, and `/stop` lists both.
+- A watch on a command's last line fires together with the command's end.
+- `sh scripts/install.sh --bin-dir <dir> --no-profile` and the build (1.2 s) work as the README says.
+- Ctrl-C twice to exit needs a stop that takes time: a plain `sleep` stops within the grace period and the second Ctrl-C lands at the idle prompt (`press Ctrl-D or type /exit to leave`). Use a command that ignores TERM (`trap '' TERM; sleep 30`). Asked to run `sleep 30`, the model sometimes starts it in the background; say "in the foreground".
+- Streamed text is written a word at a time: the last word of a delta waits for the next space, line break or the text's end. A test that reads the screen mid-stream sees the text up to the last whole word.
+- `runCli`'s `exit` throws, so an in-process test cannot follow the CLI out through an exit in the middle of a turn (a second Ctrl-C); check that in tmux with a scripted model.
+- A subcommand must come first: `--cwd <dir> fork <id>` is a one-prompt run of the prompt "fork <id>".
+- To make a message wait across a Ctrl-C: send a steer while a command runs, Ctrl-C before the command ends; the ending says `1 message still waiting`, `/undo` passes over it, and it goes out with the next prompt (`↳ delivered to the agent: "…" · held since the turn was stopped`).
+- The interactive helper of `packages/cli/test/typed.ts` hands the drive a fourth argument, `rows()`: the terminal as it shows now, the input at its foot. Use it for what is above the prompt; the returned `screen` is the final state, with the input gone.
+- The live pass of 2026-11-12 (read-only agent, fix, steer, `/queue`, three `/undo` and two `/redo`, refuse, Ctrl-C at a question, allow once, `/stop` of one of two calls, Ctrl-C twice, a real compaction at 80 columns in a 106-character path, fork and continue, SIGTERM, Ctrl-C, stdin, `-i`, parallel shells) spent 51 requests in 10 sessions.
