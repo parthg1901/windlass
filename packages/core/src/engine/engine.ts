@@ -1365,6 +1365,36 @@ export function createEngine(options: EngineOptions): Engine {
         }
       },
       warn: (message) => core.report({ kind: "wake", sessionId: null, message }),
+      sessionOf: (sessionId) => {
+        const id = sessionId as SessionId
+        // Open here: its own state says where it works, what its configuration allows and what it has taken in.
+        const live = core.sessions.get(id)
+        let state: SessionSummary["session"]
+        let seq: number
+        try {
+          if (live !== undefined) ({ session: state, lastSeq: seq } = live.projection())
+          else {
+            const summary = core.stores.read(id, (store) => store.getSession(id))
+            if (summary === null) return { refused: `There is no session ${sessionId}.` }
+            ;({ session: state, lastSeq: seq } = summary)
+          }
+        } catch (error) {
+          return { refused: error instanceof StoreError && error.code === "session_not_found" ? `There is no session ${sessionId}.` : `The session ${sessionId} could not be read: ${describe(error)}` }
+        }
+        const lineage = state.lineage
+        if (lineage?.kind === "spawn" || lineage?.kind === "replay")
+          return { refused: `The session ${sessionId} is ${lineage.kind === "spawn" ? "a subagent" : "a replay"}: a wake-up is for a session a person started.` }
+        if (state.archived) return { refused: `The session ${sessionId} is archived: a wake-up could never be delivered to it.` }
+        if (live !== undefined) return { cwd: state.cwd, enabled: live.wakeConfig()?.enabled ?? false, tainted: live.commandsNow()?.tainted ?? false, seq }
+        // Not open here: its files are read as an execution of it would read them; what it has taken in is decided when a check runs.
+        let files: ConfigFiles | null = null
+        try {
+          files = core.loadConfigSync === null ? null : (core.loadConfigSync(state.cwd).files ?? null)
+        } catch (error) {
+          return { refused: `The configuration of the session ${sessionId} could not be read: ${describe(error)}` }
+        }
+        return { cwd: state.cwd, enabled: sessionWakeConfig(files, wakeUser).enabled, tainted: state.approval?.taint != null, seq }
+      },
     })
     return wakeRuntime
   }

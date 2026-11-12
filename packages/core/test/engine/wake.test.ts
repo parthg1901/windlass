@@ -429,6 +429,91 @@ describe("untrusted firings", () => {
   })
 })
 
+describe("a wake-up the user creates", () => {
+  test("is the user's, with the module's validation and the limits it gives a user, and fires without anyone poking the scheduler", async () => {
+    const { h, clock, seen } = firing({ approval: approval() })
+    try {
+      h.provider.enqueue(answer("Hello."), answer("The build is green."))
+      h.create().send("Hi.")
+      await h.settled()
+      const api = h.engine.wake()!
+      const created = api.create({ sessionId: h.session.id, message: "Look at the build.", trigger: { kind: "after", delayMs: 5 * MINUTE } })
+      if (!created.ok) throw new Error(created.error)
+      expect(created.wake).toMatchObject({ sessionId: h.session.id, message: "Look at the build.", run: null, cwd: null, provenance: { author: "user", tainted: false, seq: h.session.projection().lastSeq } })
+      expect(created.secret).toBeNull()
+      // A user may ask for more than the model: 5000 firings, where the model's most is 100. The module's bound still holds.
+      const often = api.create({ sessionId: h.session.id, message: "Every hour.", trigger: { kind: "every", intervalMs: 60 * MINUTE }, maxFirings: 5000 })
+      expect(often.ok && often.wake.limits.maxFirings).toBe(5000)
+      expect(api.create({ sessionId: h.session.id, message: "Too often.", trigger: { kind: "every", intervalMs: 60 * MINUTE }, maxFirings: 10_001 })).toEqual({ ok: false, error: "maxFirings must be a whole number from 1 to 10000." })
+      expect(api.create({ sessionId: h.session.id, message: "  ", trigger: { kind: "after", delayMs: MINUTE } })).toEqual({ ok: false, error: "The message is empty: say what should happen when the wake-up fires." })
+      // The scheduler was told when it was created: the time comes and the session is woken.
+      clock.advance(5 * MINUTE)
+      await until(() => seen.some((item) => item.type === "delivered"), 10_000, "the delivery")
+      await until(() => h.log().at(-1)?.type === "execution.succeeded", 10_000, "the wake-up's turn")
+      expect(of(h, "inbox.enqueued").at(-1)!.data).toMatchObject({ messageId: `msg_${created.wake.id}_1`, origin: "wake" })
+      expect(userTexts(h.provider.requests.at(-1)!).at(-1)).toContain("Look at the build.")
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("a check runs in the session's directory with the access the user chose, sandboxed and offline unless they say otherwise; a webhook's secret is the result's", async () => {
+    const { h } = firing({ approval: approval() })
+    try {
+      h.create()
+      const api = h.engine.wake()!
+      const check = { kind: "check", command: "bun test", intervalMs: MINUTE, fire: "until" } as const
+      const plain = api.create({ sessionId: h.session.id, message: "The tests pass.", trigger: check })
+      expect(plain.ok && plain.wake).toMatchObject({ cwd: "/repo", run: { kind: "sandboxed", network: false, writableRoots: [] }, provenance: { author: "user" } })
+      const chosen = api.create({ sessionId: h.session.id, message: "The deploy is up.", trigger: check, run: { kind: "sandboxed", network: true, writableRoots: ["/repo/out"] } })
+      expect(chosen.ok && chosen.wake.run).toEqual({ kind: "sandboxed", network: true, writableRoots: ["/repo/out"] })
+      const open = api.create({ sessionId: h.session.id, message: "The deploy is up.", trigger: check, run: { kind: "unsandboxed" } })
+      expect(open.ok && open.wake.run).toEqual({ kind: "unsandboxed" })
+      expect(api.create({ sessionId: h.session.id, message: "x", trigger: check, run: { kind: "sandboxed", network: false, writableRoots: ["out"] } })).toEqual({ ok: false, error: "A directory the check may write to is given as an absolute path: out." })
+      expect(api.create({ sessionId: h.session.id, message: "x", trigger: check, run: { kind: "sandboxed" } as never })).toMatchObject({ ok: false, error: expect.stringContaining("The access for the check is not valid") })
+      expect(api.create({ sessionId: h.session.id, message: "x", trigger: { kind: "after", delayMs: MINUTE }, run: { kind: "unsandboxed" } })).toEqual({ ok: false, error: 'Only a check runs a command: a "after" wake-up has no access to choose.' })
+      const hook = api.create({ sessionId: h.session.id, message: "A deploy reported in.", trigger: { kind: "webhook" } })
+      expect(hook.ok && hook.secret).toMatch(/^whsec_[0-9a-f]{64}$/)
+      expect(hook.ok && api.store.secret(hook.wake.id)).toBe(hook.ok ? hook.secret : "")
+      expect(api.create({ sessionId: h.session.id, message: "x", trigger: { kind: "webhook" }, secret: "short" })).toEqual({ ok: false, error: "A webhook secret must be at least 16 characters long." })
+      expect(api.store.list({ sessionId: h.session.id })).toHaveLength(4)
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("is refused for a session that does not exist, is archived, or whose configuration turns wake-ups off, and for one that is full", async () => {
+    const { h } = firing()
+    try {
+      const api = h.engine.wake()!
+      const later = { kind: "after", delayMs: MINUTE } as const
+      expect(api.create({ sessionId: "ses_nowhere", message: "x", trigger: later })).toEqual({ ok: false, error: "There is no session ses_nowhere." })
+      const archived = h.engine.createSession({ cwd: "/repo", settings: { model: "gpt-test", reasoningEffort: "medium" } })
+      await archived.close()
+      await h.engine.archiveSession(archived.id)
+      expect(api.create({ sessionId: archived.id, message: "x", trigger: later })).toEqual({ ok: false, error: `The session ${archived.id} is archived: a wake-up could never be delivered to it.` })
+      // A session that is not open here is read from what is stored: it can have one too.
+      const closed = h.engine.createSession({ cwd: "/repo", settings: { model: "gpt-test", reasoningEffort: "medium" } })
+      await closed.close()
+      expect(api.create({ sessionId: closed.id, message: "x", trigger: later }).ok).toBe(true)
+      // The user's limit is the store's: 100 pending per session.
+      h.create()
+      for (let index = 0; index < 100; index += 1) expect(api.create({ sessionId: h.session.id, message: `Number ${index}.`, trigger: later }).ok).toBe(true)
+      expect(api.create({ sessionId: h.session.id, message: "One more.", trigger: later })).toEqual({ ok: false, limit: true, error: "This session already has 100 pending wake-ups created by the user, the most allowed. Cancel one that is no longer needed first." })
+    } finally {
+      await h.dispose()
+    }
+    const off = firing({ config: { wake: { enabled: false } } })
+    try {
+      off.h.create()
+      expect(off.h.engine.wake()!.create({ sessionId: off.h.session.id, message: "x", trigger: { kind: "after", delayMs: MINUTE } })).toEqual({ ok: false, error: "Wake-ups are turned off in the configuration that applies to this session. Nothing was set up." })
+      expect(off.h.engine.wake()!.store.list({ sessionId: off.h.session.id })).toEqual([])
+    } finally {
+      await off.h.dispose()
+    }
+  })
+})
+
 describe("the approval of wake_create", () => {
   test("in mode ask it is asked about like a command, with what it will do later; what it ran under is what its check may run with", async () => {
     const { h } = firing({ approval: approval({ user: { mode: "ask" } }), attended: true })

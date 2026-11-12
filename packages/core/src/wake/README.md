@@ -214,7 +214,10 @@ Cancellations, check runs, holds and expiries stay in the wake store; they are n
 
 Show the webhook secret to the user once on creation (`CreateResult.secret`, later `store.secret(id)`), never to the
 model. List with `describeLines`; let the user cancel (`store.cancel(id, { by: "user" })`) and create their own
-(`author: "user"`, with `run` chosen by the user for a check). Show failed wake-ups to the user.
+(`author: "user"`, with `run` chosen by the user for a check). Show failed wake-ups to the user. Through the engine
+a client creates one with `Engine.wake().create(request)` (`engine/wake.ts`), which calls `store.create` with what
+only the engine knows of the session (it exists and is a person's, its working directory, whether wake-ups are
+turned off for it, whether it holds untrusted content) and tells the scheduler.
 
 ### Not decided here
 

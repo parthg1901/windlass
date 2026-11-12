@@ -32,16 +32,16 @@
  * ceiling is not applied (the ceiling is kept by the shared store).
  */
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { parseConfigFile } from "../config/schema.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import type { AnyTool, ToolContext, ToolResult } from "../tool/tool.ts"
 import { type CheckRunner, createCheckRunner } from "../wake/check.ts"
 import { type WakeClock, systemClock } from "../wake/clock.ts"
 import { type WakeConfig, type WakeConfigSection, resolveWakeConfig } from "../wake/config.ts"
-import { type RunAs, type WakeUp, WAKE_LIMITS, duration } from "../wake/record.ts"
+import { type RunAs, type TriggerRequest, type WakeDelivery, type WakeUp, SANDBOXED_OFFLINE, WAKE_LIMITS, duration, runAs } from "../wake/record.ts"
 import { type Deliver, type Scheduler, type SchedulerOptions, createScheduler } from "../wake/scheduler.ts"
-import { type WakeStore, type WakeStoreOptions, openWakeStore, wakeDirectory } from "../wake/store.ts"
+import { type CreateResult, type WakeStore, type WakeStoreOptions, openWakeStore, wakeDirectory } from "../wake/store.ts"
 import { type CreateInput, describeLines, wakeTools } from "../wake/tools.ts"
 import { type WebhookListener, createWebhookListener } from "../wake/webhook.ts"
 import type { ConfigFiles } from "./skills.ts"
@@ -68,11 +68,58 @@ export interface WakeSetup {
   readonly port?: number
 }
 
+/**
+ * A wake-up the user asks for, for one session. The trigger and the limits
+ * are the wake module's own (`TriggerRequest`, `NewWake`); who creates it,
+ * where a check runs and whether the session holds untrusted content are
+ * not the client's to say.
+ */
+export interface UserWakeRequest {
+  readonly sessionId: string
+  /** What the session is told when it fires. */
+  readonly message: string
+  readonly trigger: TriggerRequest
+  /** `wake` (default) starts a turn if the session is idle; `queue` waits for the next turn. */
+  readonly delivery?: WakeDelivery
+  readonly maxFirings?: number
+  /** When it stops at the latest, in ms since the epoch. */
+  readonly expiresAt?: number
+  readonly minIntervalMs?: number
+  /**
+   * For a check: the access the user chooses for its command. Default: in
+   * the sandbox, without network and with no directory to write to beyond
+   * the sandbox's own. It is the most the check ever runs with: what the
+   * approval layer allows the session's commands when the check runs
+   * narrows it further (`runAllowedNow`). Not for another trigger.
+   */
+  readonly run?: RunAs
+  /** For a webhook: the secret its requests are signed with, at least 16 characters. Default: a generated one. */
+  readonly secret?: string
+}
+
+/** What the engine knows about the session a user's wake-up is for, or why it cannot have one. */
+export type UserWakeSession =
+  | { readonly cwd: string; readonly enabled: boolean; readonly tainted: boolean; readonly seq: number | null }
+  | { readonly refused: string }
+
 /** What a client uses to show, create and cancel wake-ups (`wake/README.md`, "Clients"). */
 export interface WakeApi {
   /** The process's configuration: the user's own file with the defaults applied. */
   readonly config: WakeConfig
-  /** The shared store: `list`, `get`, `create` (with `author: "user"`), `cancel` (`by: "user"`), `secret`, `firings`. */
+  /**
+   * The user creates a wake-up for a session (author `user`), with the
+   * module's validation and the limits it gives a user (`WAKE_LIMITS.user`:
+   * how many may be pending, how often one may fire, how long it may run),
+   * which are wider than the model's. Refused, with a sentence for the user,
+   * when the session does not exist, is one the harness made for itself (a
+   * subagent, a replay), or the configuration that applies to it turns
+   * wake-ups off; when the request is not valid; when the session has no
+   * room for another. A check runs in the session's working directory. The
+   * result carries a webhook's secret, for the user and never the model.
+   * The scheduler and the listener are told at once.
+   */
+  readonly create: (request: UserWakeRequest) => CreateResult
+  /** The shared store: `list`, `get`, `cancel` (`by: "user"`), `secret`, `firings`; `create` is the store's own, which `WakeApi.create` calls with what the engine knows of the session. */
   readonly store: WakeStore
   /** Where a webhook wake-up receives requests. */
   readonly webhookUrl: (wakeId: string) => string
@@ -94,6 +141,8 @@ export interface WakeRuntimeOptions {
   readonly deliver: Deliver
   readonly currentRun: NonNullable<SchedulerOptions["currentRun"]>
   readonly warn: (message: string) => void
+  /** The session a user's wake-up is for, as the engine knows it. Without it no session is refused and nothing is known of one. */
+  readonly sessionOf?: (sessionId: string) => UserWakeSession
 }
 
 /** The wake store of a process with, when the process fires wake-ups, its scheduler and listener. */
@@ -105,9 +154,11 @@ export class WakeRuntime implements WakeApi {
   private readonly listener: WebhookListener | null
   private readonly port: number
   private stopped: Promise<void> | null = null
+  private readonly sessionOf: NonNullable<WakeRuntimeOptions["sessionOf"]>
 
   constructor(options: WakeRuntimeOptions) {
     const { setup, config } = options
+    this.sessionOf = options.sessionOf ?? (() => ({ cwd: process.cwd(), enabled: config.enabled, tainted: false, seq: null }))
     const clock = setup.clock ?? systemClock
     this.config = config
     this.port = setup.port ?? config.webhook.port
@@ -154,6 +205,40 @@ export class WakeRuntime implements WakeApi {
   }
 
   describe = (wake: WakeUp): string[] => describeLines(wake, this.store.hourlyCeiling, this.webhookUrl)
+
+  create = (request: UserWakeRequest): CreateResult => {
+    const refuse = (error: string): CreateResult => ({ ok: false, error })
+    const session = this.sessionOf(request.sessionId)
+    if ("refused" in session) return refuse(session.refused)
+    if (!session.enabled) return refuse("Wake-ups are turned off in the configuration that applies to this session. Nothing was set up.")
+    const check = request.trigger.kind === "check"
+    if (request.run !== undefined) {
+      if (!check) return refuse(`Only a check runs a command: a "${request.trigger.kind}" wake-up has no access to choose.`)
+      try {
+        runAs(request.run, "run")
+      } catch {
+        return refuse("The access for the check is not valid: it is either unsandboxed, or sandboxed with or without network and the directories it may write to.")
+      }
+      const relative = request.run.kind === "sandboxed" ? request.run.writableRoots.filter((root) => !isAbsolute(root)) : []
+      if (relative.length > 0) return refuse(`A directory the check may write to is given as an absolute path: ${relative.join(", ")}.`)
+    }
+    const created = this.store.create({
+      sessionId: request.sessionId,
+      message: request.message,
+      trigger: request.trigger,
+      author: "user",
+      seq: session.seq,
+      tainted: session.tainted,
+      ...(request.delivery === undefined ? {} : { delivery: request.delivery }),
+      ...(request.maxFirings === undefined ? {} : { maxFirings: request.maxFirings }),
+      ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
+      ...(request.minIntervalMs === undefined ? {} : { minIntervalMs: request.minIntervalMs }),
+      ...(check ? { run: request.run ?? SANDBOXED_OFFLINE, cwd: session.cwd } : {}),
+      ...(request.secret === undefined ? {} : { secret: request.secret }),
+    })
+    if (created.ok) this.changed()
+    return created
+  }
 
   changed = (): void => {
     this.scheduler?.poke()

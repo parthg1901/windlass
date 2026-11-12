@@ -970,6 +970,15 @@ client opened it meanwhile.
   redacted output.
 - *Taint.* A firing with a webhook's body, or the output of a check that had the network or no sandbox, is
   admitted with `untrusted`, and the user is told (`taint.noticed`) before the execution it starts.
+- *A wake-up the user creates.* `Engine.wake().create(request)` creates one for a session as the user (author
+  `user`): the trigger and limits as the module takes them, validated by the module with the bounds it gives a
+  user (`WAKE_LIMITS.user`, wider than the model's). What a client may not say the engine fills in: the
+  session's working directory for a check, whether the session holds untrusted content, and where in its log it
+  was. For a check the user chooses the access (`run`); without a choice it is the sandbox, offline. It is the
+  most the check ever runs with, narrowed when it runs like a model's. Refused with a sentence for the user: a
+  session that does not exist, is archived, is a subagent or a replay, or whose configuration turns wake-ups
+  off. The scheduler and the listener are told at once. Listing, cancelling and a webhook's secret are the
+  store's (`wake().store`).
 - *Configuration.* The store, scheduler and listener are one per process, so the user's own file configures them.
   A project's file tightens per session: it turns the tools off and lowers the model's limit of pending wake-ups.
   Its lower hourly ceiling is not applied.
