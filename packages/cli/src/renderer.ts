@@ -16,7 +16,7 @@ import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
-import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapWhole } from "./text.ts"
+import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapKeeping, wrapWhole } from "./text.ts"
 
 export interface Sink {
   event(event: EngineEvent): void
@@ -211,14 +211,26 @@ export class PrettyRenderer implements Sink {
     this.lastSeq = Math.max(this.lastSeq, events.at(-1)?.seq ?? 0)
   }
 
-  /** A line from the CLI itself: never cut, wrapped under itself when it does not fit. */
+  /** A line from the CLI itself: never cut, wrapped under itself when it does not fit; a path in it stays whole. */
   notice(text: string, tone: "info" | "warn" | "error" = "info"): void {
     const color = tone === "error" ? "red" : tone === "warn" ? "yellow" : "dim"
     const lead = text.slice(0, text.length - text.trimStart().length)
-    const [first = "", ...rest] = wrap(text, this.width)
-    this.line("info", [seg(first, color)])
-    for (const line of wrap(rest.join(" "), this.width - lead.length - 2)) this.line("info", [seg(`${lead}  ${line}`, color)])
+    const room = this.width - lead.length - 2
+    this.whole(flatten(text.trimStart()), room, (row, index) => this.line("info", [seg(`${lead}${index === 0 ? "" : "  "}${row}`, color)]), color)
     this.drawStatus()
+  }
+
+  /**
+   * Prose that leaves nothing out and cuts nothing: wrapped at words to
+   * `room` columns and written with `write`, row by row. A word wider than a
+   * row (a path) is a row of its own, written whole from the first column:
+   * the terminal's own wrap keeps it in one piece, to its last character.
+   */
+  private whole(text: string, room: number, write: (row: string, index: number) => void, tone?: Tone | readonly Tone[]): void {
+    wrapKeeping(text, Math.max(10, room)).forEach((row, index) => {
+      if (displayWidth(row) > Math.max(10, room)) this.uncut("info", row, tone)
+      else write(row, index)
+    })
   }
 
   /** Lines a command prints (`/mcp`, `/skills`, ...): never cut; a line that does not fit wraps under its own indentation. */
@@ -234,7 +246,8 @@ export class PrettyRenderer implements Sink {
         this.uncut("info", displayWidth(item.text) <= room ? `${indent}${item.text}` : item.text, tone)
         continue
       }
-      for (const text of item.verbatim === true ? hardWrap(sanitize(item.text), room) : wrapWhole(flatten(item.text), room)) this.line("info", [seg(`${indent}${text}`, tone)])
+      if (item.verbatim === true) for (const text of hardWrap(sanitize(item.text), room)) this.line("info", [seg(`${indent}${text}`, tone)])
+      else this.whole(flatten(item.text), room, (text) => this.line("info", [seg(`${indent}${text}`, tone)]), tone)
     }
     this.drawStatus()
   }
@@ -374,7 +387,7 @@ export class PrettyRenderer implements Sink {
         // What the engine says about a language server (still starting, crashed, waiting for approval) is for the
         // user to read once and nothing is wrong: a note, not a warning.
         if (event.kind === "lsp") {
-          wrapWhole(`language server: ${flatten(event.message)}`, this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.note} ` : "  ", "dim"), seg(line, "dim")]))
+          this.whole(`language server: ${flatten(event.message)}`, this.width - 2, (line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.note} ` : "  ", "dim"), seg(line, "dim")]), "dim")
           return
         }
         // Something is wrong with the harness itself, or with a hook. It is said in full: this is what a bug report quotes.
@@ -668,7 +681,8 @@ export class PrettyRenderer implements Sink {
         const more = requestId === null ? [] : [[seg(`  request ${requestId}`, "dim")]]
         // The reason a turn failed is never cut: it moves to its own wrapped lines when it does not fit.
         if (displayWidth(`✗ failed (${kind ?? ""}): ${message}`) <= this.width) this.summary([...head, seg(`: ${message}`, "red")], turn, more)
-        else this.summary(head, turn, [...wrap(message, this.width - 2).map((line) => [seg(`  ${line}`, "red")]), ...more])
+        // A path in it (the configuration file that could not be read) stays whole, on a row of its own.
+        else this.summary(head, turn, [...wrapKeeping(message, this.width - 2).map((line) => [seg(displayWidth(line) > this.width - 2 ? line : `  ${line}`, "red")]), ...more])
         return
       }
       case "execution.interrupted": {
@@ -1040,9 +1054,9 @@ export class PrettyRenderer implements Sink {
    */
   private headed(what: string, parts: readonly string[]): void {
     const [first = "", ...rest] = parts.map((part) => part.trim()).filter((part) => part !== "")
-    // In full: what the engine says may name a command or a path wider than the terminal, which is broken, never cut.
-    wrapWhole(`${what}: ${first}`.trimEnd(), this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.unknown} ` : "  ", "yellow"), seg(line, "yellow")]))
-    for (const part of rest) for (const line of wrapWhole(part, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+    // In full: what the engine says may name a path wider than the terminal, which gets a row of its own, whole.
+    this.whole(`${what}: ${first}`.trimEnd(), this.width - 2, (line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.unknown} ` : "  ", "yellow"), seg(line, "yellow")]), "yellow")
+    for (const part of rest) this.whole(part, this.width - 2, (line) => this.line("info", [seg(`  ${line}`, "yellow")]), "yellow")
   }
 
   /**
@@ -1185,7 +1199,12 @@ export class PrettyRenderer implements Sink {
   private summary(segments: readonly Segment[], turn: Turn | null, more: readonly (readonly Segment[])[] = []): void {
     this.endLine()
     this.line("summary", segments)
-    for (const line of more) this.line("summary", line)
+    for (const line of more) {
+      // A row that is one word wider than the terminal (a path) is written whole.
+      const text = line.map((part) => flatten(part.text)).join("")
+      if (displayWidth(text) > this.width) this.uncut("summary", text, line.findLast((part) => part.tone !== undefined)?.tone)
+      else this.line("summary", line)
+    }
     const usage = turn?.usage
     if (usage !== null && usage !== undefined) this.line("summary", [seg(`  ${usageText(usage, this.width - 2)}`, "dim")])
     // A run that went on without what it asked for says so where it ends, whatever the ending.

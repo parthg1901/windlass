@@ -132,11 +132,11 @@ describe("a project's hook", () => {
     const listed = flat(await mounted!.frame())
     expect(listed).toContain("Hooks (2):")
     expect(listed).toContain("no-push · waiting for your approval: not run")
-    expect(listed).toContain(`defined in this project's file, ${PROJECT_FILE}`)
+    expect(listed).toContain(`defined in this project's file: ${PROJECT_FILE}`)
     expect(listed).toContain("fmt · failed the last time it ran")
     expect(listed).toContain("applies to edit, write, for paths matching **/*.ts · at most 10 s")
     expect(listed).toContain("why: timed out after 10 s")
-    expect(listed).toContain(`defined in your file, ${USER_FILE}`)
+    expect(listed).toContain(`defined in your file: ${USER_FILE}`)
     // `/hooks approve` puts the question again.
     await command("/hooks approve no-push")
     expect(flat(await mounted!.frame())).toContain("[a] Allow it for this project")
@@ -175,7 +175,7 @@ describe("a project's language server", () => {
     expect(listed).toContain("python · failed: it is started again at a later edit")
     expect(listed).toContain("why: it could not be started: pyright-langserver was not found on PATH")
     expect(listed).toContain("serves **/*.py")
-    expect(listed).toContain(`defined in your file, ${USER_FILE}`)
+    expect(listed).toContain(`defined in your file: ${USER_FILE}`)
     expect(listed).toContain("typescript · running")
     expect(listed).toContain("serves **/*.ts, **/*.tsx")
     // The other name for the same listing.

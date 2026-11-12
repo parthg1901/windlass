@@ -39,6 +39,15 @@ export function shownCommand(argv: readonly string[] | null | undefined, joined:
 
 const line = (text: string, tone: LineTone = "plain", indent = 0): Line => ({ text, tone, indent })
 
+/** A path as a line of its own: whole, never cut or broken where it is shown. */
+export const pathLine = (path: string, tone: LineTone = "dim", indent = 0): Line => ({ text: path, tone, indent, path: true })
+
+/** Where something is defined: a few words, then the file on a line of its own. */
+export function definedInLines(origin: "user" | "project" | null, file: string | null, indent: number): Line[] {
+  if (file === null) return [line("defined in a configuration file", "dim", indent)]
+  return [line(origin === "project" ? "defined in this project's file:" : origin === "user" ? "defined in your file:" : "defined in:", "dim", indent), pathLine(file, "dim", indent + 2)]
+}
+
 const USER_FILE = `~/.config/${brand.directory}/config.json`
 const PROJECT_FILE = `.${brand.directory}/config.json`
 
@@ -64,11 +73,6 @@ export function mcpStateWords(server: McpServerInfo): string {
   }
 }
 
-function where(server: McpServerInfo): string {
-  if (server.file === null) return "defined in a configuration file"
-  return server.origin === "project" ? `defined in this project's file, ${server.file}` : `defined in your file, ${server.file}`
-}
-
 /** `/mcp`: every server with its state, its tools, what it runs and where it is defined. */
 export function mcpLines(state: McpStateResult): Line[] {
   if (!state.available) return [line(`This engine offers no MCP servers.`, "dim")]
@@ -82,7 +86,7 @@ export function mcpLines(state: McpStateResult): Line[] {
     const tone: LineTone = server.state === "running" ? "ok" : server.state === "failed" || server.state === "awaiting_approval" ? "warn" : "dim"
     lines.push(line(`${server.name} · ${mcpStateWords(server)}`, tone, 2))
     if (server.target !== null) lines.push(line(`${server.transport === "http" ? "reached at" : "runs"} ${shownCommand(server.argv, server.target)}`, "dim", 4))
-    lines.push(line(where(server), "dim", 4))
+    lines.push(...definedInLines(server.origin, server.file, 4))
     if (server.error !== null) lines.push(line(`why: ${server.error}`, "warn", 4))
     if (server.state === "awaiting_approval") lines.push(line(`/mcp approve ${server.name} starts it for this project (you are asked first).`, "dim", 4))
   }
@@ -95,7 +99,7 @@ export function mcpQuestionLines(server: McpServerInfo): Line[] {
   return [
     line(`? Start the MCP server "${server.name}" that this project's configuration names?`, "bold"),
     commandLine(shownCommand(server.argv, question?.subject ?? server.target ?? "")),
-    ...(server.file === null ? [] : [line(`defined in ${server.file}`, "dim", 2)]),
+    ...(server.file === null ? [] : definedInLines(null, server.file, 2)),
     ...(question?.details ?? []).map((detail) => line(detail, "dim", 2)),
     line("y  start it for this project and remember that (30 days, this exact definition: an edited one is asked about again)", "dim", 2),
     line(`n  not now: it stays stopped and the agent is told it waits for you; /mcp approve ${server.name} asks again`, "dim", 2),
@@ -128,7 +132,7 @@ export function skillsLines(result: SkillsResult): Line[] {
     lines.push(line(`Skills the model can load (${result.skills.length}):`, "bold"))
     for (const skill of result.skills) {
       lines.push(line(`${skill.name} · ${skill.description}`, "plain", 2))
-      lines.push(line(`from ${SCOPE_WORDS[skill.scope]}: ${skill.path}`, "dim", 4))
+      lines.push(line(`from ${SCOPE_WORDS[skill.scope]}:`, "dim", 4), pathLine(skill.path, "dim", 6))
     }
   }
   const shadowed = result.problems.filter((problem) => problem.severity === "shadowed")
@@ -136,14 +140,14 @@ export function skillsLines(result: SkillsResult): Line[] {
   if (shadowed.length > 0) {
     lines.push(line(`Hidden by a skill of the same name (${shadowed.length}):`, "bold"))
     for (const problem of shadowed) {
-      lines.push(line(problem.path, "dim", 2))
+      lines.push(pathLine(problem.path, "dim", 2))
       lines.push(line(problem.reason, "dim", 4))
     }
   }
   if (broken.length > 0) {
     lines.push(line(`Not loaded (${broken.length}): fix the file and the next message picks it up`, "warn"))
     for (const problem of broken) {
-      lines.push(line(problem.path, "warn", 2))
+      lines.push(pathLine(problem.path, "warn", 2))
       lines.push(line(`${problem.severity === "warning" ? "loaded, but: " : ""}${problem.reason}`, "dim", 4))
     }
   }

@@ -126,6 +126,33 @@ export function wrapWhole(text: string, width: number): string[] {
 }
 
 /**
+ * Prose as rows of `width`, wrapped at words, with nothing left out and no
+ * word broken: a word wider than a row (a path, an address) is a row of its
+ * own, whole, however wide. The caller writes such a row uncut, where the
+ * terminal's own wrap keeps it in one piece for reading and copying.
+ */
+export function wrapKeeping(text: string, width: number): string[] {
+  const room = Math.max(1, width)
+  const rows: string[] = []
+  let current = ""
+  for (const word of text.split(" ")) {
+    const next = current === "" ? word : `${current} ${word}`
+    if (displayWidth(next) <= room) {
+      current = next
+      continue
+    }
+    if (current.trim() !== "") rows.push(current.trimEnd())
+    current = word
+    if (displayWidth(word) > room) {
+      rows.push(word)
+      current = ""
+    }
+  }
+  if (current.trim() !== "" || rows.length === 0) rows.push(current.trimEnd())
+  return rows
+}
+
+/**
  * Preformatted text (a line of a diff, a command) as rows of `width`
  * columns: every character kept, nothing reflowed, a tab as four spaces. A
  * row that is cut continues on the next, from the very next character.

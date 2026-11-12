@@ -111,7 +111,7 @@ describe("MCP servers", () => {
     expect(run.code).toBe(0)
     expect(run.screen).toContain("runs outside the sandbox, with your permissions")
     expect(run.screen).toContain("start it for this project and remember that")
-    expect(run.screen).toContain(`defined in this project's file, ${join(cwd, `.${brand.directory}`, "config.json")}`)
+    expect(run.screen).toContain(`defined in this project's file: ${join(cwd, `.${brand.directory}`, "config.json")}`)
   })
 
   test("a server that cannot start is a notice with why", async () => {

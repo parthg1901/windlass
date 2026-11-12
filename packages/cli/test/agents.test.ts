@@ -71,7 +71,7 @@ describe("as a user types them", () => {
       await waitFor("Agents (this session runs as reviewer):")
       await waitFor("* reviewer  Reviews a change without editing anything.")
       await waitFor("Definitions with problems:")
-      await waitFor(/broken\.md: not loaded: .*description/)
+      await waitFor(/broken\.md\n\s+not loaded: .*description/)
       type("write note.txt\r")
       await waitFor("not run: the reviewer agent may not change files")
       await waitFor("I may not write as the reviewer.")

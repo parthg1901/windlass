@@ -6,7 +6,7 @@
  */
 import type { AgentsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
 import { type AgentRecord, type AgentRestrictions, type Json, describeRestrictions, restrictionTag } from "@windlass/core"
-import type { Line, LineTone } from "./features.ts"
+import { type Line, type LineTone, pathLine } from "./features.ts"
 import { plural } from "./text.ts"
 
 const line = (text: string, tone: LineTone = "plain", indent = 0): Line => ({ text, tone, indent })
@@ -56,7 +56,8 @@ export function agentLines(result: AgentsResult): Line[] {
     for (const agent of result.agents) {
       const marks = [agent.tag, agent.model === null ? null : `model ${agent.model}${agent.effort === null ? "" : ` ${agent.effort}`}`, agent.name === result.default ? "the default for new sessions" : null].filter((part) => part !== null)
       lines.push(line(`${agent.name === current ? "*" : " "} ${agent.name.padEnd(width)}  ${agent.description}`, agent.name === current ? "accent" : "plain", 2))
-      lines.push(line(`${marks.length === 0 ? "" : `${marks.join(" · ")} · `}${agent.path}`, "dim", 6))
+      if (marks.length > 0) lines.push(line(marks.join(" · "), "dim", 6))
+      lines.push(pathLine(agent.path, "dim", 6))
     }
     lines.push(line(current === null ? "/agent <name> switches to one" : "/agent <name> switches to another · /agent none switches it off", "dim"))
   }
@@ -72,7 +73,9 @@ export function agentProblemLines(result: Pick<AgentsResult, "problems" | "ignor
   if (result.problems.length > 0) lines.push(line("Definitions with problems:", "warn"))
   for (const problem of result.problems) {
     const what = problem.severity === "skipped" ? "not loaded" : problem.severity === "shadowed" ? "hidden by another agent of the same name" : "loaded, with a warning"
-    lines.push(line(`${problem.path}: ${what}: ${problem.reason}`, problem.severity === "skipped" ? "warn" : "dim", 2))
+    // The file on a line of its own, whole; then what is wrong with it.
+    lines.push(pathLine(problem.path, problem.severity === "skipped" ? "warn" : "dim", 2))
+    lines.push(line(`${what}: ${problem.reason}`, problem.severity === "skipped" ? "warn" : "dim", 4))
   }
   for (const ignored of result.ignored) lines.push(line(`not followed: ${ignored}`, "warn", 2))
   return lines

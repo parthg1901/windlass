@@ -11,7 +11,7 @@
  */
 import { type EventData, brand } from "@windlass/core"
 import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult } from "@windlass/acp/extensions"
-import { type Line, type LineTone, commandLine, shownCommand } from "./features.ts"
+import { type Line, type LineTone, commandLine, definedInLines, shownCommand } from "./features.ts"
 
 const line = (text: string, tone: LineTone = "plain", indent = 0): Line => ({ text, tone, indent })
 
@@ -23,11 +23,6 @@ export type DiagnosticsRecord = NonNullable<EventData<"tool.settled">["diagnosti
 
 const POINT_WORDS: Record<HookInfo["point"], string> = { beforeTool: "before a tool call", afterTool: "after a tool call", stop: "when a turn is about to end" }
 const POINT_HEADS: Record<HookInfo["point"], string> = { beforeTool: "Before a tool call", afterTool: "After a tool call", stop: "When a turn is about to end" }
-
-function definedIn(origin: "user" | "project" | null, file: string | null): string {
-  if (file === null) return "defined in a configuration file"
-  return origin === "project" ? `defined in this project's file, ${file}` : `defined in your file, ${file}`
-}
 
 // ---------------------------------------------------------------- /hooks
 
@@ -63,7 +58,7 @@ export function hooksLines(state: HooksStateResult): Line[] {
       lines.push(line(`runs ${hook.command.split("\n").join(" ⏎ ")}`, "dim", 6))
       const how = [hookApplies(hook), `at most ${hook.timeoutSeconds} s`, hook.sandbox ? null : "outside the sandbox (sandbox: false)", hook.point === "beforeTool" && hook.onError === "allow" ? "a call goes through when it cannot answer (onError: allow)" : null].filter((part) => part !== null)
       lines.push(line(how.join(" · "), "dim", 6))
-      lines.push(line(definedIn(hook.origin, hook.file), "dim", 6))
+      lines.push(...definedInLines(hook.origin, hook.file, 6))
       if (hook.error !== null) lines.push(line(`why: ${hook.error}${hook.point === "beforeTool" && hook.onError === "refuse" ? " (a call it applies to is refused while it cannot answer)" : ""}`, "warn", 6))
       if (hook.state === "awaiting_approval") lines.push(line(`/hooks approve ${hook.name} allows it for this project (you are asked first).`, "dim", 6))
     }
@@ -94,7 +89,7 @@ export function hookQuestionLines(hook: HookInfo): Line[] {
     line(`? ${question.title}:`, "bold"),
     ...question.command.split("\n").map((part) => commandLine(part)),
     ...question.details.map((detail) => line(detail, "dim", 2)),
-    ...(hook.file === null ? [] : [line(`defined in ${hook.file}`, "dim", 2)]),
+    ...(hook.file === null ? [] : definedInLines(null, hook.file, 2)),
     line(`y  ${HOOK_ALLOW}`, "dim", 2),
     line(`n  ${hookNotNow(hook)}`, "dim", 2),
   ]
@@ -150,7 +145,7 @@ export function lspLines(state: LspStateResult): Line[] {
     lines.push(line(`${server.name} · ${lspStateWords(server)}`, tone, 2))
     lines.push(line(`runs ${shownCommand(server.argv, server.command)}`, "dim", 4))
     lines.push(line(`serves ${servedFiles(server)}`, "dim", 4))
-    lines.push(line(definedIn(server.origin, server.file), "dim", 4))
+    lines.push(...definedInLines(server.origin, server.file, 4))
     if (server.error !== null) lines.push(line(`why: ${server.error}`, "warn", 4))
     if (server.processes.length > 1) for (const process of server.processes) lines.push(line(`${process.root} · ${process.state.replace(/_/g, " ")}${process.error === null ? "" : `: ${process.error}`}`, "dim", 6))
     if (server.state === "awaiting_approval") lines.push(line(`/lsp approve ${server.name} allows it for this project (you are asked first).`, "dim", 4))
@@ -168,7 +163,7 @@ export function lspQuestionLines(server: LspServerInfo): Line[] {
   return [
     line(`? ${lspQuestionTitle(server)}`, "bold"),
     commandLine(shownCommand(server.argv, question?.subject ?? server.command)),
-    ...(server.file === null ? [] : [line(`defined in ${server.file}`, "dim", 2)]),
+    ...(server.file === null ? [] : definedInLines(null, server.file, 2)),
     ...(question?.details ?? []).map((detail) => line(detail, "dim", 2)),
     line(`y  ${LSP_ALLOW}`, "dim", 2),
     line(`n  ${lspNotNow(server)}`, "dim", 2),

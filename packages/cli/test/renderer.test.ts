@@ -194,7 +194,9 @@ describe("width", () => {
       const out = render(events, { columns: () => columns, color: true })
       const lines = out.split("\n").map(stripAnsi)
       expect(lines).toContain(model)
-      for (const line of lines.filter((line) => line !== model)) expect(displayWidth(line), `${columns}: ${line}`).toBeLessThanOrEqual(columns)
+      // A row that is one word (a path) is the one thing never cut or broken: it is written whole, however wide.
+      for (const line of lines.filter((line) => line !== model && line.trim().includes(" "))) expect(displayWidth(line), `${columns}: ${line}`).toBeLessThanOrEqual(columns)
+      expect(lines).toContain(long)
       expect(out).toContain("…")
     }
   })

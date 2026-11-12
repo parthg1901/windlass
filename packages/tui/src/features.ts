@@ -15,9 +15,31 @@ const ROLES: Record<Line["tone"], Role | undefined> = { plain: undefined, dim: "
 
 /** Lines as a note: the first is its heading, the rest its detail, indented as the line CLI indents them. */
 export function noteOf(lines: readonly Line[]): { readonly head: Span[]; readonly detail: Span[][] } {
-  const [first, ...rest] = lines
+  const [first, ...rest] = inRows(lines)
   const spanOf = (line: Line, base = 0) => [span(`${" ".repeat(Math.max(0, (line.indent ?? 0) - base))}${line.text}`, ROLES[line.tone], line.tone === "bold" ? { bold: true } : undefined)]
   return { head: first === undefined ? [] : spanOf(first), detail: rest.map((line) => spanOf(line, 2)) }
+}
+
+/**
+ * The line CLI gives a path a line of its own, because it never cuts or
+ * breaks one; here a row wraps, so a path goes back beside what it belongs
+ * to: after the label before it (`defined in your file: /path`), or before
+ * what is said about it on the next line (`/path: not loaded: ...`).
+ */
+export function inRows(lines: readonly Line[]): Line[] {
+  const rows: Line[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
+    const before = rows.at(-1)
+    const after = lines[index + 1]
+    if (line.path !== true) rows.push(line)
+    else if (after !== undefined && after.path !== true && (after.indent ?? 0) > (line.indent ?? 0)) {
+      rows.push({ ...line, text: `${line.text}: ${after.text}`, path: false })
+      index += 1
+    } else if (before !== undefined && before.path !== true && before.text.endsWith(":") && (before.indent ?? 0) <= (line.indent ?? 0)) rows[rows.length - 1] = { ...before, text: `${before.text} ${line.text}` }
+    else rows.push(line)
+  }
+  return rows
 }
 
 /** The ID the dock knows a server's question by. */

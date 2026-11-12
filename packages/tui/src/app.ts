@@ -23,7 +23,7 @@ import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
 import { COPY_NOTE, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
-import { hookAsk, hookAskId, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
+import { hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
@@ -945,7 +945,7 @@ export class App {
           [span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(KEY_COLUMN), "accent"), span(spec.description)],
           [span("".padEnd(KEY_COLUMN)), span(`${COMMAND_SCOPE[spec.file!.scope]}${spec.file!.agent === null ? "" : ` · runs as the agent ${spec.file!.agent}`}: ${spec.file!.path}`, "dim")],
         ]),
-        ...(listing === null ? [] : commandProblemLines(listing).map((line) => [span(`${" ".repeat(line.indent ?? 0)}${line.text}`, line.tone === "warn" ? "warn" : "dim")])),
+        ...(listing === null ? [] : inRows(commandProblemLines(listing)).map((line) => [span(`${" ".repeat(line.indent ?? 0)}${line.text}`, line.tone === "warn" ? "warn" : "dim")])),
       ],
       items: [],
       filterable: false,
@@ -1372,7 +1372,7 @@ export class App {
       return this.say(`could not list the agents: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
     if (!listed.available) return this.say("this engine offers no agents", "warn")
-    const problems = agentProblemLines(listed)
+    const problems = inRows(agentProblemLines(listed))
     const named = rest.trim()
     if (named === "" && listed.agents.length === 0 && listed.current === null) {
       this.say("no agents are defined here: a definition is a Markdown file in .claude/agents (or your own agents directory) with a name, a description and what the agent may do")
