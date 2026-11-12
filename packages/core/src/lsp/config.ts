@@ -28,7 +28,7 @@
 import { createHash } from "node:crypto"
 import { ConfigError, mergeConfigFiles } from "../config/schema.ts"
 import type { Json } from "../json.ts"
-import { BASE_ENV } from "../mcp/config.ts"
+import { BASE_ENV, variableLines } from "../mcp/config.ts"
 import { DecodeError, type Validator, boolean, nonEmptyString, string } from "../validate.ts"
 import { NOTE_LIMITS } from "./note.ts"
 
@@ -285,7 +285,6 @@ export interface LspServerQuestion {
 
 export function lspServerQuestion(plan: LspServerPlan): LspServerQuestion {
   const server = plan.config
-  const named = Object.keys(server.env)
   const files = server.languages.flatMap((language) => language.patterns)
   return {
     name: server.name,
@@ -294,7 +293,7 @@ export function lspServerQuestion(plan: LspServerPlan): LspServerQuestion {
     subject: [server.command, ...server.args].join(" "),
     details: [
       `This project's configuration names the language server "${server.name}", started by running that command when the agent edits ${files.join(", ")}. It runs outside the sandbox, with your permissions.`,
-      ...(named.length === 0 ? [] : [`It is given these variables, with values from your environment where they name one: ${named.join(", ")}.`]),
+      ...variableLines(server.env, "env"),
       "Its diagnostics are added as a short note to the agent's edits. Approving it is remembered for this project for exactly this definition of the server.",
     ],
   }

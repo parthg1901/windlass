@@ -25,6 +25,7 @@
  * that names it, without affecting the others.
  */
 import { ConfigError } from "../config/schema.ts"
+import { isCredentialName } from "../sandbox/policy.ts"
 import { DecodeError, type Validator, boolean, nonEmptyString, oneOf, string } from "../validate.ts"
 import { editDistance } from "./schema.ts"
 
@@ -204,12 +205,57 @@ export function expandVariables(
   env: Readonly<Record<string, string | undefined>>,
 ): { readonly ok: true; readonly value: string } | { readonly ok: false; readonly missing: string } {
   let missing: string | null = null
-  const expanded = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
+  const expanded = value.replace(new RegExp(VARIABLE.source, VARIABLE.flags), (_, name: string) => {
     const found = env[name]
     if (found === undefined) missing ??= name
     return found ?? ""
   })
   return missing === null ? { ok: true, value: expanded } : { ok: false, missing }
+}
+
+/** `${NAME}` in a value: the user's variable `NAME`. */
+const VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g
+
+/**
+ * The user's variables that `${NAME}` in a server's `env` or `headers` values reads, in order of first appearance,
+ * each with the keys whose values it goes into. Values only: a key is the name the server sees, chosen by whoever
+ * wrote the definition.
+ */
+export function variablesRead(values: Readonly<Record<string, string>>): { readonly name: string; readonly into: readonly string[] }[] {
+  const read = new Map<string, string[]>()
+  for (const [key, value] of Object.entries(values))
+    for (const match of value.matchAll(new RegExp(VARIABLE.source, VARIABLE.flags))) {
+      const into = read.get(match[1]!) ?? []
+      if (!into.includes(key)) into.push(key)
+      read.set(match[1]!, into)
+    }
+  return [...read].map(([name, into]) => ({ name, into }))
+}
+
+/**
+ * The lines of an approval question that say what a server is given: the names it sees (`env` of a started
+ * server, `headers` of one reached by URL), every variable of the user's environment whose value goes into them,
+ * and which of those look like credentials (`isCredentialName`). Never a value. The language servers' question
+ * uses it too.
+ */
+export function variableLines(values: Readonly<Record<string, string>>, kind: "env" | "headers"): string[] {
+  const keys = Object.keys(values)
+  if (keys.length === 0) return []
+  const list = (items: readonly string[]) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`)
+  const given = kind === "env" ? `It is given these environment variables: ${keys.join(", ")}.` : `It is sent these headers: ${keys.join(", ")}.`
+  const read = variablesRead(values)
+  if (read.length === 0) return [given, "Their values are written in the configuration; none is taken from your environment."]
+  const lines = [given, `Values from your environment go into them: ${read.map((variable) => `${variable.name} into ${list(variable.into)}`).join("; ")}.`]
+  const credentials = read.map((variable) => variable.name).filter(isCredentialName)
+  if (credentials.length > 0) {
+    const where = kind === "env" ? "to this server" : "to this address"
+    lines.push(
+      credentials.length === 1
+        ? `${credentials[0]} looks like a credential: approving gives its value ${where}.`
+        : `${list(credentials)} look like credentials: approving gives their values ${where}.`,
+    )
+  }
+  return lines
 }
 
 /** The environment of a started server: the base variables that are set, then its own `env`, expanded. */
