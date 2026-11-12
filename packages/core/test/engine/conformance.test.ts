@@ -820,7 +820,7 @@ const PLAYS: Record<string, Play> = {
     const [first, , compaction, rebuilt] = h.provider.requests
     // The summary request is the step request of what is summarised (here everything, the new prompt included) plus one prompt.
     expect(compaction!.toolChoice).toBe("none")
-    expect(compaction!.input.slice(0, -1)).toEqual([...first!.input, { type: "assistant_text", text: "A long explanation.", providerData: null }, { type: "message", role: "user", content: [{ type: "text", text: say[1]! }] }])
+    expect(compaction!.input.slice(0, -1)).toMatchObject([...first!.input, { type: "assistant_text", text: "A long explanation." }, { type: "message", role: "user", content: [{ type: "text", text: say[1]! }] }])
     // The rebuilt request is the checkpoint alone; it quotes the prompt it replaced.
     expect(rebuilt!.input).toHaveLength(1)
     expect(JSON.stringify(rebuilt!.input)).toContain(say[1]!)

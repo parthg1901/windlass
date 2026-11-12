@@ -83,7 +83,17 @@
  *   reasoning item with no output item after it, so a message never ends in one.
  *
  * `providerData` of text and tool-call parts is replayed to the model that
- * produced it and sent as `null` to any other model.
+ * produced it. A part that has none to replay (text the harness flushed from
+ * a response that was cut short, any part shown to another model than the
+ * one that wrote it, the rejected answer in a compaction's repair request)
+ * is sent with an item ID the builder derives from the stored message and
+ * the part's position (`stableItemId`). The provider reads an assistant item
+ * from its prompt cache only when the item's ID is the one it was written
+ * with, and gives an item that comes without one a new ID on every request:
+ * measured on 2026-11-12, a 7,600-token request with one such message near
+ * its start was sent twice and read nothing from the cache; with a derived
+ * ID it read 7,424 tokens. One part without an ID would make everything
+ * after it uncacheable for the rest of the session.
  *
  * Failed assistant messages (provider failure, interruption, crash) keep what
  * they produced: text, tool calls and their results, with reasoning dropped.
@@ -95,10 +105,12 @@
  * Text that is empty or only whitespace says nothing and is never sent: such
  * text parts are skipped, and a message left with no content is skipped.
  */
+import { createHash } from "node:crypto"
 import { type Content, text } from "../content.ts"
 import type { MessageId } from "../id.ts"
 import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { AssistantMessage, Message, Projection } from "../message/message.ts"
+import type { Json } from "../json.ts"
 import type { InputItem, ModelRequest, RequestParams } from "./request.ts"
 
 /**
@@ -200,7 +212,9 @@ export function buildCompactionRequest(projection: Projection, options: CallOpti
   const request = buildRequest(older, { ...options, toolChoice: "none" })
   const developer = (value: string): InputItem => ({ type: "message", role: "developer", content: text(value) })
   const repair: InputItem[] =
-    compaction.repair === null ? [] : [{ type: "assistant_text", text: compaction.repair.answer, providerData: null }, developer(compaction.repair.prompt)]
+    compaction.repair === null
+      ? []
+      : [{ type: "assistant_text", text: compaction.repair.answer, providerData: { id: stableItemId("msg", compaction.id, 0) } }, developer(compaction.repair.prompt)]
   return { ...request, input: [...request.input, developer(compaction.prompt), ...repair] }
 }
 
@@ -257,7 +271,7 @@ function renderAssistant(message: AssistantMessage, model: string): InputItem[] 
     switch (part.type) {
       case "text":
         if (blank(part.text)) return []
-        return [{ type: "assistant_text", text: part.text, providerData: sameModel ? part.providerData : null }]
+        return [{ type: "assistant_text", text: part.text, providerData: replayed(sameModel ? part.providerData : null, "msg", message.id, index) }]
       case "reasoning":
         if (message.status !== "completed" || !sameModel || part.providerData === null || index > lastOutput) return []
         return [{ type: "reasoning", text: part.text, providerData: part.providerData }]
@@ -268,7 +282,7 @@ function renderAssistant(message: AssistantMessage, model: string): InputItem[] 
             callId: part.callId,
             name: part.name,
             input: part.input,
-            providerData: sameModel ? part.providerData : null,
+            providerData: replayed(sameModel ? part.providerData : null, "fc", message.id, index),
           },
         ]
     }
@@ -283,6 +297,21 @@ function renderAssistant(message: AssistantMessage, model: string): InputItem[] 
     return [{ type: "tool_result", callId: part.callId, output: part.state.output, attachments: part.state.attachments }]
   })
   return [...output, ...results]
+}
+
+/**
+ * The item ID an assistant part is sent with when the provider gave none to
+ * replay: the same for the same part of the same stored message in every
+ * request, in this process or another, so the provider's prompt cache reads
+ * the item again. `kind` is the provider's own prefix for the item type.
+ */
+export function stableItemId(kind: "msg" | "fc", messageId: MessageId, part: number): string {
+  return `${kind}_${createHash("sha256").update(`${messageId}\u0000${part}`, "utf8").digest("hex").slice(0, 48)}`
+}
+
+/** What a part is replayed with: the provider's own data when there is some, else a stable item ID. */
+function replayed(providerData: Json | null, kind: "msg" | "fc", messageId: MessageId, part: number): Json {
+  return providerData ?? { id: stableItemId(kind, messageId, part) }
 }
 
 /**

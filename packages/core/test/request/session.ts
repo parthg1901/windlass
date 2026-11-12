@@ -140,8 +140,15 @@ export class Script {
     return buildRequest(this.projection, options)
   }
 
+  /**
+   * The input of the next request, for comparing with what a test expects.
+   * A part the provider gave nothing to replay for is sent with an item ID
+   * the builder derives from the message (`stableItemId`); that ID is shown
+   * here as `null`, which is how the tests write such a part. `request()`
+   * has the real thing.
+   */
   input(options: BuildOptions = OPTIONS): readonly InputItem[] {
-    return this.request(options).input
+    return this.request(options).input.map(withoutDerivedId)
   }
 
   hashes(options: BuildOptions = OPTIONS): BlockHash[] {
@@ -360,6 +367,15 @@ export const user = (value: string): InputItem => ({ type: "message", role: "use
 export const developer = (value: string): InputItem => ({ type: "message", role: "developer", content: text(value) })
 export const harness = (origin: string, value: string): InputItem =>
   user(`<harness origin="${origin}">\n${value}\n</harness>`)
+/** An assistant item as the tests expect it: a derived item ID (see `Script.input`) is `null`. */
+export function withoutDerivedId(item: InputItem): InputItem {
+  if (item.type !== "assistant_text" && item.type !== "tool_call") return item
+  const data = item.providerData
+  const id = data !== null && typeof data === "object" && !Array.isArray(data) && Object.keys(data).length === 1 ? (data as { readonly [key: string]: Json }).id : undefined
+  const derived = typeof id === "string" && /^(msg|fc)_[0-9a-f]{48}$/.test(id)
+  return derived ? { ...item, providerData: null } : item
+}
+
 export const said = (value: string, providerData: Json | null = null): InputItem => ({
   type: "assistant_text",
   text: value,

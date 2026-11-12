@@ -6,6 +6,7 @@ import type { MessageId, SessionId } from "../../src/id.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import type { AssistantMessage, Projection } from "../../src/message/message.ts"
 import { reduce } from "../../src/message/reducer.ts"
+import { encodeRequest } from "../../src/provider/openai-responses-encode.ts"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import {
   RequestBuildError,
@@ -14,6 +15,7 @@ import {
   buildRequestFromHistory,
   renderMessage,
   requestParams,
+  stableItemId,
 } from "../../src/request/build.ts"
 import { canonicalJson } from "../../src/request/canonical.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
@@ -38,6 +40,7 @@ import {
   said,
   thought,
   user,
+  withoutDerivedId,
 } from "./session.ts"
 
 const IMAGE = { hash: "ab".repeat(32), mediaType: "image/png" }
@@ -575,7 +578,8 @@ describe("compaction", () => {
     s.apply(event("compaction.repair_requested", { messageId: "cmp_x" as MessageId, attempt: 2, answer: "## Goal\n- x", prompt: "Fix the form." }))
     const second = buildCompactionRequest(s.projection)
     expect(comparePrefix(hashRequest(first), hashRequest(second))).toEqual({ extension: true, appended: 2 })
-    expect(second.input.slice(-2)).toEqual([{ type: "assistant_text", text: "## Goal\n- x", providerData: null }, developer("Fix the form.")])
+    // The rejected answer is the model's own text, replayed under an item ID that stays the same.
+    expect(second.input.slice(-2)).toEqual([{ type: "assistant_text", text: "## Goal\n- x", providerData: { id: stableItemId("msg", "cmp_x" as MessageId, 0) } }, developer("Fix the form.")])
     // Named, as the trace exporter does: it must be the one that is open.
     expect(buildCompactionRequest(s.projection, {}, "cmp_x" as MessageId)).toEqual(second)
     expect(() => buildCompactionRequest(s.projection, {}, "cmp_other" as MessageId)).toThrow("compaction cmp_other is not open")
@@ -591,7 +595,52 @@ describe("compaction", () => {
     s.compact((seq) => seq, "first summary")
     s.step({ parts: [{ text: "Two." }] })
     s.apply(started("cmp_y", s.seq + 1))
-    expect(buildCompactionRequest(s.projection).input).toEqual([harness("compaction", "first summary"), { type: "assistant_text", text: "Two.", providerData: null }, developer(COMPACTION_PROMPT)])
+    expect(buildCompactionRequest(s.projection).input.map(withoutDerivedId)).toEqual([harness("compaction", "first summary"), said("Two."), developer(COMPACTION_PROMPT)])
+  })
+})
+
+describe("item IDs of parts the provider gave nothing to replay for", () => {
+  test("text and calls stored without provider data are sent with an ID derived from the message and the part's position", () => {
+    const s = prompted()
+    s.step({ parts: [{ text: "Reading." }, { call: "call_1" }, { call: "call_2" }] })
+    const messageId = s.projection.messages.at(-1)!.id
+    const items = s.request().input.filter((item) => item.type === "assistant_text" || item.type === "tool_call")
+    expect(items.map((item) => item.providerData)).toEqual([{ id: stableItemId("msg", messageId, 0) }, { id: stableItemId("fc", messageId, 1) }, { id: stableItemId("fc", messageId, 2) }])
+    // The provider's own prefixes, 48 hex digits, and no two alike.
+    const ids = items.map((item) => (item.providerData as { id: string }).id)
+    expect(ids[0]).toMatch(/^msg_[0-9a-f]{48}$/)
+    expect(ids[1]).toMatch(/^fc_[0-9a-f]{48}$/)
+    expect(new Set(ids).size).toBe(3)
+  })
+
+  test("the ID is the same in every later request, which is what lets the provider read the item from its cache", () => {
+    const s = prompted()
+    s.step({ parts: [{ text: "One." }] })
+    const before = s.hashes()
+    s.user("more")
+    s.step({ parts: [{ text: "Two." }] })
+    expect(comparePrefix(before, s.hashes())).toMatchObject({ extension: true })
+    // Built again from the same state: the same bytes.
+    expect(canonicalJson(s.request())).toBe(canonicalJson(s.request()))
+  })
+
+  test("what the provider attached is replayed as it is; another model is given a derived ID, never the first model's data", () => {
+    const s = prompted()
+    s.step({ parts: [{ text: "One.", providerData: { id: "msg_real", phase: "final_answer" } }, { call: "call_1", providerData: { id: "fc_real" } }] })
+    const messageId = s.projection.messages.at(-1)!.id
+    const output = (model: string) =>
+      buildRequest({ ...s.projection, session: { ...s.projection.session, settings: { ...SETTINGS, model } } }, OPTIONS).input.flatMap((item) => (item.type === "assistant_text" || item.type === "tool_call" ? [item.providerData] : []))
+    expect(output(MODEL)).toEqual([{ id: "msg_real", phase: "final_answer" }, { id: "fc_real" }])
+    expect(output("gpt-other")).toEqual([{ id: stableItemId("msg", messageId, 0) }, { id: stableItemId("fc", messageId, 1) }])
+  })
+
+  test("on the wire they are the item's id", () => {
+    const s = prompted()
+    s.step({ parts: [{ text: "Reading." }, { call: "call_1" }] })
+    const messageId = s.projection.messages.at(-1)!.id
+    const body = JSON.parse(encodeRequest(s.request(), new Map()).body) as { input: { type: string; id?: string }[] }
+    expect(body.input.filter((item) => item.type === "message" && item.id !== undefined).map((item) => item.id)).toEqual([stableItemId("msg", messageId, 0)])
+    expect(body.input.filter((item) => item.type === "function_call").map((item) => item.id)).toEqual([stableItemId("fc", messageId, 1)])
   })
 })
 
@@ -682,7 +731,8 @@ describe("the builder as a function", () => {
     s.user("carry on")
     s.step({ parts: [{ text: "Fixed." }] })
     s.release()
-    expect(requestBlocks(s.request())).toEqual([
+    const blocks = requestBlocks(s.request()).map((block) => (block.kind === "input" ? { ...block, item: withoutDerivedId(block.item) } : block))
+    expect(blocks).toEqual([
       { kind: "params", params: PARAMS },
       { kind: "tool", tool: READ },
       { kind: "tool", tool: SHELL },

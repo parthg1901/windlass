@@ -215,7 +215,8 @@ const EXPECTED: Record<string, readonly string[]> = {
     "  tokens · 1,000 in · 800 cached (80%) · 50 out (10 reasoning)",
   ],
   "a-summary-that-is-still-invalid-the-checkpoint-is-built-without-the-model": [
-    "› Fix the failing test.",
+    "› Find out why the add test fails, fix what is wrong, and tell me what you",
+    "  changed and why.",
     "",
     "▸ read a.test.ts",
     "  ✓ 1 line · 100ms",
