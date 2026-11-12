@@ -6,6 +6,8 @@
  * Every type here is declared as a validator, because projection rows are
  * also read back from SQLite JSON.
  */
+import { grant } from "../approval/grants.ts"
+import { choiceId, storedNeed, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
 import { blobRef, content } from "../content.ts"
 import {
   compactionMode,
@@ -37,6 +39,7 @@ import {
   nullable,
   object,
   oneOf,
+  optional,
   string,
   variant,
 } from "../validate.ts"
@@ -104,6 +107,27 @@ export function hasSideEffect(effect: ToolEffect): boolean {
   return effect !== "read"
 }
 
+/**
+ * What the approval layer did with a call that did not simply run.
+ * - `asked`: the user was asked (`approval.requested`); `answer` is `null`
+ *   while the question is pending, then what they chose. The call starts only
+ *   after an approving answer.
+ * - `denied`: refused without a question, by the policy or because nobody was
+ *   present to answer.
+ */
+export const callApproval = variant("kind", {
+  asked: object({
+    kind: literal("asked"),
+    seq: integer(1),
+    question: storedQuestion,
+    needs: array(storedNeed),
+    then: storedRunDecision,
+    answer: nullable(object({ seq: integer(1), choice: choiceId, approve: boolean, note: nullable(string) })),
+  }),
+  denied: object({ kind: literal("denied"), seq: integer(1), reason: oneOf(["policy", "unattended"]), stop: boolean }),
+})
+export type CallApproval = Infer<typeof callApproval>
+
 /** One piece of an assistant message, in the order the model produced it. */
 export const assistantPart = variant("type", {
   text: object({ type: literal("text"), text: string, providerData: nullable(json) }),
@@ -116,6 +140,8 @@ export const assistantPart = variant("type", {
     input: string,
     providerData: nullable(json),
     state: toolCallState,
+    /** Set when the call was asked about or denied; absent for a call that simply ran. */
+    approval: optional(callApproval),
   }),
 })
 export type AssistantPart = Infer<typeof assistantPart>
@@ -368,6 +394,22 @@ export const sessionState = object({
       before: nullable(snapshotId),
       after: nullable(snapshotId),
       excluded: array(integer(1)),
+    }),
+  ),
+  /**
+   * What the approval layer keeps for the session; absent until it records
+   * something.
+   * - `grants`: the approvals remembered for this session, oldest first, each
+   *   with the `seq` of the answer that created it. Never reverted: an
+   *   approval the user gave stays given. A fork starts with none.
+   * - `taint`: set by `taint.noticed` (where, from what, and the sentence the
+   *   user was shown) and cleared by `taint.cleared`. It is what a client
+   *   shows; the decisions derive taint from the log itself. A fork inherits it.
+   */
+  approval: optional(
+    object({
+      grants: array(grant),
+      taint: nullable(object({ seq: integer(1), source: storedTaintSource, text: string })),
     }),
   ),
 })

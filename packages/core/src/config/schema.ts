@@ -14,6 +14,7 @@
  * it impossible for a project to drop a user-level check, and would make the
  * order and name uniqueness of checks depend on two files at once.
  */
+import { approvalSection } from "../approval/policy.ts"
 import { DecodeError, type Infer, type Validator, integer, nonEmptyString, oneOf, string } from "../validate.ts"
 
 /** A configuration error, always naming the file and the path of the bad value. */
@@ -112,6 +113,12 @@ export const configFile = section({
   effort: nonEmptyString,
   checks,
   verify: section({ mode: verifyMode, maxRounds: boundedInteger(1, MAX_VERIFY_ROUNDS) }),
+  /**
+   * The approval policy (`approval/policy.ts`). Never merged like the other
+   * keys: the project's section can only tighten the user's, so `load.ts`
+   * hands both to `resolveApprovalConfig` and `resolveConfig` leaves it out.
+   */
+  approval: approvalSection,
 })
 export type ConfigFile = Infer<typeof configFile>
 

@@ -17,6 +17,7 @@ import type { NewEvent, SessionSettings, StoredEvent } from "../../src/event/dur
 import type { EngineEvent } from "../../src/engine/channel.ts"
 import type { Clock } from "../../src/engine/clock.ts"
 import type { CompactionConfig } from "../../src/context/policy.ts"
+import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { EngineLimits } from "../../src/engine/constants.ts"
 import {
   type Diagnostic,
@@ -327,6 +328,13 @@ export interface HarnessOptions {
   readonly contextWindow?: number
   /** The compaction policy's numbers, where a test needs others than the defaults. */
   readonly compaction?: Partial<CompactionConfig>
+  /**
+   * The approval layer. Without one it is off, as in every scenario that is
+   * not about it: each call runs as it is and nothing about approval is recorded.
+   */
+  readonly approval?: ApprovalSetup
+  /** Whether a person is there to answer questions, for the sessions this harness creates and opens. Default: nobody. */
+  readonly attended?: boolean
 }
 
 export class Harness {
@@ -386,6 +394,7 @@ export class Harness {
       ...(this.options.contextWindow === undefined ? {} : { contextWindow: () => this.options.contextWindow! }),
       ...(this.options.compaction === undefined ? {} : { compaction: this.options.compaction }),
       snapshots: this.workspace === null ? null : this.workspace.open,
+      approval: this.options.approval ?? null,
       loadConfig: this.options.config === undefined ? null : async () => ({ config: this.config ?? resolveConfig({}), projectDir: "/repo" }),
       runChecks: this.checks.run,
       prompt: "You are a coding agent.",
@@ -442,6 +451,7 @@ export class Harness {
 
   private adopt(session: EngineSession): EngineSession {
     this.session = session
+    if (this.options.attended === true) session.setAttended(true)
     session.subscribe((item) => {
       this.seenEvents.push(item)
       const ready = this.waiters.filter((waiter) => waiter.predicate(item))

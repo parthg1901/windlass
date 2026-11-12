@@ -70,7 +70,7 @@ function start(data: string, responses: readonly ScriptedResponse[], more: Param
     provider,
     log: (line) => logged.push(line),
     ...more,
-    engine: { loadConfig: null, discover: () => [], ...more.engine },
+    engine: { approval: null, loadConfig: null, discover: () => [], ...more.engine },
   })
   open.push(harness)
   return { harness, provider, logged }
@@ -166,7 +166,7 @@ describe("closing a session", () => {
 describe("listing and reading", () => {
   test("list by directory, find the latest, resolve a prefix and read any session's log, without opening or closing anything", async () => {
     const { data, workspace } = place()
-    const { harness } = start(data, [say("One."), say("Two."), say("Three.")], { engine: { ids: { session: counter("ses_ab", "ses_ac", "ses_b") } } })
+    const { harness } = start(data, [say("One."), say("Two."), say("Three.")], { engine: { approval: null, ids: { session: counter("ses_ab", "ses_ac", "ses_b") } } })
     const engine = harness.engine
     const here = workspace("here")
     const there = workspace("there")
@@ -350,7 +350,7 @@ describe("instruction files in directories the agent starts working in", () => {
     mkdirSync(join(repo, ".git"))
     // The default discovery: the real files, read from the real directories.
     const { harness, provider } = start(data, [[call("read", { path: "packages/api/handler.ts" })], say("It returns 200."), [call("ls", { path: "packages/api" })], [call("write", { path: "packages/web/new.ts", content: "export {}\n" })], say("Done.")], {
-      engine: { discover: undefined, snapshots: null },
+      engine: { approval: null, discover: undefined, snapshots: null },
     })
     const session = harness.engine.createSession({ cwd: repo, settings: SETTINGS })
     session.send("What does the handler return?")
@@ -407,7 +407,7 @@ describe("checks whose last pass still stands", () => {
         write("docs/readme.md", "Documented better.\n"),
         say("Improved."),
       ],
-      { engine: { loadConfig: async () => ({ config, projectDir: project }) } },
+      { engine: { approval: null, loadConfig: async () => ({ config, projectDir: project }) } },
     )
     const session = harness.engine.createSession({ cwd: project, settings: SETTINGS })
     session.send("Change both.")
@@ -451,7 +451,7 @@ describe("snapshot retention", () => {
     const { data, workspace } = place()
     const directory = workspace("project")
     const responses = [1, 2, 3].flatMap((turn) => [write(`step-a.txt`, `turn ${turn} a\n`), write(`step-b.txt`, `turn ${turn} b\n`), say(`Turn ${turn} done.`)])
-    const started = start(data, responses, { engine: { limits } })
+    const started = start(data, responses, { engine: { approval: null, limits } })
     const session = started.harness.engine.createSession({ cwd: directory, settings: SETTINGS })
     for (const turn of [1, 2, 3]) {
       session.send(`Turn ${turn}.`)

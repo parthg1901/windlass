@@ -161,6 +161,12 @@ export interface ToolResult {
 export interface Tool<Input = Json> extends ToolSpec {
   readonly effect: ToolEffect
   /**
+   * Where the tool comes from. `mcp`: an MCP server provides it, so it runs
+   * outside the sandbox and its declared effect is not trusted: approval
+   * asks about it by name and its results taint the session. Absent: built in.
+   */
+  readonly origin?: "builtin" | "mcp"
+  /**
    * Runs the tool. Expected failures are returned as `status: "error"`. A
    * thrown exception is a bug in the tool; the runtime settles the call as
    * `error`, or as `effect_unknown` when `effect` is not `read`.

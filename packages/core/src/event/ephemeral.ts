@@ -58,6 +58,19 @@ export type EphemeralEvent =
       readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed"
       readonly message: string
     }
+  /**
+   * Something about how the session's tools run that the user should read
+   * once: the sandbox is unavailable on this machine (and why, and what
+   * would fix it), a project file asked for a looser approval policy than
+   * the user's and was not followed, the project's checks were not run
+   * because they could not be sandboxed.
+   */
+  | {
+      readonly type: "notice"
+      readonly sessionId: SessionId
+      readonly kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run"
+      readonly message: string
+    }
 
 export type EphemeralEventType = EphemeralEvent["type"]
 

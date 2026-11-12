@@ -136,7 +136,7 @@ describe("two processes working at once", () => {
     // Every snapshot either log names is in the shared private git directory, under that session's own refs.
     const snapshots = await openSnapshots(shared, { dataDir: join(data, "snapshots") })
     if (snapshots.kind !== "ready") throw new Error("no snapshots")
-    const harness = createHarness({ dataDir: data, provider: new FakeProvider([]), log: () => {}, engine: { loadConfig: null, discover: () => [] } })
+    const harness = createHarness({ dataDir: data, provider: new FakeProvider([]), log: () => {}, engine: { approval: null, loadConfig: null, discover: () => [] } })
     try {
       for (const id of ids) {
         const named = harness.engine.readEvents(id).flatMap((item) => (item.type === "snapshot.taken" ? [item.data.id] : []))

@@ -122,6 +122,8 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     compaction: null,
     // A fork starts untracked too: its snapshots, verification and undo history are its own.
     ...INITIAL_TRACKING,
+    // It starts with no approvals of its own, and with its parent's taint: the content came with the history.
+    ...(event.data.lineage !== null && state?.session.approval?.taint != null ? { approval: { grants: [], taint: state.session.approval.taint } } : {}),
   }
   const lineage = event.data.lineage
   if (lineage === null) {
@@ -205,6 +207,12 @@ const SCOPE = {
   "revert.undo_started": "work",
   "history.restored": "work",
   "revert.failed": "work",
+  "approval.requested": "work",
+  "approval.answered": "work",
+  "approval.denied": "work",
+  // Facts about the conversation, whatever the execution is doing: a result that settles during a wind-down still taints.
+  "taint.noticed": "session",
+  "taint.cleared": "session",
 } as const satisfies Record<AppliedEvent["type"], "session" | "wind_down" | "work">
 
 function apply(state: Projection, event: AppliedEvent): Projection {
@@ -681,8 +689,59 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       return call(event.data.messageId, event.data.callId, (part) => {
         if (part.state.status !== "pending")
           fail("invalid_transition", `tool call ${part.callId} is ${part.state.status}, not pending`)
+        // A call the user was asked about runs only once they approved; a denied one never runs.
+        if (part.approval?.kind === "denied") fail("invalid_transition", `tool call ${part.callId} was denied`)
+        if (part.approval?.kind === "asked" && part.approval.answer?.approve !== true)
+          fail("invalid_transition", `tool call ${part.callId} ${part.approval.answer === null ? "waits for the user's answer" : "was declined by the user"}`)
         return { ...part, state: { status: "running", effect: event.data.effect } }
       })
+    case "approval.requested":
+      return call(event.data.messageId, event.data.callId, (part) => {
+        if (part.state.status !== "pending") fail("invalid_transition", `tool call ${part.callId} is ${part.state.status}: a question comes before it starts`)
+        if (part.approval !== undefined) fail("invalid_transition", `tool call ${part.callId} was already ${part.approval.kind}`)
+        if (!event.data.question.choices.some((choice) => !choice.approve)) fail("invalid_transition", "a question always offers a way to decline")
+        return { ...part, approval: { kind: "asked", seq: event.seq, question: event.data.question, needs: event.data.needs, then: event.data.then, answer: null } }
+      })
+    case "approval.answered": {
+      const answered = call(event.data.messageId, event.data.callId, (part) => {
+        const asked = part.approval
+        if (part.state.status !== "pending" || asked?.kind !== "asked") return fail("invalid_transition", `tool call ${part.callId} was not asked about`)
+        if (asked.answer !== null) fail("invalid_transition", `the question about tool call ${part.callId} was already answered`)
+        const chosen = asked.question.choices.find((choice) => choice.id === event.data.choice)
+        if (chosen === undefined) return fail("invalid_transition", `the question about tool call ${part.callId} offers no choice ${event.data.choice}`)
+        if (chosen.approve !== event.data.approve) fail("invalid_transition", `choice ${chosen.id} ${chosen.approve ? "approves" : "declines"}`)
+        // What is remembered is exactly what the choice said it would remember, given here and now.
+        const offered = chosen.grants.map((template) => JSON.stringify([template.scope, template.rule]))
+        const stored = event.data.grants.map((item) => JSON.stringify([item.scope, item.rule]))
+        if (offered.length !== stored.length || offered.some((entry, index) => entry !== stored[index]))
+          fail("invalid_transition", `choice ${chosen.id} remembers ${chosen.remembers ?? "nothing"}, and the answer must record exactly that`)
+        if (event.data.grants.some((item) => item.scope === "session" && item.at !== event.seq))
+          fail("invalid_transition", "a session approval is stamped with the position of the answer that gave it")
+        return { ...part, approval: { ...asked, answer: { seq: event.seq, choice: event.data.choice, approve: event.data.approve, note: event.data.note } } }
+      })
+      const session = event.data.grants.filter((item) => item.scope === "session")
+      if (session.length === 0) return answered
+      const approval = answered.session.approval ?? { grants: [], taint: null }
+      return { ...answered, session: { ...answered.session, approval: { ...approval, grants: [...approval.grants, ...session] } } }
+    }
+    case "approval.denied":
+      return call(event.data.messageId, event.data.callId, (part) => {
+        if (part.state.status !== "pending") fail("invalid_transition", `tool call ${part.callId} is ${part.state.status}: it is denied before it starts`)
+        if (part.approval !== undefined) fail("invalid_transition", `tool call ${part.callId} was already ${part.approval.kind}`)
+        if (event.data.stop && event.data.reason !== "unattended") fail("invalid_transition", "only a call nobody could approve ends the run")
+        return { ...part, approval: { kind: "denied", seq: event.seq, reason: event.data.reason, stop: event.data.stop } }
+      })
+    case "taint.noticed": {
+      const approval = state.session.approval ?? { grants: [], taint: null }
+      if (approval.taint !== null) fail("invalid_transition", "the session is already tainted: the user is told once")
+      if (event.data.source.at > state.lastSeq) fail("invalid_range", "the source of the taint is a result already in the log")
+      return session({ approval: { ...approval, taint: { seq: event.seq, source: event.data.source, text: event.data.text } } })
+    }
+    case "taint.cleared": {
+      const approval = state.session.approval
+      if (approval === undefined || approval.taint === null) return fail("invalid_transition", "the session is not tainted")
+      return session({ approval: { ...approval, taint: null } })
+    }
     case "tool.settled":
       return call(event.data.messageId, event.data.callId, (part) => {
         if (!settleOutcomes(part.state).includes(event.data.outcome))

@@ -150,6 +150,8 @@ export const FAILURE_TEXT = {
   stepLimitIgnored: "The step limit was reached and the model kept asking for tools.",
   config: (problem: string) => `The configuration could not be loaded: ${problem}`,
   internal: (message: string) => `The harness failed: ${message}`,
+  /** The run was ended because a call needed approval and nobody was there (`unattended: "stop"`). `refusal` is what the model was told. */
+  approvalStop: (refusal: string) => `Stopped: a tool call needed your approval and nobody was there to give it. ${refusal}`,
 } as const
 
 /** The first few problems of a summary, for a person: the rest are counted. */

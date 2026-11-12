@@ -432,6 +432,7 @@ describe("with the real snapshot module and the real tools", () => {
     const provider = new FakeProvider()
     const diagnostics: string[] = []
     const engine: Engine = createEngine({
+      approval: null,
       store,
       provider,
       tools: createStandardTools({ spillDir: join(root, "spill") }),

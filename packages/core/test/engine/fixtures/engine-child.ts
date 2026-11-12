@@ -58,6 +58,7 @@ if (responses === undefined) throw new Error(`no script named ${name}`)
 const store = openSqliteStore({ path: database })
 let reached = 0
 const engine = createEngine({
+      approval: null,
   store,
   provider: new FakeProvider(responses),
   tools: createStandardTools({ spillDir: join(workspace, ".spill") }),

@@ -252,7 +252,7 @@ describe("sessions", () => {
 describe("settings are checked against the models the provider offers", () => {
   const engineWith = (listModels: (() => Promise<readonly string[]>) | undefined) => {
     const store = openSqliteStore({ path: ":memory:" })
-    const engine = createEngine({ store, provider: new FakeProvider(), tools: [], dataDir: "/nonexistent", snapshots: null, loadConfig: null, ...(listModels === undefined ? {} : { listModels }) })
+    const engine = createEngine({ approval: null,  store, provider: new FakeProvider(), tools: [], dataDir: "/nonexistent", snapshots: null, loadConfig: null, ...(listModels === undefined ? {} : { listModels }) })
     return { engine, store }
   }
 

@@ -16,6 +16,7 @@
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import type { ApprovalSection } from "../approval/policy.ts"
 import { brand } from "../brand.ts"
 import { type Config, ConfigError, type ConfigFile, mergeConfigFiles, parseConfigFile, resolveConfig } from "./schema.ts"
 
@@ -32,6 +33,11 @@ export interface LoadedConfig extends ConfigLocations {
   readonly config: Config
   /** The files that existed and were read, user first. */
   readonly sources: readonly string[]
+  /**
+   * The `approval` section of each file as written, apart: the project's may
+   * only tighten the user's (`resolveApprovalConfig`), so they are not merged here.
+   */
+  readonly approval: { readonly user: ApprovalSection | null; readonly project: ApprovalSection | null }
 }
 
 export interface LoadOptions {
@@ -51,6 +57,7 @@ export async function loadConfig(options: LoadOptions): Promise<LoadedConfig> {
     ...locations,
     config: resolveConfig(mergeConfigFiles(user, project)),
     sources: [user === null ? null : locations.userFile, project === null ? null : locations.projectFile].filter((file) => file !== null),
+    approval: { user: user?.approval ?? null, project: project?.approval ?? null },
   }
 }
 

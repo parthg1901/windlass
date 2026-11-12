@@ -23,6 +23,9 @@
  * decoder for the old version, and converting old to new in `decodeEvent`.
  * Adding a value to an enum or adding a new event type needs no version bump.
  */
+import { grant } from "../approval/grants.ts"
+import { approvalMode } from "../approval/policy.ts"
+import { callRun, choiceId, storedEscalation, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
 import { blobRef, content } from "../content.ts"
 import { callId, executionId, messageId, sessionId, type SessionId } from "../id.ts"
 import { interruptReason } from "../interrupt.ts"
@@ -38,10 +41,12 @@ import {
   integer,
   json,
   literal,
+  boolean,
   nonEmptyString,
   nullable,
   object,
   oneOf,
+  optional,
   string,
   variant,
 } from "../validate.ts"
@@ -350,8 +355,13 @@ export const durableEvents = {
    * were left unresolved and why.
    */
   "execution.succeeded": define(1, object({ executionId, verification: verificationOutcome })),
-  /** The execution gave up (a non-retryable error, attempts exhausted). Releases the claim. */
-  "execution.failed": define(1, object({ executionId, message: string })),
+  /**
+   * The execution gave up (a non-retryable error, attempts exhausted).
+   * Releases the claim. `cause` is `approval` when it was ended because a call
+   * needed the user's approval and nobody was there to give it (the
+   * unattended behaviour `stop`); absent for every other failure.
+   */
+  "execution.failed": define(1, object({ executionId, message: string, cause: optional(oneOf(["approval"])) })),
   /**
    * An interrupt was asked for: the user cancelled, or the process is shutting
    * down. Written the moment the abort fires, before any tool has stopped, so
@@ -440,8 +450,77 @@ export const durableEvents = {
    * the moment it started: a `read` call has no side effect and can never
    * settle as `effect_unknown`, and crash recovery settles an orphan from this
    * field, never from the tool registry of the build that restarts.
+   *
+   * `run` is what the approval layer let the call run under: the mode, where
+   * the tool comes from, the path facts the decision was made from, and for
+   * a command whether it runs in the sandbox (`sandbox: null`: it does not)
+   * and with which extra access. Taint is derived from these facts, never
+   * from the disk again. Absent when the approval layer is off.
    */
-  "tool.started": define(1, object({ messageId, callId, effect: toolEffect })),
+  "tool.started": define(1, object({ messageId, callId, effect: toolEffect, run: optional(callRun) })),
+
+  // ---- approval ----
+
+  /**
+   * The user is asked whether a call may run. Recorded with everything the
+   * decision was made from and everything the question shows: the mode, the
+   * path facts and the escalation the model asked for, the question with its
+   * choices and what each remembers, what the question is about (`needs`),
+   * and how the call runs if the answer approves (`then`). The call stays
+   * `pending`. One question per call.
+   */
+  "approval.requested": define(
+    1,
+    object({
+      messageId,
+      callId,
+      mode: approvalMode,
+      paths: array(storedPathFact),
+      escalation: nullable(storedEscalation),
+      question: storedQuestion,
+      needs: array(storedNeed),
+      then: storedRunDecision,
+    }),
+  ),
+  /**
+   * The user's answer to the question of this call: the choice, a note if
+   * they wrote one, and the approvals the choice created (`grants`, stamped
+   * with this event's own `seq`). Session grants apply from here on; project
+   * grants are also kept in the user's data directory, where later sessions
+   * of the project read them. An approving answer is followed by
+   * `tool.started`, a declining one by `tool.settled` with the refusal.
+   */
+  "approval.answered": define(1, object({ messageId, callId, choice: choiceId, approve: boolean, note: nullable(string), grants: array(grant) })),
+  /**
+   * The call was refused without anyone being asked: by the policy
+   * (`policy`), or because it needed approval and nobody was present
+   * (`unattended`; `needs` is what it needed). `stop`: the run ends with it.
+   * The call's `tool.settled` follows in the same append, with the text the
+   * model sees.
+   */
+  "approval.denied": define(
+    1,
+    object({
+      messageId,
+      callId,
+      mode: approvalMode,
+      paths: array(storedPathFact),
+      escalation: nullable(storedEscalation),
+      reason: oneOf(["policy", "unattended"]),
+      needs: array(storedNeed),
+      stop: boolean,
+    }),
+  ),
+  /**
+   * The session became tainted: content from a source the harness does not
+   * control is in the conversation. `source` is the first such result and
+   * `text` the sentence the user is shown, once. From here on anything that
+   * can send data out asks again. Derived state is not stored: this records
+   * that the user was told, and what.
+   */
+  "taint.noticed": define(1, object({ source: storedTaintSource, text: string })),
+  /** The user said the conversation is trustworthy again. Taint is derived from the log after this event only. */
+  "taint.cleared": define(1, empty),
   /**
    * The call's one terminal result. `output` is the text for the model, capped
    * once when produced and replayed byte for byte, including the text that

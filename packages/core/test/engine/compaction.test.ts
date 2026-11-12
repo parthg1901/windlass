@@ -472,6 +472,7 @@ describe("when nothing is compacted", () => {
       h.tools.on("read", fileText("big", 60_000))
       h.provider.enqueue(reads("big.ts"), answers("Read it."))
       const engine = createEngine({
+      approval: null,
         store: h.store,
         provider: h.provider,
         tools: h.tools.list(),

@@ -31,7 +31,7 @@ const print = (value: unknown) => console.log(JSON.stringify(value))
 const settings = { model: "gpt-test", reasoningEffort: null }
 
 const harness = (responses: ScriptedResponse[]) =>
-  createHarness({ dataDir: first, provider: new FakeProvider(responses), log: (line) => console.error(line), engine: { loadConfig: null, discover: () => [] } })
+  createHarness({ dataDir: first, provider: new FakeProvider(responses), log: (line) => console.error(line), engine: { approval: null, loadConfig: null, discover: () => [] } })
 
 switch (mode) {
   case "turn":

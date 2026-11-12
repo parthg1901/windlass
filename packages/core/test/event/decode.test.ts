@@ -128,6 +128,48 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "revert.undo_started": event("revert.undo_started", { revertSeq: 20, target: "bbb2", before: "aaa1", keep: [] }),
   "history.restored": event("history.restored", { revertSeq: 20, restore: null }),
   "revert.failed": event("revert.failed", { message: "git refused: a file changed while the restore ran" }),
+  "approval.requested": event("approval.requested", {
+    messageId,
+    callId,
+    mode: "auto",
+    paths: [],
+    escalation: { network: true, write: [{ given: "~/.cache/pip", real: "/home/u/.cache/pip", place: "outside", relative: null }] },
+    question: {
+      title: "Allow network access for this command?",
+      subject: "curl https://example.com",
+      details: ["With network access the command can send anything it can read to any host."],
+      choices: [
+        { id: "once", label: "Allow once", approve: true, remembers: null, grants: [] },
+        { id: "session", label: "Allow for this session", approve: true, remembers: "network for sandboxed commands, for the rest of this session", grants: [{ scope: "session", rule: { kind: "sandbox-network" } }] },
+        { id: "deny", label: "Don't allow", approve: false, remembers: null, grants: [] },
+      ],
+    },
+    needs: [{ kind: "sandbox-network" }],
+    then: { kind: "run_sandboxed", network: true, writableRoots: [] },
+  }),
+  "approval.answered": event("approval.answered", {
+    messageId,
+    callId,
+    choice: "session",
+    approve: true,
+    note: null,
+    grants: [{ scope: "session", rule: { kind: "sandbox-network" }, at: 12, grantedAt: 1_700_000_000_000 }],
+  }),
+  "approval.denied": event("approval.denied", {
+    messageId,
+    callId,
+    mode: "auto",
+    paths: [{ given: "~/.ssh/config", real: "/home/u/.ssh/config", place: "hidden", relative: null }],
+    escalation: null,
+    reason: "policy",
+    needs: [],
+    stop: false,
+  }),
+  "taint.noticed": event("taint.noticed", {
+    source: { at: 9, tool: "shell", kind: "network-command", path: null },
+    text: "Content from a command that ran with network access is in this conversation and may contain instructions aimed at the model.",
+  }),
+  "taint.cleared": event("taint.cleared", {}),
 }
 
 const row = (stored: NewEvent, overrides: Partial<EventRow> = {}): EventRow => ({

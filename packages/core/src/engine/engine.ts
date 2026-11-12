@@ -48,6 +48,13 @@ import { statSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
+import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
+import { type Grant, stampGrants } from "../approval/grants.ts"
+import type { ApprovalPolicy, ApprovalSection, ResolvedApproval } from "../approval/policy.ts"
+import { type CallRun, type ChoiceId, TaintHistory } from "../approval/record.ts"
+import { redact } from "../approval/redact.ts"
+import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
+import { approvedNote, declinedMessage } from "../approval/texts.ts"
 import { brand } from "../brand.ts"
 import { type LoadedConfig, loadConfig } from "../config/load.ts"
 import type { CheckConfig } from "../config/schema.ts"
@@ -76,11 +83,13 @@ import { type DiscoveryInput, discoverSources } from "../instructions/discover.t
 import type { InstructionSource } from "../instructions/source.ts"
 import { instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
 import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonOf } from "../interrupt.ts"
+import type { Json } from "../json.ts"
 import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
 import type { Usage } from "../provider/usage.ts"
+import type { CommandSandbox } from "../sandbox/command.ts"
 import { type PrefixVerdict, checkPrefix } from "../request/build-break.ts"
 import { CHECKPOINT_ORIGIN, type CallOptions, HARNESS_CLOSE, buildCompactionRequest, buildRequest, harnessOpen } from "../request/build.ts"
 import { canonicalJson } from "../request/canonical.ts"
@@ -91,8 +100,8 @@ import { type KeptPath, type SnapshotId, type SnapshotUnavailable, openSnapshots
 import { StoreLockedError } from "../store/sqlite-lock.ts"
 import { type AppendOptions, type RequestPurpose, type SessionQuery, type SessionStores, type SessionSummary, type Store, StoreError, sharedSessionStores } from "../store/store.ts"
 import { resolvePath } from "../tools/common.ts"
-import { type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
-import type { AnyTool, ToolEffect } from "../tool/tool.ts"
+import { type Authorization, type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
+import type { AnyTool, TempDirectory, ToolEffect } from "../tool/tool.ts"
 import { ACKNOWLEDGE_TOOL_NAME, acknowledgeTool } from "../verify/acknowledge.ts"
 import { type VerificationEvidence, buildEvidence } from "../verify/evidence.ts"
 import { fingerprintCheck, reusablePass } from "../verify/fingerprint.ts"
@@ -100,6 +109,7 @@ import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
+import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, callFacts, effectivePolicy, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
 import { type Clock, systemClock } from "./clock.ts"
 import {
@@ -175,6 +185,8 @@ export type ProbePoint =
   | "step.started"
   /** One piece of model output (`text.ended`, `reasoning.ended`, `tool.called`) is durable. */
   | "model.output"
+  /** `approval.requested` is durable; nobody has answered. */
+  | "approval.requested"
   /** `tool.started` is durable; the tool is about to run. */
   | "tool.started"
   /** A tool returned; its result is not yet written. */
@@ -306,7 +318,16 @@ export interface EngineOptions {
    * `loadConfig` (the user and project files). `null` means no configuration:
    * nothing is verified.
    */
-  readonly loadConfig?: ((cwd: string) => Promise<Pick<LoadedConfig, "config" | "projectDir">>) | null
+  readonly loadConfig?: ((cwd: string) => Promise<SessionConfig>) | null
+  /**
+   * The approval layer: what decides, before every tool call, whether it
+   * runs, runs in the sandbox, asks the user or is refused, and what redacts
+   * tool output. Defaults to the safe setup for a user's machine: mode
+   * `auto`, the sandbox this machine has, nobody present until a client says
+   * so. `null` switches the layer off: every call runs as it is and nothing
+   * about approval is recorded. That is for tests of the loop's other rules.
+   */
+  readonly approval?: ApprovalSetup | null
   /** Runs checks. Defaults to the verification module's runner, which uses the shell tool. */
   readonly runChecks?: (checks: readonly CheckConfig[], options: RunCheckOptions) => Promise<CheckResult[]>
   /**
@@ -324,6 +345,24 @@ export interface EngineOptions {
   readonly contextWindow?: (model: string) => number | null | Promise<number | null>
   /** The compaction policy's numbers, where they differ from `DEFAULT_COMPACTION_CONFIG`. */
   readonly compaction?: Partial<CompactionConfig>
+}
+
+/** The configuration an execution runs under: the checks and where they run, and the files' approval sections. */
+export type SessionConfig = Pick<LoadedConfig, "config" | "projectDir"> & Partial<Pick<LoadedConfig, "approval">>
+
+/** How a session's tool calls are decided right now, for a client to show. */
+export interface ApprovalState {
+  /** The policy in force: the user's settings, tightened by the project's. */
+  readonly policy: ApprovalPolicy
+  /** Project settings that would have loosened the user's policy and were not followed. */
+  readonly ignored: readonly string[]
+  readonly sandbox: CommandSandbox["state"]
+  /** Whether someone is there to answer a question (`setAttended`). */
+  readonly attended: boolean
+  /** The session's taint, derived from its log. */
+  readonly taint: TaintState
+  /** The question that waits for an answer, if one does. */
+  readonly pending: { readonly messageId: MessageId; readonly callId: CallId; readonly question: Extract<Decision, { kind: "ask" }>["question"] } | null
 }
 
 /** What to do with files that were edited by hand after the point a restore goes back to. */
@@ -443,6 +482,30 @@ export interface EngineSession {
   readonly revert: (options?: RevertOptions) => Promise<RevertResult>
   /** Undoes the latest revert: the workspace as it was right before it, and its messages back in history. Only while idle. */
   readonly undoRevert: (options?: Omit<RevertOptions, "messageId">) => Promise<RevertResult>
+  /**
+   * Says whether a person is there to answer questions. Nobody is until a
+   * client says so: a call that would ask is then refused (or ends the run,
+   * as the policy's `unattended` says) and nothing ever waits.
+   */
+  readonly setAttended: (present: boolean) => void
+  /**
+   * The user's own approval settings for this session, as a command-line
+   * flag or a client's control gives them. They go on top of the user's
+   * file; the project's file can still only tighten the result. Applies from
+   * the next decision. Not stored: a client says it again when it opens the session.
+   */
+  readonly setApproval: (section: ApprovalSection) => void
+  /** How calls are decided right now; `null` when the approval layer is off. */
+  readonly approval: () => ApprovalState | null
+  /**
+   * Answers the pending question about a call with one of its choices, and
+   * a note if the user wrote one. Returns whether it was taken: `false` when
+   * that question is not pending (it was answered, or an interrupt withdrew
+   * it) or offers no such choice.
+   */
+  readonly answer: (target: { readonly messageId: MessageId; readonly callId: CallId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }) => boolean
+  /** The user says the conversation is trustworthy again (`taint.cleared`). Returns whether the session was tainted. */
+  readonly clearTaint: () => boolean
   /** Whether an execution is being worked on in this process. */
   readonly working: boolean
   /** Resolves once no execution and no revert is being worked on in this process. */
@@ -533,7 +596,9 @@ interface Core {
   readonly compaction: CompactionConfig
   readonly spillDir: string
   readonly openSnapshots: OpenSnapshots | null
-  readonly loadConfig: ((cwd: string) => Promise<Pick<LoadedConfig, "config" | "projectDir">>) | null
+  readonly loadConfig: ((cwd: string) => Promise<SessionConfig>) | null
+  /** The approval layer with its defaults applied; `null` when it is off. */
+  readonly approvals: Approvals | null
   readonly runChecks: (checks: readonly CheckConfig[], options: RunCheckOptions) => Promise<CheckResult[]>
   readonly clock: Clock
   readonly ids: EngineIds
@@ -574,6 +639,7 @@ export function createEngine(options: EngineOptions): Engine {
     spillDir,
     openSnapshots: options.snapshots === undefined ? (cwd) => openSnapshots(cwd, { dataDir: join(options.dataDir, "snapshots") }) : options.snapshots,
     loadConfig: options.loadConfig === undefined ? (cwd) => loadConfig({ cwd }) : options.loadConfig,
+    approvals: options.approval === null ? null : resolveApprovals(options.approval ?? {}, options.dataDir, spillDir),
     runChecks: options.runChecks ?? runChecks,
     clock,
     ids: {
@@ -737,6 +803,29 @@ type GateResult = StepResult | { readonly verification: VerificationOutcome }
 
 const isSteer = (item: { readonly delivery: "steer" | "queue" }) => item.delivery === "steer"
 
+/** What the approval layer decided for one call of the step in progress, kept until its result is recorded. */
+interface Decided {
+  /** What `tool.started` records, for a call that runs. */
+  readonly run: CallRun | undefined
+  /** Appended together with the call's result: the record of a denial. */
+  readonly before: readonly NewEvent[]
+  /** The denial's text, when it ends the run (the unattended behaviour `stop`). */
+  readonly stop: string | null
+}
+
+/** The question that waits for the user's answer. */
+interface PendingQuestion {
+  readonly messageId: MessageId
+  readonly callId: CallId
+  readonly asked: Extract<Decision, { kind: "ask" }>
+  readonly resolve: (answer: { readonly approve: boolean; readonly note: string | null } | null) => void
+}
+
+const callKey = (messageId: MessageId, callId: CallId) => `${messageId}/${callId}`
+
+/** What `authorize` resolves with when an interrupt ended its wait: the runtime sees the abort and reports the call as not started. */
+const WITHDRAWN: Authorization = { kind: "refuse", output: "" }
+
 /** A restore that `restoreTo` is asked for: a revert to before a message, or the undo of the latest revert. */
 type RestoreRequest =
   | { readonly kind: "revert"; readonly fromSeq: number; readonly messageId: MessageId; readonly messages: number }
@@ -756,7 +845,23 @@ class LiveSession implements EngineSession {
   private restart = false
   private closing: Promise<void> | null = null
   /** The configuration the execution in progress runs under, read when it started. `null`: nothing is verified. */
-  private config: Pick<LoadedConfig, "config" | "projectDir"> | null = null
+  private config: SessionConfig | null = null
+  /** Whether a person is there to answer questions. Nobody is until a client says so. */
+  private attended = false
+  /** The user's approval settings for this session, as a client gave them. */
+  private override: ApprovalSection | null = null
+  /** The question that waits for an answer. One at a time. */
+  private question: PendingQuestion | null = null
+  /** The questions asked so far, as a chain: each waits for the one before it. */
+  private asking: Promise<void> = Promise.resolve()
+  /** What was decided for the calls of the step in progress that have no recorded result yet. */
+  private readonly decided = new Map<string, Decided>()
+  /** Set when a call that nobody could approve ends the run: the denial's text. */
+  private stopping: string | null = null
+  /** The history taint is derived from, built from the log on first use and kept up with every append. A cache of a pure function of the log. */
+  private taintHistory: TaintHistory | null = null
+  /** The notices already shown in this process, so each is said once. */
+  private readonly noticed = new Set<string>()
   /** The snapshots of the session's working directory, opened on first use. */
   private snapshotStore: Promise<WorkspaceSnapshots | SnapshotUnavailable> | null = null
   /** A revert, an undo of one or a preview of either that is in progress. The session is idle and must stay so until it ends. */
@@ -872,6 +977,65 @@ class LiveSession implements EngineSession {
     while (this.run !== null || this.restoring !== null) await (this.run?.done ?? this.restoring?.catch(() => {}))
   }
 
+  setAttended = (present: boolean): void => {
+    this.attended = present
+  }
+
+  setApproval = (section: ApprovalSection): void => {
+    this.override = { ...this.override, ...section }
+  }
+
+  approval = (): ApprovalState | null => {
+    const approvals = this.core.approvals
+    if (approvals === null) return null
+    const { policy, ignored } = this.policy()
+    const pending = this.question
+    return {
+      policy,
+      ignored,
+      sandbox: approvals.sandbox().state,
+      attended: this.attended,
+      taint: this.taint(policy),
+      pending: pending === null ? null : { messageId: pending.messageId, callId: pending.callId, question: pending.asked.question },
+    }
+  }
+
+  answer = (target: { readonly messageId: MessageId; readonly callId: CallId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }): boolean => {
+    this.assertOpen()
+    const approvals = this.core.approvals
+    const pending = this.question
+    if (approvals === null || pending === null || pending.messageId !== target.messageId || pending.callId !== target.callId) return false
+    const chosen = pending.asked.question.choices.find((choice) => choice.id === reply.choice)
+    const projection = this.projection()
+    // An interrupt that was requested first wins: the question is withdrawn and the call does not start.
+    if (chosen === undefined || projection.session.execution?.interrupting != null) return false
+    const now = this.core.clock.now()
+    // Stamped with the position of this very answer: an approval counts from where it was given.
+    const grants: Grant[] = stampGrants(chosen.grants, projection.lastSeq + 1, now)
+    const note = reply.note == null || reply.note.trim() === "" ? null : reply.note.trim()
+    this.write([event("approval.answered", { messageId: pending.messageId, callId: pending.callId, choice: chosen.id, approve: chosen.approve, note, grants })], { expectedSeq: projection.lastSeq })
+    if (grants.some((item) => item.scope === "project")) {
+      try {
+        addProjectGrants(approvals.grantsDir, realWorkspace(projection.session.cwd), grants, now)
+      } catch (error) {
+        // The answer stands for this call; what could not be kept is asked again next time.
+        this.core.report({ kind: "internal_error", sessionId: this.id, message: `the approval could not be remembered for the project: ${describe(error)}`, cause: error })
+      }
+    }
+    pending.resolve({ approve: chosen.approve, note })
+    return true
+  }
+
+  clearTaint = (): boolean => {
+    this.assertOpen()
+    if (this.core.approvals === null) return false
+    // What the log says is tainted is said first, so that the clearing has something to clear.
+    this.noticeTaint()
+    if (this.projection().session.approval?.taint == null) return false
+    this.write([event("taint.cleared", {})])
+    return true
+  }
+
   revert = (options: RevertOptions = {}): Promise<RevertResult> => this.whileIdle(() => this.revertTo(options))
 
   undoRevert = (options: Omit<RevertOptions, "messageId"> = {}): Promise<RevertResult> => this.whileIdle(() => this.undoLatestRevert(options))
@@ -897,6 +1061,7 @@ class LiveSession implements EngineSession {
   /** Appends to the session's log and publishes what was appended. The only way this session's state changes. */
   write(events: readonly NewEvent[], options?: AppendOptions): readonly StoredEvent[] {
     const stored = this.store.append(this.id, events, options)
+    if (this.taintHistory !== null) for (const item of stored) this.taintHistory.add(item)
     for (const item of stored) this.publish(item)
     return stored
   }
@@ -1054,10 +1219,12 @@ class LiveSession implements EngineSession {
     const load = this.core.loadConfig
     if (load === null) {
       this.config = null
+      this.announcePolicy()
       return true
     }
     try {
       this.config = await load(this.projection().session.cwd)
+      this.announcePolicy()
       return true
     } catch (error) {
       if (run.interrupt.signal.aborted) this.finishInterrupt(run)
@@ -1393,9 +1560,21 @@ class LiveSession implements EngineSession {
         }
       }
       await this.runTools(run, message, calls, toolChoice)
+      const stopped = this.stopping
+      this.stopping = null
       if (run.interrupt.signal.aborted) {
         // The model call itself finished: what it cost is known, though its tools were cut short.
         this.finishInterrupt(run, "", usage)
+        return "done"
+      }
+      if (stopped !== null) {
+        // A call needed approval, nobody was there, and the policy says the run ends there (`unattended: "stop"`).
+        // What had not started yet does not start; the step closes and the execution ends, in one append.
+        this.write([
+          ...settleUnsettled(this.assistant(messageId), STOPPED),
+          event("step.ended", { messageId, finish: "tool_calls", usage }),
+          event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.approvalStop(stopped), cause: "approval" }),
+        ])
         return "done"
       }
       if (tracked) {
@@ -1599,10 +1778,32 @@ class LiveSession implements EngineSession {
   }
 
   /**
-   * Runs the step's calls at once and settles each exactly once, in the order
-   * they finish. Returns when every call is settled, or, after an interrupt,
-   * when the tools have stopped or their grace period is over; what is still
+   * Runs the step's calls and settles each exactly once, in the order they
+   * finish. Returns when every call is settled, or, after an interrupt, when
+   * the tools have stopped or their grace period is over; what is still
    * unsettled then is settled by `finishInterrupt` from its recorded state.
+   *
+   * The order (with the approval layer on; without it every call starts at once):
+   *
+   * 1. Calls the loop itself refuses (tools forbidden, too many calls, the
+   *    identical-call guard) are settled first, in call order.
+   * 2. Calls of class `read` are decided at once, in call order, and those
+   *    that may run start at once and run side by side.
+   * 3. Every other call (a write, a command, a network or MCP tool) keeps its
+   *    place in one line: it is decided when the one before it in the line
+   *    has its result, and runs alone in the line. So a write is never
+   *    decided or started while a command runs (a command could swap a link
+   *    under the path that was checked), and side effects happen in the order
+   *    the model wrote them.
+   * 4. A call that must ask is suspended, and only it: reads go on, and the
+   *    line waits behind it, because what comes later in the line was written
+   *    to happen after it. Questions are asked one at a time, in the order
+   *    their calls reached them; a call is decided again when its turn to
+   *    ask comes, since an answer given meanwhile may cover it.
+   * 5. A decision is made from the state at the moment it is made: the taint
+   *    and the approvals as the log has them then.
+   * 6. An interrupt withdraws a pending question: the call settles as not
+   *    started, like every call the interrupt reached before it began.
    */
   private async runTools(
     run: Run,
@@ -1611,6 +1812,7 @@ class LiveSession implements EngineSession {
     toolChoice: ModelRequest["toolChoice"],
   ): Promise<void> {
     const { runtime, limits, clock, effects } = this.core
+    const approvals = this.core.approvals
     const signal = run.interrupt.signal
     const before = this.projection()
     const messageId = message.id
@@ -1621,7 +1823,68 @@ class LiveSession implements EngineSession {
       this.write([
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output, truncation: null, attachments: [], display: null }),
       ])
+    this.decided.clear()
+    const extras = approvals === null ? {} : { ...this.tempContext(), redact: redactor(approvals.secrets) }
 
+    /** One call, from its decision to its recorded result. */
+    const launch = (call: ToolCallPart): Promise<void> => {
+      const effect = effects.get(call.name)
+      const key = callKey(messageId, call.callId)
+      unsettled.add(call.callId)
+      return runtime
+        .run(
+          {
+            name: call.name,
+            argumentsText: call.input,
+            context: {
+              sessionId: this.id,
+              messageId,
+              callId: call.callId,
+              cwd: before.session.cwd,
+              signal,
+              progress: (update) => {
+                if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
+              },
+              ...extras,
+            },
+          },
+          {
+            ...(approvals === null ? {} : { authorize: (tool: AnyTool, input: Json) => this.authorize(run, messageId, call, tool, input) }),
+            // Synchronous, right before the tool runs: the start is durable before any side effect.
+            onStart: () => {
+              if (effect === undefined) throw new Error(`tool ${call.name} started without an effect class`)
+              const ran = this.decided.get(key)?.run
+              this.write([event("tool.started", { messageId, callId: call.callId, effect, ...(ran === undefined ? {} : { run: ran }) })])
+              this.probe("tool.started")
+            },
+          },
+        )
+        .then((result) => {
+          this.probe("tool.finished")
+          // A tool that came back after its grace period was already settled from its effect class.
+          if (abandoned.has(call.callId)) return
+          // The interrupt reached it while it waited for an answer: it never began, and the wind-down settles it.
+          if (result.kind === "not_started") return
+          unsettled.delete(call.callId)
+          const decided = this.decided.get(key)
+          this.decided.delete(key)
+          const settlement = this.settlement(result, effect, signal)
+          // The note for a failure the sandbox causes, then the redaction: what is stored is what is replayed.
+          const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets) }
+          this.write([...(decided?.before ?? []), event("tool.settled", { messageId, callId: call.callId, ...shown })])
+          this.probe("tool.settled")
+          if (decided?.stop != null) this.stopping ??= decided.stop
+          this.noticeTaint()
+        })
+        .catch((error: unknown) => {
+          unsettled.delete(call.callId)
+          if (!failure.failed) failure.error = error
+          failure.failed = true
+        })
+    }
+
+    /** The line of calls that can change something: each starts when the one before it has its result. */
+    let line: Promise<void> = Promise.resolve()
     const running = calls.flatMap((call, index): Promise<void>[] => {
       // Once an interrupt is requested nothing new starts; the call is settled as not started below.
       if (failure.failed || signal.aborted) return []
@@ -1629,47 +1892,10 @@ class LiveSession implements EngineSession {
       if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
       if (repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
       const effect = effects.get(call.name)
-      unsettled.add(call.callId)
-      const outcome = runtime.run(
-        {
-          name: call.name,
-          argumentsText: call.input,
-          context: {
-            sessionId: this.id,
-            messageId,
-            callId: call.callId,
-            cwd: before.session.cwd,
-            signal,
-            progress: (update) => {
-              if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
-            },
-          },
-        },
-        {
-          // Synchronous, right before the tool runs: the start is durable before any side effect.
-          onStart: () => {
-            if (effect === undefined) throw new Error(`tool ${call.name} started without an effect class`)
-            this.write([event("tool.started", { messageId, callId: call.callId, effect })])
-            this.probe("tool.started")
-          },
-        },
-      )
-      return [
-        outcome
-          .then((result) => {
-            this.probe("tool.finished")
-            // A tool that came back after its grace period was already settled from its effect class.
-            if (abandoned.has(call.callId)) return
-            unsettled.delete(call.callId)
-            this.write([event("tool.settled", { messageId, callId: call.callId, ...this.settlement(result, effect, signal) })])
-            this.probe("tool.settled")
-          })
-          .catch((error: unknown) => {
-            unsettled.delete(call.callId)
-            if (!failure.failed) failure.error = error
-            failure.failed = true
-          }),
-      ]
+      // A read changes nothing, and a tool nobody knows is refused before it could: both go at once.
+      if (approvals === null || effect === undefined || effect === "read") return [launch(call)]
+      line = line.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
+      return [line]
     })
 
     const all = Promise.all(running)
@@ -1681,7 +1907,205 @@ class LiveSession implements EngineSession {
       timer.abort()
       for (const callId of unsettled) abandoned.add(callId)
     }
+    this.decided.clear()
     if (failure.failed) throw failure.error
+  }
+
+  // ---- approval ----
+
+  /**
+   * Decides one call, right before it would start: it runs, runs in the
+   * sandbox, is refused, or the user is asked and the call waits for the
+   * answer. Everything a decision rests on is recorded: with `tool.started`
+   * for a call that runs, as `approval.requested` and `approval.answered`
+   * around a question, as `approval.denied` with the refusal.
+   */
+  private async authorize(run: Run, messageId: MessageId, call: ToolCallPart, tool: AnyTool, input: Json): Promise<Authorization> {
+    const approvals = this.core.approvals
+    if (approvals === null) return { kind: "run" }
+    const signal = run.interrupt.signal
+    const key = callKey(messageId, call.callId)
+    const context = this.factContext()
+    const known = callFacts(tool, input, context)
+    if ("invalid" in known) return { kind: "refuse", output: `Invalid arguments for ${tool.name}: ${known.invalid}\nFix them and call ${tool.name} again.` }
+    const facts = known.facts
+    const workspace = realWorkspace(context.cwd)
+    const decideNow = (present = this.attended) => {
+      const policy = this.policy().policy
+      const decision = decide({ policy, call: facts, sandbox: this.sandboxState(), taint: this.taint(policy), grants: this.grants(workspace), present, now: this.core.clock.now(), workspace, home: approvals.home })
+      return { policy, decision }
+    }
+    const allow = (policy: ApprovalPolicy, how: RunDecision, note?: string): Authorization => {
+      const sandbox = how.kind === "run_sandboxed" ? { network: how.network, writableRoots: [...how.writableRoots] } : null
+      this.decided.set(key, { run: runRecord(policy, facts, sandbox), before: [], stop: null })
+      return { kind: "run", sandbox, ...(note === undefined ? {} : { note }) }
+    }
+    const record = (policy: ApprovalPolicy) => ({ messageId, callId: call.callId, mode: policy.mode, paths: [...facts.paths], escalation: facts.escalation })
+
+    let { policy, decision } = decideNow()
+    if (decision.kind === "ask") {
+      // One question at a time. While this call waited for its turn, an answer may have covered what it needs.
+      const done = await this.questionTurn(signal)
+      try {
+        if (signal.aborted) return WITHDRAWN
+        ;({ policy, decision } = decideNow())
+        if (decision.kind === "ask") {
+          const asked = decision
+          this.write([event("approval.requested", { ...record(policy), question: asked.question, needs: [...asked.needs], then: asked.then })])
+          this.probe("approval.requested")
+          const answer = await this.answerTo({ messageId, callId: call.callId, asked }, signal)
+          if (answer === null) return WITHDRAWN
+          return answer.approve ? allow(policy, asked.then, answer.note === null ? undefined : approvedNote(answer.note)) : { kind: "refuse", output: declinedMessage(answer.note) }
+        }
+      } finally {
+        done()
+      }
+    }
+    if (decision.kind === "deny") {
+      // The same call with someone present: whether it was the policy that refused, or the empty chair.
+      const attended = decideNow(true).decision
+      const denied = event("approval.denied", {
+        ...record(policy),
+        reason: attended.kind === "ask" ? "unattended" : "policy",
+        needs: attended.kind === "ask" ? [...attended.needs] : [],
+        stop: decision.stop,
+      })
+      this.decided.set(key, { run: undefined, before: [denied], stop: decision.stop ? decision.message : null })
+      return { kind: "refuse", output: decision.message }
+    }
+    return allow(policy, decision)
+  }
+
+  /** Waits for this call's turn to ask, and returns what ends the turn. An interrupt does not wait. */
+  private async questionTurn(signal: AbortSignal): Promise<() => void> {
+    const previous = this.asking
+    let done = () => {}
+    this.asking = new Promise<void>((resolve) => {
+      done = resolve
+    })
+    await untilAborted(previous, signal)
+    return done
+  }
+
+  /** Resolves with the user's answer to the question that was just recorded, or with `null` when an interrupt withdrew it. */
+  private answerTo(question: Omit<PendingQuestion, "resolve">, signal: AbortSignal): Promise<{ readonly approve: boolean; readonly note: string | null } | null> {
+    return new Promise((resolve) => {
+      const settle = (answer: { readonly approve: boolean; readonly note: string | null } | null) => {
+        signal.removeEventListener("abort", withdraw)
+        this.question = null
+        resolve(answer)
+      }
+      const withdraw = () => settle(null)
+      this.question = { ...question, resolve: settle }
+      if (signal.aborted) return settle(null)
+      signal.addEventListener("abort", withdraw, { once: true })
+    })
+  }
+
+  /** The policy in force: the user's settings (their file, the process's flags, this session's own choice), tightened by the project's file. */
+  private policy(): ResolvedApproval {
+    return effectivePolicy({
+      file: this.config?.approval?.user ?? null,
+      process: this.core.approvals?.user ?? null,
+      session: this.override,
+      project: this.config?.approval?.project ?? null,
+    })
+  }
+
+  private sandboxState(): SandboxState {
+    const state = this.core.approvals!.sandbox().state
+    return state.available ? { available: true } : { available: false, reason: state.reason }
+  }
+
+  /** The session's taint, derived from its log: the fold of `approval/taint.ts` over every tool result, clearing and compaction in it. */
+  private taint(policy: ApprovalPolicy): TaintState {
+    if (this.taintHistory === null) {
+      const history = new TaintHistory()
+      for (const item of this.store.readEvents(this.id)) history.add(item)
+      this.taintHistory = history
+    }
+    return deriveTaint(this.taintHistory.entries, { untrustedPaths: policy.untrustedPaths })
+  }
+
+  /** The approvals that may cover a call: this session's, from its log, and the project's, from the user's data directory. */
+  private grants(workspace: string): Grant[] {
+    return [...(this.projection().session.approval?.grants ?? []), ...readProjectGrants(this.core.approvals!.grantsDir, workspace, this.core.clock.now())]
+  }
+
+  /**
+   * The session's temp directory as the tools see it, when commands can be
+   * sandboxed here. Its alias (`/tmp` under bubblewrap) holds only where
+   * commands run sandboxed as a rule: in `full` they see the machine's own
+   * `/tmp`, and the file tools must then mean that one too.
+   */
+  private tempContext(): { readonly temp?: TempDirectory } {
+    const approvals = this.core.approvals
+    if (approvals === null || !approvals.sandbox().state.available) return {}
+    const temp = approvals.sandbox().temp(this.id)
+    return { temp: this.policy().policy.mode === "full" ? { dir: temp.dir, alias: null } : temp }
+  }
+
+  private factContext(): FactContext {
+    return { cwd: this.projection().session.cwd, temp: this.tempContext().temp, approvals: this.core.approvals! }
+  }
+
+  /**
+   * Tells the user, once, that the session became tainted and from what:
+   * `taint.noticed`, written when the taint derived from the log is not yet
+   * on record. The decisions never read this record; they derive.
+   */
+  private noticeTaint(): void {
+    if (this.core.approvals === null) return
+    const policy = this.policy().policy
+    if (policy.taint !== "enforce" || this.projection().session.approval?.taint != null) return
+    const taint = this.taint(policy)
+    const first = taint.sources[0]
+    if (!taint.tainted || first === undefined) return
+    this.write([event("taint.noticed", { source: first, text: describeTaint(taint) })])
+  }
+
+  /** Says once per process what the user should know about how this session's tools run. */
+  private notice(kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run", message: string): void {
+    if (this.noticed.has(`${kind}:${message}`)) return
+    this.noticed.add(`${kind}:${message}`)
+    this.ephemeral({ type: "notice", sessionId: this.id, kind, message })
+  }
+
+  /** When an execution starts under the configuration just read: what is missing or was not followed, and taint that is not on record yet. */
+  private announcePolicy(): void {
+    const approvals = this.core.approvals
+    if (approvals === null) return
+    const { policy, ignored } = this.policy()
+    const state = approvals.sandbox().state
+    if (!state.available && policy.mode !== "full")
+      this.notice(
+        "sandbox_unavailable",
+        `Commands cannot be sandboxed on this machine: ${state.reason}${state.remedy === null ? "" : `\n${state.remedy}`}\nUntil then every command asks before it runs${this.attended ? "" : ", and with nobody there to ask it is refused"}.`,
+      )
+    if (ignored.length > 0)
+      this.notice("approval_ignored", `The project's configuration asks for a looser approval policy than yours and was not followed: ${ignored.join("; ")}. A project file can only make the policy stricter.`)
+    this.noticeTaint()
+  }
+
+  /**
+   * How the project's checks run. They are commands from a configuration
+   * file the repository controls, and the harness runs them without anyone
+   * asking for them, so they get what a command of the model gets without a
+   * question and no more: the sandbox, with no network and no extra
+   * directory, wherever the model's own commands are sandboxed (`ask` and
+   * `auto`; `full` once the session is tainted). Where those would have to
+   * ask because there is no sandbox, the checks are not run at all, and the
+   * user is told. Only `full` runs them unsandboxed.
+   */
+  private checkRunner(): { readonly blocked: string } | { readonly sandbox: NonNullable<RunCheckOptions["sandbox"]> | undefined } {
+    const approvals = this.core.approvals
+    if (approvals === null) return { sandbox: undefined }
+    const policy = this.policy().policy
+    const confined = policy.mode !== "full" || (policy.taint === "enforce" && this.taint(policy).tainted)
+    if (!confined) return { sandbox: undefined }
+    const state = approvals.sandbox().state
+    if (!state.available) return { blocked: state.reason }
+    return { sandbox: { sandbox: approvals.sandbox(), run: { network: false, writableRoots: [] }, sessionId: this.id } }
   }
 
   /** What `tool.settled` records for an outcome of the runtime. */
@@ -1892,6 +2316,8 @@ class LiveSession implements EngineSession {
       )
     events.push(event("execution.interrupted", { executionId: execution.id, reason }))
     this.write(events)
+    // A call that had started counts as a result, also when it was cut short.
+    this.noticeTaint()
   }
 
   /**
@@ -2092,7 +2518,13 @@ class LiveSession implements EngineSession {
       this.finishInterrupt(run)
       return "done"
     }
-    if (loaded === null || loaded.config.verify.mode === "off" || loaded.config.checks.length === 0) {
+    const runner = loaded === null || loaded.config.verify.mode === "off" || loaded.config.checks.length === 0 ? null : this.checkRunner()
+    if (runner !== null && "blocked" in runner)
+      this.notice(
+        "checks_not_run",
+        `The project's checks were not run: they are commands from the project's configuration, they run only in the sandbox in this mode, and the sandbox is unavailable (${runner.blocked}). Mode full runs them without it.`,
+      )
+    if (loaded === null || runner === null || "blocked" in runner) {
       await this.announceChanges()
       return signal.aborted ? interrupted() : this.finish(run, { status: "not_configured" })
     }
@@ -2194,7 +2626,7 @@ class LiveSession implements EngineSession {
   private async check(
     run: Run,
     work: {
-      readonly loaded: Pick<LoadedConfig, "config" | "projectDir">
+      readonly loaded: SessionConfig
       /** Every check that applies, in the configuration's order. */
       readonly checks: readonly CheckConfig[]
       readonly files: readonly string[]
@@ -2230,6 +2662,8 @@ class LiveSession implements EngineSession {
     // passed, which nothing explains: run them all.
     const reused = carried.length === work.checks.length ? [] : carried
     const checks = work.checks.filter((item) => !reused.some((entry) => entry.check === item))
+    const runner = this.checkRunner()
+    const confined = "sandbox" in runner ? runner.sandbox : undefined
     const [started] = this.write([event("checks.started", { run: number, checks: checks.map((item) => item.name) })])
     this.probe("checks.started")
 
@@ -2239,6 +2673,7 @@ class LiveSession implements EngineSession {
         // Per session: a check's output is written under a working name first, and two sessions may run the same check at once.
         spillDir: join(this.core.spillDir, "checks", this.id),
         signal,
+        ...(confined === undefined ? {} : { sandbox: confined }),
         progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
       })
       .then(
@@ -2272,7 +2707,9 @@ class LiveSession implements EngineSession {
       await this.announceChanges()
       if (signal.aborted) return interrupted()
     }
-    const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, renderReport(results))
+    // A check's output is tool output: what the model is shown of it is redacted like any other.
+    const secrets = this.core.approvals?.secrets
+    const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, secrets === undefined ? renderReport(results) : redact(renderReport(results), secrets).text)
     switch (decision.kind) {
       case "finish":
         return this.finish(run, { status: "passed", evidence }, [finished])

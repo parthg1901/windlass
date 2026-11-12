@@ -84,6 +84,7 @@ async function recoverAndContinue(where: Pick<Place, "database" | "workspace"> &
     const provider = new FakeProvider(Array.from({ length: 4 }, () => (request: ModelRequest) => [script.text(isSummary(request) ? SUMMARY : "Recovered and finished.")]))
     const diagnostics: string[] = []
     const engine = createEngine({
+      approval: null,
       store,
       provider,
       tools: createStandardTools({ spillDir: join(where.workspace, ".spill") }),
