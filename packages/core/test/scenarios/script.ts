@@ -18,6 +18,7 @@ import { CLEAN, type TaintSource, type TaintState, describeTaint } from "../../s
 import type { ConfigFile } from "../../src/config/schema.ts"
 import { text } from "../../src/content.ts"
 import { buildCheckpoint } from "../../src/context/checkpoint.ts"
+import { currentTodos, renderTodos } from "../../src/tools/todo.ts"
 import { type SummaryProblem, describeProblem, summaryPrompt, summaryRepairPrompt } from "../../src/context/summary.ts"
 import {
   type CompactionMode,
@@ -89,6 +90,8 @@ export interface FeatureSetting {
   readonly skills?: boolean
   readonly mcp?: boolean
   readonly wake?: boolean
+  /** The real `todo` tool is among the session's tools (the scenarios' other tools are stand-ins). */
+  readonly todo?: boolean
 }
 
 export interface SpawnSetting {
@@ -603,8 +606,12 @@ export const compactionRepair = (id: string, answer: string, problems: readonly 
  * compaction. `inProgress`: the cut left the turn's request out of the kept tail.
  */
 export function checkpoint(before: readonly NewEvent[], keepFromSeq: number, summary: string | null = SUMMARY, inProgress = false): string {
-  const earlier = fold(null, before).messages.filter((message) => message.excluded === null && message.seq < keepFromSeq)
-  return buildCheckpoint({ summary, earlier, inProgress }).text
+  const messages = fold(null, before).messages.filter((message) => message.excluded === null)
+  const earlier = messages.filter((message) => message.seq < keepFromSeq)
+  // As the loop does: the model's task list, when the call that last set it is before the cut.
+  const list = currentTodos(earlier)
+  const todos = list !== null && list.items.length > 0 && currentTodos(messages.filter((message) => message.seq >= keepFromSeq)) === null ? renderTodos(list) : null
+  return buildCheckpoint({ summary, earlier, inProgress, todos }).text
 }
 /** The compaction completes with its checkpoint. `tokensAfter` is a stand-in: the loop records its estimate of the next request. */
 export const compactionEnded = (id: string, checkpointText: string, source: "model" | "repaired" | "fallback" = "model", detail: string | null = null) =>

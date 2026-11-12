@@ -7,6 +7,7 @@ import { type GrepOptions, grepTool } from "./grep.ts"
 import { lsTool } from "./ls.ts"
 import { readTool } from "./read.ts"
 import { type ShellOptions, shellTool } from "./shell.ts"
+import { todoTool } from "./todo.ts"
 import { writeTool } from "./write.ts"
 
 export interface StandardToolOptions extends ToolOptions {
@@ -27,11 +28,14 @@ export function createStandardTools(options: StandardToolOptions): AnyTool[] {
     lsTool(),
     readTool(),
     shellTool({ ...options.shell, spillDir: options.spillDir }),
+    todoTool(),
     writeTool(),
   ])
 }
 
-export { editTool, globTool, grepTool, lsTool, readTool, shellTool, writeTool }
+export { editTool, globTool, grepTool, lsTool, readTool, shellTool, todoTool, writeTool }
+export { TODO_TOOL_NAME, currentTodos, renderTodos } from "./todo.ts"
+export type { TodoInput, TodoItem, TodoList, TodoStatus } from "./todo.ts"
 export type { EditInput } from "./edit.ts"
 export type { GlobInput } from "./glob.ts"
 export type { GrepInput, GrepOptions } from "./grep.ts"

@@ -8,6 +8,8 @@ import {
   NO_SUMMARY_STATEMENT,
   INDEX_HEADING,
   QUOTES_HEADING,
+  TODOS_ADVICE,
+  TODOS_HEADING,
   buildCheckpoint,
   extractIdentifiers,
 } from "../../src/context/checkpoint.ts"
@@ -181,5 +183,27 @@ describe("a checkpoint taken while the work was in progress", () => {
     expect(text.indexOf(QUOTES_HEADING)).toBeLessThan(text.indexOf(CONTINUE_SENTENCE))
     expect(text.indexOf(CONTINUE_SENTENCE)).toBeLessThan(text.indexOf(HISTORY_SENTENCE))
     expect(buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages }).text).not.toContain(CONTINUE_SENTENCE)
+  })
+})
+
+describe("a checkpoint of a session that keeps a task list", () => {
+  const todos = "[x] Read the parser\n[>] Fix the off-by-one\n[ ] Run the tests"
+
+  test("carries the list right after the summary, and says it is still the model's", () => {
+    const text = buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages, todos }).text
+    expect(text).toContain(`${TODOS_HEADING}\n${todos}\n${TODOS_ADVICE}`)
+    expect(text.indexOf("## Goal")).toBeLessThan(text.indexOf(TODOS_HEADING))
+    expect(text.indexOf(TODOS_HEADING)).toBeLessThan(text.indexOf(INDEX_HEADING))
+  })
+
+  test("says nothing about a list when there is none, and is unchanged for every session without one", () => {
+    const without = buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages })
+    expect(without.text).not.toContain(TODOS_HEADING)
+    expect(buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages, todos: null }).text).toBe(without.text)
+    expect(buildCheckpoint({ summary: "## Goal\n- Fix the importer.", earlier: session().messages, todos: "  " }).text).toBe(without.text)
+  })
+
+  test("without a summary the list is still there", () => {
+    expect(buildCheckpoint({ summary: null, earlier: session().messages, todos }).text).toContain(todos)
   })
 })

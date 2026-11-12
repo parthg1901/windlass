@@ -360,6 +360,8 @@ export interface HarnessOptions {
   readonly userConfig?: ConfigFile
   /** The directory the sessions work in. Default `/repo`, which does not exist: a test about real files names a real one. */
   readonly cwd?: string
+  /** Real tools beside the scripted ones (the `todo` tool, which keeps no state and touches nothing). */
+  readonly extraTools?: readonly AnyTool[]
 }
 
 export class Harness {
@@ -423,7 +425,7 @@ export class Harness {
     this.engine = createEngine({
       store: this.store,
       provider: this.provider,
-      tools: this.tools.list(this.toolNames),
+      tools: [...this.tools.list(this.toolNames), ...(this.options.extraTools ?? [])],
       dataDir: this.directory,
       workDir: join(this.directory, "work"),
       clock: this.clock,

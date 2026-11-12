@@ -112,6 +112,7 @@ import { type KeptPath, type SnapshotId, type SnapshotUnavailable, exportSnapsho
 import { StoreLockedError } from "../store/sqlite-lock.ts"
 import { type AppendOptions, type RequestPurpose, type SessionQuery, type SessionStores, type SessionSummary, type Store, StoreError, sharedSessionStores } from "../store/store.ts"
 import { resolvePath } from "../tools/common.ts"
+import { currentTodos, renderTodos } from "../tools/todo.ts"
 import { type Authorization, type ToolCall, type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
 import type { AnyTool, BackgroundCommand, TempDirectory, ToolContext, ToolEffect, ToolResult } from "../tool/tool.ts"
 import { ACKNOWLEDGE_TOOL_NAME, acknowledgeTool } from "../verify/acknowledge.ts"
@@ -3495,7 +3496,11 @@ class LiveSession implements EngineSession {
     const baseline = now.baseline
     // Every message before the cut that is not excluded, from the whole log: the index and the quotes cover earlier compactions too.
     const earlier = now.messages.filter((message) => message.excluded === null && message.seq < keepFromSeq)
-    const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn })
+    // The model's task list is the latest `todo` call's; when that call is being removed, the checkpoint carries the
+    // list. A later call in the kept tail says it there, and an empty list says nothing.
+    const list = currentTodos(earlier)
+    const todos = list !== null && list.items.length > 0 && currentTodos(now.messages.filter((message) => message.seq >= keepFromSeq)) === null ? renderTodos(list) : null
+    const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn, todos })
     const envelope = estimateTokens(`${harnessOpen(CHECKPOINT_ORIGIN)}\n\n${HARNESS_CLOSE}`)
     const fixed = baseline === null ? 0 : estimateTokens(baseline.instructions) + baseline.tools.reduce((sum, tool) => sum + estimateTool(tool), 0)
     const tokensAfter = REQUEST_OVERHEAD + fixed + ITEM_OVERHEAD + envelope + checkpoint.tokens + tail.keptTokens

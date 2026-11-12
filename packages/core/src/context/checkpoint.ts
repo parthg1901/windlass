@@ -3,7 +3,9 @@
  * engine stores it as `compaction.ended.summary`, and the request builder
  * shows it to the model inside `<harness origin="compaction">`.
  *
- * It has four parts, in this order:
+ * It has four parts, in this order (and, between the first two, the model's
+ * task list when it kept one with the `todo` tool and the call that last set
+ * it is being removed):
  * 1. the model-written summary (`summary.ts`);
  * 2. an index of exact identifiers that summaries tend to mangle, extracted
  *    mechanically from the removed messages: file paths (with line numbers
@@ -84,6 +86,14 @@ export interface CheckpointInput {
   readonly historyTools?: boolean
   /** Whether the work was in progress and the request is not in the kept tail (`TailChoice.midTurn`). Default `false`. */
   readonly inProgress?: boolean
+  /**
+   * The model's task list as its latest `todo` call before the cut left it,
+   * already rendered one item per line (`renderTodos`), or `null`: it never
+   * set one, the list is empty, or a later call is in the kept tail and
+   * says it there. The call itself is removed with the history, so the
+   * checkpoint carries the list.
+   */
+  readonly todos?: string | null
 }
 
 export const CHECKPOINT_HEADER = "Checkpoint of the earlier conversation, which was compacted to save space."
@@ -94,6 +104,8 @@ export const NO_SUMMARY_STATEMENT =
   "No summary of the earlier conversation could be produced, so nothing here says what the work means or where it stands. What follows was extracted mechanically from it."
 export const NO_SUMMARY_ADVICE = `Before you rely on anything from the earlier conversation, look it up with ${HISTORY_SEARCH} and ${HISTORY_READ}.`
 export const LAST_WORDS_HEADING = "## The assistant's last messages before this checkpoint (verbatim, oldest first)"
+export const TODOS_HEADING = "## Your task list when the conversation was compacted ([x] done, [>] in progress, [ ] pending)"
+export const TODOS_ADVICE = "It is still your list: update it with the todo tool as you go on."
 export const CONTINUE_SENTENCE =
   "The work was in progress when this checkpoint was taken. Continue it from where it stood; do not start over, and do not ask the user to repeat what is quoted above."
 
@@ -115,6 +127,7 @@ export function buildCheckpoint(input: CheckpointInput): Checkpoint {
   const text = [
     CHECKPOINT_HEADER,
     ...(input.summary === null ? [NO_SUMMARY_STATEMENT, lastWords(messages)] : [input.summary.trim()]),
+    input.todos == null || input.todos.trim() === "" ? "" : [TODOS_HEADING, input.todos.trim(), TODOS_ADVICE].join("\n"),
     renderIndex(index),
     quotes.text,
     input.inProgress === true ? CONTINUE_SENTENCE : "",

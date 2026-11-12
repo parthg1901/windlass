@@ -20,6 +20,8 @@
  * still fits, the loop sends it; when it does not, the compaction is
  * aggressive at once. `test/engine/compaction.test.ts` covers it.
  */
+import { event } from "../../src/event/durable.ts"
+import { todoList } from "../../src/tools/todo.ts"
 import {
   NOT_A_SUMMARY,
   NOT_A_SUMMARY_PROBLEMS,
@@ -28,6 +30,8 @@ import {
   UNUSABLE,
   WINDOW,
   baseline,
+  c,
+  called,
   checkpoint,
   compactionEnded,
   compactionFailed,
@@ -41,6 +45,7 @@ import {
   executionSucceeded,
   interruptMarker,
   interruptRequested,
+  m,
   opening,
   providerError,
   ran,
@@ -403,6 +408,54 @@ export const crashedCompaction: Scenario = {
   ],
 }
 
+// ---------------------------------------------------------------- the task list
+
+/** The list the model keeps in the scenario, as it sends it and as the tool confirms it. */
+export const TODO_ITEMS = [
+  { text: "Read the failing test", status: "done" },
+  { text: "Fix the expectation", status: "in_progress" },
+  { text: "Run the tests", status: "pending" },
+] as const
+export const TODO_INPUT = JSON.stringify({ todos: TODO_ITEMS })
+export const TODO_CONFIRMATION = "Task list updated: 1 done, 1 in progress, 1 pending.\nNow: Fix the expectation"
+
+const listTurn = [
+  ...opening(),
+  stepStarted("a1"),
+  called("a1", "call_1", "todo", TODO_INPUT),
+  event("tool.started", { messageId: m("a1"), callId: c("call_1"), effect: "read" }),
+  event("tool.settled", { messageId: m("a1"), callId: c("call_1"), outcome: "success", output: TODO_CONFIRMATION, truncation: null, attachments: [], display: { todo: { items: TODO_ITEMS.map((item) => ({ ...item })), counts: todoList(TODO_ITEMS).counts } } }),
+  stepEndedAt("a1", 4800, "tool_calls"),
+  ...answers("a2", "The expectation is wrong; fixing it is next.", 4900),
+  executionSucceeded(),
+]
+const listInput = [enqueue("u2", "Go on."), executionStarted("exe_2"), deliver("u2")]
+
+export const taskListSurvives: Scenario = {
+  title: "The model's task list survives a compaction",
+  description:
+    "The model keeps a task list with the `todo` tool: every call sends the whole list, and the current list is whatever the latest successful call in the log says. The tool keeps no state and changes nothing in the workspace (its effect class is `read`), so the call takes no snapshot and asks nobody. When the conversation is compacted, the call that set the list is among what the checkpoint replaces, and the model would no longer see its own list. So the checkpoint carries it: after the summary, the list as that call left it, one item per line. It is frozen in `compaction.ended` with the rest of the checkpoint. A client that folds the log still finds the list in the call's `display`.",
+  provider: "turn 1: a step that sets a three-item list (measured at 4,800 input tokens), then a step that answers (4,900); the summary call returns a summary; turn 2 answers",
+  contextWindow: WINDOW,
+  features: { todo: true },
+  phases: [
+    {
+      label: "the model sets its list and answers; the request is over the early threshold",
+      events: listTurn,
+      expect: { history: ["u1", "a1", "a2"], execution: null },
+    },
+    {
+      label: "the next message: the compaction's checkpoint carries the list, and the model goes on from it",
+      events: [...listInput, compactionStarted("c1", 17), compactionEnded("c1", checkpoint([...listTurn, ...listInput], 17)), baseline(), ...answers("a3", "Fixed the expectation; running the tests is next.", 1200), executionSucceeded("exe_2")],
+      expect: {
+        ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "u2" }, { id: "c1", kind: "compaction", status: "completed" }, { id: "a3" }],
+        history: ["c1", "u2", "a3"],
+        execution: null,
+      },
+    },
+  ],
+}
+
 export const compactionScenarios = [
   atUserBoundary,
   midTurn,
@@ -412,4 +465,5 @@ export const compactionScenarios = [
   summaryFallback,
   interruptedCompaction,
   crashedCompaction,
+  taskListSurvives,
 ]

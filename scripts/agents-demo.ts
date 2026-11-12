@@ -50,7 +50,7 @@ async function run() {
 
   const rule = (title: string) => console.log(`\n${"=".repeat(8)} ${title} ${"=".repeat(Math.max(0, 70 - title.length))}`)
   const show = (text: string) => text.replaceAll(base, "<tmp>")
-  const toolNames = ["background_output", "background_stop", "edit", "glob", "grep", "ls", "read", "report_check_failure", "shell", "skill", "subagent", "write"]
+  const toolNames = ["background_output", "background_stop", "edit", "glob", "grep", "ls", "read", "report_check_failure", "shell", "skill", "subagent", "todo", "write"]
 
   rule("Agents: discovery (for the user)")
   const agents = discoverAgents({ cwd, configDir })

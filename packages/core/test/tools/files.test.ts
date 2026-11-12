@@ -10,7 +10,7 @@ describe("standard tools", () => {
   test("are sorted by name, have supported schemas and do not depend on the machine", () => {
     const first = workspace()
     const second = workspace({ grep: { ripgrep: null }, shell: { shell: "/bin/sh" } })
-    expect(first.tools.map((tool) => tool.name)).toEqual(["edit", "glob", "grep", "ls", "read", "shell", "write"])
+    expect(first.tools.map((tool) => tool.name)).toEqual(["edit", "glob", "grep", "ls", "read", "shell", "todo", "write"])
     for (const tool of first.tools) compileSchema(tool.inputSchema)
     expect(first.tools.map(specOf)).toEqual(second.tools.map(specOf))
     expect(Object.fromEntries(first.tools.map((tool) => [tool.name, tool.effect]))).toEqual({
@@ -20,6 +20,7 @@ describe("standard tools", () => {
       ls: "read",
       read: "read",
       shell: "exec",
+      todo: "read",
       write: "write",
     })
   })

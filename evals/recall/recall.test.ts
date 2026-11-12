@@ -205,7 +205,7 @@ describe("the engine strategy: the real engine, a real store, the real history t
     // What the model would be sent is what the context strategies render, item for item, plus that marker.
     const request = buildRequest(projection, { toolChoice: "auto" })
     expect(request.input.slice(0, -1)).toEqual(render(session.messages))
-    expect(request.tools.map((tool) => tool.name)).toEqual(["edit", "glob", "grep", "history_read", "history_search", "ls", "read", "shell", "write"])
+    expect(request.tools.map((tool) => tool.name)).toEqual(["edit", "glob", "grep", "history_read", "history_search", "ls", "read", "shell", "todo", "write"])
     store.close()
   })
 

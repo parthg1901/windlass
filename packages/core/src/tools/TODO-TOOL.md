@@ -1,7 +1,9 @@
 # The `todo` tool, for the integrator
 
-`todo.ts` exports `todoTool()`, a standard tool with a constant spec. It is not in any tool list yet:
-`tools/index.ts` and the engine belong to other tracks.
+`todo.ts` exports `todoTool()`, a standard tool with a constant spec. It is wired: `createStandardTools`
+(`tools/index.ts`) has it, so it is in every session's frozen tool list from the first baseline, and a compaction's
+checkpoint carries the list (`engine.ts`, `compact`; `context/checkpoint.ts`, `todos`). What follows is the contract
+as it was written for that wiring; the part about clients is still to do.
 
 ## What it does
 

@@ -52,7 +52,9 @@ import {
 import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, SECOND_FIX } from "../scenarios/verification.ts"
-import type { ToolContext } from "../../src/tool/tool.ts"
+import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
+import { currentTodos, todoTool } from "../../src/tools/todo.ts"
+import { TODO_INPUT } from "../scenarios/compaction.ts"
 import { HARNESS_ORIGIN } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
 import { fixtureServer, waitFor } from "../mcp/helpers.ts"
@@ -826,6 +828,28 @@ const PLAYS: Record<string, Play> = {
     expect(after!.input[1]).toEqual({ type: "message", role: "user", content: [{ type: "text", text: say[1]! }] })
   },
 
+  "The model's task list survives a compaction": async (h, say) => {
+    h.provider.enqueue(
+      [call("call_1", "todo", JSON.parse(TODO_INPUT) as Json), at(4800)],
+      answersAt("The expectation is wrong; fixing it is next.", 4900),
+      summary(),
+      answersAt("Fixed the expectation; running the tests is next.", 1200),
+    )
+    h.create().send(say[0]!)
+    await h.settled()
+    h.session.send(say[1]!)
+    await h.settled()
+    // The request after the compaction: the checkpoint with the list as the call left it, then the new message.
+    const after = h.provider.requests.at(-1)!
+    expect(after.input).toHaveLength(2)
+    const shown = JSON.stringify(after.input[0])
+    expect(shown).toContain("[x] Read the failing test\\n[>] Fix the expectation\\n[ ] Run the tests")
+    // The tool list is the same before and after, and a client still folds the list out of the log.
+    expect(after.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(after.tools.map((tool) => tool.name)).toContain("todo")
+    expect(currentTodos(h.session.projection().messages)?.counts).toEqual({ pending: 1, in_progress: 1, done: 1 })
+  },
+
   "A compaction in the middle of a long turn": async (h, say) => {
     h.provider.enqueue(
       readsAt("build.ts", 3000),
@@ -1293,6 +1317,7 @@ describe("the loop writes each scenario's events", () => {
           ? { mcp: { startWaitMs: 0, probeMs: 300, graceMs: 500, dropAfterMs: 200 }, userConfig: { verify: { mode: "off" as const }, mcp: { servers: { fx: fixtureServer(["--only", "echo", "--startup-delay", "300"]) } } } }
           : {}),
         ...(features?.wake === true ? { wake: {} } : {}),
+        ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
         tools,
         limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET },
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
@@ -1332,7 +1357,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(90)
+    expect(scenarios).toHaveLength(91)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })
