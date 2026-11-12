@@ -1,55 +1,48 @@
 # Windlass
 
 A coding agent for the terminal: you describe a change, and it reads your code, edits files and runs commands in
-your project until the change is done. Commands run in an operating-system sandbox, edits can be undone, and every
-session is kept on disk so it can be resumed. It is one program, `windlass` (`wl` for short, wherever it is installed), with a line interface, a full-screen
-interface, and a server for editors (the Agent Client Protocol).
+your project until the change is done. It is one program, `windlass` (`wl` for short), with a line interface, a
+full-screen interface, and a server for editors (the Agent Client Protocol).
 
-**State of the project.** It works on Linux (built and run on arm64). macOS and Linux x64 executables can be built,
-but have never been run. The only model provider is a ChatGPT plan, through "Sign in with ChatGPT". Nothing is
-published: there is no package, no download and no release; you build it from this repository.
+## What it does
 
-## Requirements
+- **Works in your project.** It reads, searches, edits and runs commands, then runs the checks you configured
+  (tests, a type check) and carries on until they pass or says which still fail.
+- **Asks before what matters.** Commands run in an operating-system sandbox without network; what needs more asks
+  you first. [docs/safety.md](docs/safety.md) says exactly what runs unasked.
+- **Can be undone.** `/undo` takes the files and the conversation back to before your last message.
+- **Keeps every session.** Resume one later, fork it to try another way, or work in several at once.
+- **Is yours to shape.** Project instructions (`AGENTS.md`), agents, skills, slash commands, hooks, MCP servers,
+  language-server diagnostics, subagents and wake-ups, each with a page under [docs/](docs/).
 
-- To build: [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed (`bun install`).
-- To run: Linux or macOS, a ChatGPT plan, and these programs on `PATH`:
-  - `bwrap` (bubblewrap) on Linux, for the sandbox. Without it no command runs sandboxed, and every command asks first.
-  - GNU `env` 8.31 or newer (coreutils), so that a stopped command gets time to finish.
-  - `git` 2.25 or newer, for undo. Without it `/undo` cannot restore files.
+## Install
 
-`sh scripts/install.sh --check` says which of these this machine has, and what each missing one costs.
-
-## Build and install
+You need [Bun](https://bun.sh) 1.4 to build, and at run time `git`, GNU `env` (coreutils) and, on Linux, `bwrap`
+(bubblewrap) for the sandbox. In a checkout of this repository:
 
 ```sh
+bun install
 bun scripts/build.ts
 sh scripts/install.sh
 windlass --version
 ```
 
-The first builds `dist/windlass-<os>-<arch>` for this machine (about 95 MB: Bun's runtime, the program, and the full-screen
-interface's native library). The second copies it to `~/.local/bin/windlass`, checks the requirements, and tells you if
-that directory is not on your `PATH` (it asks before touching a shell profile). `bun scripts/build.ts --all` builds
-all four targets; see the top of `scripts/build.ts` for what each includes. `sh scripts/install.sh --uninstall`
-removes the program and keeps your sessions.
+This builds one executable for your machine and copies it to `~/.local/bin/windlass`. The install script says which
+requirements are missing and what each one costs; `sh scripts/install.sh --check` only checks. The
+[user guide](docs/user-guide.md#installing) has the details, uninstalling, and running from source.
 
-You can also run it from source without building: `bun packages/cli/src/main.ts` instead of `windlass`.
-
-## Sign in
+Then sign in with your ChatGPT plan:
 
 ```sh
 windlass login
-windlass login status
 ```
 
-On a machine with a browser, `windlass login` opens it. On a remote machine it prints an address: open it in a browser
-anywhere, approve, and the browser ends on a page at `127.0.0.1` that fails to load. Copy that page's address and
-paste it at the prompt (it is not shown, and it never goes on the command line). `windlass login status` says who is
-signed in; it never prints a token.
+It opens a browser, or on a remote machine prints an address to open anywhere
+([how](docs/user-guide.md#signing-in)).
 
-## A first session (five minutes)
+## Quickstart
 
-Try the interface without a model first: the demos are scripted sessions, played without a model or a sign-in.
+See it work without a model or a sign-in: the demos are scripted sessions.
 
 ```sh
 windlass --demo list
@@ -62,27 +55,17 @@ In a project of yours, give it one task and let it finish:
 windlass --model gpt-6-luna --effort low "the add test fails; find out why and fix it"
 ```
 
-It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 4 steps · 7.5s`.
-The exit code says how it went (0 done, 1 failed, 2 a usage error such as a mistyped option, 3 done but the
-project's checks still fail, 4 stopped because a tool call needed your approval and nobody was there).
+It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 6 steps · 16s`.
 
-Work interactively: run `windlass` with no prompt. It names the session it opened (`new session ses_…`, or for `-c` the
-one it resumed, with its title and turns), and on leaving prints how to resume it. Type a message and press Enter.
+Or work interactively: type a message and press Enter.
 
 ```sh
 windlass
 ```
 
-- **Steer a running turn:** type while the agent works and press Enter. The message is sent at once and the agent
-  reads it after its current step (`↳ delivered to the agent: ...`). `/queue <message>` holds it until the turn ends.
-- **Undo:** `/undo` at the prompt takes the files and the conversation back to before your last message, and shows
-  what will change first. `/redo` brings it back. `/diff` shows what the last turn changed.
-- **Work as an agent:** `windlass --agent reviewer` starts the session as an agent you defined (its own instructions, and
-  what it may do); `/agent` lists them and switches. `/rename <title>` names the session, and `/compact` makes room
-  in a long one.
-- **Stop:** Ctrl-C stops the agent; Ctrl-D leaves.
-- **Continue later:** `windlass -c` resumes the most recent session in this directory; `windlass fork --turn 2` starts a new
-  session with the conversation up to the end of its second turn.
+- Type while the agent works to steer it; `/queue <message>` holds a message until the turn ends.
+- `/undo` and `/redo` at the prompt; `/diff` shows what the last turn changed; `/help` lists every command.
+- Ctrl-C stops the agent; Ctrl-D leaves. `windlass -c` resumes the most recent session in this directory.
 
 The full-screen interface does the same in one screen, with a panel for tokens and the prompt cache:
 
@@ -90,51 +73,29 @@ The full-screen interface does the same in one screen, with a panel for tokens a
 windlass tui
 ```
 
-`/help` lists the commands and keys in both. A `/word` that is not a command is never sent to the model; to send a
-message that starts with a slash, begin it with two (`//etc` sends `/etc`).
+## Limits
 
-| Command | Line interface (`windlass`) | Full-screen (`windlass tui`) |
-|---|---|---|
-| `/help` | the commands and keys | the keys and commands |
-| `/undo`, `/redo` | yes | yes |
-| `/diff` | the last turn's changes | the selected step's or turn's, in a reader |
-| `/approval [ask\|auto\|full]` | yes | yes, with a picker |
-| `/clear-taint` | yes | yes |
-| `/agent [name\|none]` | the agents and the one in force; a name switches | yes, with a picker |
-| `/rename <title>` | yes | yes |
-| `/compact` | yes | yes |
-| `/mcp [approve <server>]` | the MCP servers and their state; approves one the project names | yes |
-| `/hooks [approve <hook>]` | the hooks, when each runs and its state; approves one the project names | yes |
-| `/lsp [approve <server>]` | the language servers that add diagnostics to edits; approves one the project names | yes |
-| `/skills` | the skills the model can load here | yes |
-| `/wakeups [cancel\|secret <id>]` | the session's wake-ups; cancels one, shows a webhook's secret | yes |
-| `/memory [confirm\|reject\|renew\|forget <id>]` | the notes later sessions are given, and the ones waiting for you | yes |
-| `/remember [--me] <text>`, `/forget <id>` | save a note, retract one (memory is off unless turned on) | yes |
-| `/queue <message>` | yes | yes (or Ctrl-T) |
-| `/exit`, `/quit` | yes | yes |
-| `/fork [<turn>] [copy]` | `windlass fork` instead | yes |
-| `/sessions`, `/new`, `/model` | `--list-sessions`, `-c`, `--session`, `-m` instead | yes |
-| `/reconnect`, `/panel`, `/debug` | | yes |
+- **Linux on arm64 is where it is used.** Executables for Linux x64 and macOS can be built but are untested, and
+  there is no Windows version.
+- **A ChatGPT plan is required.** The only way to reach a model is "Sign in with ChatGPT": no API keys, no other
+  providers, no local models.
+- **You build it yourself.** There is no package and no download.
+- **The sandbox needs `bwrap` on Linux.** Without it no command runs sandboxed, and every command asks first.
+- **Sessions stay on your machine.** They are files in your home directory; nothing is synchronised or shared.
 
-## Where next
+## Documentation
 
-- [docs/user-guide.md](docs/user-guide.md): sessions, models, approvals and the sandbox, configuration, checks, undo,
-  compaction, exit codes, the data directory, environment variables.
-- [docs/troubleshooting.md](docs/troubleshooting.md): the errors you are likely to meet, and what to do.
-- [docs/safety.md](docs/safety.md): what the agent may do without asking, and what the sandbox does and does not stop.
-- [docs/acp.md](docs/acp.md): using it from an editor.
-- [docs/subagents.md](docs/subagents.md): subagents, a worktree of their own, background commands.
-- [docs/forks.md](docs/forks.md): forking a session, with or without a copy of the workspace.
-- [docs/replay.md](docs/replay.md): replaying a recorded session against a changed prompt, and what that can tell you.
-- [docs/mcp.md](docs/mcp.md): MCP servers, and why a server a project names waits for your approval.
-- [docs/skills.md](docs/skills.md): skills and where they live.
-- [docs/wake-ups.md](docs/wake-ups.md): timers, checks and webhooks that wake a session.
-- [docs/memory.md](docs/memory.md): notes that persist across sessions (off by default).
-- [docs/agents.md](docs/agents.md): agents: defining one, restrictions, switching, subagents as agents.
-- [docs/hooks.md](docs/hooks.md): commands that refuse a call, add a note, or keep a turn from ending.
-- [docs/diagnostics.md](docs/diagnostics.md): language-server diagnostics after an edit.
-- [docs/task-list.md](docs/task-list.md): the model's task list.
-- [docs/event-log.md](docs/event-log.md): the format of a session's log.
+- [User guide](docs/user-guide.md): installing, sessions, models, approvals, configuration, checks, the commands
+  at the prompt, undo, compaction, exit codes, the data directory, environment variables.
+- [Troubleshooting](docs/troubleshooting.md): the errors you are likely to meet, and what to do.
+- [Safety](docs/safety.md): what the agent may do without asking, and what the sandbox does and does not stop.
+- Features: [agents](docs/agents.md), [skills](docs/skills.md), [slash commands](docs/commands.md),
+  [hooks](docs/hooks.md), [MCP servers](docs/mcp.md), [diagnostics](docs/diagnostics.md),
+  [subagents](docs/subagents.md), [the task list](docs/task-list.md), [forks](docs/forks.md),
+  [wake-ups](docs/wake-ups.md), [memory](docs/memory.md), [telemetry](docs/telemetry.md),
+  [replay](docs/replay.md).
+- For editors and tools: [the protocol](docs/acp.md), [the session log's format](docs/event-log.md),
+  [the architecture](docs/architecture.md).
 - `windlass --help`: every option and exit code.
 
 ## Licence

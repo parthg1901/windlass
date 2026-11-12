@@ -12,8 +12,8 @@
  *   source reads is in the user guide.
  * - The turn endings the user guide gives for each interface are the ones
  *   its source draws; the data directory's table and the work directory are
- *   the paths the program keeps; the README's table of slash commands names
- *   every command of both interfaces; the troubleshooting page's
+ *   the paths the program keeps; the user guide's table of slash commands
+ *   names every command of both interfaces; the troubleshooting page's
  *   configuration error lists the validator's keys.
  * - Every name that comes from `brand` (the title, the binary, directory
  *   names, environment variable prefixes) is the brand's: a rename makes this
@@ -79,6 +79,8 @@ describe("commands in the documentation", () => {
         continue
       }
       if (command === "bun") {
+        // Installing the repository's dependencies, before the build.
+        if (args.join(" ") === "install") continue
         expect(args[0], where).toBe("scripts/build.ts")
         expect(parseBuildArgs(args.slice(1), hostTarget("linux", "x64")), where).not.toHaveProperty("error")
         continue
@@ -262,10 +264,10 @@ describe("the user guide against what the program prints and keeps", () => {
   })
 })
 
-describe("the README's table of slash commands", () => {
-  const readme = text["README.md"]
-  const start = readme.indexOf("| Command | Line interface")
-  const rows = readme.slice(start).split("\n").slice(2)
+describe("the user guide's table of slash commands", () => {
+  const guide = text["docs/user-guide.md"]
+  const start = guide.indexOf("| Command | Line interface")
+  const rows = guide.slice(start).split("\n").slice(2)
   const table = rows.slice(0, rows.findIndex((row) => !row.startsWith("|"))).map((row) => row.replace(/\\\|/g, "/").split("|").map((cell) => cell.trim()))
   /** The commands a row names, and whether the row says each interface has them. */
   const named = table.flatMap(([, commandCell, lineCell, screenCell]) =>
@@ -294,6 +296,19 @@ describe("names from the brand", () => {
 
   test("the README names each alias of the binary", () => {
     for (const alias of brand.aliases) expect(text["README.md"]).toContain(`\`${alias}\``)
+  })
+
+  test("the README is a front page: short, with the table of commands in the user guide and a link to every user page", () => {
+    const readme = text["README.md"]
+    expect(readme.split("\n").length).toBeLessThanOrEqual(120)
+    expect(readme).not.toContain("| Command | Line interface")
+    expect(text["docs/user-guide.md"].indexOf("| Command | Line interface")).toBeGreaterThan(text["docs/user-guide.md"].indexOf("\n## Commands at the prompt\n"))
+    // Every page under docs/ is linked, apart from the generated scenarios; and every link leads to a file or a section that exists.
+    for (const page of readdirSync(join(ROOT, "docs")).filter((name) => name.endsWith(".md") && name !== "step-loop-scenarios.md")) expect(readme, page).toContain(`(docs/${page}`)
+    for (const [, file, anchor] of readme.matchAll(/\]\((docs\/[a-z-]+\.md)(?:#([a-z-]+))?\)/g)) {
+      const page = readFileSync(join(ROOT, file!), "utf8")
+      if (anchor !== undefined) expect(page.split("\n").filter((line) => line.startsWith("## ")).map((line) => line.slice(3).toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-")), `${file}#${anchor}`).toContain(anchor)
+    }
   })
 
   test("directories are the brand's", () => {

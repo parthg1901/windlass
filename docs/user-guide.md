@@ -4,6 +4,44 @@ How to use `windlass` day to day. `windlass --help` is the reference for every o
 Every command and message on this page was run against the program, and `test/release/docs.test.ts` checks the
 options, configuration keys, exit codes and environment variables here against the code.
 
+## Installing
+
+To build you need [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed (`bun install`).
+To run you need Linux or macOS, a ChatGPT plan, and these programs on `PATH`:
+
+- `bwrap` (bubblewrap) on Linux, for the sandbox. Without it no command runs sandboxed, and every command asks first.
+- GNU `env` 8.31 or newer (coreutils), so that a stopped command gets time to finish.
+- `git` 2.25 or newer, for undo. Without it `/undo` cannot restore files.
+
+`sh scripts/install.sh --check` says which of these this machine has, and what each missing one costs.
+
+```sh
+bun scripts/build.ts
+sh scripts/install.sh
+windlass --version
+```
+
+The first builds `dist/windlass-<os>-<arch>` for this machine (about 95 MB: Bun's runtime, the program, and the
+full-screen interface's native library). The second copies it to `~/.local/bin/windlass`, links `wl` to it, checks
+the requirements, and tells you if that directory is not on your `PATH` (it asks before touching a shell profile).
+`bun scripts/build.ts --all` builds all four targets (Linux and macOS, x64 and arm64); see the top of
+`scripts/build.ts` for what each includes. `sh scripts/install.sh --uninstall` removes the program and keeps your
+sessions.
+
+You can also run it from source without building: `bun packages/cli/src/main.ts` instead of `windlass`.
+
+## Signing in
+
+```sh
+windlass login
+windlass login status
+```
+
+On a machine with a browser, `windlass login` opens it. On a remote machine it prints an address: open it in a browser
+anywhere, approve, and the browser ends on a page at `127.0.0.1` that fails to load. Copy that page's address and
+paste it at the prompt (it is not shown, and it never goes on the command line). `windlass login status` says who is
+signed in; it never prints a token.
+
 ## Sessions
 
 Every conversation is a session, kept on disk until you delete it. A session belongs to the directory it was
@@ -74,8 +112,9 @@ windlass --agent reviewer "review the last commit"
 - The session line names the agent (`new session ses_… · agent reviewer`), the full-screen panel has an `agent`
   field, and a switch is a line in the conversation (`⇄ agent reviewer → docs (restricted)`), also in a session
   opened again.
-- A call the agent may not make is not run, and says whose rule it was: `○ not run: the reviewer agent may not
-  change files`. An agent can only take away: it never lets a call run that your approval mode would ask about.
+- A call the agent may not make is not run, and its row says who refused it and the rule:
+  `⊘ refused by the reviewer agent: it may not change files`. An agent can only take away: it never lets a call
+  run that your approval mode would ask about.
 
 ## The task list
 
@@ -160,8 +199,8 @@ Every key:
 | `agents` | agents: `paths` (extra directories), `disabled` (names to leave out) and `default` (the agent a new session runs as; from your own file only) |
 | `hooks` | hooks: commands run before a tool call (`beforeTool`: can refuse it), after one (`afterTool`: can add a note to its result) and when a turn is about to end (`stop`: can send the agent back, at most `maxStopRounds` times); a project's hooks are added to yours and none runs until you approve it |
 | `lsp` | language servers: `servers`, by name, each with a `command` and the `languages` it serves; `waitMs`, `warnings`, `maxDiagnostics`, `enabled`. After an edit, what the edit made worse is added to its result as a short note; one a project's file names is not started until you approve it |
-| `commands` | slash commands (prompt templates kept as Markdown files): `paths` (extra directories) and `disabled` (names to leave out) |
-| `telemetry` | live OpenTelemetry export of a session's spans: `enabled` (default off), `endpoint` (an OTLP/HTTP collector), `headers`, `content` (default off: no message text, tool arguments or output), `timeoutMs`. Only your own file can turn it on or say where it goes; a project's file can only turn it off |
+| `commands` | slash commands (prompt templates kept as Markdown files): `paths` (extra directories) and `disabled` (names to leave out); see [commands.md](commands.md) |
+| `telemetry` | live OpenTelemetry export of a session's spans: `enabled` (default off), `endpoint` (an OTLP/HTTP collector), `headers`, `content` (default off: no message text, tool arguments or output), `timeoutMs`. Only your own file can turn it on or say where it goes; a project's file can only turn it off; see [telemetry.md](telemetry.md) |
 
 | Key in `checks[]` | Value |
 |---|---|
@@ -231,7 +270,34 @@ In the interactive mode an entry that starts with `/<word>` is a command, never 
 A word that is not a command is not sent to the model (it would cost a request); you are told the nearest command
 instead. To send a message that really starts with a slash, begin it with two: `//etc is where the config lives`
 sends `/etc is where the config lives`. A first word with another slash in it (`/etc/hosts is wrong`) is a path and
-is sent as typed. The README has the table of the commands each interface has.
+is sent as typed. Commands of your own are files: [commands.md](commands.md).
+
+| Command | Line interface (`windlass`) | Full-screen (`windlass tui`) |
+|---|---|---|
+| `/help` | the commands and keys | the keys and commands |
+| `/undo`, `/redo` | yes | yes |
+| `/diff` | the last turn's changes | the selected step's or turn's, in a reader |
+| `/approval [ask\|auto\|full]` | yes | yes, with a picker |
+| `/clear-taint` | yes | yes |
+| `/agent [name\|none]` | the agents and the one in force; a name switches | yes, with a picker |
+| `/rename <title>` | yes | yes |
+| `/compact` | yes | yes |
+| `/mcp [approve <server>]` | the MCP servers and their state; approves one the project names | yes |
+| `/hooks [approve <hook>]` | the hooks, when each runs and its state; approves one the project names | yes |
+| `/lsp [approve <server>]` | the language servers that add diagnostics to edits; approves one the project names | yes |
+| `/skills` | the skills the model can load here | yes |
+| `/wakeups [cancel\|secret <id>]` | the session's wake-ups; cancels one, shows a webhook's secret | yes |
+| `/memory [confirm\|reject\|renew\|forget <id>]` | the notes later sessions are given, and the ones waiting for you | yes |
+| `/remember [--me] <text>`, `/forget <id>` | save a note, retract one (memory is off unless turned on) | yes |
+| `/queue <message>` | yes | yes (or Ctrl-T) |
+| `/exit`, `/quit` | yes | yes |
+| `/fork [<turn>] [copy]` | `windlass fork` instead | yes |
+| `/sessions`, `/new`, `/model` | `--list-sessions`, `-c`, `--session`, `-m` instead | yes |
+| `/reconnect`, `/panel`, `/debug` | | yes |
+
+While the agent works, a message you type and send is delivered at once and read after its current step
+(`↳ delivered to the agent: ...`); `/queue <message>` holds it until the turn ends. `/rename <title>` names the
+session, and `/compact` makes room in a long one.
 
 ## Undo and redo
 
