@@ -97,10 +97,11 @@ Reading a result:
 
 ## MCP, skills and wake-ups (wired 2026-11-12)
 
-- A one-prompt run cannot call an MCP tool in the default mode: `mcp_call` is a network-class call, nobody is there to ask, and it is refused as unattended. For a scripted or live one-shot check use `--approval full` and `"untrusted": false` on the server; interactively the question is asked.
+- A one-prompt run cannot call an MCP tool in the default mode: `mcp_call` is a network-class call, nobody is there to ask, and it is refused as unattended. For a scripted or live one-shot check use `--approval full` and `"untrusted": false` on the server; interactively the question is asked. Both are needed: with an untrusted server (the default) the model's first `mcp_search` taints the session (`Content from the MCP tool mcp_search …`), and from then on even `full` asks, so the one-shot call is refused (seen live twice, 2026-11-12).
+- `evals/dogfood/mcp-server.ts` is a user-style stdio server (legacy handshake, tools with answers the model cannot guess, `--log` of every request) and `mcp-config.ts` writes it into a throwaway user config (`--user <dir>` with `XDG_CONFIG_HOME=<dir>`) or a project config. The server's log is the proof of whether it started and what it received.
 - A server named by the PROJECT's config file is not started until the user approves it; only a server in the user's file starts by itself. Point `XDG_CONFIG_HOME` at a throwaway directory to give a run its own user config; the sign-in stays in the data directory.
 - A skill in the workspace (`.claude/skills/<name>/SKILL.md`) shows in the CLI as `· instructions updated (skills)` at the first step, then `▸ skill <name>`. Checked live: 3 requests, 3 full-request records, one provider-side miss.
-- Wake-ups fire only in a process whose engine was told to run them (`engine.wake.run`); the one-shot CLI does not.
+- Wake-ups fire only in a process whose engine was told to run them (`engine.wake.run`). As of 2026-11-12 no client passes it, the `lh acp` child of the CLI and the TUI included: a wake-up is created and never fires. Cancel every wake-up a test creates (`wake_cancel`, interactively: unattended it is refused as "writing files"), or it will fire into that session, at a cost, once a process runs the scheduler.
 - A scripted turn can finish before an `await fetch()` in the test returns: take the event index before the request.
 - `afterEach` in a shared test helper runs only for the first test file that imports it; register clean-up in each file.
 - The frozen tool list has 19 tools since this pass (13 before); the first request of a session is about 5,000 tokens.
@@ -114,3 +115,18 @@ Reading a result:
 - A queued message is its own turn; a steer belongs to the turn it steers. Fork points can be given as turns (`fork --turn N`).
 - Listing, reading, resolving an ID and forking work signed out; opening a session (`session/new`, `session/load`) still needs the sign-in.
 
+## Second dogfood pass (2026-11-12): what testing the newer features taught
+
+- `evals/dogfood/events.ts <id> [--type <prefix>]` prints a session's events read-only: the quickest way to see how many compactions or summary calls happened, a fork's lineage, what an MCP catalogue said. The event table is `event` (not `events`); the session row has `cwd`, `title`, `parent_id`.
+- `calls.ts --cwd` now counts descendants (subagents, forks in copies, replays) through the lineage in `session.created`: they work under `<data dir>-work/`, and a count by directory missed them. A replay's lineage names its recording, not a parent.
+- Compaction on demand: `LIGHT_HARNESS_TEST_CONTEXT_WINDOW=20000` (usable window 16,000 after the 20% output reserve; compaction is due from about 10,400 tokens at a user message and at once from 12,800). Two `-c` turns that each read a 10 to 20 KB file get there; three big reads in one turn compact in the middle of it. The TUI's panel still shows the model's real window (272k) under the variable.
+- The line interface shows nothing when a session is resumed (`-c` with no prompt): no history, no ID. Read a resumed session in the TUI or with `events.ts`.
+- `lh fork --through <n>` takes an event number, which only `events.ts` shows; a number between a message's `inbox.enqueued` and its `inbox.delivered` makes a fork without that message.
+- A fork made with `--copy`, and a replay under `execute`, work in a copy without `node_modules` and without `.git`: the project's checks fail there (`could not start` for `tsc`). Expect exit code 3 from such a fork's first edit.
+- `lh replay` prints the divergence report only; the "compared on what it did (reads ignored)" part that `docs/replay.md` says carries the signal is printed by `bun scripts/replay.ts` alone.
+- A foreground subagent's running command is invisible in the line interface until it settles (only `⋯ running subagent …`); the TUI shows `now: shell …`. To interrupt at the right moment, poll `pgrep -a -x sleep` for the child's command, not the screen: the task text already contains the command.
+- Background commands and subagent children are killed on Ctrl-C and on exit (checked with `pgrep -a -x sleep`). The output path a background start prints (`/tmp/.spill/…`) is the sandbox's view; on the host it is `/tmp/<brand.directory>-<uid>/<session>/.spill/`.
+- Images: `evals/dogfood/make-image.ts` makes PNGs with checkable answers. The live model described both correctly (2 of 2) after `read`; the tool row says `1 line`.
+- Text typed into the line interface before its first `›` is not sent although it looks sent. Under load (load average 11 on two cores) start-up took over 3 s: wait for `^›` before typing.
+- An interactive start that sends nothing, and `/fork` in a new TUI session, leave empty `(untitled)` sessions that `--list-sessions` shows and `-c` may pick.
+- Timing on this machine depends on other agents' load: say the load average with any start-up figure (`uptime`).

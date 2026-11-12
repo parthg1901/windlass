@@ -4,6 +4,10 @@
 //   bun evals/dogfood/calls.ts --cwd <workspace> [--cwd <another>]...   # every session started in these directories
 //   bun evals/dogfood/calls.ts --since <minutes>                        # every session used in the last N minutes
 //
+// With --cwd, sessions that descend from a counted one are counted too, wherever they work: subagents (also in
+// their own worktree), forks (also in a copy of the workspace) and replays, found through the lineage in their
+// `session.created` event. A replay or a copy works under `<data dir>-work/`, so a count by directory alone misses it.
+//
 // Reads the session databases in the data directory read-only and prints one line per session:
 // its ID, requests, tokens in/cached/out, and title. It prints counts only, never message text or
 // credentials, and it never writes. The data directory is `$XDG_DATA_HOME/<brand.directory>`, or
@@ -51,26 +55,57 @@ interface Row {
   output: number
 }
 
+/** Session IDs named anywhere in a session's lineage (its parent, the recording a replay replays, ...). */
+function lineageParents(db: Database): string[] {
+  const created = db.query("SELECT data FROM event WHERE type = 'session.created' ORDER BY seq LIMIT 1").get() as { data: string } | null
+  if (created === null) return []
+  const found: string[] = []
+  const walk = (value: unknown): void => {
+    if (typeof value === "string" && /^ses_[0-9a-f]{24}$/.test(value)) found.push(value)
+    else if (Array.isArray(value)) value.forEach(walk)
+    else if (value !== null && typeof value === "object") Object.values(value).forEach(walk)
+  }
+  walk((JSON.parse(created.data) as { lineage?: unknown }).lineage ?? null)
+  return found
+}
+
 const rows: Row[] = []
+const others: { row: Row; parents: string[] }[] = []
 for (const file of readdirSync(sessions)) {
   if (!file.endsWith(".db")) continue
   let db: Database | undefined
   try {
     db = new Database(join(sessions, file), { readonly: true })
     for (const session of db.query("SELECT id, title, cwd, time_updated AS updated FROM session").all() as Omit<Row, "requests" | "input" | "cached" | "output">[]) {
-      if (dirs.length > 0 && !dirs.includes(session.cwd)) continue
       if (session.updated < cutoff) continue
       const usage = db
         .query(
           "SELECT COUNT(*) AS requests, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(cached_input_tokens),0) AS cached, COALESCE(SUM(output_tokens),0) AS output FROM request WHERE session_id = ?",
         )
         .get(session.id) as Pick<Row, "requests" | "input" | "cached" | "output">
-      rows.push({ ...session, ...usage })
+      const row = { ...session, ...usage }
+      if (dirs.length === 0 || dirs.includes(session.cwd)) rows.push(row)
+      else others.push({ row, parents: lineageParents(db) })
     }
   } catch {
     // A session being written by a running process can be busy; skip it rather than wait.
   } finally {
     db?.close()
+  }
+}
+
+// Descendants of counted sessions, to a fixed point (a subagent of a fork of a counted session counts).
+if (dirs.length > 0) {
+  const counted = new Set(rows.map((row) => row.id))
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const other of others) {
+      if (counted.has(other.row.id) || !other.parents.some((parent) => counted.has(parent))) continue
+      counted.add(other.row.id)
+      rows.push(other.row)
+      grew = true
+    }
   }
 }
 
