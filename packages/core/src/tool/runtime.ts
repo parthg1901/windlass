@@ -13,7 +13,8 @@
  *      refused                  -> `denied`, error     (onStart is not called)
  *      aborted meanwhile        -> `not_started`       (onStart is not called)
  *   6. onStart(), then execute:
- *      returned                 -> `completed`, the tool's status, output capped once
+ *      returned                 -> afterExecute(), when the caller gave one (it may append to the output),
+ *                                  then `completed`, the tool's status, output capped once
  *      threw                    -> `crashed`, error for `read` tools, effect_unknown otherwise
  */
 import type { BlobRef } from "../content.ts"
@@ -89,6 +90,18 @@ export interface RunHooks {
    * run and the call's promise rejects with that error.
    */
   readonly onStart?: () => void
+  /**
+   * Called after `execute` returned (not for a tool that threw) and before
+   * the output is capped: the one place a caller may add to a result, which
+   * is then capped once and stored once with what was added. It is given the
+   * tool, its validated input and the result as the tool returned it, and
+   * resolves with the result to record: the same one, or one whose `output`
+   * begins with the tool's output byte for byte and whose other fields are
+   * the tool's own. A tool that capped itself (`truncation` set) keeps what
+   * is added after its capped text; the runtime does not cap it again. It
+   * must not reject: if it does, the call's promise rejects.
+   */
+  readonly afterExecute?: (tool: AnyTool, input: Json, result: ToolResult) => ToolResult | Promise<ToolResult>
 }
 
 export interface ToolRuntimeOptions {
@@ -148,7 +161,8 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     }
     const ran = await execute(entry.tool, input.value, context)
     if (!ran.ok) return crashed(entry.tool, ran.error)
-    const result = decided?.note === undefined ? ran : { ok: true as const, value: { ...ran.value, output: `${decided.note}\n\n${ran.value.output}` } }
+    const noted = hooks.afterExecute === undefined ? ran.value : await hooks.afterExecute(entry.tool, input.value, ran.value)
+    const result = { ok: true as const, value: decided?.note === undefined ? noted : { ...noted, output: `${decided.note}\n\n${noted.output}` } }
     if (result.value.truncation !== null)
       return { kind: "completed", settlement: { ...settlementOf(result.value), outcome: result.value.status } }
     const capped = await capOutput(redacted(result.value.output), call.context.spillDir ?? options.spillDir, limits)

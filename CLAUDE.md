@@ -4,7 +4,7 @@ A coding-agent harness: a session is an append-only event log in SQLite, and eve
 
 ## Rules that are easy to break
 
-- **The product's name lives in one file.** Read every name, binary name, alias and directory name from `packages/core/src/brand.ts`. Never type the name in code, tests or protocol identifiers.
+- **The product name is a placeholder.** Read every name, binary name and directory name from `packages/core/src/brand.ts`. Never type the name in code, tests or protocol identifiers.
 - **One provider.** ChatGPT-plan sign-in through OpenAI's Responses API. Do not add API-key paths or other providers.
 - **Nothing is published.** Local commits only. Never push, add a remote, or publish a package.
 - **Commits:** one line, conventional style (`feat(engine): ...`), no AI attribution or co-author lines. Say what changed for someone reading the log later: no agent or branch names, no planning words (pass, wave, prep, leaf, spine), no finding numbers. No merge commits: rebase and fast-forward. In a checkout shared with other agents, never `git add -A`; commit with an explicit path list: `git commit -m "..." -- <paths>`.

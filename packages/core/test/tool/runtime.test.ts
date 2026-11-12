@@ -238,3 +238,66 @@ describe("tool runtime", () => {
     expect(outcome).toMatchObject({ kind: "crashed", settlement: { outcome: "error", output: expect.stringContaining("no blob store") } })
   })
 })
+
+describe("the step after a tool ran", () => {
+  test("what the caller appends is capped once with the tool's output, and the tool's output comes first byte for byte", async () => {
+    const spillDir = `${tempDir()}/spill`
+    const runtime = createToolRuntime({ tools: [echo()], spillDir, putBlob: noBlobStore })
+    const seen: { tool: string; input: unknown; output: string }[] = []
+    const outcome = await runtime.run(
+      { name: "echo", argumentsText: '{"text":"hi"}', context: context(tempDir()) },
+      {
+        afterExecute: async (tool, input, result) => {
+          seen.push({ tool: tool.name, input, output: result.output })
+          return { ...result, output: `${result.output}\n\n[note]\nlook again` }
+        },
+      },
+    )
+    expect(seen).toEqual([{ tool: "echo", input: { text: "hi" }, output: "hi" }])
+    expect(outcome).toEqual({ kind: "completed", settlement: { outcome: "success", output: "hi\n\n[note]\nlook again", truncation: null, attachments: [], display: null } })
+    // A long output with a note: one cap, over the whole text.
+    const long = "x".repeat(OUTPUT_LIMITS.maxBytes + 1000)
+    const capped = await runtime.run({ name: "echo", argumentsText: JSON.stringify({ text: long }), context: context(tempDir()) }, { afterExecute: (_tool, _input, result) => ({ ...result, output: `${result.output}\n\n[note]` }) })
+    if (capped.kind !== "completed") throw new Error("expected a completed call")
+    expect(capped.settlement.truncation?.originalBytes).toBe(long.length + "\n\n[note]".length)
+    expect(readFileSync(capped.settlement.truncation!.spillPath!, "utf8")).toBe(`${long}\n\n[note]`)
+  })
+
+  test("it comes after the tool ran and is not called for a tool that threw, was refused or never started", async () => {
+    const order: string[] = []
+    const runtime = createToolRuntime({ tools: [echo(), crasher("crash", "write")], spillDir: `${tempDir()}/spill`, putBlob: noBlobStore })
+    const hooks = {
+      onStart: () => void order.push("started"),
+      afterExecute: (_tool: AnyTool, _input: unknown, result: ToolResult) => {
+        order.push("after")
+        return result
+      },
+    }
+    await runtime.run({ name: "echo", argumentsText: '{"text":"hi"}', context: context(tempDir()) }, hooks)
+    expect(order).toEqual(["started", "after"])
+    order.length = 0
+    expect((await runtime.run({ name: "crash", argumentsText: "{}", context: context(tempDir()) }, hooks)).kind).toBe("crashed")
+    expect((await runtime.run({ name: "echo", argumentsText: "{", context: context(tempDir()) }, hooks)).kind).toBe("refused")
+    expect((await runtime.run({ name: "echo", argumentsText: '{"text":"hi"}', context: context(tempDir()) }, { ...hooks, authorize: () => ({ kind: "refuse", output: "no" }) })).kind).toBe("denied")
+    const interrupt = createInterrupt()
+    interrupt.interrupt("user")
+    expect((await runtime.run({ name: "echo", argumentsText: '{"text":"hi"}', context: context(tempDir(), { signal: interrupt.signal }) }, hooks)).kind).toBe("not_started")
+    expect(order).toEqual(["started"])
+  })
+
+  test("a tool that capped itself keeps what is appended after its capped text, and an approval note still comes first", async () => {
+    const capped: Tool<Record<string, never>> = {
+      name: "capped",
+      description: "Caps itself.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      effect: "exec",
+      execute: async () => ({ ...ok("head … tail"), truncation: { originalBytes: 5000, originalLines: 90, spillPath: null } }),
+    }
+    const runtime = createToolRuntime({ tools: [capped as unknown as AnyTool], spillDir: `${tempDir()}/spill`, putBlob: noBlobStore })
+    const outcome = await runtime.run(
+      { name: "capped", argumentsText: "{}", context: context(tempDir()) },
+      { authorize: () => ({ kind: "run", note: "[approved]" }), afterExecute: (_tool, _input, result) => ({ ...result, output: `${result.output}\n\n[note]` }) },
+    )
+    expect(outcome).toMatchObject({ kind: "completed", settlement: { output: "[approved]\n\nhead … tail\n\n[note]", truncation: { originalBytes: 5000, originalLines: 90, spillPath: null } } })
+  })
+})
