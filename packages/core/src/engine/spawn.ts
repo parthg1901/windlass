@@ -117,6 +117,9 @@ export const SPAWN_TEXT = {
   startedSubagent: (child: SessionId) =>
     `Started subagent ${child} in the background. Its answer arrives as a message when it finishes. Meanwhile \`background_output\` shows what it is doing, \`background_stop\` stops it, and \`subagent\` with \`session\` sends it a follow-up.`,
   commandLostDetail: "The harness restarted while it ran, and it was stopped with it.",
+  /** Why a subagent was stopped at a switch of its parent's agent; the part of a sentence that follows "It was stopped before it finished: " and ends in a full stop. */
+  stoppedForAgent: (agent: string) =>
+    `this session now runs as the agent "${agent}", and the subagent was started before that, so it is not under that agent's restrictions. Start a new subagent for what is left (call subagent without \`session\`): it runs under them`,
   commandLost: (id: string, command: string | null, logPath: string | null, watches: readonly WatchPattern[] = []) =>
     `Background command ${id} is gone: the harness restarted while it ran, and it was stopped with it.\nCommand: ${command}${logPath === null ? "" : `\nWhat it had printed is in ${logPath}.`}${watches.length === 0 ? "" : `\n${watchesEnded(watches)}`}`,
 } as const

@@ -772,7 +772,9 @@ parent's approval settings and, by default, the parent's workspace. It has a cac
 A subagent keeps the agent it started as, so a follow-up is refused when the child is not held to everything
 its parent is held to now (`heldToParent` in `engine/agents.ts`: the parent was switched to a stricter agent
 after the child was started): work handed to it would get around the parent's restrictions. The refusal tells
-the model to start a new subagent, which is given them.
+the model to start a new subagent, which is given them. For the same reason a subagent that is at work when its
+parent is switched is stopped where the switch is recorded, when it is not held to the new agent's restrictions
+(see "Agents", *A switch and the subagents at work*).
 
 **Decisions.**
 
@@ -1065,6 +1067,22 @@ Markdown file: instructions, and optionally a model, an effort and restrictions.
 - *Subagents.* `subagent` takes `agent`; the name is looked up when the call runs (a miss is an error result
   with close names and starts nothing). The child is created as the agent, with its restrictions combined with
   its parent's; a child started without `agent` by a parent that runs as an agent runs as the parent's.
+- *A switch and the subagents at work.* A subagent keeps the agent it started as, and a background one works
+  on while its parent's turn goes on, so a switch of the parent to a stricter agent would leave it doing, on the
+  parent's behalf, what the parent may no longer do. Where the switch is recorded (`applyAgentSwitch`, right
+  after `agent.switched`), every subagent of the session that is at work and not held to everything the new
+  agent holds the session to (`heldToParent`) is stopped as by its user. Its `spawn.ended` says `stopped`, with
+  the reason in `detail`; the user is told (a `diagnostic` of kind `agents`); and the model is told by the
+  message that carries the subagent's end, which names the agent and says to start a new subagent, which runs
+  under the restrictions. What the subagent had changed stays, and so does its conversation (a follow-up to it
+  is refused, as above). A subagent that is held to the new restrictions goes on, and so does every subagent at
+  a switch to no agent. A turn that only waits for its background subagents makes the switch at once
+  (`setAgent` ends the wait), not when one of them happens to finish. Stopping was chosen over holding the
+  child's further calls to the new restrictions: a child decides its calls from its own log, where its agent is
+  recorded once, and restrictions held only in the parent's memory would be gone after a restart, while
+  rewriting the child's record would tell its model about a switch nobody made in its conversation. A
+  background command is left to run: it is one call that was made while it was allowed, like a file already
+  written, and it makes no further calls.
 - *The list.* A session whose tool list has `subagent` is given the agents that exist as an appended message
   (source `agent-index`), again when the list changes, and a withdrawal when none is left.
 - *For clients.* `Engine.listAgents(cwd)`, `EngineSession.agents()`, `agent()` and `setAgent()`. Problems

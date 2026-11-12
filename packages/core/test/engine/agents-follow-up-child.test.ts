@@ -8,7 +8,8 @@
  * is held to now is refused, with a sentence that tells the model to start a new subagent. A child that was
  * started under the same agent, or under a stricter one, still takes follow-ups.
  *
- * Not covered: a background child that is still running when the user switches keeps working as it was started.
+ * A background child that is still running when the user switches is stopped where the switch is made:
+ * agents-switch-running-child.test.ts.
  */
 import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"

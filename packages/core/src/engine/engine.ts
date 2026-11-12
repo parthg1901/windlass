@@ -1815,6 +1815,9 @@ interface TurnEnding {
 
 /** What the user is told about an agent's settings. */
 const AGENT_TEXT = {
+  /** A subagent that was at work when the session was switched to an agent whose restrictions it is not held to. */
+  subagentStopped: (child: SessionId, agent: string) =>
+    `Subagent ${child} was stopped: it was started before this session ran as the agent "${agent}", so it is not under that agent's restrictions. What it had done so far stays, and so does its conversation.`,
   /** `kept`: the settings the agent `left` named that the session still runs with; `next`: the agent it switched to, `null` for none. */
   settingsKept: (left: string, kept: readonly string[], next: string | null) =>
     `The session keeps ${kept.join(" and ")}, which the agent "${left}" set: ${next === null ? "switching the agent off" : `the agent "${next}" names none, and switching to it`} does not put back what the session ran with before. Change the session's model or effort to use another.`,
@@ -1876,8 +1879,14 @@ interface LiveSpawn {
   /** A subagent that was lost to a restart and is being looked at: its end is on its way, as a message. */
   readonly lost?: boolean
   readonly command: BackgroundCommand | null
-  /** Who asked for it to stop, once someone did: an interrupt of this session, its shutdown, the stop tool, or the user stopping the call that waits for it. */
-  stopping: "interrupt" | "shutdown" | "tool" | "call" | null
+  /**
+   * Who asked for it to stop, once someone did: an interrupt of this session, its shutdown, the stop tool, the
+   * user stopping the call that waits for it, or a switch of this session to an agent whose restrictions the
+   * subagent is not held to (`agent`; the agent's name is in `stoppedFor`).
+   */
+  stopping: "interrupt" | "shutdown" | "tool" | "call" | "agent" | null
+  /** The agent this session was switched to, for a subagent that was stopped because of the switch. */
+  stoppedFor?: string
   /** What the model is told about its end, once that is recorded. */
   result: string | null
   /** The watches on a command's output that this process follows, by watch: how to stop following. */
@@ -1887,6 +1896,12 @@ interface LiveSpawn {
 }
 
 const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop", call: "the user stopped this call" } as const
+
+/** Why spawned work was stopped, as the sentence part its result carries. */
+function stoppedBy(live: Pick<LiveSpawn, "stopping" | "stoppedFor">): string | null {
+  if (live.stopping === null) return null
+  return live.stopping === "agent" ? SPAWN_TEXT.stoppedForAgent(live.stoppedFor ?? "") : STOPPED_BY[live.stopping]
+}
 
 /** The replay a session is, while it runs. Lost with the process: a replay is not taken up again. */
 interface Director {
@@ -2440,6 +2455,9 @@ class LiveSession implements EngineSession {
     // message that tells the model and the record. While a turn runs (or a claim waits to be taken up again), the
     // loop makes the switch at its next step boundary.
     if (this.run === null && this.restoring === null && projection.session.open === null && projection.session.execution === null) this.applyAgentSwitch()
+    // A turn that only waits for its background subagents is at a boundary already: it makes the switch now, so
+    // that a subagent the new agent does not hold is stopped when the user switches, not when it happens to end.
+    else this.arrival?.()
     return next
   }
 
@@ -2477,6 +2495,7 @@ class LiveSession implements EngineSession {
       ])
     }
     if (next !== null) {
+      this.stopUnheldSubagents(next)
       for (const warning of agentWarnings(this.core, next)) this.say("agents", warning)
       const models = this.core.offered()
       const settings = agentSettings(next, this.projection().session.settings, models?.map((model) => model.id))
@@ -2486,6 +2505,31 @@ class LiveSession implements EngineSession {
       else if (settings.changed) this.changeSettings(settings.settings)
     }
     this.saySettingsKept(current, next)
+  }
+
+  /**
+   * Stops the subagents of this session that are at work and are not held
+   * to everything `next` holds the session to (`heldToParent`). A subagent
+   * keeps the agent it started as, so one started before the switch would
+   * go on doing, on this session's behalf, what the session itself may no
+   * longer do. It is stopped as by its user (its conversation stays, and
+   * what it changed so far stays); `spawn.ended` says `stopped` with the
+   * reason, the user is told, and the model is told with the message that
+   * carries the subagent's end, which says to start a new one: that one
+   * runs under the restrictions. A subagent that is held to them goes on.
+   * A background command is one call that was already made, like a file
+   * already written: it is left to run.
+   */
+  private stopUnheldSubagents(next: AgentRecord): void {
+    for (const live of this.spawns.values()) {
+      const child = live.child
+      if (child === null || live.result !== null || live.stopping !== null) continue
+      if (heldToParent(next.restrictions, child.projection().session.agent?.restrictions ?? NO_RESTRICTIONS)) continue
+      live.stopping = "agent"
+      live.stoppedFor = next.name
+      this.say("agents", AGENT_TEXT.subagentStopped(child.id, next.name))
+      child.interrupt()
+    }
   }
 
   /**
@@ -3984,7 +4028,7 @@ class LiveSession implements EngineSession {
       work.exited.then((end) => {
         const stopped = live.stopping
         const secrets = this.core.approvals?.secrets
-        const rendered = renderCommandEnd(spawnId, { ...end, command: work.command, stopped: stopped === null ? null : STOPPED_BY[stopped], logPath: work.logPath, watches: this.watching(spawnId) })
+        const rendered = renderCommandEnd(spawnId, { ...end, command: work.command, stopped: stoppedBy(live), logPath: work.logPath, watches: this.watching(spawnId) })
         // Its output is tool output: what the model is shown of it is redacted like any other.
         const shown = secrets === undefined ? rendered : redact(aliased(rendered, this.tempContext().temp), secrets).text
         live.result = shown
@@ -4176,7 +4220,7 @@ class LiveSession implements EngineSession {
       }
       let found = childResult(child.readEvents({ afterSeq: fromSeq }))
       // Stopped on request is said as that, whatever the child's log makes of the interrupt.
-      if (live.stopping !== null && found.outcome !== "completed") found = { ...found, outcome: "stopped", detail: `It was stopped before it finished: ${STOPPED_BY[live.stopping]}.` }
+      if (live.stopping !== null && found.outcome !== "completed") found = { ...found, outcome: "stopped", detail: `It was stopped before it finished: ${stoppedBy(live)}.` }
       const tainted = child.approval()?.taint.tainted ?? false
       const merge = work.worktree === null ? null : await this.finishWorktree(work.worktree, work.title, found.outcome === "completed")
       const shown = renderChildResult(child.id, found, merge, tainted)
