@@ -177,6 +177,57 @@ describe("when a session opens", () => {
   })
 })
 
+describe("Ctrl-C at a question about the project's configuration", () => {
+  test("with no turn running it answers not now and says so; with text being written it clears the text first", async () => {
+    const { session, backend } = await open()
+    const approved: string[] = []
+    session.approveHook = async (fingerprint) => (approved.push(fingerprint), true)
+    mounted!.clock.now += QUIET_MS + 10
+    session.pushHooks(hooks(session.id, [hook("exit 0", "e".repeat(64))]))
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).toContain("Esc back to your message · Ctrl-C answers not now")
+    mounted!.setup.mockInput.pressCtrlC()
+    await mounted!.settle()
+    const declined = flat(await mounted!.frame())
+    expect(declined).toContain('the hook "no-push" is not run; /hooks approve no-push asks again')
+    expect(declined).not.toContain("[a] Allow it for this project")
+    expect(approved).toEqual([])
+    expect(backend.interrupts).toBe(0)
+
+    // Someone writing a message: the first Ctrl-C clears it and the question stays, the second answers it.
+    await mounted!.setup.mockInput.typeText("fix the")
+    session.pushHooks(hooks(session.id, [hook("exit 1", "f".repeat(64))]))
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).toContain("Tab answers the question · your message stays as it is")
+    mounted!.setup.mockInput.pressCtrlC()
+    await mounted!.settle()
+    expect(mounted!.app.input.plainText).toBe("")
+    expect(flat(await mounted!.frame())).toContain("[a] Allow it for this project")
+    mounted!.setup.mockInput.pressCtrlC()
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).not.toContain("[a] Allow it for this project")
+    expect(flat(await mounted!.frame()).match(/the hook "no-push" is not run/g)).toHaveLength(2)
+  })
+
+  test("while a turn runs it stops the turn, and the question stays to be answered", async () => {
+    const { session, backend } = await open()
+    session.emit(event("execution.started", { executionId: "exe_1" } as never))
+    mounted!.clock.now += QUIET_MS + 10
+    session.pushHooks(hooks(session.id, [hook("exit 0", "e".repeat(64))]))
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).toContain("Esc back to your message · Ctrl-C stops the turn")
+    mounted!.setup.mockInput.pressCtrlC()
+    await mounted!.settle()
+    expect(backend.interrupts).toBe(1)
+    session.emit(event("execution.interrupt_requested", { executionId: "exe_1", reason: "user" } as never), event("execution.interrupted", { executionId: "exe_1", reason: "user" } as never))
+    await mounted!.settle()
+    const after = flat(await mounted!.frame())
+    expect(after).toContain("■ interrupted")
+    expect(after).toContain("[a] Allow it for this project")
+    expect(after).toContain("Ctrl-C answers not now")
+  })
+})
+
 describe("a project's language server", () => {
   test("waits in the dock with what it runs and serves; `a` allows it; /lsp lists the servers with the files they serve", async () => {
     const { session } = await open()

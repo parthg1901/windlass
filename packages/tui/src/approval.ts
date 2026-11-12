@@ -164,8 +164,11 @@ function choiceLines(state: DockState, columns: number): Span[][] {
   return lines
 }
 
-/** The dock as lines at `columns`, at most `rows` of them (details are dropped first, the choices never). */
-export function dockLines(state: DockState, columns: number, rows: number, now: number): Span[][] {
+/**
+ * The dock as lines at `columns`, at most `rows` of them (details are dropped first, the choices never).
+ * `idle`: no turn is running, so Ctrl-C has no turn to stop: it answers the question "not now".
+ */
+export function dockLines(state: DockState, columns: number, rows: number, now: number, idle = false): Span[][] {
   const ask = state.ask
   const question = ask.question
   // A subagent's question says which one asks: the first line of its task.
@@ -199,11 +202,12 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
   const details = question.details.flatMap((detail) => wrapLine([span(`  ${sanitize(detail)}`, "dim")], columns, [span("  ")]))
 
   const choices = choiceLines(state, columns)
+  const keys = state.items.map((item) => item.key).join(" ")
   const footer = state.note !== null
     ? [span(columns < 80 ? "  Enter sends the refusal · Esc back" : "  Enter sends the refusal with your note · Esc back to the choices · Ctrl-C stops the turn", "dim")]
     : state.focused
-      ? [span(columns < 80 ? `  ↑↓ Enter · ${state.items.map((item) => item.key).join(" ")} · Esc · Ctrl-C stops` : `  ↑↓ Enter · ${state.items.map((item) => item.key).join(" ")} · Esc back to your message · Ctrl-C stops the turn`, "dim")]
-      : [span("  Tab", "warn", { bold: true }), span(columns < 80 ? " answers it · your message stays" : " answers the question · your message stays as it is · Ctrl-C stops the turn", "warn")]
+      ? [span(columns < 80 ? `  ↑↓ Enter · ${keys} · Esc · Ctrl-C ${idle ? "not now" : "stops"}` : `  ↑↓ Enter · ${keys} · Esc back to your message · Ctrl-C ${idle ? "answers not now" : "stops the turn"}`, "dim")]
+      : [span("  Tab", "warn", { bold: true }), span(columns < 80 ? " answers it · your message stays" : ` answers the question · your message stays as it is${idle ? "" : " · Ctrl-C stops the turn"}`, "warn")]
 
   // Never more than `rows`: the details go first, then the why and how, never the title, the subject or the choices.
   const fixed = 1 + what.length + choices.length + 1

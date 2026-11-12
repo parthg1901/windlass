@@ -172,7 +172,7 @@ export class App {
     this.panel = new LinesView(renderer, theme, (columns, rows) => this.panelContent(columns, rows), { id: "panel", width: PANEL_WIDTH, height: "100%", flexShrink: 0 })
     this.panel.border = true
     main.add(this.panel)
-    this.dockView = new LinesView(renderer, theme, (columns, rows) => (this.dock === null ? [] : dockLines(this.dock.state, columns, rows, this.now())), { id: "approval", height: 0, width: "100%", visible: false })
+    this.dockView = new LinesView(renderer, theme, (columns, rows) => (this.dock === null ? [] : dockLines(this.dock.state, columns, rows, this.now(), !this.transcript.activity.executing)), { id: "approval", height: 0, width: "100%", visible: false })
     root.add(this.dockView)
     this.status = new LinesView(renderer, theme, (columns) => [this.statusLine(columns)], { id: "status", height: 1, width: "100%" })
     root.add(this.status)
@@ -606,12 +606,17 @@ export class App {
       if (this.transcript.activity.stopping && this.lastInterrupt !== 0) this.say("■ still stopping… press Ctrl-C again to exit now", "warn")
       this.lastInterrupt = now
       this.transcript.markStopAsked()
-      // A pending question goes from the screen now; it is answered `cancelled` once the stop has reached the engine.
-      if (this.dock !== null) this.dock.state.withdrawn = true
+      // A tool call's pending question goes from the screen now; it is answered `cancelled` once the stop has reached
+      // the engine. A question about the project's configuration is not the turn's: it stays to be answered.
+      if (this.dock !== null && this.dock.feature === undefined) this.dock.state.withdrawn = true
       this.session.interrupt()
       this.layout()
       return
     }
+    // No turn to stop. A question in the dock is answered "not now", as backing out of it is in the line interface
+    // (what that means is said by the answer); text being written while the question waits unanswered is cleared first.
+    const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock : null
+    if (dock !== null && (dock.state.focused || this.input.plainText === "")) return dock.feature === undefined ? this.closeDock() : this.answerDock({ choice: "deny" })
     if (this.input.plainText !== "") return this.setInput("")
     this.say("press Ctrl-D or type /quit to leave")
   }
@@ -1868,7 +1873,7 @@ export class App {
     const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock : null
     if (dock?.feature !== undefined) this.printWholeCommand(dock.feature.id, dock.state)
     this.dockView.visible = dock !== null
-    this.dockView.height = dock === null ? 0 : dockLines(dock.state, this.renderer.width, this.dockRows(), this.now()).length
+    this.dockView.height = dock === null ? 0 : dockLines(dock.state, this.renderer.width, this.dockRows(), this.now(), !this.transcript.activity.executing).length
     this.redraw()
   }
 
