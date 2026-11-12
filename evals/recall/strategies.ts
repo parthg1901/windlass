@@ -7,6 +7,11 @@
  * - `summary`: the model-written summary alone.
  * - `checkpoint`: Part A's checkpoint without tools: summary, identifier index, verbatim user messages.
  * - `checkpoint+tools`: the same checkpoint (naming the tools) plus `history_search` and `history_read`.
+ *
+ * A fifth strategy, `engine`, is not built here: it is the real engine
+ * compacting a real session store and the real history tools (`engine.ts`).
+ * The four above are simulations of parts of it, kept to tell what each part
+ * contributes; `engine` is the number that describes the product.
  */
 import { buildCheckpoint } from "../../packages/core/src/context/checkpoint.ts"
 import { estimateRequest } from "../../packages/core/src/context/estimate.ts"
@@ -25,8 +30,12 @@ import { HistoryIndex } from "./history.ts"
 import { LIVE_EFFORT, type ModelFn } from "./model.ts"
 import { MODEL } from "./session.ts"
 
-export type StrategyName = "full" | "summary" | "checkpoint" | "checkpoint+tools"
-export const STRATEGIES: readonly StrategyName[] = ["full", "summary", "checkpoint", "checkpoint+tools"]
+/** The strategies that build their context here. `engine` (`engine.ts`) is the product itself and builds nothing here. */
+export type ContextStrategy = "full" | "summary" | "checkpoint" | "checkpoint+tools"
+export type StrategyName = ContextStrategy | "engine"
+export const STRATEGIES: readonly StrategyName[] = ["full", "summary", "checkpoint", "checkpoint+tools", "engine"]
+/** Whether a strategy needs the simulated compaction of `compact` (the model-written summary these strategies share). */
+export const needsSummary = (name: StrategyName) => name === "summary" || name === "checkpoint" || name === "checkpoint+tools"
 
 /** The system prompt of every evaluation request: short, and it explains the harness envelope. */
 export const EVAL_INSTRUCTIONS = [
@@ -56,7 +65,7 @@ export interface Compaction {
 }
 
 export interface StrategyContext {
-  readonly name: StrategyName
+  readonly name: ContextStrategy
   readonly input: readonly InputItem[]
   readonly tools: readonly ToolSpec[]
   /** Runs a history tool call, for the strategy that has them. */
@@ -103,7 +112,7 @@ function problems(check: SummaryCheck) {
   return check.ok ? 0 : check.problems.length
 }
 
-export function buildContext(name: StrategyName, session: GeneratedSession, compaction: Compaction): StrategyContext {
+export function buildContext(name: ContextStrategy, session: GeneratedSession, compaction: Compaction | null): StrategyContext {
   const finish = (input: readonly InputItem[], tools: readonly ToolSpec[], runTool: StrategyContext["runTool"]): StrategyContext => ({
     name,
     input,
@@ -112,6 +121,7 @@ export function buildContext(name: StrategyName, session: GeneratedSession, comp
     contextTokens: estimateRequest({ instructions: EVAL_INSTRUCTIONS, tools, input }),
   })
   if (name === "full") return finish(render(session.messages), STANDARD_TOOLS, null)
+  if (compaction === null) throw new Error(`the ${name} strategy needs the compaction`)
   if (name === "summary") return finish([...render([checkpointMessage(compaction.summary)]), ...render(compaction.kept)], STANDARD_TOOLS, null)
   const tools = name === "checkpoint+tools"
   const checkpoint = buildCheckpoint({ summary: compaction.summary, earlier: compaction.removed, historyTools: tools })
@@ -135,9 +145,16 @@ function checkpointMessage(summary: string): CompactionMessage {
     time: 0,
     excluded: null,
     trigger: "auto",
+    mode: "normal",
     status: "completed",
     summary,
     keepFromSeq: 1,
+    prompt: summaryPrompt(),
+    repair: null,
+    source: "model",
+    detail: null,
+    tokensBefore: 0,
+    tokensAfter: 0,
     usage: null,
     error: null,
     endedAt: 0,

@@ -1,5 +1,15 @@
 // The recall evaluation with the scripted fake model. No live requests.
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type { SessionId } from "../../packages/core/src/id.ts"
+import { buildRequest } from "../../packages/core/src/request/build.ts"
+import { openSqliteStore } from "../../packages/core/src/store/sqlite.ts"
+import { createStandardTools } from "../../packages/core/src/tools/index.ts"
+import { exportSession } from "../../packages/core/src/trace/export.ts"
+import { expectRebuildEqualsLive } from "../../packages/core/test/store/consistency.ts"
+import { COMPACT_PROMPT, runEngine, sessionEvents } from "./engine.ts"
 import { HISTORY_SENTENCE, INDEX_HEADING, QUOTES_HEADING } from "../../packages/core/src/context/checkpoint.ts"
 import { harnessOpen } from "../../packages/core/src/request/build.ts"
 import type { InputItem, ModelRequest } from "../../packages/core/src/request/request.ts"
@@ -8,7 +18,7 @@ import { GENERIC_SUMMARY, oracleModel } from "./fake.ts"
 import { FACT_TYPES, type Fact, generateSession } from "./generate.ts"
 import { gradeAnswer, hasNeedle, namesToken, normalize, parseJudgeReply } from "./grade.ts"
 import { HistoryIndex } from "./history.ts"
-import type { ModelFn, ModelReply } from "./model.ts"
+import { type ModelFn, type ModelReply, capped } from "./model.ts"
 import { STANDARD_TOOLS, buildContext, compact, render } from "./strategies.ts"
 
 const session = generateSession({ seed: 7, tokens: 40_000, facts: 12 })
@@ -171,11 +181,135 @@ describe("strategies", () => {
   })
 })
 
+describe("the engine strategy: the real engine, a real store, the real history tools", () => {
+  const scratch: string[] = []
+  afterAll(() => {
+    for (const directory of scratch) rmSync(directory, { recursive: true, force: true })
+  })
+  const place = () => {
+    const directory = mkdtempSync(join(tmpdir(), "lh-recall-test-"))
+    scratch.push(directory)
+    return directory
+  }
+
+  test("the generated session loads as a valid log: every message in order, at rest, and the projection is what the log says", () => {
+    const store = openSqliteStore({ path: ":memory:" })
+    const id = "ses_loaded" as SessionId
+    const tools = createStandardTools({ spillDir: "/nonexistent" })
+    store.append(id, sessionEvents(session.messages, tools))
+    const projection = expectRebuildEqualsLive(store, id)
+    // The generator's messages, then the marker that the last step (a tool call) was stopped.
+    expect(projection.messages.slice(0, session.messages.length).map((message) => [message.kind, message.id])).toEqual(session.messages.map((message) => [message.kind, message.id]))
+    expect(projection.messages.slice(session.messages.length).map((message) => message.kind)).toEqual(["synthetic"])
+    expect(projection.session).toMatchObject({ execution: null, open: null, compaction: null })
+    // What the model would be sent is what the context strategies render, item for item, plus that marker.
+    const request = buildRequest(projection, { toolChoice: "auto" })
+    expect(request.input.slice(0, -1)).toEqual(render(session.messages))
+    expect(request.tools.map((tool) => tool.name)).toEqual(["edit", "glob", "grep", "history_read", "history_search", "ls", "read", "shell", "write"])
+    store.close()
+  })
+
+  test("the engine compacts the session once, and every question is answered in a fork of the compacted session through the loop", async () => {
+    const model = oracleModel(session)
+    const directory = place()
+    const run = await runEngine({ session, model, question: questionText, directory })
+    try {
+      // The engine's own decision and its own checkpoint: the policy at a user-message boundary, a normal compaction, the model's summary.
+      expect(run.compaction).toMatchObject({ trigger: "auto", mode: "normal", source: "model", detail: null, requests: 1 })
+      expect(run.compaction.removedMessages).toBeGreaterThan(130)
+      expect(run.compaction.tokensBefore).toBeGreaterThan(38_000)
+      expect(run.compaction.tokensAfter).toBeLessThan(8_000)
+      expect(run.compaction.checkpoint).toContain(GENERIC_SUMMARY)
+      expect(run.compaction.checkpoint).toContain(INDEX_HEADING)
+      expect(run.compaction.checkpoint).toContain(HISTORY_SENTENCE)
+      // Twelve answers, each from its own fork: a search with the real tool, then the answer.
+      expect(run.answers.map((answer) => [answer.requests, answer.toolCalls])).toEqual(session.facts.map(() => [2, 1]))
+      for (const [index, fact] of session.facts.entries()) {
+        const answer = run.answers[index]!
+        expect(answer.factId).toBe(fact.id)
+        expect(answer.answer).toBe(fact.gold)
+        // What the tool returned is the engine's own rendering of a hit in a stored message.
+        expect(answer.shown).toMatch(/\d+ messages? match(es)? .*; showing \d+, best first\.\n\[seq \d+/)
+      }
+      // The model was asked for one summary and for the questions, never for the reply to the message that set the compaction off.
+      const summaries = model.requests.filter((request) => request.toolChoice === "none")
+      expect(summaries).toHaveLength(1)
+      expect(model.requests).toHaveLength(1 + 24)
+      expect(JSON.stringify(summaries[0]!.input)).not.toContain(COMPACT_PROMPT)
+
+      // The store holds the session and twelve forks of it, each at rest, each equal to its log.
+      const store = openSqliteStore({ path: run.database })
+      try {
+        const sessions = store.listSessions().map((summary) => summary.session)
+        expect(sessions).toHaveLength(13)
+        const forks = sessions.filter((entry) => entry.lineage !== null)
+        expect(forks).toHaveLength(12)
+        for (const fork of forks) {
+          expect(fork.lineage).toMatchObject({ parentSessionId: run.sessionId })
+          expect(fork.rootId).toBe(run.sessionId)
+          expect(fork.execution).toBeNull()
+          expect(fork.compaction).toEqual(sessions.find((entry) => entry.id === run.sessionId)!.compaction)
+        }
+        // Every fork's first request is the compacted session's request plus the question: one cached prefix for all twelve.
+        const first = forks.map((fork) => store.readRequests(fork.id)[0]!.blocks.map((block) => block.hash))
+        const shared = first[0]!.slice(0, -1)
+        for (const blocks of first) expect(blocks.slice(0, -1)).toEqual(shared)
+        // And every request of the session and its forks can be rebuilt from the log, the summary request too.
+        for (const entry of sessions) expect(exportSession(store, entry.id).unverified).toEqual([])
+      } finally {
+        store.close()
+      }
+    } finally {
+      run.dispose()
+    }
+  }, 60_000)
+
+  test("a summary the model cannot write still leaves a session the questions can be asked in", async () => {
+    const model = oracleModel(session, { summary: "I cannot summarise this." })
+    const run = await runEngine({ session, model, question: questionText })
+    try {
+      expect(run.compaction).toMatchObject({ source: "fallback", requests: 2 })
+      expect(run.compaction.checkpoint).toContain("No summary of the earlier conversation could be produced")
+      // The history tools still reach everything.
+      expect(run.answers.filter((answer, index) => answer.answer === session.facts[index]!.gold)).toHaveLength(12)
+    } finally {
+      run.dispose()
+    }
+  }, 60_000)
+
+  test("a spent request budget stops the run at once instead of being retried", async () => {
+    const model = capped(oracleModel(session), 4)
+    const started = performance.now()
+    await expect(runEngine({ session, model, question: questionText })).rejects.toThrow("request budget of 4 spent")
+    expect(performance.now() - started).toBeLessThan(10_000)
+    expect(model.used()).toBe(4)
+  }, 60_000)
+
+  test("evaluate reports it next to the others, with the engine's compaction and without a simulated one when none is needed", async () => {
+    const model = oracleModel(session)
+    const report = await evaluate({ session, compaction: null, model, cacheKey: "k", date: "2026-11-12", live: false, modelName: "fake", effort: "-", strategies: ["full", "engine"] })
+    expect(report.strategies.map((strategy) => [strategy.name, strategy.recall, strategy.requests])).toEqual([
+      ["full", 1, 12],
+      ["engine", 1, 25],
+    ])
+    expect(report.summary).toBeNull()
+    expect(report.engine).toMatchObject({ source: "model", mode: "normal" })
+    expect(report.requests).toBe(12 + 25 + 1)
+    expect(model.requests).toHaveLength(report.requests)
+    const markdown = renderReport(report)
+    expect(markdown).toContain("Engine compaction (engine): auto, normal")
+    expect(markdown).toContain("| engine | 100% (12/12)")
+    expect(markdown).not.toContain("Simulated compaction")
+    // A context strategy that needs the simulated compaction says so when it was not made.
+    await expect(evaluate({ session, compaction: null, model, cacheKey: "k", date: "d", live: false, modelName: "fake", effort: "-", strategies: ["checkpoint"] })).rejects.toThrow("needs the compaction")
+  }, 60_000)
+})
+
 describe("evaluate", () => {
   test("asks every question per strategy, grades, judges in one request and reports", async () => {
     const model = oracleModel(session)
     const compaction = await compact(session, model, "k")
-    const report = await evaluate({ session, compaction, model, cacheKey: "k", date: "2026-11-12", live: false, modelName: "fake", effort: "-" })
+    const report = await evaluate({ session, compaction, model, cacheKey: "k", date: "2026-11-12", live: false, modelName: "fake", effort: "-", strategies: ["full", "summary", "checkpoint", "checkpoint+tools"] })
     const by = Object.fromEntries(report.strategies.map((strategy) => [strategy.name, strategy]))
     expect(by.full!.recall).toBe(1)
     expect(by.summary!.recall).toBe(0)
