@@ -124,7 +124,7 @@ function pathContext(context: FactContext): PathContext {
  * neither ask nor taint.
  */
 export function classify(given: string, context: FactContext): PathFact {
-  const fact = pathFact(tempPath(context.temp, given), pathContext(context))
+  const fact = pathFact(tempPath(context.temp, given, context.cwd), pathContext(context))
   const real = fact.real
   if (real === null || fact.place === "workspace" || fact.place === "protected") return { ...fact, given }
   const own = [...(context.temp === undefined ? [] : [context.temp.dir]), ...context.approvals.trustedRoots].map(realWorkspace)
@@ -146,7 +146,7 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
   if (tool.effect === "exec") {
     const asked = safeDecode(escalationRequest, record.sandbox)
     if (!asked.ok) return { invalid: `the \`sandbox\` argument is not valid: ${asked.error.message}` }
-    if (asked.value !== null) escalation = escalationFacts({ network: asked.value.network, write: asked.value.write.map((path) => tempPath(context.temp, path)) }, pathContext(context))
+    if (asked.value !== null) escalation = escalationFacts({ network: asked.value.network, write: asked.value.write.map((path) => tempPath(context.temp, path, context.cwd)) }, pathContext(context))
   }
   return {
     facts: {

@@ -163,3 +163,30 @@ describe("the view of a file as it was shown", () => {
     }
   })
 })
+
+describe("the temp directory's alias", () => {
+  const temp = { dir: "/var/lib/session-temp/ses_1", alias: "/tmp" }
+
+  test("a path under the alias is the session's file; any other path is itself", async () => {
+    const { tempPath, toolPath, shownPath } = await import("../../src/tools/common.ts")
+    expect(tempPath(temp, "/tmp/out.log", "/home/u/project")).toBe("/var/lib/session-temp/ses_1/out.log")
+    expect(tempPath(temp, "/tmp", "/home/u/project")).toBe("/var/lib/session-temp/ses_1")
+    expect(tempPath(temp, "/tmpfile", "/home/u/project")).toBe("/tmpfile")
+    expect(tempPath(temp, "src/a.ts", "/home/u/project")).toBe("src/a.ts")
+    expect(tempPath(undefined, "/tmp/out.log", "/home/u/project")).toBe("/tmp/out.log")
+    expect(tempPath({ dir: temp.dir, alias: null }, "/tmp/out.log", "/home/u/project")).toBe("/tmp/out.log")
+    expect(toolPath({ cwd: "/home/u/project", temp }, "/tmp/a/b.txt")).toBe("/var/lib/session-temp/ses_1/a/b.txt")
+    expect(shownPath({ cwd: "/home/u/project", temp }, "/var/lib/session-temp/ses_1/a/b.txt")).toBe("/tmp/a/b.txt")
+  })
+
+  test("a workspace that itself lies under the alias keeps its own paths: commands see it there, on top of the temp directory", async () => {
+    const { tempPath, toolPath } = await import("../../src/tools/common.ts")
+    const cwd = "/tmp/checkout/project"
+    expect(tempPath(temp, "/tmp/checkout/project/src/a.ts", cwd)).toBe("/tmp/checkout/project/src/a.ts")
+    expect(tempPath(temp, cwd, cwd)).toBe(cwd)
+    expect(toolPath({ cwd, temp }, "src/a.ts")).toBe("/tmp/checkout/project/src/a.ts")
+    // A sibling of the workspace under /tmp is not something a command can see: the name means the session's temp directory.
+    expect(tempPath(temp, "/tmp/checkout/other.txt", cwd)).toBe("/var/lib/session-temp/ses_1/checkout/other.txt")
+    expect(tempPath(temp, "/tmp/checkout/project-two/x", cwd)).toBe("/var/lib/session-temp/ses_1/checkout/project-two/x")
+  })
+})

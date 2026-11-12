@@ -25,13 +25,20 @@ export function resolvePath(cwd: string, path: string): string {
  * is the file a command would mean by it.
  */
 export function toolPath(context: Pick<ToolContext, "cwd" | "temp">, path: string): string {
-  return resolvePath(context.cwd, tempPath(context.temp, path))
+  return resolvePath(context.cwd, tempPath(context.temp, path, context.cwd))
 }
 
-/** A path under the temp directory's alias, as the path of the same file on the host; any other path unchanged. */
-export function tempPath(temp: ToolContext["temp"], path: string): string {
+/**
+ * A path under the temp directory's alias, as the path of the same file on
+ * the host; any other path unchanged. A path inside the working directory
+ * is left alone also when that directory itself lies under the alias (a
+ * workspace in `/tmp`): commands see the workspace at its own path, on top
+ * of the temp directory, so there the name already means one file.
+ */
+export function tempPath(temp: ToolContext["temp"], path: string, cwd: string): string {
   const alias = temp?.alias ?? null
   if (temp === undefined || alias === null) return path
+  if (path === cwd || path.startsWith(`${cwd}/`)) return path
   if (path === alias) return temp.dir
   return path.startsWith(`${alias}/`) ? join(temp.dir, path.slice(alias.length + 1)) : path
 }
