@@ -25,7 +25,7 @@ packages/core   engine, store, reducer, request builder, provider, tools, sandbo
                 memory (wired, off by default)
                 agents and the todo tool (wired in)
                 hooks and lsp (language-server diagnostics), wired in; both off until configured
-                modules not yet wired into the engine: commands, telemetry
+                commands (slash commands) and telemetry (OpenTelemetry export), wired in; telemetry off until the user's own file turns it on
 packages/acp    Agent Client Protocol v1 server and the shared client
 packages/cli    line-based CLI (an ACP client); subcommands acp, tui
 packages/tui    full-screen interface (an ACP client)

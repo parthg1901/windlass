@@ -150,7 +150,7 @@ Reading a result:
 
 ## After the engine fixes (2026-11-12)
 
-- The store's schema version is 7 (it changes with most engine passes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
+- The store's schema version is 8 (it changes with most engine passes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
 - A one-prompt run can search and call a tool of an untrusted MCP server with `--approval full`; only the call's result taints the session, the search does not.
 - `wake_cancel`, `memory_save` and `memory_retract` run unattended in `auto` and `full`; `ask` still asks.
 - A compaction's ending carries `calls`, the summary calls it took: count them with `bun evals/dogfood/events.ts <id> --type compaction.ended`. Model requests of a turn are its steps plus those calls.
@@ -166,4 +166,10 @@ Reading a result:
 - A project's hook or language server is skipped, with a diagnostic, until a client can approve it (no client can yet); put them in the user's config file to test.
 - Stop hooks do not run for a subagent's turn; a replay runs no hooks and no language servers.
 - Live, pyright's first diagnostics after an edit took 1.4 s; the default bound is 1.5 s, so a cold server can miss the first edit.
+
+## Slash commands and telemetry (wired 2026-11-12)
+
+- A session is idle by the time a reader sees its turn's ending event: an undo sent at that instant is accepted (it was refused as busy for a while; `packages/core/test/engine/idle-at-ending.test.ts` holds it).
+- A user-defined slash command is expanded by the engine and recorded with the message it produced (`command.expanded`); clients send it with `session.sendCommand`. The client commands for it may lag behind the engine.
+- Telemetry is off unless the user's own config file turns it on; a project's file can only turn it off. To look at a real turn's spans, point it at a local file or a local fake collector: one turn gives a turn span, a span per model call (token counts, response model, request ID) and a span per tool call, with no content.
 
