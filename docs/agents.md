@@ -197,6 +197,7 @@ A session keeps its agent when you resume it without `--agent`.
 ## A subagent run as an agent
 
 When agents are defined, the model is given their names and descriptions as a message (you see
+`· instructions updated: agent-index`, and in the full-screen interface
 `· instructions updated (agent-index): Agents you can run a subagent as: ...`) and can set `agent` on a `subagent`
 call ([subagents.md](subagents.md)):
 

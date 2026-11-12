@@ -66,8 +66,23 @@ test("a subagent's line names the agent it runs as, and a call of its own that w
 
 test("an instruction update that is the same again (after every compaction) is said once; a changed one is said again", () => {
   const index = (fingerprint: string | null, text = "2 agents: reviewer, docs") => event("instruction.appended", { messageId: m(`n${Math.random()}`), source: "agent-index", text, fingerprint })
-  const out = render(stored([...opening("hello"), executionStarted(), index("aaa"), index("aaa"), index("aaa"), index("bbb", "3 agents: reviewer, docs, tester"), index("bbb", "3 agents: reviewer, docs, tester"), index(null), index(null), index("aaa")]), { columns: () => 120 })
-  expect(out.match(/· instructions updated \(agent-index\)/g)).toHaveLength(3)
-  expect(out.match(/· instructions removed: agent-index/g)).toHaveLength(1)
-  expect(out).toContain("· instructions updated (agent-index): 3 agents: reviewer, docs, tester\n")
+  // Each step is what a compaction is here: the instructions are appended anew before it.
+  const steps = [index("aaa"), index("aaa"), index("bbb", "3 agents: reviewer, docs, tester"), index("bbb", "3 agents: reviewer, docs, tester"), index(null), index(null), index("aaa")]
+  const out = render(stored([...opening("hello"), executionStarted(), ...steps.flatMap((item, at) => [item, stepStarted(`a${at}`), stepEnded(`a${at}`)])]), { columns: () => 120 })
+  expect(out.match(/· instructions updated: agent-index\n/g)).toHaveLength(3)
+  expect(out.match(/· instructions removed: agent-index\n/g)).toHaveLength(1)
+  // What the update says is the model's to read (`--json` has it), not a line of the transcript.
+  expect(out).not.toContain("3 agents: reviewer, docs, tester")
+})
+
+test("the instruction updates of one step are one line: how many, and from which sources", () => {
+  const update = (source: string, fingerprint: string | null = "f") => event("instruction.appended", { messageId: m(`n${Math.random()}`), source, text: `${source}: a long catalogue\nwith lines`, fingerprint })
+  const first = [update("skills"), update("mcp"), update("memory"), update("agent-index"), update("agents:src/AGENTS.md")]
+  const second = [update("skills", "g"), update("mcp", null), update("agent", "x")]
+  const out = render(stored([...opening("hello"), executionStarted(), ...first, stepStarted("a1"), stepEnded("a1"), ...second, stepStarted("a2"), stepEnded("a2"), update("memory", "g"), stepStarted("a3")]), { columns: () => 120 })
+  expect(out.split("\n").filter((line) => line.includes("instructions"))).toEqual([
+    "· instructions updated (5): skills, mcp, memory, agent-index, src/AGENTS.md",
+    "· instructions updated: skills · removed: mcp",
+    "· instructions updated: memory",
+  ])
 })

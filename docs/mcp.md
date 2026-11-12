@@ -26,8 +26,10 @@ Then work as usual, interactively:
 windlass
 ```
 
-At the first step you see `· instructions updated (mcp): MCP tools are available: ...`: the model has been given
-the list. When it calls a tool you are asked:
+At the first step you see `· instructions updated: mcp` (one line for everything the model was given at that step,
+such as `· instructions updated (2): skills, mcp`; the full-screen interface shows each with how it begins,
+`· instructions updated (mcp): MCP tools are available: ...`): the model has been given the list. When it calls a
+tool you are asked:
 
 ```text
 ? Allow the MCP tool tracker/create_issue?

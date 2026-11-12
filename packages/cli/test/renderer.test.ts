@@ -304,6 +304,7 @@ describe("events the core added", () => {
         base(["date", "agents:AGENTS.md", "agents:src/AGENTS.md"]),
         base(["date", "agents:AGENTS.md", "agents:src/AGENTS.md"]),
         event("instruction.appended", { messageId: m("i1"), source: "agents:src/AGENTS.md", text: "", fingerprint: null }),
+        stepStarted("a1"),
       ]),
     )
     expect(out).toBe("· instructions from AGENTS.md, src/AGENTS.md\n· instructions removed: src/AGENTS.md\n")

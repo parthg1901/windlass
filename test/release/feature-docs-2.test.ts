@@ -366,7 +366,7 @@ describe("quoted program messages", () => {
       quote: '⚠ agents: The agent "<name>" asks for approval mode "full"; the user\'s mode "auto" is kept, since an agent can only tighten it.',
       pieces: [" asks for approval mode ", "; the user's mode ", " is kept, since an agent can only tighten it."],
     },
-    { page: "docs/agents.md", quote: "new session ses_… · agent reviewer", pieces: ["new session ", " · agent "] },
+    { page: "docs/agents.md", quote: "new session ses_… · model <name> · agent reviewer", pieces: ["new session ", " · model ", " · agent "] },
     { page: "docs/agents.md", quote: 'There is no agent named "reviwer". Did you mean "reviewer"? Agents: docs, reviewer.', pieces: ["There is no agent named ", " Did you mean ", " Agents: "] },
     { page: "docs/agents.md", quote: 'The agent "docs" is disabled in the configuration (agents.disabled).', pieces: [" is disabled in the configuration (agents.disabled)."] },
     {

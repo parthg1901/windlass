@@ -24,8 +24,9 @@ Then give `windlass` a task in that project:
 windlass "write release notes for the last three commits"
 ```
 
-At the first step you see `· instructions updated (skills): Skills you can load: ...`, and when the model decides the
-skill applies, `▸ skill release-notes`, then its work. Nothing else is needed: skills are on in every session.
+At the first step you see `· instructions updated: skills` (in the full-screen interface
+`· instructions updated (skills): Skills you can load: ...`), and when the model decides the skill applies,
+`▸ skill release-notes`, then its work. Nothing else is needed: skills are on in every session.
 
 ## Where skills live
 

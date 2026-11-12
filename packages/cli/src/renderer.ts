@@ -161,6 +161,8 @@ export class PrettyRenderer implements Sink {
   private instructionFiles = ""
   /** The instruction updates shown so far, by source: the version (its fingerprint; `null`: removed) last said. */
   private readonly instructionsShown = new Map<string, string | null>()
+  /** The sources whose instructions changed and are not said yet (`sayInstructions`), each with what became of it. */
+  private readonly instructionsPending = new Map<string, "updated" | "removed">()
   /** The stop of the running execution: asked for by this CLI (with the exit hint pending), shown, or neither. */
   private stop: "hint" | "shown" | null = null
   /** The call whose approval question waits for the user's answer. */
@@ -528,6 +530,8 @@ export class PrettyRenderer implements Sink {
       case "tool.settled":
         return this.toolSettled(event.data, event.time)
       case "step.started":
+        // What the model was given new for this step is said as it starts work on it.
+        this.sayInstructions()
         this.openStep = event.data.messageId
         this.open.clear()
         this.retrying = false
@@ -606,8 +610,8 @@ export class PrettyRenderer implements Sink {
         // The same update again (every compaction appends the instructions anew) is not news: said once.
         if (this.instructionsShown.get(event.data.source) === event.data.fingerprint && this.instructionsShown.has(event.data.source)) return
         this.instructionsShown.set(event.data.source, event.data.fingerprint)
-        if (event.data.fingerprint === null) this.line("info", [seg(`${SYMBOL.note} instructions removed: ${source}`, "dim")])
-        else this.line("info", [seg(`${SYMBOL.note} instructions updated (${source}): `, "dim"), seg(flatten(event.data.text), "dim")])
+        // Not a line each: a first turn brings many at once. They are said together before the next thing printed.
+        this.instructionsPending.set(source, event.data.fingerprint === null ? "removed" : "updated")
         return
       }
       case "settings.changed":
@@ -1391,6 +1395,22 @@ export class PrettyRenderer implements Sink {
 
   private endLine(): void {
     if (!this.atLineStart) this.raw("\n")
+    this.sayInstructions()
+  }
+
+  /**
+   * The instruction updates since the last thing printed, as one line: how many, and from which sources. What each
+   * one says is the model's to read; `--json` has it (`instruction.appended`).
+   */
+  private sayInstructions(): void {
+    if (this.instructionsPending.size === 0) return
+    const of = (state: "updated" | "removed") => [...this.instructionsPending].filter(([, value]) => value === state).map(([source]) => source)
+    const updated = of("updated")
+    const removed = of("removed")
+    this.instructionsPending.clear()
+    const listed = (sources: readonly string[]) => `${sources.length === 1 ? "" : ` (${sources.length})`}: ${sources.join(", ")}`
+    const parts = [updated.length === 0 ? null : `updated${listed(updated)}`, removed.length === 0 ? null : `removed${listed(removed)}`].filter((part) => part !== null)
+    this.line("info", [seg(`${SYMBOL.note} instructions ${parts.join(" · ")}`, "dim")])
   }
 
   private raw(text: string): void {

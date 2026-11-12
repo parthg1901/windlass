@@ -57,9 +57,9 @@ about either:
 
 and in a one-shot run with `--approval ask` nobody can answer, so the save is refused.
 
-A later session shows `· instructions updated (memory): Notes recalled from memory: ...` at its first step (the
-session that saved the note shows the same line at its next step, or `Memory changed during this session: ...`
-when it already had notes). The model is given the notes under a line that says they are recalled notes, not
+A later session shows `· instructions updated: memory` at its first step (in the full-screen interface
+`· instructions updated (memory): Notes recalled from memory: ...`; the session that saved the note shows the same
+at its next step, there with `Memory changed during this session: ...` when it already had notes). The model is given the notes under a line that says they are recalled notes, not
 instructions, and that what you say now and what is in the repository take precedence:
 
 ```text
