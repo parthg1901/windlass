@@ -227,7 +227,7 @@ export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOpt
     [
       `Forked ${forked.parentSessionId} ${options.turn !== null ? `after turn ${options.turn} (event ${forked.throughSeq})` : options.throughSeq === null ? "after its latest step" : `after event ${forked.throughSeq}`}.`,
       ...inherited,
-      `New session: ${forked.sessionId}${title} (${forked.model}${forked.effort === null ? "" : `, effort ${forked.effort}`}), with the conversation ${options.turn === null && options.throughSeq === null ? "so far" : "up to there"}; the original is unchanged.`,
+      `New session: ${forked.sessionId}${title} (${forked.model}${forked.effort === null ? "" : `, effort ${forked.effort}`}), with the conversation so far; the original is unchanged.`,
       where,
       "",
       "Continue in the fork:",
