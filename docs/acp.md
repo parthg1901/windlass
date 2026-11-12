@@ -47,7 +47,7 @@ every command the agent started is stopped, and the session resumes later where 
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
 | `authenticate` | Checks the saved sign-in; succeeds if it is usable, otherwise answers auth-required with how to sign in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["light-harness"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["light-harness"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`) and `attended` (default `true`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_light-harness/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["light-harness"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort, archived? }`. With `_meta["light-harness"] = { archived: true }` archived sessions are listed too. |
@@ -56,7 +56,7 @@ every command the agent started is stopped, and the session resumes later where 
 | `session/cancel` | Prompts not yet delivered are withdrawn and answered `cancelled` at once; the running turn is interrupted (commands are stopped) and its prompt is answered `cancelled` after its last update. A prompt sent right after a cancel starts the next turn. |
 | `session/close` | Cancels, then frees the session in the agent. With `_meta["light-harness"] = { shutdown: true }` it stops running work as a shutdown instead (the session stays resumable, as when the process exits), and every update and event of that is sent before the answer. |
 | `session/delete` | A soft delete: the session is archived and disappears from `session/list` and `session/load`; its log is kept. |
-| `session/set_config_option` | Two select options: `model` (category `model`, the models the account offers) and `effort` (category `thought_level`: `default` or the model's efforts). A change applies from the next step boundary, also in the middle of a turn, and is reported with `config_option_update`. |
+| `session/set_config_option` | Three select options: `model` (category `model`, the models the account offers), `effort` (category `thought_level`: `default` or the model's efforts) and `approval` (category `mode`: `ask`, `auto`, `full`). A model or effort change applies from the next step boundary, also in the middle of a turn, and is reported with `config_option_update`; an approval change applies from the next tool call. |
 
 Stop reasons: `end_turn`; `max_turn_requests` when the turn reached its step limit; `max_tokens` when the last
 response hit the output limit; `refusal` when the provider refused; `cancelled`. A turn that fails answers the prompt
@@ -89,12 +89,51 @@ gate's `verification` (`passed` with the evidence, `not_needed`, `not_configured
 and the failing checks), and the files the turn changed. On `session/load` every earlier turn's ending is replayed
 as a `_light-harness/turn` notification marked `replay: true`, after that turn's updates.
 
-Permission requests: the agent's tools read, write and run commands in the session's directory on their own, as they
-do in the CLI, and never ask. The one question the agent asks is the hand-edit question of an undo or redo
-(`_light-harness/revert`, below): `session/request_permission` with options `overwrite` (allow once), `keep` (allow
-once: restore the rest) and `cancel` (reject once). Its `toolCall` names the files (`locations`) and says what
-overwriting means; `_meta["light-harness"] = { command, plan, handEdited }` has the whole plan. A cancelled request
-changes nothing.
+## Approval
+
+Before every tool call the harness decides whether it runs, runs in the sandbox, asks the user or is refused
+(`docs/safety.md` says what each mode does). What a client sees and does:
+
+- **The mode** is the `approval` config option, or `approval` in `_meta["light-harness"]` when the session is
+  opened, or `_light-harness/approval` (below). It is the user's own choice for the session; a project
+  configuration file can make it stricter and never looser, and the option's `currentValue` is the mode in force.
+- **A question** is `session/request_permission`. Its `toolCall.toolCallId` is the call the client already shows
+  (`<message>/<call>`), its `title` is the question ("Allow network access for this command?"), and its `content` is
+  the command, path or tool verbatim followed by what the user needs to know to answer. The options are the
+  question's choices under their own IDs: `once` (`allow_once`), `session` and `project` (`allow_always`: allowed
+  for the rest of the session, or in this project for 30 days) and `deny` (`reject_once`). Each option's name says
+  what it remembers, which is always a capability (network for sandboxed commands, writes under a directory), never
+  the command. `_meta["light-harness"].approval = { messageId, callId, question, needs, then }` has the whole
+  question: `question.choices[].remembers` in words, `needs` (what it is about) and `then` (how the call runs if
+  approved: `{ kind: "run" }` or `{ kind: "run_sandboxed", network, writableRoots }`). The answer is the selected
+  option; a `note` under `_meta["light-harness"]` of the response goes to the model with the result. A cancelled
+  request, an option the question does not have and a client that cannot answer all decline.
+- **While it waits** the call is `pending` with the title suffixed "(waiting for approval)", and the turn's prompt
+  stays unanswered: the turn is waiting, not stuck. `session/cancel` withdraws the question (the call ends as
+  "not started"); the client then answers its pending request with `cancelled`, as ACP asks. A prompt sent
+  meanwhile is delivered after the step, as during any tool call. One question is pending at a time.
+- **Nobody present.** A client that cannot answer says `attended: false` when it opens the session. A call that
+  would ask is then refused at once and the model is told (`unattended: "deny"`, the default), or the turn ends
+  (`"stop"`): the prompt is answered with an error whose `data["light-harness"].reason` is `approval_required`.
+  Nothing waits either way.
+- **Taint.** When content from outside (a file outside the workspace, a command that ran with the network, later a
+  web or MCP tool) enters the conversation, `_light-harness/taint` `{ sessionId, tainted: true, text, source }` is
+  sent once, and a `notice` to clients that show them. From then on anything that can send data out asks again.
+  `_light-harness/clear_taint` is the user's "I trust what is there"; it is answered `{ cleared }` and followed by
+  `_light-harness/taint` `{ tainted: false }`.
+- **Notices.** `_light-harness/notice` `{ sessionId, kind, message }` says once what the user should know about how
+  tools run here: `sandbox_unavailable` (why, and what would fix it), `approval_ignored` (a project setting that
+  would have loosened the policy), `checks_not_run`.
+- **A session that is loaded** replays an asked-and-answered call as the call with its final status and content.
+  A client that takes the harness's events gets `approval.requested`, `approval.answered` and `approval.denied`
+  with `replay: true`; it shows them as history and puts no question. No question is ever pending in a stored
+  session: one that a process died under was settled as "not started" by recovery, and the model asks again.
+
+The other question the agent asks is the hand-edit question of an undo or redo (`_light-harness/revert`, below):
+`session/request_permission` with options `overwrite` (allow once), `keep` (allow once: restore the rest) and
+`cancel` (reject once). Its `toolCall` names the files (`locations`) and says what overwriting means;
+`_meta["light-harness"] = { command, plan, handEdited }` has the whole plan. A cancelled request changes nothing.
+A client tells the two apart by `_meta["light-harness"]`: `approval` or `plan`.
 
 ## What is not supported (yet)
 
@@ -125,6 +164,10 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | Recovery of a session whose process died | The events `session/resume` appended (the crashed step settled, the claim recovered) arrive as live events before its answer |
 | The prompt, a steer, `/queue` | `_light-harness/steer` / `_light-harness/queue` (answered once admitted, with the message ID); the turn's end is its `execution.*` event |
 | `--max-steps` | `maxSteps` on `_light-harness/steer` and `_light-harness/queue` (`_meta["light-harness/maxSteps"]` on `session/prompt`) |
+| `--approval`, `--unattended`, and whether anyone is at the terminal | `approval`, `unattended` and `attended` in `_meta["light-harness"]` on `session/new` and `session/resume`. Only the interactive mode is attended: a one-shot run, `--json` and a pipe are not |
+| A tool call's approval question, answered at the prompt | `session/request_permission` with `_meta["light-harness"].approval`; the answer is the option, and what the user typed after it is the `note` |
+| `/clear-taint` | `_light-harness/clear_taint` |
+| Exit code 4 (`--unattended stop`) | `execution.failed` with `cause: "approval"` in the events; for other clients the prompt's error with `reason: "approval_required"` |
 | Ctrl-C (first press) | `session/cancel` |
 | Exit while working (`/exit`, SIGTERM, Ctrl-C at the prompt, a closed pipe) | `session/close` with `_meta["light-harness"].shutdown`, then the connection is closed and `lh acp` exits |
 | `/undo`, `/redo` | `_light-harness/revert`, `_light-harness/undo_revert`: a dry run first, then `handEdits: "ask"`; the hand-edit question is `session/request_permission` |
@@ -221,11 +264,22 @@ start of one names, or, without `session`, the latest in `cwd`. Refused when sig
 **`_light-harness/diagnostic`** (notification) `{ sessionId, kind, message }`: something the engine noticed that is
 not part of the log (`prefix_violation`, `internal_error`, `tool_crashed`, `listener_failed`).
 
+**`_light-harness/approval`** (request) `{ sessionId, mode?, unattended?, attended? }` → `{ sessionId, enabled, mode,
+unattended, attended, sandboxUnavailable: { reason, remedy } | null, tainted, taint, ignored }`: how the session's
+tool calls are approved, after setting the fields the request names. `ignored` lists project settings that would
+have loosened the user's policy.
+
+**`_light-harness/clear_taint`** (request) `{ sessionId }` → `{ cleared: boolean }`.
+
+**`_light-harness/taint`** (notification) `{ sessionId, tainted, text?, source?, replay? }` and
+**`_light-harness/notice`** (notification) `{ sessionId, kind, message }`: see "Approval" above.
+
 **Errors.** Every error the server answers for a reason a client may act on has
 `data["light-harness"] = { reason, message, holderPid? }`, `message` being the harness's own sentence:
 `auth_required` (`-32000`), `session_in_use` (`-32603`, with the holder's process ID), `session_not_found`
 (`-32002`), `ambiguous_session` and `unknown_model` (`-32602`), `schema_mismatch` (a session written by another
-version), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `closed`.
+version), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `approval_required` (a turn ended
+because a call needed approval and nobody was present), `closed`.
 
 **`session/prompt` `_meta["light-harness/delivery"]`**: `"steer"` (the default) or `"queue"`. A queued prompt waits
 until the agent would otherwise stop, then gets its own answer in the same turn.

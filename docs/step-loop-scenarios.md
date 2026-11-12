@@ -36,6 +36,11 @@ the two differ.
   workspace and the project's configuration. Their opening has six events: the workspace is recorded (`w0`) before
   the prompt is delivered (at seq 6). Every other scenario runs without snapshots and without a configuration, so
   its log holds none of their events and its `execution.succeeded` says that nothing was verified (not shown).
+- The scenarios of the family "Approval and the sandbox" run with the approval layer on, and say what they run
+  under in an *Approval* line: the mode, whether the machine has a sandbox, and whether a person is present. Every
+  other scenario runs with the layer off: each call runs as it is, `tool.started` carries no `run` facts, and the
+  log holds no `approval.*` or `taint.*` event. With the layer on, `tool.started` shows the mode, `sandboxed` for a
+  command that ran in the sandbox (`+network` when it had the network) and where each path argument lies.
 - *Model sees next* is `selectModelHistory` after the last event: what the next request is built from.
 - *The reducer rejects* lists events the loop must not write at the end of the named phase, with the error code.
 - Scenario constants: an attempt budget of 5 per logical step (1 + the spec's 4 retries), a crash-resume cap of 3,
@@ -2820,3 +2825,29 @@ a durable write and a side effect, which no log can show; they are the loop's al
     the list before a compaction, in its summary request and after it is the same.
 27. Return excluded content through the history tools: a reverted or refused message can be neither found nor read,
     and a checkpoint, which is derived text, is not searched.
+28. Run a call before it was decided (`decide`, from the mode, the call's effect class, the facts about its path
+    arguments, the escalation the model asked for explicitly, the sandbox, the session's taint and the remembered
+    approvals). Start a call the user was asked about before their approving answer, or a call that was denied
+    *(reducer)*. Read a command's text, or an error's text, to decide anything: escalation is the shell call's
+    `sandbox` argument and nothing else.
+29. Decide or start a write while a command runs in the same session, or the other way round: a command could swap
+    a link under the path that was checked. Calls that can change something (write, command, network, MCP) run one
+    at a time, in the order the model wrote them, each decided when the one before it has its result. Reads run
+    side by side and wait for nothing.
+30. Wait for an answer when nobody is present, or turn a question into a yes by any setting. An unattended ask is a
+    refusal the model reads (`approval.denied`, reason `unattended`), or with `unattended: "stop"` a refusal that
+    ends the run (`execution.failed`, cause `approval`).
+31. Record an answer that remembers something else than the chosen choice of the question said it would, or a
+    session approval that is not stamped with the position of its own answer *(reducer)*. Ask twice about one call,
+    or answer twice *(reducer)*. Remember a command or a command prefix: what is remembered is a capability.
+32. Take an answer after an interrupt was requested *(reducer)*. The interrupt withdraws the question; the call
+    settles as not started. A crash does the same through recovery. Nothing an unrecorded answer said is honoured.
+33. Run a command unsandboxed that was decided to run sandboxed. The shell tool refuses when it cannot sandbox.
+34. Store or show tool output before it was redacted, or redact it differently on a replay: the text in
+    `tool.settled` is the redacted text, once.
+35. Tell the user more than once that the session is tainted *(reducer)*, or clear taint by a compaction, a revert
+    or a fork. Taint is derived from the log (`deriveTaint` over every tool result that started, with the path
+    facts recorded at `tool.started`); only `taint.cleared`, which the user asks for, starts the fold again.
+36. Run the project's checks with more than a model's command gets without a question: they run in the sandbox
+    wherever commands are sandboxed, with no network and no extra directory, and where there is no sandbox they are
+    not run (mode `full` aside).

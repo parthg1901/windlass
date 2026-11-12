@@ -51,7 +51,14 @@ packages/core/src
   verify/         which checks apply, running them, the report the model is shown, the gate decision, the evidence
   testing/        fake-provider.ts (scripted provider for tests)
   auth/           ChatGPT sign-in (owned by the model layer)
-  sandbox/        built by its own track on top of these contracts
+  sandbox/        the OS sandbox for commands: policy.ts (what a command may write, read and reach), bwrap.ts
+                  and seatbelt.ts (Linux and macOS), detect.ts, command.ts (the policy of a command in a
+                  session's workspace: its temp directory, the git hardening)
+  approval/       the decision layer, without I/O: decide.ts (run, run sandboxed, ask or deny), policy.ts (the
+                  modes and the configuration section), paths.ts (where a path argument really points),
+                  escalation.ts (the shell call's explicit `sandbox` argument, the hint), grants.ts (remembered
+                  approvals), taint.ts, redact.ts, record.ts (these shapes as the log stores them, and the
+                  history taint is folded from)
 ```
 
 Naming: a lowercase export such as `message` or `usage` is a validator; the PascalCase export of the same name is its
@@ -80,10 +87,11 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Session | `session.created` (cwd, title, lineage, settings), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint) |
 | Inbox | `inbox.enqueued`, `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
-| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` |
+| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
-| Tools | `tool.called`, `tool.started` (with the effect class), `tool.settled` |
+| Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.settled` |
+| Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
 | Compaction | `compaction.started` (the trigger, the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after), `compaction.failed` |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
 | Verification | `checks.started`, `checks.finished` (the evidence), `checks.failed`; the gate's outcome is on `execution.succeeded` |
@@ -248,11 +256,50 @@ is a new version with a decoder for the old one.
 - The context carries `putBlob`, which stores bytes in the blob table and returns the reference a tool lists in its
   result's `attachments`. The tool runtime supplies it from its options (`store.putBlob`), so a tool never sees the store.
 
+**Approval and the sandbox** (`approval/`, `sandbox/`, `engine/approval.ts`; for users: `docs/safety.md`)
+- `decide` is pure. It is given the mode, the call's effect class and origin, the facts about its path arguments
+  (`pathFact`: the real path with every link followed, and whether it lies in the workspace, in `.git` or the
+  harness's project directory, outside, or in a path the sandbox hides), the escalation the model asked for with
+  the shell call's `sandbox` argument, whether a sandbox exists, the session's taint, the remembered approvals and
+  whether anyone is present. It never reads a command's text. The engine does the lookups and the writes.
+- From the log alone: what was asked is `approval.requested` (the question as shown, word for word); what the user
+  answered is `approval.answered`; what that allowed afterwards is its `grants` (a session approval is stamped with
+  the answer's own `seq`, and `session.approval.grants` in the projection is their list); whether a command ran in
+  the sandbox and with what is `tool.started.run.sandbox` (`null`: unsandboxed; otherwise `network` and
+  `writableRoots`), next to the mode and the path facts the decision was made from.
+- A call that is asked about stays `pending`; the projection's tool-call part carries the question and, once given,
+  the answer (`approval`). The reducer starts such a call only after an approving answer, never starts a denied
+  one, takes one question and one answer per call, and takes no answer once an interrupt was requested.
+- Taint is derived, not stored: `deriveTaint` folds the tool results that started (a read's path facts, a
+  command's granted network, a network or MCP tool by its class or origin: a tool declares `origin: "mcp"` or
+  effect `network` and is a source with no further wiring), `taint.cleared` and compactions, in log order. The
+  engine keeps that history in memory, built from the log on first use and extended with every append. A write
+  outside the workspace is not a source: its result shows nothing of the file. `taint.noticed` records that the
+  user was told, and is what a client shows; a fork inherits it, a revert and a compaction leave it.
+- Redaction is applied by the loop to every tool result before `tool.settled` is written (the text, and every
+  string of the structured `display` data), and to a check report. The values are the engine's `secrets`: by
+  default the values of the process's credential-looking environment variables, read once. The file tools are
+  handed the same redaction (`ToolContext.redact`), so an `edit` whose `old_string` holds a placeholder is matched
+  against the file as it was shown and applied to the real text, and a placeholder in `new_string`, or in the
+  content of a `write` of the same file, is written as the secret it stands for (`tools/redacted.ts`).
+- The sandbox wraps a command; it spawns nothing. `createCommandSandbox` (`sandbox/command.ts`) is what the shell
+  tool and the check runner use: the workspace writable, the session's temp directory as the command's `/tmp`
+  (Linux) or `TMPDIR` (macOS), the repository's git directory writable when it lies outside the workspace (a
+  subdirectory of a repository, a linked worktree), `hooks` and `config` of that git directory and the harness's
+  project directory read-only, and with the network granted a Bun install cache inside the temp directory. The
+  shell tool is told how to run through `ToolContext.sandbox` and refuses when it cannot sandbox.
+- The session's temp directory is one name for commands and file tools: a path under `/tmp` given to a file tool
+  is the file a sandboxed command means by it, and output too long for the model is kept in that directory, so
+  the path the model is given works in a command and in `read` alike. In mode `full` commands see the machine's
+  own `/tmp`, and so do the file tools.
+
 **Snapshot, config, verify** (`snapshot/`, `config/`, `verify/`)
 - `openSnapshots(cwd)` gives `take`, `changedFiles`, `diff` and `restore` on a private git directory per workspace
   that never touches the user's repository, or a typed `unavailable` (no git, an old git, no storage). A restore
   takes its own "before" snapshot, never deletes an ignored file, and reports what it left alone.
-- `loadConfig` reads the user and project files with strict validation: an unknown key is an error.
+- `loadConfig` reads the user and project files with strict validation: an unknown key is an error. The
+  `approval` section is the one key that is not merged: each file's section is handed on as written, and
+  `resolveApprovalConfig` lets the project's only tighten the user's.
 - `decideGate` is pure: finish, run these checks, report and continue, or finish unresolved. `renderReport` is the
   deterministic text the model is shown; `acknowledgeTool` is the tool (`report_check_failure`) with which the model
   says it cannot fix a failing check. An acknowledgement is that tool call, never parsed prose; a check may be
@@ -278,6 +325,20 @@ is a new version with a decoder for the old one.
   it keeps no conversation state in memory. Events that are decided together are appended in one transaction.
 - `tool.called` is durable when the call finishes streaming and `tool.started` right before the tool runs, both
   before any side effect. An interrupt is durable (`execution.interrupt_requested`) before anything is aborted.
+- *The order of the calls of one step.* Calls the loop itself refuses are settled first. Reads are decided at
+  once and run side by side. Every call that can change something (a write, a command, a network or MCP tool)
+  keeps its place in one line: it is decided when the one before it in the line has its result, and runs alone.
+  A call that must ask suspends itself and what is behind it in the line; reads go on. Questions are put one at a
+  time, and a call is decided again when its turn to ask comes. With the approval layer off (`approval: null`, in
+  tests of the loop's other rules) every call starts at once, as before.
+- *Asking.* `approval.requested` is durable before the question is put. A client answers with
+  `session.answer(...)`; `session.setAttended(false)` (the default until a client says otherwise) makes a call
+  that would ask a refusal instead, so nothing waits. An interrupt withdraws a pending question; a steered message
+  that arrives meanwhile waits in the inbox until the step is over, like any steer that arrives while tools run.
+- *The project's checks* are commands from a file the repository controls, run without anyone asking for them.
+  They run in the sandbox wherever the model's commands are sandboxed (`ask`, `auto`, and `full` once the session
+  is tainted), with no network and no extra directory; where there is no sandbox they are not run and a `notice`
+  says so. Only an untainted `full` runs them unsandboxed.
 - One attempt budget per logical step; the numbers and every text the loop freezes into the log are in
   `engine/constants.ts`.
 - Opening a session that still holds a claim recovers it (`engine/recovery.ts`), then resumes it.
@@ -470,12 +531,18 @@ Everything is under the harness data directory (`$XDG_DATA_HOME/<brand.directory
 sessions/<session id>.db          one SQLite database per session (WAL, with its -wal and -shm)
 sessions/<session id>.db-lock     that session's writer lock; never deleted
 sessions/<session id>.db-holder   the process holding the lock, for the error message only
+approvals/<workspace hash>.json   approvals remembered for a project (30 days), keyed by its real path
 index.db                          the listing cache; can be deleted at any time
 blobs/<aa>/<sha256>               media, content-addressed
 spill/                            tool output too long for the model, named by content or by call
 snapshots/<workspace hash>/       one private git directory per working directory
 auth.json                         the sign-in
 ```
+
+Outside the data directory, because sandboxed commands must reach it and the data directory is hidden from them:
+`<os temp>/<brand.directory>-<uid>/<session id>/` is the session's temp directory (mode 0700), with `.spill/`
+inside it for the session's tool output kept in full. With the approval layer off, and for a session on a machine
+without a sandbox, that output is in `spill/` of the data directory as before.
 
 **Why one file per session.** The store's guarantees are per database: one writer, dense `seq`, the reducer inside
 the append transaction, rebuild-from-log equals the live rows. A session is the natural unit of all four, and one
