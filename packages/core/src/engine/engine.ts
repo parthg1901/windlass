@@ -988,6 +988,8 @@ interface LiveSpawn {
   readonly child: LiveSession | null
   /** Where in the child's log this piece of its work begins. */
   readonly fromSeq: number
+  /** A subagent that was lost to a restart and is being looked at: its end is on its way, as a message. */
+  readonly lost?: boolean
   readonly command: BackgroundCommand | null
   /** Who asked for it to stop, once someone did: an interrupt of this session, its shutdown, or the stop tool. */
   stopping: "interrupt" | "shutdown" | "tool" | null
@@ -2222,7 +2224,9 @@ class LiveSession implements EngineSession {
 
   /** Whether a background subagent of this session is still at work here. */
   private awaitsSubagents(): boolean {
-    return [...this.spawns.values()].some((live) => live.child !== null && live.background && live.result === null)
+    // Also one that a restart cut off and that is being looked at right now: a turn that is taken up again does
+    // not end before the model was told what became of the work it had handed out.
+    return [...this.spawns.values()].some((live) => (live.lost === true || (live.child !== null && live.background)) && live.result === null)
   }
 
   /** Resolves when input arrives in the inbox, or the execution is interrupted. */
@@ -2586,7 +2590,7 @@ class LiveSession implements EngineSession {
       }
       // Held here, as work in progress, until its end is recorded.
       let finish = () => {}
-      const live: LiveSpawn = { spawnId: entry.spawnId, background: entry.background, child: null, fromSeq: 0, command: null, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+      const live: LiveSpawn = { spawnId: entry.spawnId, background: entry.background, child: null, fromSeq: 0, lost: true, command: null, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
       this.spawns.set(entry.spawnId, live)
       this.track(
         this.reapChild(entry.spawnId, entry.sessionId!, entry.worktree).finally(() => {
