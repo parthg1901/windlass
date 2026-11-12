@@ -227,3 +227,9 @@ Reading a result:
 - Telemetry with content off, checked on a turn with a command, a read, a write and a subagent: 15 spans in 4 requests, no prompt, path, command or output in them; the machine's host name is.
 - No client command stops one running call or sets a watch yet (`/help` in both interfaces, 2026-11-12).
 - The fourth pass spent 115 requests on tasks 34 to 41 (15 of them on the default model, see the first point).
+
+## Reading the gate: batches (2026-11-12)
+
+- The model's cost on a task changes with the time of day by more than between runs made together (`audit-every-handler`: a median of 16 steps / 181k input tokens in one sitting, 24 to 39 steps / 300k to 508k the same evening on the same code; `answer-question` 3/3 then 0/3). Before blaming a change for a cost or pass-rate finding, rerun the baseline's commit in the same sitting as a control.
+- A baseline holds one batch per results directory. Record it from two sittings hours apart: `bun evals/baseline.ts <evening dir> <morning dir>`. When the control itself fails the cost rules, add its directory as a third batch.
+- Against a baseline with one batch (the committed one until it is recorded again) cost findings are `WARNING` lines that do not change the verdict or the nightly's exit code; with two or more they are regressions only when every run is above the baseline's most expensive run and the median is 1.5 times over the highest batch median.

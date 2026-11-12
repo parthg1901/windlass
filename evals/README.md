@@ -146,7 +146,8 @@ bun evals/gate.ts /tmp/eval-a /tmp/eval-b --json                                
 ```
 
 Exit codes: 0 pass; 1 a hard failure or a regression; 3 inconclusive (nothing failed, but some comparison lacked the
-repeats it needs or some run was not classified: that is not a pass); 2 usage error.
+repeats it needs or some run was not classified: that is not a pass); 2 usage error. A `WARNING` (cost above a
+baseline that has one batch) is printed and counted and does not change the verdict.
 
 The output is one line per finding, worst first, then a verdict:
 
@@ -156,7 +157,7 @@ REGRESSION pass-rate            rename-function: passed 3/3 in the baseline, 1/3
 NO-DATA    repeats              add-feature: baseline 1 run(s), new 3; pass rate, tokens and steps need 3 on each side
 INFO       wall-time            overall: median wall 19.2s (baseline 18.6s)
 
-gate: FAIL  1 hard failure(s), 1 regression(s), 1 without enough data, 52 check(s) passed
+gate: FAIL  1 hard failure(s), 1 regression(s), 0 warning(s), 1 without enough data, 52 check(s) passed
 ```
 
 | rule | kind | fails when | why this threshold |
@@ -169,38 +170,70 @@ gate: FAIL  1 hard failure(s), 1 regression(s), 1 without enough data, 52 check(
 | `malformed-event` | hard | any line that is not a valid event | the stream is the CLI's contract; unknown event types are tolerated, broken ones are not |
 | `time-limit` | hard | killed after ignoring Ctrl-C for the grace period, or over 1.5x the limit | stopping at the limit is model slowness; not stopping is a harness bug |
 | `setup-failed` | hard | a workspace setup failed | an eval bug, not a result |
-| `pass-rate` (task) | statistical | baseline passed every time and a strict majority of new runs fail; otherwise a one-sided Fisher exact test at p < 0.05 | a solid task does not lose a majority to noise (2 of 3 at a true 0.9 pass rate: 2.8%); Fisher is exact at small n and needs a large drop |
+| `pass-rate` (task) | statistical | baseline passed every time in every batch and a strict majority of new runs fail; otherwise a one-sided Fisher exact test at p < 0.05 against the baseline's count pooled over its batches | a solid task does not lose a majority to noise (2 of 3 at a true 0.9 pass rate: 2.8%); Fisher is exact at small n and needs a large drop, so a task that was 3/3 in one batch and 0/3 in another (3/6) is not flagged at 0/3 |
 | `pass-rate` (overall) | statistical | Fisher, p < 0.05, pooled over tasks compared | many runs give power for a broad, moderate drop no single task shows |
-| `input-tokens`, `steps` (task) | statistical | new median over 1.5x and over +5k tokens / +2 steps | medians of 3+ runs ignore one long run; the floors keep small tasks from flapping on one extra tool call |
-| `input-tokens` (overall) | statistical | median of per-task ratios over 1.25, with 3+ tasks | noise cancels across tasks; a 25% shift in the middle task is systematic (a longer prompt, untruncated output) |
+| `input-tokens`, `steps` (task) | statistical | new median over 1.5x the highest baseline batch median and over +5k tokens / +2 steps, and every new run above the baseline's most expensive run | cost varies between batches more than inside one, so the reference is the most expensive batch on record plus a margin, and the change must show in every run; the floors keep small tasks from flapping on one extra tool call |
+| `input-tokens` (overall) | statistical | median over tasks of new median / highest baseline batch median over 1.25, with 3+ tasks | noise cancels across tasks; the middle task 25% above its most expensive batch is systematic (a longer prompt, untruncated output) |
 | `wall-time`, `cached-share` | report-only | never | they follow the provider's load and cache, not the harness |
 
 Statistical rules need at least 3 runs of a task on each side and the same model and effort as the baseline;
 otherwise they report `NO-DATA`. `UNCHECKED` means some runs were not classified (no prefixlens checkout, or results
 from before classification existed). The thresholds and their reasoning are in `RULES` in `gate.ts`.
 
-### Refreshing the baseline
+### Batches
+
+What a task costs the model changes with the time of day by more than it changes between runs made together. The
+first nightly run showed it: the same code took a median of 16 steps and 181k input tokens on `audit-every-handler`
+in the sitting the baseline came from and 24 to 39 steps, 300k to 508k tokens, the same evening; `answer-question`
+went from 3/3 to 0/3. A three-run median from one sitting says nothing about the next one.
+
+So each results directory in a baseline is a batch, and the baseline keeps every batch's samples. The cost rules
+compare a task with what its batches showed: the reference is the highest batch median, not the pooled one, and a
+finding needs the new median over it by the margin and every new run above the most expensive baseline run. They
+need two baseline batches with 3 runs of the task each, recorded at different times of day:
+
+- two or more such batches: cost over the rule is a `REGRESSION`;
+- one (a baseline recorded from one directory, or a `baseline.json` from before batches were recorded): the task is
+  compared with that batch alone and cost over the rule is a `WARNING`, with an `INFO` line saying cost is not gated;
+- none (the task's baseline runs are spread 2 + 1 over directories): `NO-DATA`.
+
+Pass rate is judged against the count pooled over the batches. The price of the cost rule is sensitivity: a
+regression smaller than the spread between the baseline's batches passes. When a rerun of the baseline's own commit
+fails the cost rules, that sitting was more expensive than any on record: add its directory as another batch.
+
+### Recording the baseline
+
+Run the suite twice on one commit, hours apart (an evening and a morning), then record both directories:
 
 ```
-bun evals/gate.ts /tmp/eval-a /tmp/eval-b --update-baseline     # writes baseline.json from these results; refused on a hard failure
-bun evals/baseline.ts /tmp/eval-a [--commit <sha>] [--note <text>] [--out <file>]   # the generator itself
+bun evals/run-agent.ts --all --model gpt-6-luna --effort low --repeat 3 --out /tmp/eval-evening
+bun evals/run-agent.ts --all --model gpt-6-luna --effort low --repeat 3 --out /tmp/eval-morning    # hours later, same commit
+bun evals/baseline.ts /tmp/eval-evening /tmp/eval-morning                                          # writes evals/baseline.json, one batch per directory
 ```
+
+`baseline.ts` takes `[--commit <sha>] [--note <text>] [--out <file>]` and prints each batch with its start time, and
+a line when there is only one. `bun evals/gate.ts /tmp/eval-evening /tmp/eval-morning --update-baseline` does the same
+after gating the results, and is refused on a hard failure. A third directory adds a third batch.
 
 The baseline holds one configuration (model, effort): per task the runs, passes, pass rate, median steps, wall time
-and input tokens, and cached share; the same over all runs; the date, the commit the runs recorded (`--commit` for
-older results that did not record one), the source directories and a note. Refresh it on purpose, after a change
-that is meant to change the numbers, and commit it with that change. Updating accepts any statistical regression in
-the new results; it never accepts a hard failure.
+and input tokens, and cached share, pooled over the batches, and under `batches` each directory's runs, passes,
+steps and input tokens per run, and their medians; the same pooled numbers over all runs; the date, the commit the
+runs recorded (`--commit` for results that did not record one or that come from several commits), the source
+directories with their start times and a note. Refresh it on purpose, after a change that is meant to change the
+numbers, and commit it with that change. Updating accepts any statistical regression in the new results; it never
+accepts a hard failure.
 
-The committed `baseline.json` is a single-repeat seed from the first real run (2026-11-11, gpt-6-luna, low effort,
-at a1b9d1f): every statistical comparison against it reports not enough data. Regenerate it from at least 3
-repeats of all 15 tasks before relying on the gate's statistics.
+The committed `baseline.json` holds one batch (2026-11-12, 27 tasks, 3 repeats), written before batches were
+recorded: against it the gate warns about cost and does not fail on it. Record it again from two directories.
 
 ### Honest limits
 
 - One model and one effort level per baseline. Another configuration is not comparable, only hard rules apply.
 - Fifteen small synthetic tasks. A pass rate over them says the harness works on small, well-specified jobs; it says
   little about long sessions, large repositories or vague requests.
+- Batches. Two batches sample the spread between sittings thinly: a third sitting is the most expensive of the three
+  one time in three, and the margin over the highest batch median is all that covers it. Pass rate moves between
+  sittings too, and the pass-rate rules treat every run as independent.
 - Variance. At 3 repeats only big drops are detectable: a task that went from 90% to 60% will usually pass the gate.
   More repeats buy sensitivity at the price of time and requests (15 tasks x 3 is about 45 runs and 15 minutes).
 - The provider's cache is noisy (4 of the first 10 runs had provider-side misses), which is why the cached share is
@@ -412,7 +445,7 @@ Where it writes: a root outside the repository, by default `$XDG_DATA_HOME/<bran
 
 ```
 summary.md          a page to read in a minute: the verdict and exit code, the commit, pass rate per task against the
-                    baseline, regressions by name, cached share and avoidable misses, recall against the previous row,
+                    baseline, regressions and warnings by name, cached share and avoidable misses, recall against the previous row,
                     model requests and tokens, how long each phase took
 summary.json        the same as data (`NightlySummary` in nightly.ts)
 gate.txt, gate.json the gate's findings
@@ -442,7 +475,8 @@ The recall rows go to the nightly's own history, `<root>/recall-history.jsonl`, 
 | 6 | the run could not be completed: a dirty tree, or a step that threw (the summary's `errors` says which) |
 | 64 | usage error |
 
-Until the baseline holds three repeats of every task, a real run ends in 4. `--dry-run` uses the stand-in agent in
+While the baseline holds one batch, cost above it is listed under Warnings in `summary.md` and does not change the
+exit code. `--dry-run` uses the stand-in agent in
 `scripted` mode (set `STAND_IN_MODE` for another) with its sessions in a data directory inside the summary, so the
 trace export and the classification run for real; its tasks are graded as failed because nothing solved them, and
 it is compared with the committed baseline only as "not comparable". `nightly.test.ts` runs the whole flow this way.
