@@ -370,8 +370,11 @@ Overall: Two small things.
 A line is numbered in the new file, and a removed line in the old file, which the message says. While the agent
 works the message is delivered like any other you send: into the running turn, or after it in queue mode (Ctrl-T).
 Leaving without sending keeps the comments for that turn until the session is closed, and a line says so;
-`/review` opens them again. A review that was not sent is not stored anywhere. A turn that changed no file, or
-whose diff cannot be had (no snapshot was taken), gets a line saying that instead of an empty view.
+`/review` opens them again. A review that could not be sent (the engine had gone) keeps them too: the `not sent`
+line says so. A review that was not sent is not stored anywhere. A turn that changed no file, or
+whose diff cannot be had (no snapshot was taken), gets a line saying that instead of an empty view. A question
+that comes up while the review or the `/diff` reader is open is said on a line of the view, with the key that
+leaves it: the question waits under the view, and Tab answers it once you are back.
 
 ## Compaction and the history tools
 
