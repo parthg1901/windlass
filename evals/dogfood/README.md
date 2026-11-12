@@ -16,6 +16,8 @@ The kit uses prefixlens (`/home/ubuntu/projects/prefixlens`), a real TypeScript/
 | `mcp-server.ts` | a small stdio MCP server written as a user would (handshake protocol, two tools whose answers the model cannot guess: `shelf_code`, `inventory`); `--log <file>` records every request it receives |
 | `mcp-config.ts` | adds (or `--remove`s) that server in a user's config home (`--user <dir>`, used with `XDG_CONFIG_HOME=<dir>`) or a workspace's project config (`--project <dir>`); `--trusted` sets `"untrusted": false` |
 | `make-image.ts` | writes a synthetic PNG (`--pattern halves`, `digit` or `shapes`) with an answer a person can check |
+| `hooks-config.ts` | adds (or `--remove`s) four hooks (`no-push`, `no-env`, `house-rule`, `no-scratch`) and optionally a language server (`--lsp <langserver.js>`, run with `node`) in a user's config home or a workspace's project config; `--marker <word>` ends one hook's command with a 190-character word that ends in the marker, to check that an approval question shows the whole command |
+| `otel-collector.ts` | a local stand-in for an OpenTelemetry collector: appends every request it receives to a file; `--check <file> <word>...` counts each word in what was received and lists the attribute keys |
 | `webhook.ts` | sends one signed request to a webhook wake-up (the secret from `WAKE_SECRET` or standard input, never printed); `--bad` signs wrongly, `--repeat` sends it twice, `--github` signs as GitHub does |
 | `tsconfig.json` | so `bunx tsc --noEmit -p evals/dogfood/tsconfig.json` checks the scripts |
 
@@ -37,12 +39,15 @@ agents' sessions on a shared machine: prefer `--cwd`.
 ## Budget and rules
 
 - About 60 live requests for tasks 1 to 10 (the first 2026-11-12 pass spent 59); about 160 for tasks 11 to 21 (the
-  second pass spent 160, replays and subagents included); about 170 for tasks 22 to 33 (the third pass spent 172).
+  second pass spent 160, replays and subagents included); about 170 for tasks 22 to 33 (the third pass spent 172); about 115 for tasks 34 to 41 (the fourth pass spent 115).
   Always `--model gpt-6-luna --effort low`, short prompts, one live run at a time.
 - An unknown slash command (`/foo`) and an effort the model does not accept (`--effort ultra` on `gpt-6-luna`)
   cost nothing any more: both are refused before anything is sent.
 - The source repository moves. When `setup.ts --seed` says the file "no longer has the expected text", read the
   file in a clean clone and update `SEEDS` (the third pass had to).
+- The README's interactive commands (the program with no arguments, and `tui`) name no model: in a directory
+  without a project configuration they run on the account's default model. Add `--model gpt-6-luna --effort low`
+  when following the README (the fourth pass spent 15 requests on the default model before noticing).
 - Never print or copy the sign-in. For a "not signed in" test, use a throwaway `XDG_DATA_HOME`.
 - Drive the line interface and the full-screen interface through a private tmux server (`tmux -L <name>`), kill by
   PID, remove the socket afterwards. See `.claude/skills/tui-tmux-testing/SKILL.md`.
@@ -250,6 +255,89 @@ used as `XDG_CONFIG_HOME=$C`). Each entry says what a good run shows; the words 
     `--models` with an empty `XDG_DATA_HOME`, a mistyped option, `fork --turn 3 --json`, `--demo list`, a one-prompt
     edit with the checks (`--cwd`), `tui` with the hooks of task 28, and the network question of task 9 with a URL
     150 characters long ending in a marker, in both interfaces: the whole command must be on screen. About 20 requests.
+
+## The fourth pass: the README as a stranger, a project's own configuration, and what was left (tasks 34 to 41)
+
+Set up: `$W/c1/repo` clean, `$W/h1/repo` and `$W/h2/repo` clean with `hooks-config.ts --project` (below), a tiny
+project of your own for the README (`src/add.ts` whose `add` subtracts, `src/add.test.ts`, `git init`), and one
+throwaway config home per configuration (`XDG_CONFIG_HOME=<dir>` inline on every command). `<binary>` below is
+`brand.binary`.
+
+34. **The README from the top.** `bun scripts/build.ts`, `sh scripts/install.sh --bin-dir <throwaway>/bin
+    --no-profile` (never the default directory), `--version` under both names, `--demo list`, the showcase demo,
+    the one-task quickstart in the tiny project, then the interactive one in tmux: a message, a steer while it
+    works, `/queue <message>`, `/diff`, `/undo`, Ctrl-C during the model call and during `sleep 27`, Ctrl-D, `-c`;
+    then `tui`. Note every place where what happens differs from the README's words, and read `--help` line by
+    line. About 25 requests.
+35. **Command files** (`docs/commands.md`). In the workspace `.<brand.directory>/commands/echo-args.md` (front
+    matter with `description` and `argument-hint`; text: `Without using any tool, reply with exactly this one line
+    and nothing else: FIRST=$1 SECOND=$2 ALL=$ARGUMENTS PRICE=$$5 HOME=$HOME`), `.claude/commands/frontend/test.md`
+    (`NAMESPACED-OK`), a `broken.md` (a front-matter line without a colon), an `undo.md`; in the config home
+    `commands/standup.md` (with a `` !`git status` `` line and an `@src/usage.ts` line) and an `echo-args.md` of the
+    same name as the project's. One prompt: `'/echo-args one "two words" three'` (good: `FIRST=one SECOND=two words
+    ALL=one "two words" three PRICE=$5 HOME=$HOME`). At the prompt: `/help`, `/ech-args x`, `/broken`,
+    `/echo-args solo` (the warning about argument 2), `/frontend:test extra words`, `/standup` (two `left as text`
+    warnings). About 6 requests.
+36. **A project's hooks and language server.** `bun evals/dogfood/hooks-config.ts --project <workspace> --marker
+    TAIL-MARKER --lsp <pyright's langserver.index.js from the uv cache> --wait-ms 4000`, committed. One prompt
+    (every hook named as skipped, and how to approve). Line interface at 80 columns: each question, the marker on
+    screen before answering, `y` to each one at a time (read which question each `approved:` line follows),
+    `/hooks`, `/lsp`. Then `"Do exactly this, in order, one step at a time: 1) run 'git push origin main' with the
+    shell tool once. 2) write SCRATCH.md containing the word tmp, using the write tool. 3) write greet.py using the
+    write tool with: def greet(name: str) -> str returning a greeting, and a last line that calls gret(42)
+    (misspelled on purpose; keep it). Then answer in one line what happened in each step."` (the refusal, two
+    notes, the stop hook, the file removed), and a second edit of `greet.py` with the edit tool (`2 new
+    diagnostics from python`). The full-screen interface on a fresh copy of the workspace (`cp -a`): is anything
+    asked before the first message? Then change the marker (an edited hook) and open both interfaces again.
+    From a subdirectory: `cd <workspace>/src` and the first two steps as one prompt (the hooks hold; read the
+    ending's words after the stop hook). About 20 requests.
+37. **A subagent in a worktree under the guard hooks** (the approved workspace of task 36, one prompt). `"Use a
+    subagent with a worktree of its own (worktree: true) and this task: '1) run git push origin main with the shell
+    tool once. 2) write the file .env containing A=1 with the write tool. 3) write note.txt containing hi with the
+    write tool. Do not retry anything refused. Report exactly what each step returned.' Then tell me in one line
+    per step what it reported."` Good: both refusals name their hook, `merged 1 file into the workspace: note.txt`,
+    no worktree or branch left (`git worktree list`, `git branch`). About 6 requests.
+38. **A project's MCP server before the first message** (`mcp-config.ts --project`). Line interface: the question
+    comes at the start; `n`, then `/mcp approve warehouse`, `y`, `/mcp` (`running · 2 tools`), and task 17's
+    question as the FIRST message (the answer `WH-F0239` in that turn; Ctrl-C at the tool's question once, then
+    `"Try again now."` and `a`). Full-screen interface on a fresh copy: `/mcp`, `/mcp approve warehouse`. About 6
+    requests.
+39. **Agents and a follow-up**. `{ "agents": { "default": "careful" } }` and `agents/careful.md` (`Start every
+    answer with the word USER-CAREFUL:`) in the config home; `.claude/agents/careful.md` (`PROJECT-CAREFUL:`) and
+    `.claude/agents/planner.md` (`disallowed-tools: write, edit`) in the workspace. `"What is 2+2? One short line,
+    no tools."` with no option (`USER-CAREFUL`), `--agent careful` (`PROJECT-CAREFUL`) and `--agent none`
+    (neither): read what the screen says about which definition is in force. Then interactively with `--agent
+    none`: a subagent that writes `sub1.txt` and reports its session ID; `/agent planner`; `"Send a follow-up to
+    the subagent <id> …: create the file sub2.txt …. If that is refused, start a new subagent with the same
+    task."` Good: the follow-up is refused, the new subagent runs as the planner and cannot write. About 10
+    requests.
+40. **What a user does while the agent works** (line interface, then the full-screen one with `{ "memory": {
+    "enabled": true } }` in the config home, a workspace skill and a user skill).
+    - A merge conflict: `"Use a subagent with a worktree of its own (worktree: true) and this task: first run
+      'sleep 21' with the shell tool, then with the edit tool replace the first line of README.md with '# from the
+      subagent' and also write the file other.txt containing hi. …"`; once `pgrep -a -x sleep` shows it, change
+      the first line of `README.md` by hand. Good: `⚠ not merged, conflicts in: README.md`, the branch kept,
+      the hand edit intact. Then `/undo`: is the hand edit kept, and is anything asked?
+    - The same without a subagent: `"Run 'sleep 9' with the shell tool, then answer with the word done. Touch no
+      file."`, a hand edit and a new file of your own during the sleep, then read the `· changed` line and `/undo`.
+    - Full screen: `/skills`, `/memory`, `/wakeups`, `/remember <text>` before the first message; three reads with
+      a steer and (Ctrl-T) a queued message; task 19's reminder and the firing; `/compact` typed during `sleep 19`
+      and again when idle; Ctrl-C during task 15's `sleep 41` subagent (`pgrep`: nothing left); a second process
+      on the open session (`--session <id> "Reply OK."`: refused, naming the pid); `/forget <id>`.
+    About 30 requests.
+41. **Forks of forks, replay under `execute`, telemetry.** `fork <id> --turn 1` on a session whose first turn was
+    followed by a queued message (it must fork; the fourth pass got `seq … is inside a step`), `fork <id>` while a
+    process holds the session, a fork of that fork, `fork <that> --copy --json`, and one prompt with an edit in
+    the copy (exit 3: no `node_modules` there). Task 14's recording, then `replay <id> --policy execute --effort
+    low --system-prompt <file saying to run 'echo PRE-EDIT' before editing>`: the report, the `compared on what
+    it did` part and the copy it names (delete it). Telemetry: `bun evals/dogfood/otel-collector.ts --out <file>`
+    (stop it by PID), `{ "telemetry": { "enabled": true, "endpoint": "<the address it printed>" } }` in a config
+    home, one prompt that names a command, a path, a text and a subagent's command by unusual words, then
+    `otel-collector.ts --check <file> <the words> /tmp/ <the workspace's name>`: every count must be 0. About 25
+    requests.
+
+The client commands for stopping one running call and for watching a background command's output were not in
+`/help` when the fourth pass ran: try them when they are.
 
 ## Reading the results
 
