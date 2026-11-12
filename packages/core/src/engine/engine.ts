@@ -51,6 +51,8 @@ import { homedir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
 import { type Grant, stampGrants } from "../approval/grants.ts"
+import type { McpRegistry } from "../mcp/registry.ts"
+import type { SkillSet } from "../skills/discover.ts"
 import type { ApprovalPolicy, ApprovalSection, ResolvedApproval } from "../approval/policy.ts"
 import type { CallMatch, Divergence } from "../replay/match.ts"
 import { type Replay, type ReplayWorkspace, createReplay } from "../replay/replay.ts"
@@ -89,7 +91,7 @@ import type { EphemeralEvent } from "../event/ephemeral.ts"
 import { type CallId, type ExecutionId, type MessageId, type RequestId, type SessionId, newId } from "../id.ts"
 import { type DiscoveryInput, discoverSources } from "../instructions/discover.ts"
 import type { InstructionSource } from "../instructions/source.ts"
-import { instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
+import { type AppendedSource, detectAppendedChanges, instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
 import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonOf } from "../interrupt.ts"
 import type { Json } from "../json.ts"
 import { selectModelHistory } from "../message/history.ts"
@@ -134,6 +136,8 @@ import {
   retryDelayMs,
 } from "./constants.ts"
 import { historyTools } from "./history.ts"
+import { McpHub, type McpServerPlan, type McpSetup, type McpState, type SessionServers, catalogueAppended, engineMcpTools, planServers, serverGrant, serverQuestion, sessionServers } from "./mcp.ts"
+import { type SkillPlaces, type SkillsSetup, describeSkillProblem, engineSkillTool, findSkills, skillPlaces, skillsSource } from "./skills.ts"
 import { recover } from "./recovery.ts"
 import { DEFAULT_NORMALISERS, REPLAY_TEXT, type ReplayOutcome, type ReplayRequest, type ReplayRun, changedBaseline, snapshotAtDivergence } from "./replay.ts"
 import {
@@ -257,7 +261,11 @@ export interface EngineHooks {
 
 /** Something the engine noticed that is not part of any session's log. Shown or logged, never stored. */
 export interface Diagnostic {
-  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed"
+  /**
+   * `skills`, `mcp`, `wake` and `memory` are about those features and are for the user to read, never the model: a
+   * skill that could not be loaded, a server of the project's that waits for approval, a note file that is invalid.
+   */
+  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory"
   readonly sessionId: SessionId | null
   readonly message: string
   readonly cause?: unknown
@@ -407,6 +415,21 @@ export interface EngineOptions {
    * `<dataDir>/snapshots`.
    */
   readonly exportSnapshot?: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number } | SnapshotUnavailable>
+  /**
+   * Skills: the `skill` tool in every new session's tool list, and the index
+   * of the skills that exist appended to the conversation when it changes
+   * (`engine/skills.ts`). Without it (or `null`) the engine offers neither.
+   * `createHarness` switches it on.
+   */
+  readonly skills?: SkillsSetup | null
+  /**
+   * MCP servers: `mcp_search` and `mcp_call` in every new session's tool
+   * list, the configured servers started in the background, and their
+   * catalogue appended to the conversation when it changes (`engine/mcp.ts`).
+   * Without it (or `null`) the engine offers none of it and starts no
+   * server. `createHarness` switches it on.
+   */
+  readonly mcp?: McpSetup | null
 }
 
 /** How a session is forked. */
@@ -430,7 +453,7 @@ export interface ForkOptions {
 }
 
 /** The configuration an execution runs under: the checks and where they run, and the files' approval sections. */
-export type SessionConfig = Pick<LoadedConfig, "config" | "projectDir"> & Partial<Pick<LoadedConfig, "approval">>
+export type SessionConfig = Pick<LoadedConfig, "config" | "projectDir"> & Partial<Pick<LoadedConfig, "approval" | "files">>
 
 /** How a session's tool calls are decided right now, for a client to show. */
 export interface ApprovalState {
@@ -605,6 +628,27 @@ export interface EngineSession {
   readonly answer: (target: { readonly messageId: MessageId; readonly callId: CallId; readonly sessionId?: SessionId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }) => boolean
   /** The user says the conversation is trustworthy again (`taint.cleared`). Returns whether the session was tainted. */
   readonly clearTaint: () => boolean
+  /**
+   * The skills of the session's working directory as they are now, with what
+   * discovery could not load (for a `/skills` listing). `null` when the
+   * engine offers no skills.
+   */
+  readonly skills: () => SkillSet | null
+  /**
+   * The session's MCP servers: the started ones as their registries report
+   * them, and the project's servers that wait for the user's approval. As of
+   * the configuration the latest execution read; `null` when the engine
+   * offers no MCP servers.
+   */
+  readonly mcp: () => McpState | null
+  /**
+   * The user approves a server the project's configuration names, by its
+   * name (and, to be exact about which definition, the fingerprint the
+   * question showed). The approval is remembered for the project and the
+   * server starts at once; its tools reach the model with the catalogue at
+   * the next step boundary. Returns whether such a server was waiting.
+   */
+  readonly approveMcpServer: (name: string, fingerprint?: string) => boolean
   /** Whether an execution is being worked on in this process. */
   readonly working: boolean
   /** Resolves once no execution and no revert is being worked on in this process. */
@@ -738,6 +782,12 @@ interface Core {
   /** The names of the tools whose calls need no decision and run side by side (`Tool.delegates`). */
   readonly delegating: ReadonlySet<string>
   readonly exportSnapshot: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number } | SnapshotUnavailable>
+  /** Skills: the tool and where the user's own are kept. `null` when the build offers none. */
+  readonly skills: { readonly tool: AnyTool; readonly configDir: string; readonly home: string | undefined } | null
+  /** MCP: the bridge tools and the registries of the configured servers. `null` when the build offers none. */
+  readonly mcp: { readonly tools: readonly AnyTool[]; readonly hub: McpHub } | null
+  /** Where the approvals remembered for a project are kept, also with the approval layer off. */
+  readonly grantsDir: string
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -753,7 +803,14 @@ export function createEngine(options: EngineOptions): Engine {
   // The tools of spawned work are carried out by the session that calls them. A build that brings its own tool of one of those names keeps it.
   const spawning = spawnTools((sessionId) => core.sessions.get(sessionId) ?? null)
   const own = [spawning.subagent, ...spawning.management].filter((tool) => !options.tools.some((other) => other.name === tool.name))
-  const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, acknowledge]
+  // The tools of the features an engine may offer are carried out for the session that calls them. As above, a
+  // build that brings its own tool of one of those names keeps it.
+  const mine = (tools: readonly AnyTool[]) => tools.filter((tool) => !options.tools.some((other) => other.name === tool.name))
+  const skillsDir = options.skills?.configDir ?? configDirectory()
+  const skill = engineSkillTool((context) => core.sessions.get(context.sessionId)?.skillPlaces() ?? { configDir: skillsDir, extraPaths: [], disabled: [] }) as unknown as AnyTool
+  const bridge = engineMcpTools((context) => core.sessions.get(context.sessionId)?.mcpServers() ?? null)
+  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool])
+  const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
   const core: Core = {
     stores,
     provider: options.provider,
@@ -807,6 +864,15 @@ export function createEngine(options: EngineOptions): Engine {
     },
     delegating: new Set(runnable.filter((tool) => tool.delegates === true).map((tool) => tool.name)),
     exportSnapshot: options.exportSnapshot ?? ((workspace, snapshot, into) => exportSnapshot(workspace, snapshot, into, { dataDir: join(options.dataDir, "snapshots") })),
+    skills: options.skills == null ? null : { tool: runnable.find((tool) => tool.name === skill.name)!, configDir: skillsDir, home: options.skills.home },
+    mcp:
+      options.mcp == null
+        ? null
+        : {
+            tools: [bridge.search, bridge.call].map((tool) => runnable.find((other) => other.name === tool.name)!),
+            hub: new McpHub(options.mcp, (server, message) => core.report({ kind: "mcp", sessionId: null, message: `${server}: ${message}` })),
+          },
+    grantsDir: options.approval?.grantsDir ?? join(options.dataDir, "approvals"),
   }
   let closing: Promise<void> | null = null
   const assertOpen = () => {
@@ -882,7 +948,10 @@ export function createEngine(options: EngineOptions): Engine {
       throw new EngineError("unknown_model", `model ${settings.model} is not available; choose one of: ${models.join(", ")}`)
     },
     close: () => {
-      closing ??= Promise.all([...core.sessions.values()].map((session) => session.close())).then(() => {})
+      closing ??= Promise.all([...core.sessions.values()].map((session) => session.close()))
+        // Every server the sessions had started is stopped once no session can call one any more.
+        .then(() => core.mcp?.hub.stop())
+        .then(() => {})
       return closing
     },
   }
@@ -1075,6 +1144,12 @@ class LiveSession implements EngineSession {
   private arrival: (() => void) | null = null
   /** The replay this session is, while it runs. */
   private director: Director | null = null
+  /** The MCP servers this session holds in the engine's hub, by name, with the key each is let go of by. */
+  private readonly mcpHeld = new Map<string, { readonly key: string; readonly registry: McpRegistry }>()
+  /** The MCP servers the configuration of the latest execution names, and which of them may start. */
+  private mcpPlan: readonly McpServerPlan[] = []
+  /** The session's servers as its bridge tools and its catalogue read them. Rebuilt when the held servers change. */
+  private mcpBackend: SessionServers | null = null
 
   constructor(
     private readonly core: Core,
@@ -1377,6 +1452,8 @@ class LiveSession implements EngineSession {
       while (this.ending.size > 0) await Promise.all([...this.ending]).catch(() => {})
       await Promise.all([...this.children].map((child) => child.close())).catch(() => {})
       await this.retaining?.catch(() => {})
+      // Its servers are let go of: one that no other session uses is stopped.
+      this.releaseMcp()
       this.channel.end()
       this.listeners.clear()
       this.core.sessions.delete(this.id)
@@ -1468,6 +1545,8 @@ class LiveSession implements EngineSession {
     try {
       this.config = await load(this.projection().session.cwd)
       this.announcePolicy()
+      // The servers this configuration names are started now, in the background: nothing waits for one here.
+      this.attachMcp()
       return true
     } catch (error) {
       if (run.interrupt.signal.aborted) this.finishInterrupt(run)
@@ -1544,6 +1623,12 @@ class LiveSession implements EngineSession {
         await this.snapshot("delivery")
         if (signal.aborted) return this.finishInterrupt(run)
       }
+      // The first step of an execution gives servers that are still starting a bounded moment, so that a one-prompt
+      // run has the catalogue in its first request. (No await when none is starting: the loop goes straight on.)
+      if (this.serversToAwait(run)) {
+        await this.awaitServers(run)
+        if (signal.aborted) return this.finishInterrupt(run)
+      }
       // Read again: input may have arrived, or been withdrawn, while the gate ran and the snapshot was taken.
       const waiting = this.projection()
       const steers = waiting.inbox.filter(isSteer)
@@ -1565,6 +1650,13 @@ class LiveSession implements EngineSession {
         newMessageId: ids.message,
       })
       if (prepared.length > 0) this.write(prepared)
+      // What is never in the baseline (the skill index, the MCP catalogue) is appended when it changed. Read after
+      // the baseline is in place: a baseline set just now carries none of it, so it is given in full.
+      if (waiting.session.replay === undefined) {
+        const current = this.projection()
+        const appended = detectAppendedChanges(instructionState(selectModelHistory(current)), this.appendedSources(current), ids.message)
+        if (appended.length > 0) this.write(appended)
+      }
       if (steers.length > 0) this.write(steers.map((item) => event("inbox.delivered", { messageId: item.messageId })))
       else if (handover !== undefined)
         // The end of the turn and the delivery it makes room for are one decision, so one append.
@@ -3297,10 +3389,146 @@ class LiveSession implements EngineSession {
         : spawn === null
           ? []
           : [...this.core.spawning.management, ...(depth < spawn.maxDepth ? [this.core.spawning.subagent] : [])]
+    // The tools of the features an engine may offer, by the same rule: in the list or not from the first baseline
+    // on, and their specs never change. Skills and MCP are offered to every session, whether or not a skill or a
+    // server exists yet, so that one appearing later needs no change of the list.
+    const kept = (tools: readonly AnyTool[], first: boolean) => (baseline !== null ? tools.filter((tool) => baseline.tools.some((known) => known.name === tool.name)) : first ? tools : [])
+    const features = [...kept(this.core.skills === null ? [] : [this.core.skills.tool], true), ...kept(this.core.mcp?.tools ?? [], true)]
     // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
-    const own = new Set([this.core.spawning.subagent, ...this.core.spawning.management].map((tool) => tool.name))
-    const tools = [...this.core.tools.filter((tool) => !own.has(tool.name)), ...this.core.history, ...spawning]
+    const own = new Set([this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? [])].map((tool) => tool.name))
+    const tools = [...this.core.tools.filter((tool) => !own.has(tool.name)), ...this.core.history, ...spawning, ...features]
     return offered ? [...tools, this.core.acknowledge] : tools
+  }
+
+  // ---- what is appended, never in the baseline: skills, the MCP catalogue ----
+
+  /** Whether the session's frozen tool list has the tool: what a feature offers a session follows its list, never the reverse. */
+  private offers(projection: Projection, tool: string): boolean {
+    return projection.baseline?.tools.some((known) => known.name === tool) ?? false
+  }
+
+  /** The two configuration files the execution in progress (or the latest one) read. */
+  private files() {
+    return this.config?.files ?? null
+  }
+
+  /** Where this session's skills are looked for besides its working directory. */
+  skillPlaces(): SkillPlaces {
+    const skills = this.core.skills
+    return skillPlaces(this.files(), { configDir: skills?.configDir ?? configDirectory(), ...(skills?.home === undefined ? {} : { home: skills.home }) })
+  }
+
+  skills = (): SkillSet | null => (this.core.skills === null ? null : findSkills(this.projection().session.cwd, this.skillPlaces()))
+
+  /**
+   * The sources that are appended when they changed, as they are now: the
+   * skill index and the MCP catalogue, each only for a session whose frozen
+   * tool list has the tool to act on it.
+   */
+  private appendedSources(projection: Projection): AppendedSource[] {
+    const sources: AppendedSource[] = []
+    if (this.core.skills !== null && this.offers(projection, this.core.skills.tool.name)) {
+      const set = findSkills(projection.session.cwd, this.skillPlaces())
+      // What could not be loaded is the user's to read, once; the model is told about the skills that exist.
+      for (const problem of set.problems) this.say("skills", describeSkillProblem(problem))
+      sources.push(skillsSource(set))
+    }
+    const mcp = this.core.mcp
+    if (mcp !== null && mcp.tools.every((tool) => this.offers(projection, tool.name))) sources.push(catalogueAppended(this.mcpServers().servers()))
+    return sources
+  }
+
+  /** Says something about a feature to the user, once per process. */
+  private say(kind: "skills" | "mcp" | "wake" | "memory", message: string): void {
+    if (this.noticed.has(`${kind}:${message}`)) return
+    this.noticed.add(`${kind}:${message}`)
+    this.core.report({ kind, sessionId: this.id, message })
+  }
+
+  // ---- MCP servers ----
+
+  /** This session's servers, as its bridge tools and its catalogue read them. */
+  mcpServers(): SessionServers {
+    this.mcpBackend ??= sessionServers(new Map([...this.mcpHeld].map(([name, held]) => [name, held.registry])), this.mcpPlan.filter((plan) => plan.config.enabled && !plan.approved))
+    return this.mcpBackend
+  }
+
+  mcp = (): McpState | null => {
+    if (this.core.mcp === null) return null
+    return { servers: this.mcpServers().status(), awaiting: this.mcpPlan.filter((plan) => plan.config.enabled && !plan.approved).map(serverQuestion) }
+  }
+
+  approveMcpServer = (name: string, fingerprint?: string): boolean => {
+    this.assertOpen()
+    if (this.core.mcp === null) return false
+    const plan = this.mcpPlan.find((item) => item.config.name === name && !item.approved && item.config.enabled && (fingerprint === undefined || item.fingerprint === fingerprint))
+    if (plan === undefined) return false
+    const now = this.core.clock.now()
+    addProjectGrants(this.core.grantsDir, realWorkspace(this.projection().session.cwd), [serverGrant(plan, now)], now)
+    this.attachMcp()
+    return true
+  }
+
+  /**
+   * Takes hold of the servers the configuration names and may start, and lets
+   * go of the ones it no longer names. A server the project's file names
+   * and the user has not approved is not started: the user is told, once.
+   * A subagent in its parent's directory shares its parent's servers.
+   */
+  private attachMcp(): void {
+    const mcp = this.core.mcp
+    if (mcp === null || this.closing !== null) return
+    const cwd = this.projection().session.cwd
+    let plans: McpServerPlan[]
+    try {
+      plans = planServers(this.files(), readProjectGrants(this.core.grantsDir, realWorkspace(cwd), this.core.clock.now()), this.core.clock.now())
+    } catch (error) {
+      this.say("mcp", `The MCP servers of the configuration could not be read: ${describe(error)}`)
+      return
+    }
+    this.mcpPlan = plans
+    const wanted = new Map(plans.filter((plan) => plan.config.enabled && plan.approved).map((plan) => [plan.config.name, plan]))
+    const acquired = new Map<string, { readonly key: string; readonly registry: McpRegistry }>()
+    for (const [name, plan] of wanted) {
+      const held = mcp.hub.acquire(plan.config, cwd)
+      if (held !== null) acquired.set(name, held)
+    }
+    // Taken before the old ones are let go of, so a server both configurations name is never stopped in between.
+    for (const held of this.mcpHeld.values()) mcp.hub.release(held.key)
+    this.mcpHeld.clear()
+    for (const [name, held] of acquired) this.mcpHeld.set(name, held)
+    this.mcpBackend = null
+    for (const plan of plans) {
+      if (!plan.config.enabled || plan.approved) continue
+      const question = serverQuestion(plan)
+      this.say("mcp", `This project's configuration names the MCP server "${plan.config.name}" (${question.subject}). It was not started: a server a project names runs only after you approve it.`)
+    }
+  }
+
+  private releaseMcp(): void {
+    for (const held of this.mcpHeld.values()) this.core.mcp?.hub.release(held.key)
+    this.mcpHeld.clear()
+    this.mcpBackend = null
+  }
+
+  /** The execution whose first step already waited for the servers. */
+  private serversAwaited: ExecutionId | null = null
+
+  /** Whether this boundary should give starting servers a moment: once per execution, and only when one has not answered yet. */
+  private serversToAwait(run: Run): boolean {
+    const mcp = this.core.mcp
+    if (mcp === null || this.serversAwaited === run.executionId || this.director !== null) return false
+    this.serversAwaited = run.executionId
+    return mcp.hub.startWaitMs > 0 && this.mcpHeld.size > 0 && this.mcpServers().starting()
+  }
+
+  private async awaitServers(run: Run): Promise<void> {
+    const stopped = abortedOnce(run.interrupt.signal)
+    try {
+      await Promise.race([this.mcpServers().settled(this.core.mcp!.hub.startWaitMs), stopped.promise])
+    } finally {
+      stopped.dispose()
+    }
   }
 
   /** Whether one of the calls this step will run can change files, going by its tool's effect class. */

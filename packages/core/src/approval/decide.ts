@@ -33,6 +33,8 @@ export interface CallFacts {
   readonly command: string | null
   /** A shell call's `sandbox` argument, classified. */
   readonly escalation: Escalation | null
+  /** Facts about this call the question shows besides its own (`Tool.cautions`), one per line. */
+  readonly cautions?: readonly string[]
 }
 
 export type SandboxState = { readonly available: true } | { readonly available: false; readonly reason: string }
@@ -184,6 +186,7 @@ function question(input: DecisionInput, needs: readonly Need[], then: RunDecisio
     { id: "deny", label: "Don't allow", approve: false, remembers: null, grants: [] } as Choice,
   ]
   const details = [
+    ...(call.cautions ?? []),
     ...detailsFor(input, needs, then),
     ...(taint.tainted && needs.some(isOutbound) ? [describeTaint(taint), "Approvals for this given before that content arrived do not apply."] : []),
   ]

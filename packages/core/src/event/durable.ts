@@ -149,6 +149,34 @@ export type ToolOutcome = Infer<typeof toolOutcome>
 export const instructionFingerprint = object({ source: nonEmptyString, fingerprint: nonEmptyString })
 export type InstructionFingerprint = Infer<typeof instructionFingerprint>
 
+/**
+ * What an appended instruction message carries, for the sources whose text
+ * is not the harness's or the user's own, recorded as fields beside the text
+ * so that nothing has to be read back out of it:
+ * - `mcp`: the catalogue. Its tool names and descriptions were written by
+ *   the listed servers; `untrusted` is whether the server's content counts
+ *   as content the harness does not control.
+ * - `memory`: the notes the model holds once the message is in its history,
+ *   each by its ID and the hash of the line it was shown as.
+ * - `skills`: the skills the index lists, each with the file it comes from.
+ */
+export const instructionDetail = variant("kind", {
+  mcp: object({ kind: literal("mcp"), servers: array(object({ name: nonEmptyString, tools: integer(0), untrusted: boolean })) }),
+  memory: object({ kind: literal("memory"), notes: array(object({ id: nonEmptyString, hash: nonEmptyString })) }),
+  skills: object({ kind: literal("skills"), skills: array(object({ name: nonEmptyString, path: nonEmptyString })) }),
+})
+export type InstructionDetail = Infer<typeof instructionDetail>
+
+/**
+ * Why an admitted input is content the harness does not control: the firing
+ * of a wake-up that carries a webhook's body, or the output of a check that
+ * ran with the network or without the sandbox. The session counts as having
+ * taken in untrusted content from the admission on (`approval/taint.ts`), so
+ * the turn the input starts is decided under that from its first call.
+ */
+export const untrustedInput = object({ kind: literal("wake"), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) })
+export type UntrustedInput = Infer<typeof untrustedInput>
+
 /** Why a step or a compaction did not complete. */
 export const stepError = variant("kind", {
   /** The model call failed with a classified provider error. */
@@ -276,6 +304,10 @@ export const HARNESS_ORIGIN = {
   subagentResult: "subagent_result",
   /** Spawned work that the harness could not keep (it restarted) or stopped itself (an interrupt). Delivered through the inbox. */
   spawnLost: "spawn_lost",
+  /** A wake-up fired (a time came, a check passed or changed), or the notice that one stopped. Delivered through the inbox. */
+  wake: "wake",
+  /** A wake-up fired because a signed webhook request arrived; the message may carry the request's body. Delivered through the inbox. */
+  wakeWebhook: "wake_webhook",
 } as const
 
 function define<const V extends number, D>(v: V, data: Validator<D>) {
@@ -339,10 +371,12 @@ export const durableEvents = {
    * later compaction can fold the newest text per source into the next
    * baseline. `fingerprint` identifies the value `text` gives the model for
    * that source; `null` means the message tells the model the source is gone.
+   * `detail` is set for the sources that are never part of the baseline (the
+   * MCP catalogue, the skill index, memory): what the text carries, as fields.
    */
   "instruction.appended": define(
     1,
-    object({ messageId, source: nonEmptyString, text: string, fingerprint: nullable(nonEmptyString) }),
+    object({ messageId, source: nonEmptyString, text: string, fingerprint: nullable(nonEmptyString), detail: optional(instructionDetail) }),
   ),
 
   // ---- inbox ----
@@ -352,8 +386,11 @@ export const durableEvents = {
    * the message will have once delivered. `origin` is `null` when the user
    * wrote it; otherwise it names the harness component that produced it
    * (a finished background command, a wake-up) and the item is synthetic.
+   * `untrusted` is set when the content came from outside the harness (a
+   * webhook's body, a networked check's output): a taint source, recorded
+   * with the admission.
    */
-  "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content })),
+  "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, untrusted: optional(untrustedInput) })),
   /** A waiting item was switched between steer and queue. */
   "inbox.delivery_changed": define(1, object({ messageId, delivery })),
   /** A waiting item was withdrawn before delivery. It never becomes a message. */

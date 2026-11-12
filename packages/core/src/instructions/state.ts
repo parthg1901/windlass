@@ -21,7 +21,7 @@
  * new baseline already folded the change in. A fork inherits the state with
  * the parent's history.
  */
-import { type EventData, type NewEvent, event } from "../event/durable.ts"
+import { type EventData, type InstructionDetail, type NewEvent, event } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { type ModelHistory, selectModelHistory } from "../message/history.ts"
 import type { Projection } from "../message/message.ts"
@@ -83,6 +83,62 @@ export function detectInstructionChanges(
     .sort()
     .map((key) => appended(key, renderRemoval(key), null))
   return [...changed, ...removed]
+}
+
+/**
+ * A source that is never part of the baseline: the MCP catalogue (`mcp`),
+ * the skill index (`skills`), memory (`memory`). What it has to say changes
+ * with things outside the session (a server connects, a skill file is
+ * edited), so it reaches the model only as appended messages: once when it
+ * first has something to say, again when its fingerprint changes, and as a
+ * short withdrawal (fingerprint `null`) when nothing is left. The module that
+ * owns the source writes the texts; this file only routes its key.
+ */
+export interface AppendedSource {
+  /** The `source` of its `instruction.appended` events. Never a key of `source.ts`. */
+  readonly key: string
+  /**
+   * What to append so that the model's knowledge matches the source as it is
+   * now, given the fingerprint the model last had for the key (`null` or
+   * `undefined`: nothing, or that it is gone). `null` when nothing changed.
+   * The text is final and is stored as returned.
+   */
+  readonly update: (known: string | null | undefined) => AppendedUpdate | null
+}
+
+export interface AppendedUpdate {
+  readonly text: string
+  readonly fingerprint: string | null
+  /** What the text carries, as fields (`instructionDetail`). */
+  readonly detail?: InstructionDetail
+}
+
+/**
+ * The events to append for the sources that are never in the baseline, in
+ * the order given. `state` is the instruction fold of the model's view, so a
+ * message that was reverted, refused or left behind by a compaction is no
+ * longer known and its source is appended again in full: after a compaction
+ * the new baseline does not carry these sources, and the first boundary
+ * after it gives the model the current catalogue, index and notes again.
+ */
+export function detectAppendedChanges(
+  state: InstructionState,
+  sources: readonly AppendedSource[],
+  newMessageId: () => MessageId,
+): NewEvent<"instruction.appended">[] {
+  return sources.flatMap((source) => {
+    const update = source.update(state.get(source.key))
+    if (update === null) return []
+    return [
+      event("instruction.appended", {
+        messageId: newMessageId(),
+        source: source.key,
+        text: update.text,
+        fingerprint: update.fingerprint,
+        ...(update.detail === undefined ? {} : { detail: update.detail }),
+      }),
+    ]
+  })
 }
 
 /** The paths of the AGENTS.md files the model currently has. Discovery re-reads them so an edit or removal is noticed. */

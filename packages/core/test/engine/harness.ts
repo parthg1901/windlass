@@ -19,6 +19,8 @@ import type { Clock } from "../../src/engine/clock.ts"
 import type { CompactionConfig } from "../../src/context/policy.ts"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { EngineLimits } from "../../src/engine/constants.ts"
+import type { McpSetup } from "../../src/engine/mcp.ts"
+import type { SkillsSetup } from "../../src/engine/skills.ts"
 import type { SpawnSettings } from "../../src/engine/spawn.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
 import type { ScriptedResponse } from "../../src/testing/fake-provider.ts"
@@ -344,6 +346,14 @@ export interface HarnessOptions {
   readonly spawn?: Partial<SpawnSettings>
   /** Writes a snapshot of the scripted workspace into a directory, for a fork with a copy and a replay that runs tools. */
   readonly exportSnapshot?: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number }>
+  /** Skills. Without it the engine offers none, as in every scenario that is not about them. */
+  readonly skills?: SkillsSetup
+  /** MCP servers. Without it the engine offers none and starts none. */
+  readonly mcp?: McpSetup
+  /** The user's own configuration file, apart from the project's (`config`): what the engine's features read from each. */
+  readonly userConfig?: ConfigFile
+  /** The directory the sessions work in. Default `/repo`, which does not exist: a test about real files names a real one. */
+  readonly cwd?: string
 }
 
 export class Harness {
@@ -354,6 +364,8 @@ export class Harness {
   readonly workspace: FakeWorkspace | null
   /** The configuration as it is on disk now. An execution reads it when it starts. */
   config: Config | null
+  /** The two configuration files as they are on disk now, apart: the features' sections (`mcp`, `skills`, `wake`, `memory`). */
+  files: { user: ConfigFile | null; project: ConfigFile | null }
   /** The date the instruction sources report: `[year, month, day]`. */
   date: [number, number, number] = [2026, 11, 12]
   /** AGENTS.md files on the scripted disk, by directory. One is a source once the session works in its directory. */
@@ -378,11 +390,17 @@ export class Harness {
     this.tools = options.tools ?? new ScriptedTools()
     this.workspace = options.workspace ?? null
     this.config = options.config === undefined ? null : resolveConfig(options.config)
+    this.files = { user: options.userConfig ?? null, project: options.config ?? null }
     this.toolNames = Object.keys(this.tools.effects)
     this.directory = mkdtempSync(join(tmpdir(), "lh-engine-"))
     directories.push(this.directory)
     this.path = join(this.directory, "store.db")
     this.boot()
+  }
+
+  /** The directory the sessions of this harness work in. */
+  get cwd(): string {
+    return this.options.cwd ?? "/repo"
   }
 
   /** The data directory of the engines this harness boots. */
@@ -410,7 +428,10 @@ export class Harness {
       ...(this.options.compaction === undefined ? {} : { compaction: this.options.compaction }),
       snapshots: this.workspace === null ? null : this.workspace.open,
       approval: this.options.approval ?? null,
-      loadConfig: this.options.config === undefined ? null : async () => ({ config: this.config ?? resolveConfig({}), projectDir: "/repo" }),
+      loadConfig:
+        this.options.config === undefined && this.options.userConfig === undefined
+          ? null
+          : async () => ({ config: this.config ?? resolveConfig({}), projectDir: this.cwd, files: this.files }),
       runChecks: this.checks.run,
       prompt: "You are a coding agent.",
       discover: (input): InstructionSource[] => [
@@ -431,6 +452,8 @@ export class Harness {
         spawn: () => `bg_${++this.counters.spawn}`,
       },
       ...(this.options.spawn === undefined ? {} : { spawn: this.options.spawn }),
+      ...(this.options.skills === undefined ? {} : { skills: this.options.skills }),
+      ...(this.options.mcp === undefined ? {} : { mcp: this.options.mcp }),
       ...(this.options.exportSnapshot === undefined ? {} : { exportSnapshot: this.options.exportSnapshot }),
       ...(this.options.refreshAuth === undefined ? {} : { refreshAuth: this.options.refreshAuth }),
       hooks: { probe: (point) => [...this.probes].forEach((probe) => probe(point)) },
@@ -442,7 +465,7 @@ export class Harness {
 
   /** Creates the session every test works in. */
   create(settings: SessionSettings = this.options.settings ?? { model: "gpt-test", reasoningEffort: "medium" }): EngineSession {
-    return this.adopt(this.engine.createSession({ cwd: "/repo", settings }))
+    return this.adopt(this.engine.createSession({ cwd: this.cwd, settings }))
   }
 
   /** Opens the session again, in the running process or after `boot`. */

@@ -188,6 +188,10 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...(options.provider === undefined || options.engine?.contextWindow !== undefined || lowered !== null ? { contextWindow } : {}),
       // Subagents and background work are part of the real harness; a caller that passes `spawn: null` builds one without them.
       ...(options.engine?.spawn === undefined ? { spawn: {} } : {}),
+      // So are skills and MCP servers: their tools are in every session's list from its first baseline, whatever
+      // exists then. A caller that passes `null` builds a harness without them.
+      ...(options.engine?.skills === undefined ? { skills: {} } : {}),
+      ...(options.engine?.mcp === undefined ? { mcp: {} } : {}),
       store: sessions,
       provider,
       tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),

@@ -55,7 +55,7 @@ export type EphemeralEvent =
   | {
       readonly type: "diagnostic"
       readonly sessionId: SessionId
-      readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed"
+      readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory"
       readonly message: string
     }
   /**

@@ -148,14 +148,25 @@ export function callFacts(tool: AnyTool, input: Json, context: FactContext): { r
     if (!asked.ok) return { invalid: `the \`sandbox\` argument is not valid: ${asked.error.message}` }
     if (asked.value !== null) escalation = escalationFacts({ network: asked.value.network, write: asked.value.write.map((path) => tempPath(context.temp, path, context.cwd)) }, pathContext(context))
   }
+  // What the tool says about this very call. A tool's own code must never keep a call from being decided.
+  const said = <T>(read: ((input: never) => T) | undefined, fallback: T): T => {
+    try {
+      return read === undefined ? fallback : (read as (input: unknown) => T)(input)
+    } catch {
+      return fallback
+    }
+  }
+  const subject = said(tool.subject, tool.name)
+  const cautions = said(tool.cautions, [] as readonly string[]).filter((line) => typeof line === "string" && line !== "")
   return {
     facts: {
-      tool: tool.name,
+      tool: typeof subject === "string" && subject !== "" ? subject : tool.name,
       effect: tool.effect,
       origin: tool.origin ?? "builtin",
       paths,
       command: tool.effect === "exec" && typeof record.command === "string" ? record.command : null,
       escalation,
+      ...(cautions.length === 0 ? {} : { cautions }),
     },
   }
 }

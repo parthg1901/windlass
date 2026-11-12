@@ -229,6 +229,20 @@ export interface Tool<Input = Json> extends ToolSpec {
    * may have changed files.
    */
   readonly delegates?: boolean
+  /**
+   * For a tool that stands for many (the MCP bridge, whose one `mcp_call`
+   * reaches every tool of every server): the name a call with this input is
+   * asked about and remembered by, e.g. `github/create_issue`. Without it
+   * that is the tool's own name. It is given the call's input (typed by the
+   * implementation) and must not throw on input the schema allows.
+   */
+  readonly subject?: (input: never) => string
+  /**
+   * What the user should know about a call with this input before approving
+   * it, beyond what its class says: one fact per line, shown in the question
+   * (a wake-up says that its command runs later, unattended, and how often).
+   */
+  readonly cautions?: (input: never) => readonly string[]
 }
 
 /**

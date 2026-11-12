@@ -23,7 +23,11 @@ import { createHash } from "node:crypto"
 export interface InstructionSource {
   /**
    * Stable identity, and the `source` of the `instruction.appended` events
-   * about it: `environment`, `date`, or `agents:<absolute path>`.
+   * about it: `environment`, `date`, or `agents:<absolute path>`. Other keys
+   * (`mcp`, `skills`, `memory`) belong to sources that are never part of the
+   * baseline and are rendered by their own modules: see `AppendedSource` in
+   * `state.ts`. `renderSection` refuses them, so one can never be folded
+   * into a baseline by mistake.
    */
   readonly key: string
   /** The body the model is given. Never blank, and without a trailing newline. */
