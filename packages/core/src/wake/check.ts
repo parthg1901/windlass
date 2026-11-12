@@ -6,9 +6,10 @@
  * recorded access, or not at all: where the sandbox is unavailable the run is an error, never an unsandboxed run.
  */
 import { rm } from "node:fs/promises"
-import { redact } from "../approval/redact.ts"
+import { type RedactedPiece, redactPieces } from "../approval/redact.ts"
 import { createInterrupt } from "../interrupt.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
+import { isContinuation, markerAround } from "../tool/cap.ts"
 import { runCheck } from "../verify/run.ts"
 import type { RunAs } from "./record.ts"
 
@@ -49,6 +50,7 @@ export interface CheckRunnerOptions {
 }
 
 const decoder = new TextDecoder()
+const encoder = new TextEncoder()
 
 export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
   const shownBytes = options.shownBytes ?? 4096
@@ -86,7 +88,7 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
         return hasher.digest("hex")
       })()
       if (path !== null) await rm(path, { force: true })
-      const output = redact(shown(result.output.source, shownBytes), options.secrets?.() ?? []).text
+      const output = shown(result.output.source, shownBytes, options.secrets?.() ?? [])
       switch (result.status) {
         case "passed":
         case "failed":
@@ -105,11 +107,44 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
   }
 }
 
-/** All of the output when it fits, else its beginning and end around a line that says how much is left out. */
-function shown(source: { readonly head: Uint8Array; readonly tail: Uint8Array; readonly totalBytes: number }, limit: number): string {
-  if (source.totalBytes <= limit && source.head.length >= source.totalBytes) return decoder.decode(source.head.subarray(0, source.totalBytes))
+/**
+ * All of the output when it fits, else its beginning and end around a line that says how much is left out, redacted.
+ * Each end is redacted before it is cut (the runner keeps far more of each than is shown), and the cut falls on a
+ * character boundary and never inside a placeholder, as the tool output cap's does: a value that lies across the cut
+ * is replaced whole, never shown in part. The count left out is in bytes of the output as it was printed.
+ */
+function shown(source: { readonly head: Uint8Array; readonly tail: Uint8Array; readonly totalBytes: number }, limit: number, secrets: readonly string[]): string {
+  const whole = source.head.length >= source.totalBytes
+  if (source.totalBytes <= limit && whole) return text(redactPieces(decoder.decode(source.head.subarray(0, source.totalBytes)), secrets))
   const half = Math.floor(limit / 2)
-  const head = decoder.decode(source.head.subarray(0, half))
-  const tail = decoder.decode(source.tail.subarray(Math.max(0, source.tail.length - half)))
-  return `${head}\n[… ${source.totalBytes - half * 2} bytes left out …]\n${tail}`
+  const head = redactPieces(decoder.decode(whole ? source.head.subarray(0, source.totalBytes) : source.head), secrets)
+  const tail = whole ? head : redactPieces(decoder.decode(source.tail), secrets)
+  const headBytes = encoder.encode(text(head))
+  const tailBytes = whole ? headBytes : encoder.encode(text(tail))
+  let headEnd = Math.min(headBytes.length, half)
+  while (headEnd > 0 && isContinuation(headBytes[headEnd])) headEnd -= 1
+  headEnd = markerAround(headBytes, headEnd)?.start ?? headEnd
+  // From one text (all of the output was kept), the two ends must not overlap.
+  let tailStart = Math.max(whole ? headEnd : 0, tailBytes.length - half)
+  while (tailStart < tailBytes.length && isContinuation(tailBytes[tailStart])) tailStart += 1
+  tailStart = markerAround(tailBytes, tailStart)?.end ?? tailStart
+  const omitted = source.totalBytes - printedBytes(head, headEnd) - printedBytes([...tail].reverse(), tailBytes.length - tailStart)
+  return `${decoder.decode(headBytes.subarray(0, headEnd))}\n[… ${Math.max(0, omitted)} bytes left out …]\n${decoder.decode(tailBytes.subarray(tailStart))}`
+}
+
+function text(pieces: readonly RedactedPiece[]): string {
+  return pieces.map((piece) => piece.text).join("")
+}
+
+/** How many bytes of the output as printed the first `shownBytes` bytes of the redacted pieces stand for. */
+function printedBytes(pieces: readonly RedactedPiece[], shownBytes: number): number {
+  let redacted = 0
+  let printed = 0
+  for (const piece of pieces) {
+    const length = encoder.encode(piece.text).length
+    if (redacted + length > shownBytes) return printed + (piece.kind === null ? shownBytes - redacted : 0)
+    redacted += length
+    printed += encoder.encode(piece.original).length
+  }
+  return printed
 }

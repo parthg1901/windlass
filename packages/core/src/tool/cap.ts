@@ -159,7 +159,7 @@ const MARKER_START = encoder.encode("[REDACTED:")
 const MARKER_REACH = 40
 
 /** The redaction placeholder a cut inside one long line would split, so that the cut moves to one of its ends. */
-function markerAround(bytes: Uint8Array, cut: number): { readonly start: number; readonly end: number } | null {
+export function markerAround(bytes: Uint8Array, cut: number): { readonly start: number; readonly end: number } | null {
   for (let start = cut - 1; start >= 0 && start > cut - MARKER_REACH; start -= 1) {
     if (bytes[start] !== MARKER_START[0] || !MARKER_START.every((byte, index) => bytes[start + index] === byte)) continue
     const close = bytes.indexOf(0x5d, start + MARKER_START.length)
@@ -168,7 +168,7 @@ function markerAround(bytes: Uint8Array, cut: number): { readonly start: number;
   return null
 }
 
-function isContinuation(byte: number | undefined) {
+export function isContinuation(byte: number | undefined) {
   return byte !== undefined && (byte & 0xc0) === 0x80
 }
 
