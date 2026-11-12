@@ -285,6 +285,9 @@ export function mcpResultStart(output: string): string | null {
   return first === undefined ? "an empty result" : first.trim()
 }
 
+/** The fewest columns a tool row's argument is given before the end of the row says less. */
+const MIN_ARGUMENT = 16
+
 function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[] {
   // A subagent's row names the agent it runs as: its instructions and what it may do are that agent's.
   const name = span(`${row.name || "tool"}${row.subagent?.agent == null ? "" : ` (${row.subagent.agent})`}`, undefined, { bold: true })
@@ -310,8 +313,12 @@ function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[]
       const took = row.startedAt === null || row.settledAt === null ? "" : ` · ${formatDuration(row.settledAt - row.startedAt)}`
       // What the language servers said about an edit: how many new diagnostics its note lists, and from which server.
       const diagnosed = diagnosticsSummary(row.diagnostics ?? undefined)
-      const tail = [...sandboxMark(row), span(outcome.text === "" ? "" : ` · ${outcome.text}`, outcome.role === "ok" ? undefined : outcome.role), ...(diagnosed === null ? [] : [span(` · ${diagnosed}`, "warn")]), ...approvalMark(row), span(took, "dim")]
-      return fit([span(`${outcome.symbol} `, outcome.role), name, span(row.arg === "" ? "" : " ")], tail)
+      const before = [span(`${outcome.symbol} `, outcome.role), name, span(row.arg === "" ? "" : " ")]
+      const tailOf = (withTime: boolean, brief: boolean) => [...sandboxMark(row), span(outcome.text === "" ? "" : ` · ${outcome.text}`, outcome.role === "ok" ? undefined : outcome.role), ...(diagnosed === null ? [] : [span(` · ${diagnosed}`, "warn")]), ...approvalMark(row, brief), span(withTime ? took : "", "dim")]
+      // On a narrow row the time goes first, then the approval in fewer words: the outcome is never cut for the argument.
+      const roomFor = (tail: Span[]) => columns - textWidth([...before, ...tail].map((part) => part.text).join(""))
+      const tail = [tailOf(true, false), tailOf(false, false), tailOf(false, true)].find((candidate) => roomFor(candidate) >= MIN_ARGUMENT) ?? tailOf(false, true)
+      return fit(before, tail)
     }
   }
 }
@@ -333,10 +340,10 @@ function sandboxMark(row: ToolRow): Span[] {
 }
 
 /** How the call's approval question was answered, when it was asked. */
-function approvalMark(row: ToolRow): Span[] {
+function approvalMark(row: ToolRow, brief = false): Span[] {
   const approval = row.approval
   if (approval?.state !== "allowed") return []
-  const how = approval.choice === "session" ? "allowed for the session" : approval.choice === "project" ? "allowed in this project" : "allowed once"
+  const how = brief ? "allowed" : approval.choice === "session" ? "allowed for the session" : approval.choice === "project" ? "allowed in this project" : "allowed once"
   return [span(` · ${how}`, "dim"), ...(approval.note === null ? [] : [span(` · your note: ${approval.note}`, "dim")])]
 }
 

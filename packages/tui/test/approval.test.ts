@@ -202,6 +202,21 @@ describe("the approval dock", () => {
   })
 })
 
+test("on a narrow row an allowed call keeps its outcome whole: the time goes first, then the approval in fewer words", async () => {
+  const backend = new ScriptBackend()
+  mounted = await mount({ width: 64, height: 40, backend })
+  backend.session!.emit(...ALL.map(({ sessionId: _, seq: __, time: ___, ...rest }) => rest as never))
+  await mounted.settle()
+  for (const width of [64, 54, 48]) {
+    mounted.setup.resize(width, 40)
+    await mounted.settle()
+    const row = (await mounted.frame()).split("\n").find((line) => line.includes("✓ shell curl"))!.trimEnd()
+    expect(row).toMatch(/✓ shell curl -s \S+ ⊡ \+network · allowed( once)?( · 100ms)?$/)
+    if (width === 64) expect(row).toEndWith("allowed once · 100ms")
+    if (width === 48) expect(row).toEndWith("· allowed")
+  }
+})
+
 describe("the safety states in the conversation", () => {
   test("the rest of the scenario: allowed once, the sandbox marker with the extra access, taint, a declined call", async () => {
     const backend = new ScriptBackend()
