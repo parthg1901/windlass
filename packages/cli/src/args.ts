@@ -1,6 +1,7 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
 import { brand } from "@light-harness/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
+import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"
 
 export interface Options {
   /** The prompt given as arguments, joined with spaces; `null` when none was given. */
@@ -38,6 +39,12 @@ export type Parsed =
   | { readonly kind: "login"; readonly argv: readonly string[] }
   /** `tui [options]`: the full-screen terminal interface (packages/tui). */
   | { readonly kind: "tui"; readonly options: Options }
+  /** `fork [<session>] [options]`: a new session with another's conversation so far. */
+  | { readonly kind: "fork"; readonly options: ForkOptions }
+  /** `replay [<session>] [options]`: the model again on a recorded session, answered from the recording. */
+  | { readonly kind: "replay"; readonly options: ReplayOptions }
+  /** A subcommand's own `--help`. */
+  | { readonly kind: "usage"; readonly text: string }
   | { readonly kind: "error"; readonly message: string }
 
 const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--approval", "--unattended", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
@@ -50,6 +57,11 @@ const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c":
 export function parseArgs(argv: readonly string[]): Parsed {
   if (argv[0] === "acp") return argv.length === 1 ? { kind: "acp" } : error("acp takes no arguments; the client sends everything else")
   if (argv[0] === "login") return { kind: "login", argv: argv.slice(1) }
+  if (argv[0] === "fork" || argv[0] === "replay") {
+    const sub = parseSubcommand(argv)
+    if (sub.kind === "help") return { kind: "usage", text: sub.text }
+    return sub
+  }
   if (argv[0] === "tui") {
     const rest = parseArgs(argv.slice(1))
     if (rest.kind !== "run") return rest.kind === "list" ? error("tui does not list; run the listing without tui") : rest
@@ -158,6 +170,12 @@ Usage:
   ${b} login logout              forget the saved sign-in on this machine
   ${b} tui [options]             the full-screen terminal interface (preview; ${b.toUpperCase()}_TUI=1 makes
                                  it what \`${b}\` with no prompt starts)
+  ${b} fork [<session>]          a new session with the conversation so far, to try another
+                                 way without changing the original (\`${b} fork --help\`)
+  ${b} replay [<session>]        the model again on a recorded session, every tool call
+                                 answered from the recording: where does a changed prompt,
+                                 tool description or model change what it does
+                                 (\`${b} replay --help\`)
 
 Options:
   --session <id>         resume a session by ID, or by the start of one if it is unique

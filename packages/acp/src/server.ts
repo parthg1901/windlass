@@ -613,7 +613,8 @@ class ConnectionState {
         engine.forkSession(params.sessionId as SessionId, {
           ...(params.throughSeq === undefined ? {} : { throughSeq: params.throughSeq }),
           ...(settings === undefined ? {} : { settings }),
-          ...(params.title === undefined ? {} : { title: params.title }),
+          // Told apart from its parent in a listing: the parent's title, marked, unless the client names it.
+          ...(params.title !== undefined ? { title: params.title } : forkTitle(this.titleOf(params.sessionId, summary.session.title))),
           ...(params.workspace === undefined ? {} : { workspace: params.workspace }),
         }),
       params.sessionId,
@@ -1435,6 +1436,12 @@ function parseReplayParams(raw: unknown): ReplayParams {
     ...(workspace === undefined ? {} : { workspace }),
     ...(ref === undefined ? {} : { ref }),
   }
+}
+
+/** The title of a fork the client did not name: its parent's, marked as a fork (once). */
+function forkTitle(parent: string | null): { title?: string } {
+  if (parent === null) return {}
+  return { title: / \(fork\)$/.test(parent) ? parent : `${parent} (fork)` }
 }
 
 /** `text` cut at a word to at most `max` characters, with an ellipsis. */

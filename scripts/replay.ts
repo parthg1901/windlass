@@ -14,6 +14,11 @@
  *
  * Exit code: 0 when the replay ran (identical or diverged), 1 when it could
  * not be compared (unsupported, incomplete), 2 for a usage error.
+ *
+ * `<binary> replay` is the same replay for users, through the engine's ACP
+ * server (`<prefix>/replay`), with its progress shown as it runs. This
+ * script stays the in-process path: it takes `--data-dir`, and the eval
+ * suite (`evals/replay-suite.ts`) builds its requests with `replayRequest`.
  */
 import { join } from "node:path"
 import { parseArgs } from "node:util"

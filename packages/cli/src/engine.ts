@@ -32,7 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { DiffResult } from "@light-harness/acp/extensions"
+import type { DiffResult, ForkResult, ReplayParams, ReplayResult } from "@light-harness/acp/extensions"
 import { brand } from "@light-harness/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
@@ -57,6 +57,8 @@ export interface ApprovalRequest {
   readonly messageId: MessageId
   readonly callId: CallId
   readonly question: Question
+  /** Set when one of the session's subagents asks: its label (the first line of its task). The call is the subagent's. */
+  readonly subagent?: string | null
 }
 
 /**
@@ -149,6 +151,35 @@ export interface Engine {
   listSessions?(request: { readonly cwd: string }): Promise<readonly SessionSummary[]>
   /** `--models`: the models `--model` accepts. Optional, like `listSessions`. */
   listModels?(): Promise<readonly ModelInfo[]>
+  /** `fork`: a new session with another's conversation up to a step boundary. Optional: without it the subcommand says this engine cannot fork. */
+  fork?(request: ForkRequest): Promise<ForkResult>
+  /** `replay`: replays a recorded session; `progress` gets the replay session's events as they happen, and `cancel` ends it as incomplete. */
+  replay?(request: ReplayCommand, progress: ReplayProgress): Promise<ReplayResult>
+}
+
+/** What `fork` forks. `session` is an ID or a unique start of one; `null` is the latest session in `cwd`. */
+export interface ForkRequest {
+  readonly cwd: string
+  readonly session: string | null
+  readonly throughSeq: number | null
+  /** `null`: the fork shares the parent's working directory. `{ copyTo }`: a copy of its own (`null`: the default place). */
+  readonly copy: { readonly copyTo: string | null } | null
+  readonly model: string | null
+  readonly effort: string | null
+  readonly title: string | null
+}
+
+/** What `replay` replays, and how. */
+export interface ReplayCommand {
+  readonly cwd: string
+  readonly session: string | null
+  readonly params: Omit<ReplayParams, "sessionId" | "ref">
+}
+
+export interface ReplayProgress {
+  /** The replay session started; `cancel` ends the replay as incomplete. */
+  readonly started: (replaySessionId: string, sourceSessionId: string, cancel: () => void) => void
+  readonly event: (event: EngineEvent) => void
 }
 
 export interface Session {

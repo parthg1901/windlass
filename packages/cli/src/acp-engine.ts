@@ -31,10 +31,26 @@
  *   after it; a server in use is never stopped by a listing.
  */
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS } from "@light-harness/acp/client"
-import { type DiffResult, EXT } from "@light-harness/acp/extensions"
+import { type DiffResult, EXT, type ForkResult, type ReplayResult } from "@light-harness/acp/extensions"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
 import { selfCommand } from "./self.ts"
-import { type Approver, type Engine, type EngineEvent, EngineUnavailable, type HandEditQuestion, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type SendOptions, type Session, type SessionRevertOptions, type SessionSummary } from "./engine.ts"
+import {
+  type Approver,
+  type Engine,
+  type EngineEvent,
+  EngineUnavailable,
+  type ForkRequest,
+  type HandEditQuestion,
+  type ModelInfo,
+  type OpenRequest,
+  type ReplayCommand,
+  type ReplayProgress,
+  SIGN_IN_ADVICE,
+  type SendOptions,
+  type Session,
+  type SessionRevertOptions,
+  type SessionSummary,
+} from "./engine.ts"
 
 export interface AcpEngineOptions {
   /** `child` (the default) or `memory`. */
@@ -108,6 +124,46 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
         })
         return listed.models.map((model): ModelInfo => ({ id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: model.id === listed.defaultModel }))
       }),
+    // A one-off: the server is let go of after it, as after a listing.
+    fork: (request: ForkRequest): Promise<ForkResult> =>
+      listing(async (connected) => {
+        try {
+          const named = await connected.resolve(request.cwd, request.session ?? undefined)
+          return await connected.fork({
+            sessionId: named.sessionId,
+            ...(request.throughSeq === null ? {} : { throughSeq: request.throughSeq }),
+            ...(request.copy === null ? {} : { workspace: request.copy.copyTo === null ? {} : { copyTo: request.copy.copyTo } }),
+            ...(request.model === null ? {} : { model: request.model }),
+            ...(request.effort === null ? {} : { effort: request.effort === "default" ? null : request.effort }),
+            ...(request.title === null ? {} : { title: request.title }),
+          })
+        } catch (error) {
+          throw unavailable(error)
+        }
+      }),
+    replay: (request: ReplayCommand, progress: ReplayProgress): Promise<ReplayResult> =>
+      listing(async (connected) => {
+        try {
+          const named = await connected.resolve(request.cwd, request.session ?? undefined)
+          let reading: Promise<void> = Promise.resolve()
+          const result = await connected.replay(
+            { sessionId: named.sessionId, ...request.params },
+            {
+              cwd: named.cwd,
+              onStart: (session) => {
+                progress.started(session.id, named.sessionId, () => session.cancel())
+                reading = (async () => {
+                  for await (const item of session.events) progress.event(item.event)
+                })()
+              },
+            },
+          )
+          await reading
+          return result
+        } catch (error) {
+          throw unavailable(error)
+        }
+      }),
   }
 }
 
@@ -146,7 +202,7 @@ class AcpSession implements Session {
     session.approver = (ask) => {
       const approver = this.approver
       if (approver === null) return Promise.resolve(null)
-      return approver({ messageId: ask.messageId as MessageId, callId: ask.callId as CallId, question: ask.question as Question })
+      return approver({ messageId: ask.messageId as MessageId, callId: ask.callId as CallId, question: ask.question as Question, subagent: ask.subagent })
     }
     session.handEdits = async (ask) => {
       const question = this.question

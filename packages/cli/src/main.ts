@@ -78,6 +78,26 @@ export const DEMO_TRACE_ENV = `${brand.binary.toUpperCase()}_DEMO_TRACE`
 
 const STEER_HINT = "type to steer · /queue <message> for after this turn"
 
+/** What a subcommand that is not a run (`fork`, `replay`) passes where a run's options are expected. */
+const SUBCOMMAND_DEFAULTS: Options = {
+  prompt: null,
+  session: null,
+  continue: false,
+  model: null,
+  effort: null,
+  maxSteps: null,
+  approval: null,
+  unattended: null,
+  cwd: null,
+  output: "pretty",
+  showReasoning: false,
+  interactive: false,
+  demo: null,
+  demoSpeed: 1,
+  demoGraceMs: null,
+  engine: "acp",
+}
+
 export async function run(io: Io): Promise<number> {
   const parsed = parseArgs(io.argv)
   switch (parsed.kind) {
@@ -92,7 +112,22 @@ export async function run(io: Io): Promise<number> {
       return runLogin(parsed.argv, io)
     }
     case "error":
-      return usage(io, parsed.message)
+      return usage(io, parsed.message, io.argv[0] === "fork" || io.argv[0] === "replay" ? io.argv[0] : null)
+    case "usage":
+      io.stdout.write(parsed.text)
+      return 0
+    case "fork":
+    case "replay": {
+      const options = parsed.options
+      const cwd = resolve(io.cwd, options.cwd ?? ".")
+      if (!isDirectory(cwd)) return usage(io, `--cwd ${options.cwd}: not a directory`)
+      const engine = await engineFor(io, { ...SUBCOMMAND_DEFAULTS, engine: options.engine }, null)
+      if (engine === null) return EXIT.usage
+      const { runFork, runReplay } = await import("./subcommands.ts")
+      const subIo = { cwd, stdout: io.stdout, stderr: io.stderr, onSignal: io.onSignal }
+      if (parsed.kind === "fork") return runFork(subIo, engine, parsed.options, cwd)
+      return runReplay(subIo, engine, parsed.options, cwd)
+    }
     case "acp": {
       // Loaded only here, so a normal run does not pay for the protocol SDK. The server builds the same harness the CLI does.
       const { serveStdio } = await import("@light-harness/acp")
@@ -550,8 +585,8 @@ function makeSink(io: Io, options: Options, echoPrompts: boolean, screen: Screen
   }
 }
 
-function usage(io: Io, message: string): number {
-  io.stderr.write(`${brand.binary}: ${message}\nRun \`${brand.binary} --help\` for usage.\n`)
+function usage(io: Io, message: string, subcommand: string | null = null): number {
+  io.stderr.write(`${brand.binary}: ${message}\nRun \`${brand.binary}${subcommand === null ? "" : ` ${subcommand}`} --help\` for usage.\n`)
   return EXIT.usage
 }
 
