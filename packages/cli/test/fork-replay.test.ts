@@ -107,6 +107,27 @@ describe("as a process", () => {
     expect(missing.err).toContain("ses_nothing")
   })
 
+  test("fork --turn: after a turn as the user counts them; a turn there is not lists the turns", async () => {
+    const at = place("by-turn")
+    expect((await cli(at, [[write("one\n")], [say("Wrote it.")]], ["write b"])).code).toBe(0)
+    expect((await cli(at, [[say("Fine.")]], ["-c", "now check it"])).code).toBe(0)
+    const forked = await cli(at, [], ["fork", "--turn", "1", "--json"])
+    expect([forked.code, forked.err]).toEqual([0, ""])
+    const result = JSON.parse(forked.out) as { sessionId: string; parentSessionId: string; throughSeq: number }
+    // The fork holds the first turn and nothing of the second.
+    const continued = await cli(at, [[say("Here.")]], ["--session", result.sessionId, "--json", "and?"])
+    const prompts = continued.out.split("\n").filter((line) => line.includes('"inbox.enqueued"'))
+    expect(prompts).toHaveLength(1)
+    // The fork is now the latest session here: the original is named.
+    const pretty = await cli(at, [], ["fork", result.parentSessionId, "--turn", "2"])
+    expect(pretty.out).toMatch(/^Forked ses_\w+ after turn 2 \(event \d+\)\./)
+    const missing = await cli(at, [], ["fork", result.parentSessionId, "--turn", "7"])
+    expect(missing.code).toBe(2)
+    expect(missing.err).toBe(`${brand.binary}: there is no turn 7: the session has turns 1 to 2\nIts turns:\n  1  "write b"\n  2  "now check it"\n`)
+    expect(parseArgs(["fork", "--turn", "1", "--through", "3"])).toMatchObject({ kind: "error" })
+    expect(parseArgs(["fork", "--turn", "x"])).toEqual({ kind: "error", message: "fork: --turn takes a turn number, such as 3" })
+  })
+
   test("signed out: forking and listing work, as they call no model; --models and a prompt say how to sign in", async () => {
     const at = place("signed-out")
     expect((await cli(at, [[write("bee\n")], [say("Wrote b.txt.")]], ["write b"])).code).toBe(0)

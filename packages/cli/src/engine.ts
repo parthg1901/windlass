@@ -182,6 +182,8 @@ export interface ForkRequest {
   readonly cwd: string
   readonly session: string | null
   readonly throughSeq: number | null
+  /** After this turn (counted from 1, as the user sees turns), instead of `throughSeq`. */
+  readonly turn?: number | null
   /** `null`: the fork shares the parent's working directory. `{ copyTo }`: a copy of its own (`null`: the default place). */
   readonly copy: { readonly copyTo: string | null } | null
   readonly model: string | null

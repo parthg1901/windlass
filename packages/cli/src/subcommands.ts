@@ -19,6 +19,8 @@ import { callArgument } from "./tools.ts"
 export interface ForkOptions {
   readonly session: string | null
   readonly throughSeq: number | null
+  /** `--turn <n>`: fork after the session's turn `n`, counted from 1 as the user sees turns. */
+  readonly turn: number | null
   readonly copy: { readonly copyTo: string | null } | null
   readonly model: string | null
   readonly effort: string | null
@@ -62,8 +64,11 @@ of one; the most recent session in this directory when left out). The original i
 not changed; the fork is a session of its own that you continue with --session.
 
 Options:
-  --through <n>      fork after event <n> of the session (a step boundary) instead of
-                     after its latest step
+  --turn <n>         fork after turn <n> of the session instead of after its latest
+                     step: 1 is its first prompt, as the TUI numbers turns on their
+                     ending rows (one that /undo took back cannot be forked at)
+  --through <n>      the precise form: fork after event <n> of the session (a step
+                     boundary)
   --copy             the fork works in a copy of the workspace instead of the same
                      directory (made under the harness's work directory)
   --copy-to <dir>    the same, in <dir> (an absolute path that does not exist yet)
@@ -130,7 +135,7 @@ export function parseSubcommand(argv: readonly string[]): SubcommandParsed {
         strict: true,
         options:
           command === "fork"
-            ? { ...COMMON, copy: { type: "boolean" }, "copy-to": { type: "string" }, title: { type: "string" } }
+            ? { ...COMMON, copy: { type: "boolean" }, "copy-to": { type: "string" }, title: { type: "string" }, turn: { type: "string" } }
             : { ...COMMON, "system-prompt": { type: "string" }, "tool-description": { type: "string", multiple: true }, policy: { type: "string" }, strict: { type: "boolean" }, workspace: { type: "string" }, quiet: { type: "boolean", short: "q" } },
       })
     } catch (error) {
@@ -140,7 +145,7 @@ export function parseSubcommand(argv: readonly string[]): SubcommandParsed {
   if (typeof parsed === "string") {
     // A mistyped option is named with the one that was probably meant.
     const unknown = /^Unknown option '(--[^']+)'$/.exec(parsed)?.[1]
-    const known = Object.keys(command === "fork" ? { ...COMMON, copy: 0, "copy-to": 0, title: 0 } : { ...COMMON, "system-prompt": 0, "tool-description": 0, policy: 0, strict: 0, workspace: 0, quiet: 0 }).map((name) => `--${name}`)
+    const known = Object.keys(command === "fork" ? { ...COMMON, copy: 0, "copy-to": 0, title: 0, turn: 0 } : { ...COMMON, "system-prompt": 0, "tool-description": 0, policy: 0, strict: 0, workspace: 0, quiet: 0 }).map((name) => `--${name}`)
     const close = unknown === undefined ? null : nearest(unknown, known)
     return { kind: "error", message: unknown === undefined ? `${command}: ${parsed}` : `${command}: unknown option ${unknown}${close === null ? "" : `; did you mean ${close}?`}` }
   }
@@ -159,7 +164,10 @@ export function parseSubcommand(argv: readonly string[]): SubcommandParsed {
   if (command === "fork") {
     const copyTo = text("copy-to")
     if (copyTo !== null && !copyTo.startsWith("/")) return { kind: "error", message: "fork: --copy-to takes an absolute path" }
-    return { kind: "fork", options: { ...shared, copy: values.copy === true || copyTo !== null ? { copyTo } : null, title: text("title") } }
+    const turn = text("turn")
+    if (turn !== null && !/^[1-9]\d*$/.test(turn)) return { kind: "error", message: "fork: --turn takes a turn number, such as 3" }
+    if (turn !== null && through !== null) return { kind: "error", message: "fork: --turn and --through cannot be combined; --turn names a turn, --through an event" }
+    return { kind: "fork", options: { ...shared, turn: turn === null ? null : Number(turn), copy: values.copy === true || copyTo !== null ? { copyTo } : null, title: text("title") } }
   }
   const policy = text("policy") ?? "stop"
   if (!(POLICIES as readonly string[]).includes(policy)) return { kind: "error", message: `replay: --policy is one of ${POLICIES.join(", ")}` }
@@ -196,7 +204,7 @@ export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOpt
   if (engine.fork === undefined) return fail(io, "fork is not available with this engine")
   let forked: ForkResult
   try {
-    forked = await engine.fork({ cwd, session: options.session, throughSeq: options.throughSeq, copy: options.copy, model: options.model, effort: options.effort, title: options.title })
+    forked = await engine.fork({ cwd, session: options.session, throughSeq: options.throughSeq, turn: options.turn, copy: options.copy, model: options.model, effort: options.effort, title: options.title })
   } catch (error) {
     if (!(error instanceof EngineUnavailable)) throw error
     return fail(io, error.message, exitCodeOfRefusal(error))
@@ -213,7 +221,7 @@ export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOpt
       : `It works in a copy of ${forked.copiedFrom}: ${forked.cwd}`
   io.stdout.write(
     [
-      `Forked ${forked.parentSessionId} ${options.throughSeq === null ? "after its latest step" : `after event ${forked.throughSeq}`}.`,
+      `Forked ${forked.parentSessionId} ${options.turn !== null ? `after turn ${options.turn} (event ${forked.throughSeq})` : options.throughSeq === null ? "after its latest step" : `after event ${forked.throughSeq}`}.`,
       `New session: ${forked.sessionId}${title} (${forked.model}${forked.effort === null ? "" : `, effort ${forked.effort}`}), with the conversation so far; the original is unchanged.`,
       where,
       "",

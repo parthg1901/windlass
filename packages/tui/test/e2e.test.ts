@@ -400,6 +400,30 @@ describe("approvals and safety, against lh acp", () => {
     expect(frame).toContain("write the notes (fork)")
   }, 60_000)
 
+  test("/fork <turn>: up to the end of the turn its ending row numbers; a turn there is not is said", async () => {
+    const space = workspace([...WRITE_TURN, [{ type: "text", text: "Second answer." }]])
+    const term = await start(["--cwd", space.cwd], { env: space.env })
+    await term.waitFor(READY, { timeoutMs: 20_000 })
+    term.type("write the notes")
+    term.keys("Enter")
+    await term.waitFor("Created notes.md.", { timeoutMs: 20_000 })
+    await term.waitFor(READY)
+    term.type("and then?")
+    term.keys("Enter")
+    const two = await term.waitFor("Second answer.", { timeoutMs: 20_000 })
+    await term.waitFor(READY)
+    expect(conversation(two)).toMatch(/○ done .*· turn 1/)
+    term.type("/fork 5")
+    term.keys("Enter")
+    await term.waitFor("/fork 5: there is no turn 5: the session has turns 1 to 2")
+    term.type("/fork 1")
+    term.keys("Enter")
+    const forked = await term.waitFor((frame) => frame.includes("forked from") && frame.includes(READY), { timeoutMs: 20_000 })
+    expect(conversation(forked)).toContain("this is a new session with the conversation up to the end of turn 1")
+    expect(conversation(forked)).toContain("Created notes.md.")
+    expect(conversation(forked)).not.toContain("Second answer.")
+  }, 60_000)
+
   test("the per-file diff view after a turn: a file written whole and one changed by a command", async () => {
     const space = workspace([
       [

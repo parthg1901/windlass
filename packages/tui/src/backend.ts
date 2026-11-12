@@ -123,7 +123,8 @@ export interface BackendSession {
   /** Another session's stored log (a subagent's, to show its work), also of one this client did not open. */
   storedEvents?(sessionId: string): Promise<readonly EngineEvent[]>
   /** A new session with this one's conversation so far (`copy`: in a copy of the workspace). Nothing is opened. */
-  fork?(options: { readonly copy: boolean }): Promise<ForkInfo>
+  /** `throughSeq`: after that event (a turn's end) instead of after the latest step. */
+  fork?(options: { readonly copy: boolean; readonly throughSeq?: number }): Promise<ForkInfo>
   /** Lets go of the session; with `shutdown`, running work stops as a shutdown and resumes at the next open. */
   close(shutdown: boolean): Promise<void>
   /** Why the events ended without `close` (the server went away), as a sentence; `null` while all is well. */

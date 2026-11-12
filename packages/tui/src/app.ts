@@ -27,6 +27,7 @@ import { PANEL_WIDTH, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { type OutcomeRow, type Row, Transcript, expandable } from "./transcript.ts"
+import { forkPointOfTurn } from "@light-harness/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
 /** How long after a first Ctrl-C a second one exits instead of waiting for the stop. */
@@ -659,27 +660,39 @@ export class App {
   }
 
   /**
-   * `/fork [copy]`: a new session with this conversation so far, opened in
+   * `/fork [<turn>] [copy]`: a new session with this conversation so far (or
+   * up to the end of a turn, numbered as its ending row shows), opened in
    * place of this one, which is left as it is (/sessions goes back to it).
    * While idle only: switching away would stop the running turn.
    */
   private async fork(rest: string): Promise<void> {
     const session = this.session
     if (session?.fork === undefined) return this.say(`/fork is not available with this engine (${this.options.backend.label})`, "warn")
-    const word = rest.trim().toLowerCase()
-    if (word !== "" && word !== "copy") return this.say("/fork takes nothing, or copy (the fork then works in a copy of the workspace)", "warn")
+    const words = rest.trim().toLowerCase().split(/\s+/).filter((word) => word !== "")
+    const copy = words.includes("copy")
+    const numbers = words.filter((word) => /^\d+$/.test(word))
+    if (words.some((word) => word !== "copy" && !/^\d+$/.test(word)) || numbers.length > 1)
+      return this.say("/fork takes a turn number (the one on its ending row), copy (the fork works in a copy of the workspace), both, or nothing", "warn")
     if (this.transcript.activity.executing) return this.say("/fork works while the agent is idle; stop it first (Ctrl-C) or wait for the turn to end", "warn")
+    const turn = numbers.length === 0 ? null : Number(numbers[0])
+    let throughSeq: number | undefined
+    if (turn !== null) {
+      const point = forkPointOfTurn(this.transcript.turns.turns, turn)
+      if ("problem" in point) return this.say(`/fork ${turn}: ${point.problem}`, "warn")
+      throughSeq = point.throughSeq
+    }
     const from = { id: session.id, title: this.transcript.session.title }
     let forked
     try {
-      forked = await session.fork({ copy: word === "copy" })
+      forked = await session.fork({ copy, ...(throughSeq === undefined ? {} : { throughSeq }) })
     } catch (error) {
       return this.say(`/fork failed: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
     const where = forked.copiedFrom === null ? "in the same directory (both sessions change the same files)" : `in a copy of the workspace: ${forked.cwd}`
+    const upTo = turn === null ? "the conversation so far" : `the conversation up to the end of turn ${turn}`
     await this.switchTo({ kind: "resume", id: forked.sessionId }, () =>
       this.transcript.note(
-        [span("forked", "accent"), span(` from ${from.title === null ? from.id : `"${shorten(from.title, 40)}"`} · this is a new session with the conversation so far, ${where}`, "dim")],
+        [span("forked", "accent"), span(` from ${from.title === null ? from.id : `"${shorten(from.title, 40)}"`} · this is a new session with ${upTo}, ${where}`, "dim")],
         "accent",
         "⑂",
         [[span(`the original is unchanged: /sessions goes back to it (${from.id})`, "dim")]],

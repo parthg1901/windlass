@@ -32,7 +32,7 @@
  */
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@light-harness/acp/client"
 import { type DiffResult, EXT, type ForkResult, type ReplayResult, titleFromEvents } from "@light-harness/acp/extensions"
-import { isUndone, turnsOf } from "@light-harness/acp/turns"
+import { forkPointOfTurn, isUndone, turnsOf } from "@light-harness/acp/turns"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
 import { selfCommand } from "./self.ts"
 import {
@@ -131,9 +131,17 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
       listing(async (connected) => {
         try {
           const named = await connected.resolve(request.cwd, request.session ?? undefined)
+          // A turn is where the user sees it: its event number, from the session's own log.
+          let throughSeq = request.throughSeq
+          if (request.turn != null) {
+            const turns = turnsOf(await connected.storedEvents(named.sessionId))
+            const point = forkPointOfTurn(turns, request.turn)
+            if ("problem" in point) throw new EngineUnavailable(`${point.problem}${turnList(turns)}`, "usage")
+            throughSeq = point.throughSeq
+          }
           return await connected.fork({
             sessionId: named.sessionId,
-            ...(request.throughSeq === null ? {} : { throughSeq: request.throughSeq }),
+            ...(throughSeq === null ? {} : { throughSeq }),
             ...(request.copy === null ? {} : { workspace: request.copy.copyTo === null ? {} : { copyTo: request.copy.copyTo } }),
             ...(request.model === null ? {} : { model: request.model }),
             ...(request.effort === null ? {} : { effort: request.effort === "default" ? null : request.effort }),
@@ -311,6 +319,13 @@ class AcpSession implements Session {
       this.question = null
     }
   }
+}
+
+/** The session's turns, one line each, for a `--turn` that names none of them. */
+function turnList(turns: ReturnType<typeof turnsOf>): string {
+  if (turns.length === 0) return ""
+  const width = String(turns.length).length
+  return `\nIts turns:\n${turns.map((turn) => `  ${String(turn.number).padStart(width)}  "${turn.prompt.split("\n")[0]!.slice(0, 60)}"${isUndone(turn) ? " (undone)" : ""}`).join("\n")}`
 }
 
 /** Refusals that say the command line asked for something wrong: an exit with the usage code. */

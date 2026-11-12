@@ -160,7 +160,7 @@ class AcpSession implements BackendSession {
   readonly events: AsyncIterable<StreamItem>
   readonly compact?: () => Promise<void>
   readonly rename?: (title: string) => Promise<string>
-  readonly fork?: (options: { readonly copy: boolean }) => Promise<ForkInfo>
+  readonly fork?: (options: { readonly copy: boolean; readonly throughSeq?: number }) => Promise<ForkInfo>
   readonly storedEvents?: (sessionId: string) => Promise<readonly EngineEvent[]>
   private closing: Promise<void> | null = null
 
@@ -200,8 +200,8 @@ class AcpSession implements BackendSession {
     if (session.offers(EXT.compact)) this.compact = () => this.call(() => session.compact())
     if (session.offers(EXT.events)) this.storedEvents = (sessionId) => this.call(() => session.connection.storedEvents(sessionId))
     if (session.offers(EXT.fork))
-      this.fork = async ({ copy }) => {
-        const forked = await this.call(() => session.connection.fork({ sessionId: session.id, ...(copy ? { workspace: {} } : {}) }))
+      this.fork = async ({ copy, throughSeq }) => {
+        const forked = await this.call(() => session.connection.fork({ sessionId: session.id, ...(copy ? { workspace: {} } : {}), ...(throughSeq === undefined ? {} : { throughSeq }) }))
         return { sessionId: forked.sessionId, cwd: forked.cwd, copiedFrom: forked.copiedFrom, title: forked.title }
       }
     if (session.offers(EXT.rename)) this.rename = (title) => this.call(() => session.rename(title))

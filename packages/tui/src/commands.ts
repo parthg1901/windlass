@@ -14,7 +14,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "sessions", args: "", description: "switch to or resume another session in this directory" },
   { name: "model", args: "", description: "choose the model and its reasoning effort" },
   { name: "new", args: "", description: "start a new session" },
-  { name: "fork", args: "[copy]", description: "continue in a new session with this conversation so far (copy: in a copy of the workspace)" },
+  { name: "fork", args: "[<turn>] [copy]", description: "continue in a new session with this conversation so far, or up to a turn (the number on its ending row); copy: in a copy of the workspace" },
   { name: "compact", args: "", description: "compact the conversation now" },
   { name: "approval", args: "[ask|auto|full]", description: "when tool calls ask before they run", aliases: ["mode"] },
   { name: "clear-taint", args: "", description: "say you trust the untrusted content in the conversation" },
