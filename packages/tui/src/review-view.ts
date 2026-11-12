@@ -29,6 +29,8 @@ export interface ReviewRequest extends ReviewTarget {
   readonly diff: (params: { readonly executionId?: string }) => Promise<DiffResult>
   /** What Enter does with the message right now, for the hint (`sends it`, or how it reaches an agent at work). */
   readonly delivery: () => string
+  /** Whether a question (a tool call's approval, one about the project's configuration) waits under the view right now. */
+  readonly asking?: () => boolean
 }
 
 /**
@@ -130,6 +132,7 @@ export class ReviewView extends Renderable {
     this.kept.set(key, review)
     const screen = new ReviewScreen(review)
     screen.delivery = request.delivery
+    if (request.asking !== undefined) screen.asking = request.asking
     // Comments kept on other turns are easy to lose sight of once a later turn has ended.
     const others = [...this.kept.values()].filter((other) => other !== review && other.count > 0)
     if (others.length > 0) screen.notice = { text: `comments are kept on ${others.map((other) => other.what).join(", ")} too: select that turn's ending row (Alt-Up), then /review`, tone: "dim" }

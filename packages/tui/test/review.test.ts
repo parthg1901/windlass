@@ -548,6 +548,59 @@ describe("a review that could not be sent, and a question under the view", () =>
     await command("/review")
     expect(await mounted!.frame()).toContain("Review of turn 1 · no comments yet")
   })
+
+  test("a question that arrives while the review or the diff reader is open is said in the view, with the key that leaves it", async () => {
+    const running = ALL.slice(0, ALL.findIndex((item) => item.type === "approval.requested"))
+    const { backend, app } = await opened({ ...DIFF, executionId: "exe_before" }, running)
+    const ask = {
+      sessionId: "ses_script",
+      toolCallId: "t1",
+      messageId: "a9",
+      callId: "c9",
+      question: { title: "Run this command outside the sandbox?", subject: "bun test", details: [], choices: [{ id: "once", label: "Allow once", approve: true, remembers: null }, { id: "deny", label: "Don't allow", approve: false, remembers: null }] },
+      needs: [],
+      then: { kind: "run" },
+      subagent: null,
+      subagentSessionId: null,
+    } as never
+    await command("/review")
+    expect(await mounted!.frame()).not.toContain("a question is waiting")
+    const answer = backend.onApproval(ask, new AbortController().signal)
+    await mounted!.settle()
+    expect(await mounted!.frame()).toContain("? a question is waiting for your answer · Esc leaves the review to answer it: your comments are kept\n")
+    // While a comment is written, and at the last look, the way out is the one from there.
+    keys().pressKey("c")
+    await mounted!.settle()
+    expect(await mounted!.frame()).toContain("? a question is waiting for your answer · Enter saves this comment, then Esc leaves to answer it")
+    await keys().typeText("x")
+    keys().pressEnter()
+    keys().pressKey("s")
+    await mounted!.settle()
+    expect(await mounted!.frame()).toContain("? a question is waiting for your answer · Esc back, Esc again leaves to answer it: comments are kept")
+    keys().pressEscape()
+    await Bun.sleep(80)
+    keys().pressEscape()
+    await Bun.sleep(80)
+    await mounted!.settle()
+    expect(app.review.open).toBe(false)
+    const under = await mounted!.frame()
+    expect(under).toContain("Run this command outside the sandbox?")
+    expect(under).toContain("Tab answers the question")
+
+    // The diff reader: its footer says it, before its keys.
+    await command("/diff")
+    expect(app.pager.open).toBe(true)
+    expect((await mounted!.frame()).split("\n").at(-1)).toStartWith("? a question is waiting for your answer · Esc closes this view to answer it · ↑↓ PgUp")
+    keys().pressEscape()
+    await Bun.sleep(80)
+    await mounted!.settle()
+    expect(app.pager.open).toBe(false)
+    keys().pressTab()
+    await mounted!.settle()
+    keys().pressKey("a")
+    await mounted!.settle()
+    expect(await answer).toEqual({ choice: "once" })
+  })
 })
 
 describe("the turn /review is about", () => {

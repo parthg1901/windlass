@@ -467,6 +467,8 @@ export interface PagerSpec {
 export class Pager extends Renderable {
   spec: PagerSpec | null = null
   first = 0
+  /** Whether a question waits under the reader (it cannot be seen from here): the footer says so, with the key that closes the reader. */
+  asking: () => boolean = () => false
   private laid: { columns: number; lines: Span[][]; marks: readonly number[] } | null = null
   private resolve: (() => void) | null = null
 
@@ -554,6 +556,8 @@ export class Pager extends Renderable {
       const line = laid.lines[this.first + row]
       if (line !== undefined) drawLine(buffer, this.theme, 1, 1 + row, w - 1, line)
     }
-    drawLine(buffer, this.theme, 0, h - 1, w, [span(truncate(spec.footer, w), "dim")])
+    const waiting = "? a question is waiting for your answer · Esc closes this view to answer it"
+    if (!this.asking()) drawLine(buffer, this.theme, 0, h - 1, w, [span(truncate(spec.footer, w), "dim")])
+    else drawLine(buffer, this.theme, 0, h - 1, w, [span(truncate(textWidth(waiting) <= w ? waiting : "? a question waits · Esc closes", w), "warn", { bold: true }), span(truncate(` · ${spec.footer}`, Math.max(0, w - textWidth(waiting))), "dim")])
   }
 }

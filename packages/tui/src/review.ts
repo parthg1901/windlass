@@ -337,6 +337,8 @@ export class ReviewScreen {
   notice: { readonly text: string; readonly tone: "dim" | "warn" } | null = null
   /** What Enter does with the message, for the hint: `sends it`, or how it reaches an agent at work. */
   delivery: () => string = () => "sends it"
+  /** Whether a question waits under the view (it cannot be seen or answered from here): said above the keys, with the way out. */
+  asking: () => boolean = () => false
   private first = 0
   private previewFirst = 0
   private laid: Laid | null = null
@@ -470,8 +472,9 @@ export class ReviewScreen {
 
     const bottom: Span[][] = []
     let editor: EditorPlace | null = null
-    if (this.notice !== null) bottom.push(truncateLine([span(this.notice.text, this.notice.tone)], columns))
     const editing = this.mode === "comment"
+    if (this.asking()) bottom.push(waiting(editing ? ["Enter saves this comment, then Esc leaves to answer it", "Enter, then Esc to answer it"] : ["Esc leaves the review to answer it: your comments are kept", "Esc leaves to answer it"], columns))
+    if (this.notice !== null) bottom.push(truncateLine([span(this.notice.text, this.notice.tone)], columns))
     const editorRows = editing ? editorHeight(typed, columns, rows) : 0
     if (editing) {
       const line = review.lines[review.cursor]!
@@ -515,7 +518,8 @@ export class ReviewScreen {
     const message = reviewMessage(review, typed)
     const files = new Set(review.ordered().map((comment) => comment.path)).size
     const editorRows = editorHeight(typed, columns, rows)
-    const body = Math.max(1, rows - 4 - editorRows)
+    const asking = this.asking()
+    const body = Math.max(1, rows - 4 - editorRows - (asking ? 1 : 0))
     this.body = body
     // The message as it will be sent, each line wrapped under its own indentation.
     const preview = message.split("\n").flatMap((line) => wrapLine([span(" "), span(sanitize(line))], columns, [span(` ${/^\s*/.exec(line)![0]}`)]))
@@ -526,6 +530,7 @@ export class ReviewScreen {
       rule(`the message, as it will be sent${shown}`, columns),
     ]
     for (let row = 0; row < body; row += 1) lines.push(preview[this.previewFirst + row] ?? [])
+    if (asking) lines.push(waiting(["Esc goes back to the review, Esc again leaves it to answer: your comments are kept", "Esc back, Esc again leaves to answer it: comments are kept", "Esc, then Esc again, to answer it"], columns))
     lines.push(rule("an overall note, if you want one: it goes above the comments", columns))
     const top = lines.length
     for (let row = 0; row < editorRows; row += 1) lines.push([span(row === 0 ? "› " : "  ", "accent")])
@@ -609,6 +614,13 @@ function rule(label: string, columns: number): Span[] {
 }
 
 /** The longest of the hints that fits whole: a hint is never cut in the middle of a key. */
+/** The line that says a question waits under the view, and how to get to it: the longest form that fits. */
+function waiting(ways: readonly string[], columns: number): Span[] {
+  const head = "? a question is waiting for your answer"
+  const way = ways.find((form) => textWidth(`${head} · ${form}`) <= columns) ?? ways.at(-1)!
+  return truncateLine([span("? ", "warn", { bold: true }), span(head.slice(2), "warn", { bold: true }), span(` · ${way}`, "warn")], columns)
+}
+
 function hint(forms: readonly string[], columns: number): Span[] {
   const fits = forms.find((form) => textWidth(form) <= columns) ?? forms.at(-1)!
   return [span(truncate(fits, columns), "dim")]

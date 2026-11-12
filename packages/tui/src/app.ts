@@ -207,6 +207,7 @@ export class App {
     this.review = new ReviewView(renderer, theme, { id: "review", left: 0, top: 0, width: "100%", height: "100%" })
     root.add(this.review)
     this.input.focus()
+    this.pager.asking = () => this.asking()
 
     renderer.keyInput.on("keypress", (key: KeyEvent) => this.onKey(key))
     renderer.on("resize", () => this.layout())
@@ -1720,7 +1721,7 @@ export class App {
     const session = this.session
     if (session?.diff === undefined) return this.say("reviewing a turn's changes is not available with this engine", "warn")
     const delivery = () => (!this.transcript.activity.executing ? "sends it" : this.mode === "steer" ? "sends it into the running turn (steer)" : "queues it for after the running turn")
-    const came = await this.review.run({ ...reviewTarget(this.transcript.rows, this.conversation.selectedRow(), executionId), sessionId: session.id, diff: (params) => session.diff!(params), delivery })
+    const came = await this.review.run({ ...reviewTarget(this.transcript.rows, this.conversation.selectedRow(), executionId), sessionId: session.id, diff: (params) => session.diff!(params), delivery, asking: () => this.asking() })
     this.input.focus()
     // A question that came up meanwhile waits for Tab: a key meant for the review must not answer it.
     if (this.dock !== null) this.dock.state.focused = false
@@ -1731,6 +1732,11 @@ export class App {
     const problem = await this.deliver(came.message, this.transcript.activity.executing ? this.mode : "steer")
     if (problem === null) return came.sent?.()
     this.say(`${problem.text} · ${came.kept ?? "the review is kept"}`, problem.tone)
+  }
+
+  /** Whether a question waits in the dock: one a full-screen view over the conversation hides. */
+  private asking(): boolean {
+    return this.dock !== null && !this.dock.state.withdrawn
   }
 
   private toggle(row: Row): void {
