@@ -456,6 +456,36 @@ export const taskListSurvives: Scenario = {
   ],
 }
 
+// ---------------------------------------------------------------- on request
+
+const askedTurn = [...opening(), ...reads("a1", "a.test.ts", "expect(add(1, 1)).toBe(3)", 3000), ...answers("a2", "The expectation is wrong: 1 + 1 is 2.", 3200), executionSucceeded()]
+
+export const onRequest: Scenario = {
+  title: "The user asks for a compaction while the session is idle",
+  description:
+    "The request is far below the thresholds, so nothing would be compacted by itself; the user asks for it (`/compact`). A compaction changes history, and history changes under a claim: the session takes one for this alone. `compaction.started` records `manual` as the trigger, and from there it is the compaction of every other scenario: the same summary request, the same repair and fallback, the same checkpoint. It keeps word for word only what the next request has to answer (here the model's last answer) and a short recent tail. Then the execution ends, with no step and no check: there was no turn, so nothing of a turn's to verify. The baseline is set again when the next turn is about to send a step. Asked again right away, the engine answers that there is nothing to compact and writes nothing; asked while a turn runs, the same compaction is made at the boundary after the step in progress.",
+  provider: "the turn is measured at 3,000 and 3,200 input tokens; the summary call returns a summary; the next turn answers",
+  contextWindow: WINDOW,
+  phases: [
+    {
+      label: "a turn, far below the thresholds",
+      events: askedTurn,
+      expect: { history: ["u1", "a1", "a2"], execution: null },
+    },
+    {
+      label: "the user asks: a claim of its own, the compaction, and the claim is released",
+      events: [executionStarted("exe_2"), compactionStarted("c1", 11, "manual"), compactionEnded("c1", checkpoint(askedTurn, 11)), executionSucceeded("exe_2")],
+      expect: { ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "c1", kind: "compaction", status: "completed" }], history: ["c1", "a2"], execution: null },
+      rejects: [{ event: compactionStarted("c2", 11, "manual"), code: "invalid_transition", why: "no execution is running: a compaction is written under a claim" }],
+    },
+    {
+      label: "the next turn: the baseline is set again, and the request is the checkpoint, the kept answer and the new message",
+      events: [enqueue("u2", "Then fix it."), executionStarted("exe_3"), baseline(), deliver("u2"), ...answers("a3", "Changed the expectation to 2.", 1200), executionSucceeded("exe_3")],
+      expect: { history: ["c1", "a2", "u2", "a3"], execution: null },
+    },
+  ],
+}
+
 export const compactionScenarios = [
   atUserBoundary,
   midTurn,
@@ -466,4 +496,5 @@ export const compactionScenarios = [
   interruptedCompaction,
   crashedCompaction,
   taskListSurvives,
+  onRequest,
 ]

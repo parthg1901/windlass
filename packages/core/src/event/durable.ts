@@ -248,8 +248,14 @@ export const KEPT_LIMIT = 200
 /**
  * What the verification gate found when an execution ended as done.
  * - `not_configured`: verification is off, or no check is configured. Nothing was verified.
- * - `not_needed`: checks are configured and none applied: nothing they cover
- *   changed since the last verification that passed.
+ * - `not_needed`: checks are configured and none ran. Either nothing they
+ *   cover changed since the last verification that passed, or this turn
+ *   changed no file: the gate verifies a turn's own work, and a turn that
+ *   only answered has none. In the second case `unverified` is set when
+ *   files the checks cover did change since the last verification, outside
+ *   this turn (the user edited by hand, a turn was undone, an earlier turn
+ *   ended with its checks failing): they are still to be checked, and are,
+ *   with everything else, at the end of the next turn that changes a file.
  * - `passed`: every check that applied passed; `evidence` is that run.
  * - `unresolved`: checks still fail and the execution ended anyway. `reason`
  *   says why it was allowed to: the model reported with the acknowledgement
@@ -259,7 +265,7 @@ export const KEPT_LIMIT = 200
  */
 export const verificationOutcome = variant("status", {
   not_configured: object({ status: literal("not_configured") }),
-  not_needed: object({ status: literal("not_needed") }),
+  not_needed: object({ status: literal("not_needed"), unverified: optional(literal(true)) }),
   passed: object({ status: literal("passed"), evidence: verificationEvidence }),
   unresolved: object({
     status: literal("unresolved"),

@@ -519,8 +519,9 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       return session({
         open: { kind: "handover", messageId: queued.messageId },
         // As when an execution ends with nothing to check: what is there now is what later checks are selected against.
+        // Not so when changes made outside the turn were left unchecked: they stay to be verified.
         verification:
-          outcome.status === "not_needed"
+          outcome.status === "not_needed" && outcome.unverified !== true
             ? { ...state.session.verification, verified: { seq: event.seq, snapshot: state.session.workspace.snapshot?.id ?? null } }
             : state.session.verification,
       })
@@ -562,9 +563,10 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       const outcome = event.data.verification
       if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
         fail("invalid_transition", "the model has not answered everything it was given under this execution")
-      // With nothing to check, what is there now is what later checks are selected against.
+      // With nothing to check, what is there now is what later checks are selected against. A turn that changed
+      // nothing while files changed outside it verified nothing: those changes stay to be checked.
       const verification =
-        outcome.status === "not_needed"
+        outcome.status === "not_needed" && outcome.unverified !== true
           ? { ...state.session.verification, verified: { seq: event.seq, snapshot: state.session.workspace.snapshot?.id ?? null } }
           : state.session.verification
       return session({ execution: null, verification })

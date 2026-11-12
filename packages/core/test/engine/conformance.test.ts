@@ -51,7 +51,7 @@ import {
 } from "../scenarios/script.ts"
 import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
-import { ACKNOWLEDGEMENT, FIRST_FIX, SECOND_FIX } from "../scenarios/verification.ts"
+import { ACKNOWLEDGEMENT, FIRST_FIX, HAND_EDITED, SECOND_FIX } from "../scenarios/verification.ts"
 import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
 import { TODO_INPUT } from "../scenarios/compaction.ts"
@@ -722,6 +722,22 @@ const PLAYS: Record<string, Play> = {
     expect(h.checks.ran).toEqual(["test"])
   },
 
+  "A question after a hand edit runs no check; the next turn that changes a file checks it all": async (h, say) => {
+    h.provider.enqueue(answer("It subtracts, which looks like a bug."), answer("It expects 4 for 2 + 2, which is right."), write(SECOND_FIX), answer("Now it adds."))
+    h.tools.on("write", writes(h, "Wrote add.ts"))
+    h.checks.on("test", "passed")
+    h.create().send(say[0]!)
+    await h.settled()
+    // The user edits a test by hand between the turns.
+    h.workspace!.files.set(HAND_EDITED.path, HAND_EDITED.content)
+    h.session.send(say[1]!)
+    await h.settled()
+    expect(h.checks.ran).toEqual([])
+    h.session.send(say[2]!)
+    await h.settled()
+    expect(h.checks.ran).toEqual(["test"])
+  },
+
   "The checks fail, the model fixes the code, and they pass": async (h, say) => {
     h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."), write(SECOND_FIX), answer("Now it adds."))
     h.tools.on("write", writes(h, "Wrote add.ts"), writes(h, "Wrote add.ts"))
@@ -857,6 +873,24 @@ const PLAYS: Record<string, Play> = {
     expect(after.tools).toEqual(h.provider.requests[0]!.tools)
     expect(after.tools.map((tool) => tool.name)).toContain("todo")
     expect(currentTodos(h.session.projection().messages)?.counts).toEqual({ pending: 1, in_progress: 1, done: 1 })
+  },
+
+  "The user asks for a compaction while the session is idle": async (h, say) => {
+    h.provider.enqueue(readsAt("a.test.ts", 3000), answersAt("The expectation is wrong: 1 + 1 is 2.", 3200), summary(), answersAt("Changed the expectation to 2.", 1200))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(await h.session.compact()).toMatchObject({ kind: "compacted", source: "model" })
+    await h.settled()
+    // Asked again right away: nothing to take out, and nothing is written.
+    const before = h.log().length
+    expect((await h.session.compact()).kind).toBe("nothing")
+    expect(h.log()).toHaveLength(before)
+    h.session.send(say[1]!)
+    await h.settled()
+    const after = h.provider.requests.at(-1)!
+    expect(after.input.map((item) => item.type)).toEqual(["message", "assistant_text", "message"])
+    expect(after.tools).toEqual(h.provider.requests[0]!.tools)
   },
 
   "A compaction in the middle of a long turn": async (h, say) => {
@@ -1414,7 +1448,8 @@ describe("the loop writes each scenario's events", () => {
         ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
         ...(features?.agents === true ? { agents: { configDir: join(dirname(cwd!), "config") } } : {}),
         tools,
-        limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET },
+        // The scenarios' conversations are a few dozen tokens long: a compaction on request is made whatever it frees.
+        limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET, manualCompactionMinTokens: 0 },
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
         ...(setup?.config === undefined ? {} : { config: setup.config }),
         ...(scenario.contextWindow === undefined ? {} : { contextWindow: scenario.contextWindow }),
@@ -1452,7 +1487,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(95)
+    expect(scenarios).toHaveLength(97)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

@@ -69,9 +69,17 @@ export interface EngineLimits {
   readonly snapshotKeepLast: number
   /** ... and none older than this. An archived session keeps none of them. */
   readonly snapshotMaxAgeMs: number
+  /**
+   * A compaction the user asks for is made only when it would take at least
+   * this many tokens of history out of the model's view: below that the
+   * checkpoint that replaces them is about as large as they are, and the
+   * summary call would be spent for nothing.
+   */
+  readonly manualCompactionMinTokens: number
 }
 
 export const ENGINE_LIMITS: EngineLimits = {
+  manualCompactionMinTokens: 2_000,
   attemptBudget: 5,
   retryBaseDelayMs: 2000,
   retryMaxDelayMs: 32_000,
@@ -139,6 +147,19 @@ export const NOTE_TEXT = {
 } as const
 
 /** The messages of `execution.failed`, written for a person. */
+/** What a compaction the user asked for answers when it does not compact. */
+export const MANUAL_COMPACTION_TEXT = {
+  nothingYet: "There is nothing to compact: the conversation has not started.",
+  nothingToRemove: "There is nothing to compact: what is in the model's view is what the next request needs (the latest input, or a checkpoint and what followed it).",
+  tooSmall: (tokens: number, minimum: number) =>
+    `Not compacted: only about ${tokens.toLocaleString("en-US")} tokens of the conversation could be summarised, and a checkpoint takes about as much. A compaction is worth it from about ${minimum.toLocaleString("en-US")} tokens.`,
+  replay: "A replay session is not compacted.",
+  reverting: "The session is being reverted; ask again when that is done.",
+  closed: "The session was closed before the conversation could be compacted.",
+  interrupted: "The compaction was interrupted; the conversation is unchanged.",
+  ended: (why: string) => `The conversation was not compacted: ${why}`,
+} as const
+
 export const FAILURE_TEXT = {
   refused: "The provider refused the request.",
   emptyTwice: "The model returned an empty response twice.",

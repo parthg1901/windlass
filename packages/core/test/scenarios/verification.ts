@@ -28,6 +28,7 @@ import {
   checksStarted,
   executionInterrupted,
   executionResumed,
+  executionStarted as executionStartedAs,
   executionSucceeded,
   interruptMarker,
   interruptRequested,
@@ -318,6 +319,59 @@ export const queuedWaitsForTheGate: Scenario = {
   ],
 }
 
+const HAND_EDIT = { path: "add.test.ts", content: 'test("add", () => expect(add(2, 2)).toBe(4))\n' }
+export const HAND_EDITED = HAND_EDIT
+
+export const questionAfterHandEdit: Scenario = {
+  title: "A question after a hand edit runs no check; the next turn that changes a file checks it all",
+  description:
+    "The gate verifies a turn's own work. Between two turns the user edits a test by hand, then asks a question that the model answers without a tool. The workspace when that message was delivered (`delivery`) is the workspace when the turn ends, so the turn changed nothing and no check runs: the user is not shown `checks passed` for a turn that did nothing, and a hand edit that breaks a test does not send the model off to fix unfinished work it was not asked about. The edit is still unverified, and the ending says so (`not_needed` with `unverified`); the state checks are selected against does not move. The next turn changes a file, so the checks run, and they are selected from everything that is unverified: the evidence names the hand-edited file with the model's own.",
+  provider: "turn 1 answers. Turn 2 (after the hand edit) answers. Turn 3 calls write, then answers; the `test` check exits 0",
+  setup,
+  phases: [
+    {
+      label: "a question: nothing changed, nothing to check",
+      events: [...openingIn("What does add do?"), stepStarted("a1"), say("a1", "It subtracts, which looks like a bug."), stepEnded("a1"), snap("checks_start", "w0"), succeededWith({ status: "not_needed" })],
+      expect: { execution: null, history: ["u1", "a1"] },
+    },
+    {
+      label: "the user edits a test by hand, then asks again: the turn changed nothing, so no check runs, and the edit stays unverified",
+      events: [
+        enqueue("u2", "Is the test right now?"),
+        executionStartedAs("exe_2"),
+        snap("delivery", "w1"),
+        deliver("u2"),
+        stepStarted("a2"),
+        say("a2", "It expects 4 for 2 + 2, which is right."),
+        stepEnded("a2"),
+        snap("checks_start", "w1"),
+        succeededWith({ status: "not_needed", unverified: true }, "exe_2"),
+      ],
+      expect: { execution: null, history: ["u1", "a1", "u2", "a2"] },
+      rejects: [{ event: checksStarted(1), code: "invalid_transition", why: "no execution is running: checks run under a claim, when a turn that changed files would end" }],
+    },
+    {
+      label: "the next turn changes a file: the checks run on everything unverified, the hand edit included",
+      events: [
+        enqueue("u3", "Fix add."),
+        executionStartedAs("exe_3"),
+        snap("delivery", "w1"),
+        deliver("u3"),
+        ...wrote("a3", SECOND_FIX, "Wrote add.ts", "w1", "w2"),
+        stepStarted("a4"),
+        say("a4", "Now it adds."),
+        stepEnded("a4"),
+        snap("checks_start", "w2"),
+        checksStarted(1),
+        snap("checks_end", "w2"),
+        checksFinished(1, "passed", ["add.test.ts", "add.ts"]),
+        succeededWith(passed(1, ["add.test.ts", "add.ts"]), "exe_3"),
+      ],
+      expect: { execution: null, history: ["u1", "a1", "u2", "a2", "u3", "a3", "a4"] },
+    },
+  ],
+}
+
 export const verificationScenarios = [
   checksPass,
   checksFailThenPass,
@@ -325,4 +379,7 @@ export const verificationScenarios = [
   checksAcknowledged,
   noChecksConfigured,
   cancelDuringChecks,
-  crashDuringChecks, queuedWaitsForTheGate]
+  crashDuringChecks,
+  queuedWaitsForTheGate,
+  questionAfterHandEdit,
+]

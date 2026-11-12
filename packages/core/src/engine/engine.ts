@@ -133,6 +133,7 @@ import { type Clock, systemClock } from "./clock.ts"
 import {
   COMPACTION_TEXT,
   ENGINE_LIMITS,
+  MANUAL_COMPACTION_TEXT,
   type EngineLimits,
   FAILURE_TEXT,
   INCOMPLETE_STREAM,
@@ -187,7 +188,9 @@ import {
   reportsThisTurn,
   saysNothing,
   settleUnsettled,
+  spawnedWorkEndedThisTurn,
   stepsThisTurn,
+  turnBeginning,
   turnInput,
   turnStartSeq,
   wouldGoIdle,
@@ -621,6 +624,15 @@ export interface Admission {
   readonly untrusted?: UntrustedInput
 }
 
+/** What a compaction the user asked for came to (`EngineSession.compact`). */
+export type CompactResult =
+  /** Done: the older part of the conversation is a checkpoint now. The sizes are the estimates `compaction.started` and `compaction.ended` record. */
+  | { readonly kind: "compacted"; readonly tokensBefore: number; readonly tokensAfter: number; readonly source: "model" | "repaired" | "fallback"; readonly detail: string | null }
+  /** Nothing was written: there is nothing worth compacting, and `message` says why, for the user. */
+  | { readonly kind: "nothing"; readonly message: string }
+  /** It did not complete (an interrupt, a provider that cannot be used, the session closed). History is unchanged; `message` says why. */
+  | { readonly kind: "failed"; readonly message: string }
+
 export interface SendOptions {
   /** `steer` (the default) is delivered at the next step boundary; `queue` once the session would otherwise go idle. */
   readonly delivery?: "steer" | "queue"
@@ -662,6 +674,28 @@ export interface EngineSession {
    * written and nothing is sent.
    */
   readonly setSettings: (settings: SessionSettings) => void
+  /**
+   * Sets the session's title (`session.renamed`), at any time. Returns the
+   * title as stored: trimmed, with line breaks as spaces. Throws
+   * `EngineError` `invalid_request` for a title that is empty.
+   */
+  readonly rename: (title: string) => string
+  /**
+   * Compacts the conversation because the user asks: the older part of the
+   * model's view is replaced by a checkpoint, exactly as an automatic
+   * compaction does it (the same summary request, repair, fallback and
+   * events; `compaction.started.trigger` is `manual`), keeping word for
+   * word only what the next request has to answer and a short recent tail.
+   * It happens at a step boundary: while a turn runs, at the boundary after
+   * the step in progress (the turn then carries on from the checkpoint);
+   * while idle, under an execution of its own that ends as soon as the
+   * checkpoint is written, with no step and no checks. The baseline is set
+   * again when the next step is about to be sent. Resolves when it is done,
+   * with the sizes before and after; with `nothing` and the reason, and
+   * nothing written, when there is nothing worth compacting; with `failed`
+   * when it could not complete.
+   */
+  readonly compact: () => Promise<CompactResult>
   /**
    * The agent the session runs as, or will from its next step on when a
    * switch was asked for and is not applied yet; `null`: none. What the log
@@ -1301,7 +1335,8 @@ interface Prepared {
 
 /** What a compaction is asked to do: the policy's decision, as far as the loop acts on it. */
 interface CompactionPlan {
-  readonly trigger: "auto" | "overflow"
+  /** `manual`: the user asked for it (`EngineSession.compact`). */
+  readonly trigger: "auto" | "overflow" | "manual"
   readonly mode: CompactionMode
   /** Tokens of history to keep word for word (`chooseTail`). */
   readonly tailBudget: number
@@ -1470,6 +1505,8 @@ class LiveSession implements EngineSession {
   private configRead = false
   /** The settings the loop last checked against the provider's listing, so each is checked once. */
   private checkedSettings: string | null = null
+  /** Compactions the user asked for that wait for a step boundary: who to tell when it is done. */
+  private compactRequests: ((result: CompactResult) => void)[] = []
 
   constructor(
     private readonly core: Core,
@@ -1701,6 +1738,93 @@ class LiveSession implements EngineSession {
     if (this.projection().session.approval?.taint == null) return false
     this.write([event("taint.cleared", {})])
     return true
+  }
+
+  rename = (title: string): string => {
+    this.assertOpen()
+    const next = title.replace(/\s+/g, " ").trim()
+    if (next === "") throw new EngineError("invalid_request", "a session's title cannot be empty")
+    if (this.projection().session.title !== next) this.write([event("session.renamed", { title: next })])
+    return next
+  }
+
+  compact = async (): Promise<CompactResult> => {
+    this.assertOpen()
+    const projection = this.projection()
+    if (projection.session.replay !== undefined) return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.replay }
+    if (this.restoring !== null) return { kind: "failed", message: MANUAL_COMPACTION_TEXT.reverting }
+    if (this.run === null) {
+      // Idle: said at once when there is nothing to do, so that no execution is started for it.
+      const worth = await this.worthCompacting()
+      if (worth.kind !== "plan") return worth
+      if (this.closing !== null) return { kind: "failed", message: MANUAL_COMPACTION_TEXT.closed }
+    }
+    const done = new Promise<CompactResult>((resolve) => this.compactRequests.push(resolve))
+    // A turn that runs compacts at its next boundary. Otherwise an execution is started (or a suspended one taken
+    // up) whose first boundary does: a compaction is written under a claim, like everything that changes history.
+    if (this.run === null && this.restoring === null) {
+      const execution = this.projection().session.execution
+      if (execution === null) {
+        const executionId = this.core.ids.execution()
+        this.write([event("execution.started", { executionId })])
+        this.launch(executionId)
+      } else this.start()
+    }
+    return done
+  }
+
+  /**
+   * Whether a compaction the user asks for would take enough out of the
+   * model's view, and the plan of one that would. It keeps what the next
+   * request has to answer and, where the window is known, the short tail an
+   * aggressive compaction keeps: the user asked for room.
+   */
+  private async worthCompacting(): Promise<{ readonly kind: "plan"; readonly plan: CompactionPlan } | Extract<CompactResult, { kind: "nothing" }>> {
+    const start = this.projection()
+    if (start.baseline === null) return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.nothingYet }
+    const window = await this.contextWindow(start.session.settings.model)
+    const projection = this.projection()
+    const prepared = this.prepare(projection, "auto")
+    const budget = window === null ? 0 : this.aggressiveBudget(prepared, window)
+    const tail = chooseTail(selectModelHistory(projection).messages, { budget, mandatory: "always" })
+    if (tail.nothingToRemove) return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.nothingToRemove }
+    const minimum = this.core.limits.manualCompactionMinTokens
+    if (tail.removedTokens < minimum) return { kind: "nothing", message: MANUAL_COMPACTION_TEXT.tooSmall(Math.round(tail.removedTokens), minimum) }
+    return { kind: "plan", plan: { trigger: "manual", mode: "normal", tailBudget: budget, tokensBefore: this.measure(prepared).total } }
+  }
+
+  /**
+   * At a step boundary, under the claim: makes the compaction the user
+   * asked for and tells whoever asked. Returns what the loop does next:
+   * `done` when the execution's terminal event was written.
+   */
+  private async compactOnRequest(run: Run): Promise<"compacted" | "nothing" | "done"> {
+    const waiting = this.compactRequests.splice(0)
+    const answer = (result: CompactResult) => {
+      for (const resolve of waiting) resolve(result)
+    }
+    try {
+      const worth = await this.worthCompacting()
+      if (run.interrupt.signal.aborted) {
+        answer({ kind: "failed", message: MANUAL_COMPACTION_TEXT.interrupted })
+        this.finishInterrupt(run)
+        return "done"
+      }
+      if (worth.kind !== "plan") {
+        answer(worth)
+        return "nothing"
+      }
+      const outcome = await this.compact$(run, worth.plan)
+      const made = this.projection().messages.findLast((message) => message.kind === "compaction")
+      if (outcome === "compacted" && made?.kind === "compaction" && made.status === "completed")
+        answer({ kind: "compacted", tokensBefore: made.tokensBefore, tokensAfter: made.tokensAfter ?? 0, source: made.source ?? "model", detail: made.detail })
+      else if (outcome === "nothing") answer({ kind: "nothing", message: MANUAL_COMPACTION_TEXT.nothingToRemove })
+      else answer({ kind: "failed", message: run.interrupt.signal.aborted ? MANUAL_COMPACTION_TEXT.interrupted : MANUAL_COMPACTION_TEXT.ended(lastExecutionFailure(this.readEvents()) ?? "the summary could not be had") })
+      return outcome
+    } catch (error) {
+      answer({ kind: "failed", message: MANUAL_COMPACTION_TEXT.ended(describe(error)) })
+      throw error
+    }
   }
 
   agent = (): AgentRecord | null => (this.pendingAgent !== undefined ? this.pendingAgent : (this.projection().session.agent ?? null))
@@ -1984,6 +2108,13 @@ class LiveSession implements EngineSession {
     } finally {
       this.concludeReplay()
       this.run = null
+      // A compaction that was asked for and never reached a boundary (the turn failed or was stopped first) is not
+      // made behind the user's back later: whoever asked is told.
+      const unmade = this.compactRequests.splice(0)
+      if (unmade.length > 0) {
+        const message = this.closing !== null ? MANUAL_COMPACTION_TEXT.closed : run.interrupt.signal.aborted ? MANUAL_COMPACTION_TEXT.interrupted : MANUAL_COMPACTION_TEXT.ended(lastExecutionFailure(this.store.readEvents(this.id)) ?? "the turn ended first")
+        for (const resolve of unmade) resolve({ kind: "failed", message })
+      }
       this.retain()
       const again = this.restart && this.closing === null
       this.restart = false
@@ -2048,6 +2179,12 @@ class LiveSession implements EngineSession {
       // A switch of agent that was asked for is made here: the instruction message that tells the model is appended
       // at a boundary, under the claim. (A replay runs as its recording did.)
       if (this.pendingAgent !== undefined && this.director === null) this.applyAgentSwitch()
+      // A compaction the user asked for is made here, at the boundary, before anything else is decided: the turn
+      // in progress carries on from the checkpoint, and an execution started only for it ends right after.
+      if (this.compactRequests.length > 0 && this.director === null) {
+        if ((await this.compactOnRequest(run)) === "done") return
+        continue
+      }
 
       // A replay that left its recording and then had to stop (a call its policy does not run) ends here.
       const replayed = this.director?.replay
@@ -2068,7 +2205,7 @@ class LiveSession implements EngineSession {
           if (signal.aborted) return this.finishInterrupt(run)
           const rejected = this.prepare(before, "auto")
           const decision = this.afterOverflow(rejected, window)
-          const outcome = decision.kind === "now" ? await this.compact(run, { trigger: "overflow", mode: decision.mode, tailBudget: decision.tailBudget, tokensBefore: this.measure(rejected).total }) : "nothing"
+          const outcome = decision.kind === "now" ? await this.compact$(run, { trigger: "overflow", mode: decision.mode, tailBudget: decision.tailBudget, tokensBefore: this.measure(rejected).total }) : "nothing"
           if (outcome === "done") return
           if (outcome === "nothing") {
             // Nothing is left to take out, or the request built right after an aggressive compaction was rejected too.
@@ -2187,7 +2324,7 @@ class LiveSession implements EngineSession {
       const next = this.prepare(this.projection(), toolChoice)
       const decision = window === null ? null : this.beforeStep(next, window)
       if (window !== null && decision?.kind === "now") {
-        const outcome = await this.compact(run, {
+        const outcome = await this.compact$(run, {
           trigger: decision.trigger,
           mode: decision.mode,
           tailBudget: decision.tailBudget,
@@ -3753,7 +3890,7 @@ class LiveSession implements EngineSession {
    * `compaction.ended`. Returns `nothing` when there is nothing before the
    * cut to take out, and nothing was written.
    */
-  private async compact(run: Run, plan: CompactionPlan): Promise<"compacted" | "nothing" | "done"> {
+  private async compact$(run: Run, plan: CompactionPlan): Promise<"compacted" | "nothing" | "done"> {
     const { limits, clock, ids, compaction: config } = this.core
     const signal = run.interrupt.signal
     const start = this.projection()
@@ -3859,7 +3996,9 @@ class LiveSession implements EngineSession {
     // list. A later call in the kept tail says it there, and an empty list says nothing.
     const list = currentTodos(earlier)
     const todos = list !== null && list.items.length > 0 && currentTodos(now.messages.filter((message) => message.seq >= keepFromSeq)) === null ? renderTodos(list) : null
-    const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn, todos })
+    // The request is not in the kept tail. That is work in progress only while something is still unanswered: a
+    // compaction the user asks for after the model's answer cut a turn that is over.
+    const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn && !wouldGoIdle(start), todos })
     const envelope = estimateTokens(`${harnessOpen(CHECKPOINT_ORIGIN)}\n\n${HARNESS_CLOSE}`)
     const fixed = baseline === null ? 0 : estimateTokens(baseline.instructions) + baseline.tools.reduce((sum, tool) => sum + estimateTool(tool), 0)
     const tokensAfter = REQUEST_OVERHEAD + fixed + ITEM_OVERHEAD + envelope + checkpoint.tokens + tail.keptTokens
@@ -4332,6 +4471,11 @@ class LiveSession implements EngineSession {
    * and takes the result as a fact:
    *
    * - no checks configured, or verification off: done, and the event says nothing was verified;
+   * - this turn changed no file: done, without a check. The gate verifies a
+   *   turn's own work, so a question that was answered, or a turn that put
+   *   back what it changed, runs nothing, whatever the user edited by hand
+   *   or undid before it. What changed outside the turn stays unverified
+   *   (`not_needed` says so) and is checked with the next turn that changes a file;
    * - nothing the checks cover changed since they last passed: done;
    * - the checks pass: done, with the evidence;
    * - they fail: the report is appended as a harness message and the model
@@ -4374,6 +4518,13 @@ class LiveSession implements EngineSession {
     if (signal.aborted) return interrupted()
     // Without a snapshot diff nobody knows which files changed, so every check applies.
     const selected = changed.files === null ? (changed.any ? loaded.config.checks : []) : selectChecks(loaded.config.checks, changed.files)
+    // Checks run for a turn that changed files, and only for one. Which ones then is decided from everything that
+    // is unverified, the turn's own changes or not: a check that runs cannot tell whose change it reads.
+    if (!this.turnChangedFiles(state, current)) {
+      await this.announceChanges()
+      if (signal.aborted) return interrupted()
+      return this.finish(run, selected.length === 0 ? { status: "not_needed" } : { status: "not_needed", unverified: true })
+    }
     const input: GateInput = {
       mode: loaded.config.verify.mode,
       maxRounds: loaded.config.verify.maxRounds,
@@ -4557,6 +4708,28 @@ class LiveSession implements EngineSession {
         this.write([finished])
         return "continue"
     }
+  }
+
+  /**
+   * Whether the turn in progress changed the workspace: it differs from the
+   * snapshot taken when the turn's input was delivered. `current` is the
+   * workspace now. A change made during the turn by someone else (the user,
+   * by hand) counts as the turn's: the two cannot be told apart, and in
+   * doubt the checks run. So does everything since the last verification
+   * when the turn was told that spawned work ended: a background command or
+   * subagent works outside the steps, also between turns. Without snapshots
+   * the stand-in is whether a call that can change files ran in the turn.
+   */
+  private turnChangedFiles(projection: Projection, current: string | null): boolean {
+    if (spawnedWorkEndedThisTurn(projection)) return true
+    const claim = claimOf(projection)
+    const began = turnBeginning(projection)?.seq ?? claim.startedSeq
+    if (current !== null) {
+      // The delivery snapshot is the last thing recorded about the workspace before the input entered history.
+      const delivery = snapshotsSinceDelivery(this.store.readEvents(this.id, { afterSeq: claim.startedSeq }), began).target
+      if (delivery !== null) return delivery !== current
+    }
+    return ranSideEffectsSince(projection, began, this.core.effects)
   }
 
   /**
@@ -4829,6 +5002,12 @@ class LiveSession implements EngineSession {
     if (message?.kind !== "assistant") throw new Error(`step ${messageId} has no assistant message`)
     return message
   }
+}
+
+/** Why the latest execution of a log failed, in its own words; `null` when it did not. */
+function lastExecutionFailure(events: readonly StoredEvent[]): string | null {
+  const last = events.findLast((item) => item.type === "execution.failed" || item.type === "execution.succeeded" || item.type === "execution.interrupted")
+  return last?.type === "execution.failed" ? last.data.message : null
 }
 
 /** What is wrong with `settings`, going by the provider's listing: a model it does not offer, or an effort that model does not. */

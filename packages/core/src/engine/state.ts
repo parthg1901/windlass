@@ -225,6 +225,34 @@ export function turnStartSeq(projection: Projection): number {
   return currentTurn(projection)[0]?.seq ?? claimOf(projection).startedSeq
 }
 
+/**
+ * The input that began the turn in progress, for the gate, which verifies a
+ * whole turn: the first input delivered under the claim, or the latest
+ * queued one (a queued item is delivered only once the turn before it has
+ * ended). A steer in between redirects the turn and does not begin one, so
+ * this is not `turnInput`, which the step limit counts from. `undefined`
+ * when nothing was delivered under the claim.
+ */
+export function turnBeginning(projection: Projection): Message | undefined {
+  const startedSeq = claimOf(projection).startedSeq
+  const inputs = projection.messages.filter((message) => message.seq > startedSeq && delivered(message))
+  return inputs.findLast((message, index) => index === 0 || ("delivery" in message && message.delivery === "queue"))
+}
+
+/** The origins of the messages that tell the model how spawned work ended. */
+const SPAWN_ENDS: ReadonlySet<string> = new Set([HARNESS_ORIGIN.backgroundCommand, HARNESS_ORIGIN.subagentResult, HARNESS_ORIGIN.spawnLost])
+
+/**
+ * Whether the turn in progress was told that spawned work ended: a
+ * background command exited, a background subagent finished, or one of them
+ * was lost. That work ran outside the steps, possibly between two turns, so
+ * what it changed is nobody's turn but this one's to verify.
+ */
+export function spawnedWorkEndedThisTurn(projection: Projection): boolean {
+  const from = turnBeginning(projection)?.seq ?? claimOf(projection).startedSeq
+  return projection.messages.some((message) => message.seq >= from && message.kind === "synthetic" && message.delivery !== null && SPAWN_ENDS.has(message.origin))
+}
+
 /** The check reports the model was sent in the current turn, oldest first. */
 export function reportsThisTurn(projection: Projection): readonly { readonly seq: number; readonly content: Content }[] {
   return currentTurn(projection).flatMap((message) =>

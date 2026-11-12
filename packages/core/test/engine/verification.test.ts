@@ -95,19 +95,28 @@ describe("which checks run", () => {
       expect(outcomes(h).map((outcome) => outcome.status)).toEqual(["passed", "not_needed"])
     }))
 
-  test("changes left unresolved are checked again at the end of the next turn, even if that turn changed nothing", () =>
+  test("changes left unresolved are not checked by a turn that changes nothing, and are checked with the next turn that changes a file", () =>
     withProject(
       async (h) => {
-        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), say("Still done."), say("I looked again."), say("Yes."))
+        h.provider.enqueue(write("a.ts", "2\n"), say("Done."), say("Still done."), say("They fail because of a.ts."), write("README.md", "hello\n"), say("Updated the readme."), say("Still failing."))
         h.checks.on("test", "failed", "failed")
         h.create().send("Change a.ts.")
         await h.settled()
         expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "max_rounds", failing: ["test"] }])
+        const verified = h.session.projection().session.verification.verified
 
-        h.session.send("Is it fine now?")
+        // A question: nothing of this turn's to verify. What the turn before left failing is still unverified, and the ending says so.
+        h.session.send("Why do they fail?")
+        await h.settled()
+        expect(h.checks.ran).toEqual(["test"])
+        expect(outcomes(h)[1]).toEqual({ status: "not_needed", unverified: true })
+        expect(h.session.projection().session.verification.verified).toEqual(verified)
+
+        // The next turn changes another file: the checks are selected from everything unverified, a.ts included.
+        h.session.send("Update the readme.")
         await h.settled()
         expect(h.checks.ran).toEqual(["test", "test"])
-        expect(outcomes(h)[1]).toMatchObject({ status: "unresolved", reason: "max_rounds" })
+        expect(outcomes(h)[2]).toMatchObject({ status: "unresolved", reason: "max_rounds", evidence: { changedFiles: ["README.md", "a.ts"] } })
       },
       { config: { ...CHECKS, verify: { maxRounds: 1 } } },
     ))
@@ -316,7 +325,7 @@ describe("a run of checks that does not go to plan", () => {
 
   test("a check runner that throws fails the execution and closes the run, and the session stays usable", () =>
     withProject(async (h) => {
-      h.provider.enqueue(write("a.ts", "2\n"), say("Done."), say("Again."))
+      h.provider.enqueue(write("a.ts", "2\n"), say("Done."), write("a.ts", "3\n"), say("Again."))
       h.checks.on(
         "test",
         () => {

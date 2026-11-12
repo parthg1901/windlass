@@ -1872,9 +1872,64 @@ The user queues a follow-up while the model works. "After this turn" means after
 - after "the user queues a follow-up while the write runs; the model says it is done and the checks fail": `inbox.delivered u2` (invalid_transition). The turn has not ended: the checks failed and the model is sent back first.
 - after "the user queues a follow-up while the write runs; the model says it is done and the checks fail": `turn.ended verification=passed` (invalid_transition). The report is unanswered, so the turn is not over.
 
+#### 56. A question after a hand edit runs no check; the next turn that changes a file checks it all
+
+The gate verifies a turn's own work. Between two turns the user edits a test by hand, then asks a question that the model answers without a tool. The workspace when that message was delivered (`delivery`) is the workspace when the turn ends, so the turn changed nothing and no check runs: the user is not shown `checks passed` for a turn that did nothing, and a hand edit that breaks a test does not send the model off to fix unfinished work it was not asked about. The edit is still unverified, and the ending says so (`not_needed` with `unverified`); the state checks are selected against does not move. The next turn changes a file, so the checks run, and they are selected from everything that is unverified: the evidence names the hand-edited file with the model's own.
+
+*Provider:* turn 1 answers. Turn 2 (after the hand edit) answers. Turn 3 calls write, then answers; the `test` check exits 0.
+
+*Setup:* snapshots on; the workspace holds add.ts, add.test.ts; configuration `{"checks":[{"name":"test","command":"bun test"}]}`.
+
+```
+-- a question: nothing changed, nothing to check
+1-6  opening: session.created, inbox.enqueued u1, execution.started exe_1, snapshot.taken w0 delivery, baseline.set, inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  text.ended a1 "It subtracts, which looks like a bug."
+  9  step.ended a1 finish=stop
+ 10  snapshot.taken w0 checks_start
+ 11  execution.succeeded exe_1 verification=not_needed
+-- the user edits a test by hand, then asks again: the turn changed nothing, so no check runs, and the edit stays unverified
+ 12  inbox.enqueued u2 steer "Is the test right now?"
+ 13  execution.started exe_2
+ 14  snapshot.taken w1 delivery
+ 15  inbox.delivered u2
+ 16  step.started a2 attempt=1
+ 17  text.ended a2 "It expects 4 for 2 + 2, which is right."
+ 18  step.ended a2 finish=stop
+ 19  snapshot.taken w1 checks_start
+ 20  execution.succeeded exe_2 verification=not_needed
+-- the next turn changes a file: the checks run on everything unverified, the hand edit included
+ 21  inbox.enqueued u3 steer "Fix add."
+ 22  execution.started exe_3
+ 23  snapshot.taken w1 delivery
+ 24  inbox.delivered u3
+ 25  step.started a3 attempt=1
+ 26  tool.called a3/call_1 write {"path":"add.ts","content":"export const add = (a: number, b: number) => a + b\n"}
+ 27  snapshot.taken w1 step_start a3
+ 28  tool.started a3/call_1 effect=write
+ 29  tool.settled a3/call_1 success "Wrote add.ts"
+ 30  snapshot.taken w2 step_end a3
+ 31  step.ended a3 finish=tool_calls
+ 32  step.started a4 attempt=1
+ 33  text.ended a4 "Now it adds."
+ 34  step.ended a4 finish=stop
+ 35  snapshot.taken w2 checks_start
+ 36  checks.started run=1 test
+ 37  snapshot.taken w2 checks_end
+ 38  checks.finished run=1 test:passed
+ 39  execution.succeeded exe_3 verification=passed
+```
+
+*UI:* u1 user · a1 completed · u2 user · a2 completed · u3 user · a3 completed [write success] · a4 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, u2, a2, u3, a3, a4.
+
+*The reducer rejects:*
+- after "the user edits a test by hand, then asks again: the turn changed nothing, so no check runs, and the edit stays unverified": `checks.started run=1 test` (invalid_transition). No execution is running: checks run under a claim, when a turn that changed files would end.
+
 ### Revert
 
-#### 56. Revert of the last turn
+#### 57. Revert of the last turn
 
 The user undoes the turn. The harness records the workspace as it is (so the revert itself can be undone), announces the restore, puts the files back as they were when the prompt was delivered, and records the restore together with the range that leaves history. The next request does not extend the previous one, which `history.reverted` allows.
 
@@ -1912,7 +1967,7 @@ The user undoes the turn. The harness records the workspace as it is (so the rev
 - after "the revert is announced": `execution.started exe_2` (invalid_transition). Nothing starts while a restore is in progress.
 - after "the revert is announced": `history.reverted fromSeq=6 restored=w0 changed=1` (invalid_transition). The record must be of the restore that was announced, with its undo point.
 
-#### 57. Revert, then undo the revert
+#### 58. Revert, then undo the revert
 
 The user reverts the turn and then changes their mind. Undoing the revert restores the workspace to the snapshot taken right before it and puts exactly the messages it excluded back into history. Only the latest revert can be undone, and only until new work starts.
 
@@ -1956,7 +2011,7 @@ The user reverts the turn and then changes their mind. Undoing the revert restor
 
 ### Compaction
 
-#### 58. A compaction that is due waits for the next user message
+#### 59. A compaction that is due waits for the next user message
 
 The first turn grows the request past the early threshold. That is not urgent, so nothing happens between its steps: a compaction in the middle of a turn costs the model the thread of what it was doing. When the user's next message is delivered, the request is still over the threshold, and now is the moment: the loop compacts before it calls the model. The cut is right before the new message, so the checkpoint replaces the first turn and the message stays word for word. `compaction.started` records the cut, the mode and the prompt before the summary request is sent; `compaction.ended` freezes the checkpoint (the summary, the identifier index, the user's earlier messages verbatim). The baseline is set again, and the next request is the checkpoint, the new message and nothing else.
 
@@ -1998,7 +2053,7 @@ The first turn grows the request past the early threshold. That is not urgent, s
 - after "the next message is delivered: compact before the model is called": `step.started a3 attempt=1` (invalid_transition). The compaction is open: no step starts until it has ended.
 - after "the next message is delivered: compact before the model is called": `baseline.set` (invalid_transition). The baseline is set again only once the compaction has completed.
 
-#### 59. A compaction in the middle of a long turn
+#### 60. A compaction in the middle of a long turn
 
 One turn keeps reading files until the next request would be over the trigger. Waiting for a user message is no longer possible, so the loop compacts between two steps. The cut falls inside the turn: the last step, with its call and its result, is kept word for word, because the next model call answers it; the turn's request and its earlier steps go into the checkpoint, which quotes the request verbatim and ends by telling the model that the work was in progress and to carry on. The model continues the same turn from the checkpoint and the kept step.
 
@@ -2042,7 +2097,7 @@ One turn keeps reading files until the next request would be over the trigger. W
 *The reducer rejects:*
 - after "compact between two steps, keeping the last one": `compaction.started c2 auto normal keepFromSeq=15` (invalid_range). The cut only moves forward: a later compaction cannot keep what this one replaced.
 
-#### 60. The provider rejects a request as too large: compact aggressively and rebuild
+#### 61. The provider rejects a request as too large: compact aggressively and rebuild
 
 Nobody told the engine the model's context window, so nothing was compacted ahead of time, and in the second turn the provider rejects the request. That is a fact, not an estimate: the loop compacts aggressively (trigger `overflow`) and rebuilds the request (retry rule 5). A compaction can start only at a boundary, so the rejected attempt is first closed as failed, with an empty body, and stays in the log. An aggressive compaction keeps only what fits a small budget, and here nothing does: the new prompt itself goes into the checkpoint, quoted verbatim, with the sentence that the work continues. A second rejection right after this compaction fails the execution.
 
@@ -2074,7 +2129,7 @@ Nobody told the engine the model's context window, so nothing was compacted ahea
 
 *Model sees next:* c1, a2, a3.
 
-#### 61. A compaction that frees too little: the hold, one aggressive attempt, then nothing more
+#### 62. A compaction that frees too little: the hold, one aggressive attempt, then nothing more
 
 The request is over the trigger and the loop compacts, but what must be kept is most of the context: the provider measures the first request after the compaction at almost the size before it. Compacting again at once would summarise a summary, so the policy holds: while the request still fits, the next steps are sent without a compaction, in the headroom between the trigger and the window. When a request would no longer fit at all, there is one aggressive compaction, which keeps nothing word for word. Here that frees too little as well, and nothing more is tried: the request is sent as it is. (Had the provider rejected it, the overflow rule would have ended the execution.) The loop never compacts in a circle.
 
@@ -2124,7 +2179,7 @@ The request is over the trigger and the loop compacts, but what must be kept is 
 
 *Model sees next:* c2, a4, a5.
 
-#### 62. An invalid summary is repaired
+#### 63. An invalid summary is repaired
 
 The model's answer to the summary request does not have the required sections. The loop asks once more: it records the rejected answer and what is wrong with it (`compaction.repair_requested`), and the second request is the first one plus that answer and the request to fix it, so it still reads everything before it from the cache and can be rebuilt from the log. The second answer is valid, and the compaction ends with `source: repaired`.
 
@@ -2160,7 +2215,7 @@ The model's answer to the summary request does not have the required sections. T
 - after "the first answer is not a summary": `compaction.ended c1 source=repaired` (invalid_transition). A compaction ends as repaired only after a repair was asked for.
 - after "one repair is asked for": `compaction.repair_requested c1 attempt=3 "The user asked for a fix and some files were read."` (invalid_transition). A summary is repaired at most once.
 
-#### 63. A summary that is still invalid: the checkpoint is built without the model
+#### 64. A summary that is still invalid: the checkpoint is built without the model
 
 The answer to the repair request is not usable either. The loop does not ask a third time and does not give up: it builds the checkpoint without a summary. It says plainly that there is none, and carries what needs no model: the identifier index, the user's messages verbatim, the assistant's last words, and the pointer to the history tools, with which the model can read the original messages. `compaction.ended` says `source: fallback` and why, so a client can tell the user. A compaction therefore always completes, and the session is never lost to a model that cannot summarise.
 
@@ -2191,7 +2246,7 @@ The answer to the repair request is not usable either. The loop does not ask a t
 
 *Model sees next:* c1, a1, a2.
 
-#### 64. Cancel while the summary is being written
+#### 65. Cancel while the summary is being written
 
 The user cancels while the summary call is streaming. The compaction is closed as interrupted, the marker tells the model that it was stopped, and the claim is released. Nothing about history changed: a compaction that did not complete is only a row in the log. When the user sends the next message the request is as large as before, so the loop compacts again, now at a user-message boundary: the cut cannot fall between the marker and the step it follows, so that step, the marker and the new message are kept.
 
@@ -2229,7 +2284,7 @@ The user cancels while the summary call is streaming. The compaction is closed a
 
 *Model sees next:* c2, a1, s1, u2, a2.
 
-#### 65. The process dies during a compaction
+#### 66. The process dies during a compaction
 
 The process dies after `compaction.started` and before the summary arrived. At the next start, recovery closes the compaction as crashed and takes the execution up again (which counts as a crash resume). No step was cut short, so there is no marker. History is what it was, the loop decides again from stored state, finds the request as large as before and compacts again, under a new compaction message.
 
@@ -2262,7 +2317,7 @@ The process dies after `compaction.started` and before the summary arrived. At t
 
 *Model sees next:* c2, a1, a2.
 
-#### 66. The model's task list survives a compaction
+#### 67. The model's task list survives a compaction
 
 The model keeps a task list with the `todo` tool: every call sends the whole list, and the current list is whatever the latest successful call in the log says. The tool keeps no state and changes nothing in the workspace (its effect class is `read`), so the call takes no snapshot and asks nobody. When the conversation is compacted, the call that set the list is among what the checkpoint replaces, and the model would no longer see its own list. So the checkpoint carries it: after the summary, the list as that call left it, one item per line. It is frozen in `compaction.ended` with the rest of the checkpoint. A client that folds the log still finds the list in the call's `display`.
 
@@ -2301,9 +2356,52 @@ The model keeps a task list with the `todo` tool: every call sends the whole lis
 
 *Model sees next:* c1, u2, a3.
 
+#### 68. The user asks for a compaction while the session is idle
+
+The request is far below the thresholds, so nothing would be compacted by itself; the user asks for it (`/compact`). A compaction changes history, and history changes under a claim: the session takes one for this alone. `compaction.started` records `manual` as the trigger, and from there it is the compaction of every other scenario: the same summary request, the same repair and fallback, the same checkpoint. It keeps word for word only what the next request has to answer (here the model's last answer) and a short recent tail. Then the execution ends, with no step and no check: there was no turn, so nothing of a turn's to verify. The baseline is set again when the next turn is about to send a step. Asked again right away, the engine answers that there is nothing to compact and writes nothing; asked while a turn runs, the same compaction is made at the boundary after the step in progress.
+
+*Provider:* the turn is measured at 3,000 and 3,200 input tokens; the summary call returns a summary; the next turn answers.
+
+*Context window:* 10,000 tokens.
+
+```
+-- a turn, far below the thresholds
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+  8  tool.started a1/call_1 effect=read
+  9  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 10  step.ended a1 finish=tool_calls
+ 11  step.started a2 attempt=1
+ 12  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 13  step.ended a2 finish=stop
+ 14  execution.succeeded exe_1
+-- the user asks: a claim of its own, the compaction, and the claim is released
+ 15  execution.started exe_2
+ 16  compaction.started c1 manual normal keepFromSeq=11
+ 17  compaction.ended c1 source=model
+ 18  execution.succeeded exe_2
+-- the next turn: the baseline is set again, and the request is the checkpoint, the kept answer and the new message
+ 19  inbox.enqueued u2 steer "Then fix it."
+ 20  execution.started exe_3
+ 21  baseline.set
+ 22  inbox.delivered u2
+ 23  step.started a3 attempt=1
+ 24  text.ended a3 "Changed the expectation to 2."
+ 25  step.ended a3 finish=stop
+ 26  execution.succeeded exe_3
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed · c1 compaction · u2 user · a3 completed. *Claim:* released.
+
+*Model sees next:* c1, a2, u2, a3.
+
+*The reducer rejects:*
+- after "the user asks: a claim of its own, the compaction, and the claim is released": `compaction.started c2 manual normal keepFromSeq=11` (invalid_transition). No execution is running: a compaction is written under a claim.
+
 ### Approval and the sandbox
 
-#### 67. Auto mode: an edit runs and a command runs in the sandbox
+#### 69. Auto mode: an edit runs and a command runs in the sandbox
 
 The default. An edit inside the workspace runs as it is and a command runs in the sandbox (no network, writes only in the workspace and the temp directory), and nobody is asked. `tool.started` records what each ran under: the mode, the path facts the decision was made from, and for the command that it was sandboxed and with what. The command is decided and started only once the edit before it has its result: what can change something runs one at a time, in the order the model wrote it.
 
@@ -2332,7 +2430,7 @@ The default. An edit inside the workspace runs as it is and a command runs in th
 
 *Model sees next:* u1, a1, a2.
 
-#### 68. A command needs the network: the hint, the request, one approval, taint, and the next request asks again
+#### 70. A command needs the network: the hint, the request, one approval, taint, and the next request asks again
 
 A sandboxed command fails because it has no network, and its result ends with the note that says how to ask. The model runs it again with `sandbox: { network: true }`: the harness never widens the sandbox on its own, and never guesses from the error. The user is asked, allows it once, and the command runs in the sandbox with the network on. Its output is now content from outside, so the session is tainted and the user is told, once. The next request for the network asks again, and the question says why earlier approvals no longer count.
 
@@ -2382,7 +2480,7 @@ A sandboxed command fails because it has no network, and its result ends with th
 - after "the user allows it once: it runs with the network, and the session is tainted": `taint.noticed network-command from shell at seq 16` (invalid_transition). The user is told once that the session is tainted.
 - after "the user allows it once: it runs with the network, and the session is tainted": `approval.answered a2/call_1 once` (invalid_transition). A question is answered once.
 
-#### 69. Ask mode: a read runs, an edit and a command each ask
+#### 71. Ask mode: a read runs, an edit and a command each ask
 
 In `ask` a read runs and everything else is asked about first: the edit, with the real path it would write, and the command, which still runs in the sandbox once approved. Each question is durable before it is put, with its choices and what each would remember, and the answer is recorded before the call starts.
 
@@ -2424,7 +2522,7 @@ In `ask` a read runs and everything else is asked about first: the edit, with th
 
 *Model sees next:* u1, a1, a2, a3, a4.
 
-#### 70. A call the policy refuses
+#### 72. A call the policy refuses
 
 The model tries to write into a credential store. No mode but `full` allows that and nobody is asked: the call is refused, and the refusal (with the real path, links followed) is the call's result. The denial and the result are one append, so a log never holds a denied call without what the model was told.
 
@@ -2450,7 +2548,7 @@ The model tries to write into a credential store. No mode but `full` allows that
 
 *Model sees next:* u1, a1, a2.
 
-#### 71. Nobody present: a call that would ask is refused and the run goes on
+#### 73. Nobody present: a call that would ask is refused and the run goes on
 
 A one-shot run, `--json`, an eval: nobody can answer. A call that would ask is refused at once with what it needed, the model is told, and the run goes on. Nothing waits, and no setting turns the question into a yes.
 
@@ -2476,7 +2574,7 @@ A one-shot run, `--json`, an eval: nobody can answer. A call that would ask is r
 
 *Model sees next:* u1, a1, a2.
 
-#### 72. Nobody present, and the run ends with the refusal
+#### 74. Nobody present, and the run ends with the refusal
 
 With the unattended behaviour `stop` a refusal for lack of an answer ends the run, for a run in which a refusal would hide a problem. The call is refused, what had not started does not start, the step closes and the execution ends with the cause `approval`, in one append.
 
@@ -2501,7 +2599,7 @@ With the unattended behaviour `stop` a refusal for lack of an answer ends the ru
 
 *Model sees next:* u1, a1.
 
-#### 73. An approval remembered for the session, then used
+#### 75. An approval remembered for the session, then used
 
 The user allows commands in the sandbox for the rest of the session. What is remembered is that capability, never the command: the answer records it, stamped with its own position in the log, and the next command, a different one, runs on it without a question.
 
@@ -2535,7 +2633,7 @@ The user allows commands in the sandbox for the rest of the session. What is rem
 
 *Model sees next:* u1, a1, a2, a3.
 
-#### 74. A pending question is interrupted
+#### 76. A pending question is interrupted
 
 While the question waits the turn is not stuck: the user can stop it. The interrupt withdraws the question, and the call settles as not started, like every call an interrupt reaches before it began. An answer that arrives afterwards is not taken.
 
@@ -2565,7 +2663,7 @@ While the question waits the turn is not stuck: the user can stop it. The interr
 *The reducer rejects:*
 - after "the user stops the turn instead of answering": `approval.answered a1/call_1 once` (invalid_transition). Once an interrupt is requested the execution only winds down: the question is withdrawn.
 
-#### 75. A crash with a pending question
+#### 77. A crash with a pending question
 
 The process dies while a question waits. The call is pending in the log: it was asked about and never started. Recovery settles it as not started and closes the step as crashed, like any step a process died in. The model asks again, and so the user is asked again: an answer nobody recorded was never given.
 
@@ -2603,7 +2701,7 @@ The process dies while a question waits. The call is pending in the log: it was 
 
 *Model sees next:* u1, a1, s1, a2, a3.
 
-#### 76. No sandbox on this machine: auto asks for every command
+#### 78. No sandbox on this machine: auto asks for every command
 
 Where commands cannot be sandboxed, `auto` does not quietly become `full`: each command asks, the question says why the sandbox is missing and what running without it means, and what could be remembered is commands without the sandbox for this session, nothing wider. `tool.started` records that the command ran unsandboxed.
 
@@ -2633,7 +2731,7 @@ Where commands cannot be sandboxed, `auto` does not quietly become `full`: each 
 
 ### Replays, subagents and background work
 
-#### 77. A replay that stays on its recording
+#### 79. A replay that stays on its recording
 
 A recorded session (a read, then an answer) is replayed against a changed system prompt. The replay is a session of its own, typed as a replay of the recording. Its baseline is the recording's with the new prompt; the recording's prompt is delivered where it arrived. The model makes the recorded call: it is answered from the recording (`replay.call matched`, then the recorded `tool.started` and the recorded result, byte for byte) and nothing runs. No snapshot is taken, no check runs, nobody is asked. When the recording's last step is replayed the execution ends, and `replay.ended` says the replay was identical.
 
@@ -2671,7 +2769,7 @@ A recorded session (a read, then an answer) is replayed against a changed system
 - after "the model makes the recorded call and is given the recorded result": `replay.call a1/call_1 diverged recorded step 1 call 1 (arguments_differ)` (invalid_transition). Only a matched call names a recorded call.
 - after "the recording's answer follows, and the replay ends as identical": `replay.ended identical "again"` (invalid_transition). A replay ends once.
 
-#### 78. A replay that leaves its recording stops there
+#### 80. A replay that leaves its recording stops there
 
 Under the `stop` policy. The replayed model reads another file than the recording did. That call is not on the recording: it is recorded as the divergence (`replay.call diverged`, with the kind), it is not run, and it settles as not started with a text that says the replay stopped. The step closes, and the execution ends without an answer, marked as ended by the replay (`execution.failed` with `cause: replay`: nothing failed, but there is no answer to end on). `replay.ended` carries the report: where the replay left and what the recording did there.
 
@@ -2698,7 +2796,7 @@ Under the `stop` policy. The replayed model reads another file than the recordin
 
 *Model sees next:* u1, a1.
 
-#### 79. A replay that leaves its recording carries on in a copy
+#### 81. A replay that leaves its recording carries on in a copy
 
 Under the `execute` policy. At the first call that is not on the recording, the recorded workspace as it was at that point is restored into a copy (`replay.diverged`: the directory and the snapshot it was restored from; here the recording has none, so the copy starts empty), and from there the replay is an ordinary turn in that copy: the call runs for real (`replay.call diverged executed`), with the sandbox and without the network where the approval layer is on, and the turn runs to its answer. The recording's workspace is never touched. `replay.ended` says the replay diverged; what the copy holds can be graded.
 
@@ -2733,7 +2831,7 @@ Under the `execute` policy. At the first call that is not on the recording, the 
 *The reducer rejects:*
 - after "the model leaves the recording; the copy is made and the call runs in it": `replay.diverged extra_call -> /data/replays/copy (no snapshot: the copy is empty)` (invalid_transition). A replay leaves its recording once.
 
-#### 80. A subagent runs a task and its answer is the call's result
+#### 82. A subagent runs a task and its answer is the call's result
 
 The model hands a task to a subagent. The call starts like any tool (its effect class says the step may change files); the child session is named in the parent's log (`spawn.started`) before it exists. The child runs its own loop in the same workspace with a fresh conversation. When it ends, `spawn.ended` records how, and what its model calls cost (rolled up into the parent's totals), and the call settles with the child's final answer and a reference to its session. Several such calls in one response run side by side. The subagent's turn is not verified; the parent's is.
 
@@ -2767,7 +2865,7 @@ The model hands a task to a subagent. The call starts like any tool (its effect 
 - after "the child is started and runs": `spawn.ended bg_2 completed usage=1000in/50out` (not_found). Only work that is running ends.
 - after "the child ends; its answer is the call's result": `spawn.ended bg_1 completed usage=1000in/50out` (not_found). Spawned work ends once.
 
-#### 81. The subagent's own log
+#### 83. The subagent's own log
 
 The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, without the verification gate. At the depth limit (one level by default) its tool list has no `subagent`.
 
@@ -2793,7 +2891,7 @@ The same situation from the child's side. A subagent is a real session, typed as
 *The reducer rejects:*
 - after "the child is created with its task and works": `spawn.ended bg_1 completed` (not_found). The end of the child's work is recorded in its parent's log, not its own.
 
-#### 82. A background subagent's answer arrives as a message
+#### 84. A background subagent's answer arrives as a message
 
 With `background: true` the call returns at once with the child's reference, and the model goes on. When the model has nothing more to do while the child still works, the turn does not end: the loop waits at the boundary (the checks would see the child's work half done). When the child ends, `spawn.ended` and the message that carries its answer are one append; the message is a harness message (`subagent_result`), delivered as a steer at the boundary, and the model answers it. Had the session been idle (its own turn failed, say), the message would have started a new execution.
 
@@ -2825,7 +2923,7 @@ With `background: true` the call returns at once with the child's reference, and
 
 *Model sees next:* u1, a1, a2, s1, a3.
 
-#### 83. A background command's exit wakes the idle session
+#### 85. A background command's exit wakes the idle session
 
 The shell tool's `background` argument starts a command and returns a handle at once. The command is spawned work of the session (`spawn.started`): it runs beside the steps, in the same sandbox a foreground command would, and is stopped when the session is interrupted or closed. The turn ends while it runs. When it exits, `spawn.ended` (with the exit code) and a harness message with the end of its output (`background_command`) are one append; the session is idle, so the message starts a new execution, is delivered, and the model answers.
 
@@ -2859,7 +2957,7 @@ The shell tool's `background` argument starts a command and returns a handle at 
 
 *Model sees next:* u1, a1, a2, s1, a3.
 
-#### 84. A background command is lost when the process dies
+#### 86. A background command is lost when the process dies
 
 A background command dies with the harness process: the guard that every command has kills its process group. The session's log still says it runs. When the session is opened again, the command is recorded as lost (`spawn.ended lost`) together with a harness message that says so (`spawn_lost`). Opening a session starts nothing, so the message waits in the inbox and is delivered, before the user's next prompt, when that prompt starts the next turn.
 
@@ -2897,7 +2995,7 @@ A background command dies with the harness process: the guard that every command
 
 ### Skills, MCP servers and wake-ups
 
-#### 85. The skill index follows the files: first given, then replaced, then withdrawn
+#### 87. The skill index follows the files: first given, then replaced, then withdrawn
 
 The project has one skill. The `skill` tool is in the frozen tool list from the first baseline, with a spec that names no skill; which skills exist is told in a message. Before the first step the index is appended (the baseline never carries it). Between two turns the skill's description is edited, so the next turn starts with the index again, saying that it replaces the one before. During that turn the model's own command removes the skill, and at the next step boundary a short withdrawal is appended (its fingerprint is `null`). The baseline is never rewritten: every request is the previous one plus appended items.
 
@@ -2942,7 +3040,7 @@ The project has one skill. The `skill` tool is in the frozen tool list from the 
 *The reducer rejects:*
 - after "the first turn: the index is appended after the baseline and before the user's message": `baseline.set` (invalid_transition). The baseline is frozen until the next compaction: the index is appended, never folded in.
 
-#### 86. An MCP server connects late; its tool is called through the bridge, and the result taints the session
+#### 88. An MCP server connects late; its tool is called through the bridge, and the result taints the session
 
 The user's configuration names an MCP server that is still starting when the first request goes out. Nothing waits for it and nothing in the request depends on it: `mcp_search` and `mcp_call` are in the frozen tool list whether or not a server exists. When the server has connected, the catalogue (its tools, by name and one-line description) is appended at the next step boundary as an instruction message; the event records beside the text which servers wrote those descriptions. The model calls the server's tool through `mcp_call`, which is a `network` call from an MCP origin: `tool.started` records that, the result's `display` records the server, the tool and that the content is untrusted, and from that result on the session is tainted, which the user is told once (`taint.noticed`). Mode `full` runs the first call without a question; a second one would now ask.
 
@@ -2982,7 +3080,7 @@ The user's configuration names an MCP server that is still starting when the fir
 *The reducer rejects:*
 - after "the server has connected: its catalogue is appended, and the model calls its tool": `baseline.set` (invalid_transition). A server that connects late is appended as a message; the tool list and the instructions stay as they were frozen.
 
-#### 87. A wake-up fires while the session is idle
+#### 89. A wake-up fires while the session is idle
 
 The session has finished a turn and nobody is working in it. A wake-up the user set up comes due: the scheduler hands the firing to the engine, which admits the message into the inbox under the firing's own key as its message ID, with origin `wake`, as a queued item. Delivery `wake` then starts an execution exactly as a prompt would. Nobody is present, so the turn is unattended: a call that would ask is refused, never approved by default. The model sees the message in an envelope that names its origin, and the request is the previous one plus appended items.
 
@@ -3011,7 +3109,7 @@ The session has finished a turn and nobody is working in it. A wake-up the user 
 
 *Model sees next:* u1, a1, msg_wk_5c3a9e21b7d4_1, a2.
 
-#### 88. A wake-up fires while a turn runs
+#### 90. A wake-up fires while a turn runs
 
 The model is in the middle of a turn (a tool is running) when a wake-up comes due. The firing is admitted at once, as a queued item: a wake-up never steers a turn in progress. The turn carries on to its answer; then, in one append, the turn ends and the wake-up's message is delivered, and its turn runs under the same claim, as for any queued message.
 
@@ -3044,7 +3142,7 @@ The model is in the middle of a turn (a tool is running) when a wake-up comes du
 
 *Model sees next:* u1, a1, a2, msg_wk_5c3a9e21b7d4_1, a3.
 
-#### 89. A firing is delivered again after the process died
+#### 91. A firing is delivered again after the process died
 
 The engine admitted a firing, and the process died before it started the turn and before the wake store heard that the firing was delivered. The store still has the firing open, so the next process's scheduler hands it over again, with the same key. The engine finds the key in the session's log and answers that it is a duplicate: nothing is admitted a second time. The message still waits and was to start a turn, so that turn starts now. A firing is therefore delivered at least once by the store and exactly once into the conversation.
 
@@ -3077,7 +3175,7 @@ The engine admitted a firing, and the process died before it started the turn an
 *The reducer rejects:*
 - after "the firing is admitted, and the process dies before anything else happens": `inbox.enqueued msg_wk_5c3a9e21b7d4_1 queue origin=wake "[Wake-up wk_5c3a9e21b7d4 · after 5m (at 2026-11-12T09:05:..."` (duplicate_id). A message ID is used once: the engine answers the redelivery as a duplicate before it writes anything.
 
-#### 90. A webhook's firing brings untrusted content: the session is tainted before its turn starts
+#### 92. A webhook's firing brings untrusted content: the session is tainted before its turn starts
 
 A webhook wake-up fires with the body of the request in its message. The body is content the harness does not control, so the admission says so in a field of the same event (`untrusted`: which wake-up, and that it carries a webhook's body); the origin is `wake_webhook`, so a client can show such messages apart. Taint is derived from the log, and this admission is a source from its own position on: the user is told once (`taint.noticed`), before the execution starts, and every call of the turn it starts is decided with untrusted content in the conversation.
 
@@ -3111,7 +3209,7 @@ A webhook wake-up fires with the body of the request in its message. The body is
 
 ### Agents
 
-#### 91. A session starts as a read-only agent, and a write is refused with the reason
+#### 93. A session starts as a read-only agent, and a write is refused with the reason
 
 The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, and the call's result is the sentence that says so and what to do instead. The model reads it and answers.
 
@@ -3147,7 +3245,7 @@ The user starts the session as the agent `reviewer`, whose definition allows onl
 - after "the session is created as the agent, and its first baseline carries the agent's instructions": `agent.switched null` (invalid_transition). The baseline is frozen: from here a switch is announced by an instruction message.
 - after "the session is created as the agent, and its first baseline carries the agent's instructions": `approval.denied a1/call_1 policy` (invalid_transition). A call is refused by the restrictions of the agent the session runs as, and that is the reviewer.
 
-#### 92. The user switches the agent in the middle of a session: an appended message, never a new baseline
+#### 94. The user switches the agent in the middle of a session: an appended message, never a new baseline
 
 The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: when the next turn starts, the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.
 
@@ -3214,7 +3312,7 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
 - after "the user selected the reviewer: the next turn starts with the message and the record, and a write is refused": `agent.switched i1` (invalid_transition). A switch follows at once the instruction message that announces it.
 - after "the user switched the agent off: one line, and its restrictions no longer apply": `agent.switched null` (invalid_transition). The baseline is frozen: a switch is announced by an instruction message.
 
-#### 93. A subagent is run as an agent the list of agents names
+#### 95. A subagent is run as an agent the list of agents names
 
 The `subagent` tool has an optional `agent` argument in every session: its spec is a constant that names no agent, so the tool list never depends on which agents exist. Which ones do is told in a message: a session that is offered `subagent` gets the list of agents (name, a tag for its restrictions, one line of description) appended after its baseline, and again when the list changes. The model runs a subagent as `reviewer`. The name is checked when the call runs (a wrong one is an error result with close names, and starts nothing); `spawn.started` names the agent, and the child session is created as it. The child's result comes back like any subagent's.
 
@@ -3248,7 +3346,7 @@ The `subagent` tool has an optional `agent` argument in every session: its spec 
 
 *Model sees next:* i1, u1, a1, a2.
 
-#### 94. The log of a subagent that runs as an agent
+#### 96. The log of a subagent that runs as an agent
 
 The same situation from the child's side. The child is created as the agent: `agent.switched` follows its `session.created` in the same append, and its own fresh baseline carries the agent's instructions. Its restrictions are the agent's combined with its parent's (the stricter of each), and a child started without `agent` by a parent that runs as an agent runs as the parent's agent, so a restricted session cannot get around its restrictions by handing the work to a child. Here the child tries to edit a file: the call is refused with the sentence, in its own log, and it answers. At the depth limit it is not offered `subagent`, so it is not given the list of agents.
 
@@ -3281,7 +3379,7 @@ The same situation from the child's side. The child is created as the agent: `ag
 
 ### Forks
 
-#### 95. A fork continues from its parent's history
+#### 97. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 

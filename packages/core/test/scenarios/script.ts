@@ -595,7 +595,7 @@ export const NOT_A_SUMMARY_PROBLEMS: readonly SummaryProblem[] = [
  * for word (the compaction's own `seq` when nothing is kept). `tokensBefore`
  * is a stand-in: the loop records its size estimate of the next request.
  */
-export const compactionStarted = (id: string, keepFromSeq: number, trigger: "auto" | "overflow" = "auto", mode: CompactionMode = "normal") =>
+export const compactionStarted = (id: string, keepFromSeq: number, trigger: "auto" | "overflow" | "manual" = "auto", mode: CompactionMode = "normal") =>
   event("compaction.started", { messageId: m(id), trigger, mode, keepFromSeq, prompt: SUMMARY_PROMPT, tokensBefore: 0 })
 /** The first answer was not usable: the loop records it and what it asks the model to fix. */
 export const compactionRepair = (id: string, answer: string, problems: readonly SummaryProblem[], attempt = 2) =>
