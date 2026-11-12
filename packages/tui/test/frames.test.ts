@@ -126,7 +126,7 @@ describe("the usage panel", () => {
     expect(count(bars[2]!, "█")).toBeGreaterThan(count(bars[1]!, "█"))
     expect(bars[2]).toContain("⚠")
     expect(bars[3]).toContain("C")
-    expect(lines.at(-1)).toContain("⚠ diagnostic · C compaction")
+    expect(lines.at(-1)).toBe("⚠ diagnostic · C compaction")
   })
 })
 

@@ -204,6 +204,8 @@ export class Transcript {
   private continuing = false
   private sentBack = 0
   private stopAsked = false
+  /** The stop line that tells how to exit at once; the hint goes once the turn has ended. */
+  private stopRow: NoticeRow | null = null
   private instructionFiles = ""
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -414,7 +416,8 @@ export class Transcript {
         this.activity.stopping = true
         this.activity.retry = null
         const hint = this.stopAsked && !replay ? " · press Ctrl-C again to exit now" : ""
-        this.notice(SYMBOL.stop, "warn", [span(event.data.reason === "user" ? "stopping…" : "shutting down…", "warn"), span(hint, "dim")], [], replay, "work")
+        const row = this.notice(SYMBOL.stop, "warn", [span(event.data.reason === "user" ? "stopping…" : "shutting down…", "warn"), span(hint, "dim")], [], replay, "work")
+        if (hint !== "") this.stopRow = row
         return
       }
       case "inbox.enqueued":
@@ -697,6 +700,9 @@ export class Transcript {
     this.continuing = false
     this.sentBack = 0
     this.stopAsked = false
+    const stop = this.stopRow
+    this.stopRow = null
+    if (stop !== null) this.touch(stop, () => (stop.text = stop.text.slice(0, 1)))
     // Anything still open belongs to the turn that ended.
     for (const row of this.openText.values()) this.touch(row, () => (row.streaming = false))
     for (const row of this.openReasoning.values()) this.touch(row, () => (row.streaming = false))

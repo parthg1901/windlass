@@ -63,6 +63,8 @@ export class App {
   private readonly status: LinesView
   private readonly hints: LinesView
   private readonly modeLabel: TextRenderable
+  /** What the mode label shows; `TextRenderable.content` is styled text and cannot be compared with a string. */
+  private shownMode = ""
   private readonly inputRow: BoxRenderable
   private readonly now: () => number
   private session: BackendSession | null = null
@@ -191,6 +193,8 @@ export class App {
       for await (const item of session.events) {
         this.transcript.apply(item.event, item.replay)
         if (!this.transcript.activity.executing) this.suggestIfIdle()
+        // The mode label next to the input follows the turn starting and ending.
+        if (this.modeText() !== this.shownMode) this.layout()
         this.renderer.requestRender()
       }
     } catch (error) {
@@ -755,6 +759,7 @@ export class App {
     const visible = this.panelVisible()
     this.panel.visible = visible
     const label = this.modeText()
+    this.shownMode = label
     this.modeLabel.content = label
     this.modeLabel.width = textWidth(label)
     const columns = Math.max(10, this.renderer.width - textWidth(label))
@@ -776,9 +781,6 @@ export class App {
   }
 
   private statusLine(columns: number): Span[] {
-    // The mode label lives next to the input; kept in sync on every frame since the turn may start or end any time.
-    const label = this.modeText()
-    if (this.modeLabel.content.toString() !== label) queueMicrotask(() => this.layout())
     const activity = this.transcript.activity
     const now = this.now()
     const parts: Span[] = []

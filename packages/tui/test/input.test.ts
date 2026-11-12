@@ -120,6 +120,17 @@ describe("while the agent works", () => {
     expect(mounted.exits).toEqual([130])
   })
 
+  test("the exit hint on the stop line goes once the turn has ended", async () => {
+    const { mounted, backend } = await working()
+    keys(mounted).pressCtrlC()
+    backend.session!.emit(event("execution.interrupt_requested", { executionId: "exe_1" as never, reason: "user" }), event("execution.interrupted", { executionId: "exe_1" as never, reason: "user" }))
+    await mounted.settle()
+    const frame = await mounted.frame()
+    expect(frame).toContain("■ stopping…")
+    expect(frame).not.toContain("press Ctrl-C again")
+    expect(frame).toContain("■ interrupted")
+  })
+
   test("a second Ctrl-C after two seconds stops again instead of exiting", async () => {
     const { mounted, backend } = await working()
     keys(mounted).pressCtrlC()

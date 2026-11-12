@@ -75,6 +75,9 @@ describe("against the scripted demo engine", () => {
     expect(frame).toContain("Cache per call")
     term.keys("C-d")
     expect(await term.exited()).toBe(0)
+    // tmux may not have processed the program's last bytes when its exit is known: the screen and the modes are polled.
+    await term.waitFor((frame) => !frame.includes(READY))
+    await term.until(() => !term.modes().alternateScreen)
     expect(term.modes()).toEqual({ alternateScreen: false, mouse: false, cursorVisible: true })
   }, 40_000)
 
@@ -88,9 +91,13 @@ describe("against the scripted demo engine", () => {
     await term.waitFor(READY)
     expect(term.modes().alternateScreen).toBe(true)
     expect(await term.exited({ timeoutMs: 8000 })).toBe(1)
+    await term.until(() => term.capture({ history: true }).includes("open it again with"))
     const frame = term.capture({ history: true })
     expect(frame).toContain("the TUI crashed: Error: boom from a test")
     expect(frame).toContain("open it again with: lh tui --session ses_demo")
+    // tmux may not have processed the program's last bytes when its exit is known: the screen and the modes are polled.
+    await term.waitFor((frame) => !frame.includes(READY))
+    await term.until(() => !term.modes().alternateScreen)
     expect(term.modes()).toEqual({ alternateScreen: false, mouse: false, cursorVisible: true })
   }, 40_000)
 
@@ -129,8 +136,9 @@ describe("against the scripted demo engine", () => {
     await term.waitFor("stopping")
     term.keys("C-c")
     expect(await term.exited({ timeoutMs: 3000 })).toBe(130)
-    // Left the alternate screen: the TUI's frame is gone from the pane, and mouse reporting is off.
-    expect(term.capture()).not.toContain(READY)
+    // tmux may not have processed the program's last bytes when its exit is known: the screen and the modes are polled.
+    await term.waitFor((frame) => !frame.includes(READY))
+    await term.until(() => !term.modes().alternateScreen)
     expect(term.modes()).toEqual({ alternateScreen: false, mouse: false, cursorVisible: true })
   }, 40_000)
 

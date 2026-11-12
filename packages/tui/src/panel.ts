@@ -89,7 +89,12 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   lines.push([])
 
   heading("Cache per call", [span("  █ cached ░ new", "dim")])
-  const legendRows = input.calls.some((call) => call.diagnostics.length > 0 || call.kind === "compaction" || call.ended !== "ok") ? 1 : 0
+  const marks = [
+    input.calls.some((call) => call.diagnostics.length > 0) ? "⚠ diagnostic" : null,
+    input.calls.some((call) => call.kind === "compaction") ? "C compaction" : null,
+    input.calls.some((call) => call.ended !== "ok" && call.diagnostics.length === 0 && call.kind !== "compaction") ? "✗ cut short" : null,
+  ].filter((mark) => mark !== null)
+  const legendRows = marks.length > 0 ? 1 : 0
   const room = Math.max(1, rows - lines.length - legendRows)
   const shown = input.calls.slice(-room)
   if (input.calls.length === 0) lines.push([span("bars appear after the first call", "dim")])
@@ -98,7 +103,7 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   const numberWidth = String(input.calls.length).length
   const bar = Math.max(4, inner - numberWidth - 1 - 2 - 6 - 5)
   for (const call of shown) lines.push(callLine(call, max, bar, numberWidth))
-  if (legendRows > 0) lines.push([span("⚠ diagnostic · C compaction · ✗ failed", "dim")])
+  if (legendRows > 0) lines.push([span(truncate(marks.join(" · "), inner), "dim")])
   return lines.slice(0, rows)
 }
 
@@ -113,7 +118,7 @@ function callLine(call: CallUsage, max: number, bar: number, numberWidth: number
     span("█".repeat(cached), "cached"),
     span("░".repeat(total - cached), "uncached"),
     span(" ".repeat(bar - total)),
-    span(mark === " " ? " " : mark, mark === "⚠" ? "warn" : mark === "✗" ? "error" : "dim"),
+    span(mark, mark === "⚠" ? "warn" : mark === "✗" ? "error" : "dim"),
     span(` ${compact(call.usage.inputTokens).padStart(5)}`),
     span(` ${shareText.padStart(4)}`, "dim"),
   ]

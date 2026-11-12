@@ -139,6 +139,15 @@ export class Tmux {
     }
   }
 
+  /** Polls `check` until it holds (bounded), for state that is not on the screen, such as the terminal's modes. */
+  async until(check: () => boolean, options: WaitOptions = {}): Promise<void> {
+    const deadline = Date.now() + (options.timeoutMs ?? 5000)
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error(`the condition did not hold within ${options.timeoutMs ?? 5000} ms; the pane shows:\n${this.capture()}`)
+      await Bun.sleep(options.intervalMs ?? 50)
+    }
+  }
+
   /** The terminal modes the program left set: a TUI that exits cleanly leaves none of the first two on. */
   modes(): { alternateScreen: boolean; mouse: boolean; cursorVisible: boolean } {
     const [alternate, mouse, cursor] = this.format("#{alternate_on}|#{mouse_any_flag}|#{cursor_flag}").split("|")
