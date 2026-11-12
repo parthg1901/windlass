@@ -319,6 +319,24 @@ export class Transcript {
     return this.children.get(sessionId) ?? null
   }
 
+  /**
+   * A subagent's stored log, read for a row that knows nothing of it (a
+   * session opened again: what the parent forwarded live is not stored).
+   * Shown as history. Returns whether there was such a row to fill.
+   */
+  loadSubagent(sessionId: string, events: readonly EngineEvent[]): boolean {
+    const row = this.children.get(sessionId)
+    const view = row?.subagent ?? null
+    if (row === undefined || view === null || view.transcript.rows.length > 0) return false
+    this.touch(row, () => {
+      for (const item of events) {
+        view.transcript.apply(item, true)
+        if (item.type === "step.ended" || item.type === "step.failed" || item.type === "step.refused") view.steps += 1
+      }
+    })
+    return true
+  }
+
   /** The subagents still at work, oldest first: in the foreground or the background. */
   runningSubagents(): SubagentView[] {
     return [...this.children.values()].flatMap((row) => (row.subagent !== null && row.subagent.state === "running" ? [row.subagent] : []))

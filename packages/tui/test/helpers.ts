@@ -148,6 +148,8 @@ export class ScriptSession implements BackendSession {
   setConfig?: BackendSession["setConfig"]
   diff?: BackendSession["diff"]
   rename?: BackendSession["rename"]
+  storedEvents?: BackendSession["storedEvents"]
+  fork?: BackendSession["fork"]
 
   constructor(
     private readonly backend: ScriptBackend,

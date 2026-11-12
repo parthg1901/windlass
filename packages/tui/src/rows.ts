@@ -9,6 +9,7 @@
  * edit, the tail of a command's output, the match list of a search. Output is
  * capped; a second expansion shows it in full up to `FULL_OUTPUT_LINES`.
  */
+import { SUBAGENT_NOTE } from "@light-harness/core"
 import { detailLines, diffStat, errorSummary, fileList, formatBytes, formatDuration, successSummary, unresolvedReason, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
@@ -29,6 +30,8 @@ export interface LayoutContext {
   readonly debug: boolean
   /** Colour is on: inline code is told apart by colour rather than by its backticks. */
   readonly color: boolean
+  /** Rows inside a subagent's row: they cannot be selected, so they offer no keys. */
+  readonly nested?: boolean
 }
 
 const INDENT = "    "
@@ -46,7 +49,7 @@ export function layoutRow(row: Row, columns: number, context: LayoutContext): Sp
     case "notice":
       return noticeLines(row, columns)
     case "outcome":
-      return outcomeLines(row, columns)
+      return outcomeLines(row, columns, context.nested === true)
     case "debug":
       return context.debug ? wrapLine([span(`· event ${row.text}`, "dim")], columns, [span("  ")]).slice(0, 3) : []
   }
@@ -149,13 +152,17 @@ function subagentLines(row: ToolRow, view: SubagentView, columns: number, contex
     if (view.asking) return [span(`${INDENT}↳ `, "warn"), span("it asks you something: answer below", "warn")]
     switch (view.state) {
       case "running": {
+        if (steps === 0 && tools.length === 0) return [span(`${INDENT}↳ ${where}starting`, "dim")]
         const current = tools.findLast((candidate) => candidate.phase !== "settled") ?? tools.at(-1)
         const now = current === undefined ? "starting" : `${current.phase === "settled" ? "last" : "now"}: ${current.name} ${current.arg}`.trim()
         return [span(`${INDENT}↳ ${where}${counted} · ${now}`, "dim")]
       }
       case "completed":
+        // A session opened again knows the subagent only from its parent's log: its work is read on expansion.
+        if (rows.length === 0) return [span(`${INDENT}↳ ${where}finished · expand to read its work`, "dim")]
         return [span(`${INDENT}↳ ${where}finished after ${counted}`, "dim")]
       default:
+        if (rows.length === 0) return [span(`${INDENT}↳ ${where}${view.state}${view.detail === null ? "" : ` · ${view.detail}`} · expand to read its work`, "warn")]
         return [span(`${INDENT}↳ ${where}${view.state} after ${counted}${view.detail === null ? "" : ` · ${view.detail}`}`, "warn")]
     }
   }
@@ -165,7 +172,9 @@ function subagentLines(row: ToolRow, view: SubagentView, columns: number, contex
   const body: Span[][] = []
   let previous: Row | null = null
   for (const child of rows) {
-    const laid = layoutRow(child, inner, context)
+    // The task as the user gave it, without the harness's note to the subagent; and no key hint the nested rows cannot take.
+    const shown = child.kind === "user" ? { ...child, text: child.text.replace(SUBAGENT_NOTE, "").trimEnd() } : child
+    const laid = layoutRow(shown, inner, { ...context, nested: true })
     if (laid.length === 0) continue
     if (gapBefore(child, previous)) body.push([])
     body.push(...laid)
@@ -350,7 +359,7 @@ function noticeLines(row: NoticeRow, columns: number): Span[][] {
   return [...first, ...detail]
 }
 
-function outcomeLines(row: OutcomeRow, columns: number): Span[][] {
+function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][] {
   const parts = [row.steps > 0 ? plural(row.steps, "step") : null, row.durationMs === null ? null : formatDuration(row.durationMs)].filter((part) => part !== null)
   const after = parts.length === 0 ? "" : ` · ${parts.join(" · ")}`
   const lines: Span[][] = []
@@ -382,19 +391,19 @@ function outcomeLines(row: OutcomeRow, columns: number): Span[][] {
       wrapped([span("■ ", "warn"), span("stopped for shutdown", "warn", { bold: true }), span(" · the turn resumes at the next start", "dim")])
       break
   }
-  lines.push(...changedLines(row, columns))
+  lines.push(...changedLines(row, columns, nested))
   if (row.usage !== null) lines.push([span(`  ${usageText(row.usage, columns - 2)}`, "dim")])
   return lines
 }
 
-function changedLines(row: OutcomeRow, columns: number): Span[][] {
+function changedLines(row: OutcomeRow, columns: number, nested: boolean): Span[][] {
   const known = row.changedFiles
   const edited = [...new Set([...row.diffs.keys(), ...row.written])]
   const server = row.serverDiff !== null && row.serverDiff !== "loading" && row.serverDiff.available ? row.serverDiff : null
   const paths = server?.files.map((file) => file.path) ?? known ?? edited
   if (paths.length === 0) return []
   const source = server === null && known === null ? "edited" : "changed"
-  const hint = `${server === null && known === null ? " (from its tool calls)" : ""}${row.expanded ? "" : " · Ctrl-O for diffs"}`
+  const hint = `${server === null && known === null ? " (from its tool calls)" : ""}${row.expanded || nested ? "" : " · Ctrl-O for diffs"}`
   const lines = wrapLine([span(`  ${source} ${plural(paths.length, "file")}: `, "dim"), span(fileList(paths, row.expanded ? paths.length : 6)), span(hint, "dim")], columns, [span("    ")])
   if (!row.expanded) return lines
   if (row.serverDiff === "loading") lines.push([span(`${INDENT}loading the per-file diffs…`, "dim")])

@@ -30,10 +30,14 @@
  *   changed (also on a replay): `<prefix>/turn`
  * - the title: `<prefix>/session`; rename and compaction: `<prefix>/rename`
  *   and `<prefix>/compact`, only when `initialize` advertises them
+ * - `/fork`: `<prefix>/fork`, then `session/load` of the fork
+ * - a subagent's question: `session/request_permission` on the parent with
+ *   `approval.subagent`; its activity: `child.event` in the events
  */
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@light-harness/acp/client"
 import { EXT } from "@light-harness/acp/extensions"
 import { type RevertResult, brand } from "@light-harness/core"
+import type { EngineEvent } from "./cli.ts"
 import {
   type ApprovalHandler,
   type ApprovalInfo,
@@ -43,6 +47,7 @@ import {
   type ConfigChoice,
   type Delivery,
   type DiffResult,
+  type ForkInfo,
   type ModelChoice,
   type OpenSettings,
   type OpenTarget,
@@ -155,6 +160,8 @@ class AcpSession implements BackendSession {
   readonly events: AsyncIterable<StreamItem>
   readonly compact?: () => Promise<void>
   readonly rename?: (title: string) => Promise<string>
+  readonly fork?: (options: { readonly copy: boolean }) => Promise<ForkInfo>
+  readonly storedEvents?: (sessionId: string) => Promise<readonly EngineEvent[]>
   private closing: Promise<void> | null = null
 
   constructor(
@@ -187,6 +194,12 @@ class AcpSession implements BackendSession {
       return answer === "overwrite" || answer === "keep" ? answer : null
     }
     if (session.offers(EXT.compact)) this.compact = () => this.call(() => session.compact())
+    if (session.offers(EXT.events)) this.storedEvents = (sessionId) => this.call(() => session.connection.storedEvents(sessionId))
+    if (session.offers(EXT.fork))
+      this.fork = async ({ copy }) => {
+        const forked = await this.call(() => session.connection.fork({ sessionId: session.id, ...(copy ? { workspace: {} } : {}) }))
+        return { sessionId: forked.sessionId, cwd: forked.cwd, copiedFrom: forked.copiedFrom, title: forked.title }
+      }
     if (session.offers(EXT.rename)) this.rename = (title) => this.call(() => session.rename(title))
   }
 

@@ -28,6 +28,9 @@ export function callArgument(name: string, input: string): string {
     }
     case "shell":
       return str("command") ?? ""
+    // A subagent is named by the first line of its task, as everywhere else.
+    case "subagent":
+      return (str("task") ?? "").trim().split("\n")[0] ?? ""
     case "report_check_failure": {
       const checks = Array.isArray(args.checks) ? args.checks.filter((name) => typeof name === "string").join(", ") : ""
       return [checks, str("reason")].filter((part) => part !== null && part !== "").join(": ")

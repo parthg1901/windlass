@@ -283,6 +283,40 @@ describe("approvals and safety, against lh acp", () => {
     expect(existsSync(target)).toBe(false)
   }, 60_000)
 
+  test("a subagent's question: the dock names the subagent, the answer reaches it, and its rows show under its call", async () => {
+    const space = workspace([
+      [{ type: "text", text: "Handing it over." }, { type: "tool_call", callId: "p1", name: "subagent", input: { task: "Write the file outside\nUse the shared directory." } }],
+      [{ type: "tool_call", callId: "w1", name: "ls", input: {} }, { type: "tool_call", callId: "w2", name: "write", input: { path: target, content: "outside\n" } }],
+      [{ type: "text", text: "Wrote it." }],
+      [{ type: "text", text: "Finished." }],
+    ])
+    const term = await start(["--cwd", space.cwd], { env: space.env })
+    await term.waitFor(READY, { timeoutMs: 20_000 })
+    term.type("delegate it")
+    term.keys("Enter")
+    await dockReady(term)
+    const asked = await term.waitFor("? waiting for your answer · subagent")
+    expect(asked).toContain("subagent: Write the file outside")
+    expect(conversation(asked)).toContain(`Allow write: writing ${target}?`)
+    expect(conversation(asked)).toContain("↳ it asks you something: answer below")
+    term.type("a")
+    let frame = await term.waitFor("Finished.", { timeoutMs: 20_000 })
+    expect(readFileSync(target, "utf8")).toBe("outside\n")
+    expect(conversation(frame)).toContain("↳ finished after 2 steps, 2 tool calls")
+    // Select the subagent's row (Alt-Up from the bottom, until the selection mark is on it) and expand it: its own work, framed under it.
+    for (let guard = 0; guard < 6 && !/▌ ✓ subagent/.test(frame); guard += 1) {
+      term.keys("M-Up")
+      frame = await term.waitFor((next) => next.includes("▌"), { timeoutMs: 3000 })
+    }
+    term.keys("C-o")
+    frame = await term.waitFor((next) => next.includes("│ ✓ write"), { timeoutMs: 5000 })
+    const rows = frame.split("\n").map((line) => line.split("│ ").slice(1).join("│ "))
+    expect(rows.some((line) => line.startsWith("› Write the file outside"))).toBe(true)
+    expect(rows.some((line) => /^✓ ls/.test(line))).toBe(true)
+    expect(rows.some((line) => /^✓ write .* · allowed once/.test(line))).toBe(true)
+    expect(rows.some((line) => line.startsWith("Wrote it."))).toBe(true)
+  }, 60_000)
+
   test("Ctrl-C while the question waits: the turn stops, the dock goes, the call never ran", async () => {
     const space = workspace(writeOutside)
     const term = await start(["--cwd", space.cwd], { env: space.env })
@@ -340,6 +374,26 @@ describe("approvals and safety, against lh acp", () => {
     term.type("y")
     frame = await term.waitFor("the conversation is trusted again")
     expect(frame).not.toContain("trust  untrusted")
+  }, 60_000)
+
+  test("/fork: a new session with the conversation so far, said so; a message in it is answered there", async () => {
+    const space = workspace([...WRITE_TURN, [{ type: "text", text: "Answered in the fork." }]])
+    const term = await start(["--cwd", space.cwd], { env: space.env })
+    await term.waitFor(READY, { timeoutMs: 20_000 })
+    term.type("write the notes")
+    term.keys("Enter")
+    await term.waitFor("Created notes.md.", { timeoutMs: 20_000 })
+    await term.waitFor(READY)
+    term.type("/fork")
+    term.keys("Enter")
+    // The note first, then the history that came with the fork.
+    const forked = await term.waitFor((frame) => frame.includes("forked from") && conversation(frame).includes("Created notes.md.") && frame.includes(READY), { timeoutMs: 20_000 })
+    expect(conversation(forked)).toContain('forked from "write the notes" · this is a new session with the conversation so far, in the same directory')
+    expect(conversation(forked)).toContain("the original is unchanged: /sessions goes back to it")
+    term.type("and now?")
+    term.keys("Enter")
+    const frame = await term.waitFor("Answered in the fork.", { timeoutMs: 20_000 })
+    expect(frame).toContain("write the notes (fork)")
   }, 60_000)
 
   test("the per-file diff view after a turn: a file written whole and one changed by a command", async () => {

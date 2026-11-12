@@ -13,6 +13,15 @@ export type { ApprovalAnswer, ApprovalAsk, DiffResult, TurnNotification }
 
 export type Delivery = "steer" | "queue"
 
+/** A fork that was made: where it works, and from what. */
+export interface ForkInfo {
+  readonly sessionId: string
+  readonly cwd: string
+  /** The directory the copy was made from; `null` when the fork shares the original's. */
+  readonly copiedFrom: string | null
+  readonly title: string | null
+}
+
 export type OpenTarget = { readonly kind: "new" } | { readonly kind: "resume"; readonly id: string } | { readonly kind: "continue" }
 
 export interface OpenSettings {
@@ -111,6 +120,10 @@ export interface BackendSession {
   rename?(title: string): Promise<string>
   /** Compacts the conversation now, when the server offers it. */
   compact?(): Promise<void>
+  /** Another session's stored log (a subagent's, to show its work), also of one this client did not open. */
+  storedEvents?(sessionId: string): Promise<readonly EngineEvent[]>
+  /** A new session with this one's conversation so far (`copy`: in a copy of the workspace). Nothing is opened. */
+  fork?(options: { readonly copy: boolean }): Promise<ForkInfo>
   /** Lets go of the session; with `shutdown`, running work stops as a shutdown and resumes at the next open. */
   close(shutdown: boolean): Promise<void>
   /** Why the events ended without `close` (the server went away), as a sentence; `null` while all is well. */

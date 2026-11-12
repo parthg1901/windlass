@@ -239,7 +239,7 @@ export class App {
     this.redraw()
   }
 
-  private async switchTo(target: OpenTarget): Promise<void> {
+  private async switchTo(target: OpenTarget, banner?: () => void): Promise<void> {
     if (this.transcript.activity.executing) return this.say("stop the agent first (Ctrl-C), then switch sessions", "warn")
     const old = this.session
     this.session = null
@@ -248,6 +248,8 @@ export class App {
     this.transcript.reset()
     this.conversation.toBottom()
     this.conversation.selected = null
+    // Said before the session's history arrives, so it stands above it.
+    banner?.()
     await this.openSession(target)
   }
 
@@ -525,6 +527,8 @@ export class App {
         return session?.diff !== undefined
       case "rename":
         return session?.rename !== undefined
+      case "fork":
+        return session?.fork !== undefined
       case "reconnect":
         return this.connection !== "connected" && this.connection !== "starting"
       case "queue":
@@ -582,6 +586,8 @@ export class App {
           return await this.showDiff()
         case "rename":
           return await this.rename(rest)
+        case "fork":
+          return await this.fork(rest)
       }
     } finally {
       this.busyCommand = false
@@ -623,6 +629,35 @@ export class App {
     } catch (error) {
       this.say(`${command} failed: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
+  }
+
+  /**
+   * `/fork [copy]`: a new session with this conversation so far, opened in
+   * place of this one, which is left as it is (/sessions goes back to it).
+   * While idle only: switching away would stop the running turn.
+   */
+  private async fork(rest: string): Promise<void> {
+    const session = this.session
+    if (session?.fork === undefined) return this.say(`/fork is not available with this engine (${this.options.backend.label})`, "warn")
+    const word = rest.trim().toLowerCase()
+    if (word !== "" && word !== "copy") return this.say("/fork takes nothing, or copy (the fork then works in a copy of the workspace)", "warn")
+    if (this.transcript.activity.executing) return this.say("/fork works while the agent is idle; stop it first (Ctrl-C) or wait for the turn to end", "warn")
+    const from = { id: session.id, title: this.transcript.session.title }
+    let forked
+    try {
+      forked = await session.fork({ copy: word === "copy" })
+    } catch (error) {
+      return this.say(`/fork failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+    const where = forked.copiedFrom === null ? "in the same directory (both sessions change the same files)" : `in a copy of the workspace: ${forked.cwd}`
+    await this.switchTo({ kind: "resume", id: forked.sessionId }, () =>
+      this.transcript.note(
+        [span("forked", "accent"), span(` from ${from.title === null ? from.id : `"${shorten(from.title, 40)}"`} · this is a new session with the conversation so far, ${where}`, "dim")],
+        "accent",
+        "⑂",
+        [[span(`the original is unchanged: /sessions goes back to it (${from.id})`, "dim")]],
+      ),
+    )
   }
 
   private async pickSession(): Promise<void> {
@@ -939,6 +974,12 @@ export class App {
     if (!expandable(row)) return
     switch (row.kind) {
       case "tool": {
+        if (row.subagent !== null) {
+          // Its own conversation; a second expansion shows all of it when there is more than the latest part.
+          row.expand = row.expand === 0 ? 1 : row.expand === 1 && row.subagent.transcript.rows.length > 12 ? 2 : 0
+          if (row.expand === 1) this.fetchSubagent(row.subagent.sessionId)
+          break
+        }
         const full = row.expand === 1 && (row.output.split("\n").length > 24 || (row.progress?.split("\n").length ?? 0) > 24 || (typeof (row.display as { diff?: unknown } | null)?.diff === "string" && String((row.display as { diff: string }).diff).split("\n").length > 24))
         row.expand = row.expand === 0 ? 1 : full ? 2 : 0
         break
@@ -957,6 +998,19 @@ export class App {
     this.transcript.changed(row)
     this.conversation.keepInView(row)
     this.redraw()
+  }
+
+  /** A subagent's own stored log, for a row that knows nothing of its work (a session opened again). */
+  private fetchSubagent(sessionId: string): void {
+    const session = this.session
+    const row = this.transcript.subagentRow(sessionId)
+    if (session?.storedEvents === undefined || row?.subagent == null || row.subagent.transcript.rows.length > 0 || row.subagent.state === "running") return
+    void session.storedEvents(sessionId).then(
+      (events) => {
+        if (this.session === session && this.transcript.loadSubagent(sessionId, events)) this.redraw()
+      },
+      (error: unknown) => this.say(`could not read the subagent's work: ${error instanceof Error ? error.message : String(error)}`, "warn"),
+    )
   }
 
   /** The server's per-file diffs of a turn, for its expanded ending row. */

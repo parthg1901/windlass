@@ -143,6 +143,39 @@ describe("a subagent", () => {
     expect(body).toContain("Written the note.")
   })
 
+  test("a session opened again knows the subagent from its parent's log only: expanding the row reads the subagent's own", async () => {
+    const backend = new ScriptBackend()
+    mounted = await mount({ width: 100, height: 40, backend })
+    const session = backend.session!
+    const asked: string[] = []
+    const childLog = [...recorded.before, recorded.question, ...recorded.after].flatMap((item) => (item.type === "child.event" ? [item.event] : []))
+    session.storedEvents = async (sessionId) => {
+      asked.push(sessionId)
+      return childLog
+    }
+    // What a load replays: the parent's durable events, none of the forwarded ones.
+    session.emit(...([...recorded.before, ...recorded.after].filter((item) => "seq" in item) as StoredEvent[]))
+    await mounted.settle()
+    let frame = await mounted.frame()
+    expect(frame).toContain("↳ finished · expand to read its work")
+    for (let guard = 0; guard < 6 && !frame.includes("│ › Write the note outside"); guard += 1) {
+      mounted.setup.mockInput.pressArrow("up", { meta: true })
+      await mounted.settle()
+      mounted.setup.mockInput.pressKey("o", { ctrl: true })
+      await mounted.settle()
+      frame = await mounted.frame()
+      if (!frame.includes("│ › Write the note outside")) {
+        mounted.setup.mockInput.pressKey("o", { ctrl: true })
+        await mounted.settle()
+      }
+    }
+    expect(asked).toEqual([childLog[0]!.sessionId])
+    expect(frame).toContain("│ › Write the note outside")
+    expect(frame).not.toContain("You are a subagent")
+    expect(frame).toMatch(/│ ✓ write \S+ · created/)
+    expect(frame).toContain("↳ finished after 2 steps, 2 tool calls")
+  })
+
   test("in the background: the status line and the panel show it at work after its call returned", async () => {
     const backend = new ScriptBackend()
     mounted = await mount({ width: 110, height: 30, backend })
