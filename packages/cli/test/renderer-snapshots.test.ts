@@ -324,8 +324,10 @@ const EXPECTED: Record<string, readonly string[]> = {
     "✓ done · no checks configured · 2 steps · 1.4s",
     "  tokens · 2,000 in · 1,600 cached (80%) · 100 out (20 reasoning)",
     "",
-    "↶ went back · 1 file restored · /redo brings it back",
-    "↷ brought back · 1 file restored",
+    '↶ undone: turn 1 "Add a line to the notes." · out of the conversation · 1 file',
+    "  restored · /redo brings it back",
+    '↷ redone: turn 1 "Add a line to the notes." · back in the conversation · 1 file',
+    "  as the turn left them",
   ],
 }
 
