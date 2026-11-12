@@ -98,6 +98,26 @@ export interface PruneOptions {
   readonly now?: number
   /** Unreferenced objects younger than this survive gc, so a snapshot being taken concurrently is never cut. Default 3600. */
   readonly graceSeconds?: number
+  /**
+   * Snapshots that are never removed, whatever their age or number: the ones
+   * a revert or an undo of the session could still restore. One ref is kept
+   * for each; they do not count toward `keepLast`. A function is called after
+   * the refs were listed, so that a snapshot recorded while the prune runs is
+   * either not among them or already named by it.
+   */
+  readonly protect?: readonly SnapshotId[] | (() => readonly SnapshotId[])
+  /**
+   * Also remove a ref when a newer ref that is kept names the same snapshot.
+   * An unchanged workspace is recorded as the same tree again and again, and
+   * one ref keeps it alive.
+   */
+  readonly dedupe?: boolean
+  /**
+   * `always` (the default) collects unreferenced objects now. `auto` leaves
+   * it to git's own thresholds (`git gc --auto`), which costs almost nothing
+   * when there is little to collect: for a prune that runs after every turn.
+   */
+  readonly gc?: "always" | "auto"
 }
 
 export function defaultSnapshotDir() {
@@ -254,13 +274,26 @@ function createSnapshots(context: GitContext, workspace: string, given: string, 
     async prune(options) {
       const refs = await list({ session: options.session })
       const now = options.now ?? Date.now()
-      const removed = refs.filter(
-        (ref, index) =>
-          (options.keepLast !== undefined && index >= options.keepLast) || (options.olderThanMs !== undefined && now - ref.takenAt > options.olderThanMs),
-      )
+      const protect = new Set<string>(typeof options.protect === "function" ? options.protect() : (options.protect ?? []))
+      // Refs are newest first. A snapshot is kept through the newest ref that names it.
+      const kept = new Set<string>()
+      let counted = 0
+      const removed = refs.filter((ref) => {
+        const key = `${ref.session}\0${ref.id}`
+        if (options.dedupe && kept.has(key)) return true
+        if (!protect.has(ref.id)) {
+          const position = counted
+          counted += 1
+          if ((options.keepLast !== undefined && position >= options.keepLast) || (options.olderThanMs !== undefined && now - ref.takenAt > options.olderThanMs)) return true
+        }
+        kept.add(key)
+        return false
+      })
       if (removed.length > 0) await git(["update-ref", "--stdin", "-z"], { stdin: removed.map((ref) => `delete ${ref.ref}\0\0`).join("") })
       const grace = options.graceSeconds ?? 3600
-      await git(["gc", "--quiet", `--prune=${grace <= 0 ? "now" : `${Math.ceil(grace)}.seconds.ago`}`])
+      const expire = `--prune=${grace <= 0 ? "now" : `${Math.ceil(grace)}.seconds.ago`}`
+      // `--auto` must not leave a detached git behind: whoever called may be about to exit or remove the directory.
+      await git(options.gc === "auto" ? ["-c", "gc.autoDetach=false", "gc", "--auto", "--quiet", expire] : ["gc", "--quiet", expire])
       await removeStaleIndexes()
       return { removed, remaining: refs.length - removed.length }
     },

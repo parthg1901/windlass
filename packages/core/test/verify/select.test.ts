@@ -1,7 +1,7 @@
 /** Check selection, the fingerprint, evidence and the acknowledgement tool. */
 import { afterEach, describe, expect, test } from "bun:test"
 import { noBlobStore } from "../../src/tool/tool.ts"
-import { rmSync, utimesSync } from "node:fs"
+import { chmodSync, rmSync, utimesSync } from "node:fs"
 import { join } from "node:path"
 import { DecodeError, safeDecode } from "../../src/validate.ts"
 import {
@@ -10,6 +10,7 @@ import {
   buildEvidence,
   filesFor,
   fingerprintCheck,
+  reusablePass,
   runChecks,
   selectChecks,
   verificationEvidence,
@@ -47,7 +48,7 @@ describe("selectChecks", () => {
 })
 
 describe("fingerprintCheck", () => {
-  test("changes with the command, the timeout, a file's size or mtime, or a deletion; not with unrelated files", async () => {
+  test("changes with the command, the timeout, the patterns, a file's content, or a deletion; not with unrelated files or timestamps", async () => {
     const p = project()
     await p.write("src/a.ts", "export const a = 1\n")
     await p.write("notes.md", "x")
@@ -62,19 +63,22 @@ describe("fingerprintCheck", () => {
 
     expect(await fingerprintCheck({ ...typecheck, command: "tsc --strict" }, changed, p.dir)).not.toBe(first)
     expect(await fingerprintCheck({ ...typecheck, timeoutSeconds: 31 }, changed, p.dir)).not.toBe(first)
+    expect(await fingerprintCheck({ ...typecheck, when: ["src/**", "notes.md"] }, changed, p.dir)).not.toBe(first)
 
+    // The same bytes are the same input, whenever they were written.
     utimesSync(join(p.dir, "src/a.ts"), new Date(2020, 0, 1), new Date(2020, 0, 1))
-    const touched = await fingerprintCheck(typecheck, changed, p.dir)
-    expect(touched).not.toBe(first)
+    expect(await fingerprintCheck(typecheck, changed, p.dir)).toBe(first)
     await p.write("src/a.ts", "export const a = 22\n")
-    utimesSync(join(p.dir, "src/a.ts"), new Date(2020, 0, 1), new Date(2020, 0, 1))
-    expect(await fingerprintCheck(typecheck, changed, p.dir)).not.toBe(touched)
+    const edited = await fingerprintCheck(typecheck, changed, p.dir)
+    expect(edited).not.toBe(first)
 
     rmSync(join(p.dir, "src/a.ts"))
-    expect(await fingerprintCheck(typecheck, changed, p.dir)).not.toBe(touched)
+    const deleted = await fingerprintCheck(typecheck, changed, p.dir)
+    expect(deleted).not.toBe(edited)
+    expect(deleted).not.toBe(first)
   })
 
-  test("what it misses: same size and restored mtime", async () => {
+  test("sees an edit that keeps the size and restores the modification time", async () => {
     const p = project()
     await p.write("a.ts", "const a = 1\n")
     const when = new Date(2021, 5, 1)
@@ -82,7 +86,57 @@ describe("fingerprintCheck", () => {
     const before = await fingerprintCheck(check("t", "tsc"), ["a.ts"], p.dir)
     await p.write("a.ts", "const a = 2\n")
     utimesSync(join(p.dir, "a.ts"), when, when)
-    expect(await fingerprintCheck(check("t", "tsc"), ["a.ts"], p.dir)).toBe(before)
+    expect(await fingerprintCheck(check("t", "tsc"), ["a.ts"], p.dir)).not.toBe(before)
+  })
+
+  test("a file that cannot be read never fingerprints the same twice", async () => {
+    const p = project()
+    await p.write("a.ts", "const a = 1\n")
+    chmodSync(join(p.dir, "a.ts"), 0o000)
+    try {
+      // Root reads anything; then the file is simply readable and the fingerprint is stable.
+      if (process.getuid?.() === 0) return
+      const typecheck = check("t", "tsc", { when: ["*.ts"] })
+      expect(await fingerprintCheck(typecheck, ["a.ts"], p.dir)).not.toBe(await fingerprintCheck(typecheck, ["a.ts"], p.dir))
+    } finally {
+      chmodSync(join(p.dir, "a.ts"), 0o644)
+    }
+  })
+})
+
+describe("reusablePass", () => {
+  const typecheck = check("typecheck", "tsc", { when: ["src/**"] })
+  const result = (fingerprint: string, status: "passed" | "failed" = "passed", reusedFromSeq: number | null = null) => ({
+    name: "typecheck",
+    command: "tsc",
+    status,
+    exitCode: status === "passed" ? 0 : 1,
+    signal: null,
+    durationMs: 1,
+    files: ["src/a.ts"],
+    fingerprint,
+    reusedFromSeq,
+    outputPath: null,
+    outputBytes: 0,
+    outputLines: 0,
+  })
+  const standing = { check: typecheck, fingerprint: "f1", changedFilesKnown: true, sameBaseline: true, latest: { seq: 40, checks: [result("f1")] } }
+
+  test("a pass on the same fingerprint stands, and names the run that produced it", () => {
+    expect(reusablePass(standing)).toBe(40)
+    // A result that was itself carried over points at the run that really ran the check.
+    expect(reusablePass({ ...standing, latest: { seq: 60, checks: [result("f1", "passed", 40)] } })).toBe(40)
+  })
+
+  test("in doubt the check runs", () => {
+    expect(reusablePass({ ...standing, fingerprint: "f2" })).toBeNull() // something it depends on changed
+    expect(reusablePass({ ...standing, latest: { seq: 40, checks: [result("f1", "failed")] } })).toBeNull() // only a pass is carried
+    expect(reusablePass({ ...standing, latest: { seq: 40, checks: [] } })).toBeNull() // it did not run last time
+    expect(reusablePass({ ...standing, latest: null })).toBeNull()
+    expect(reusablePass({ ...standing, changedFilesKnown: false })).toBeNull() // nobody knows which files changed
+    expect(reusablePass({ ...standing, sameBaseline: false })).toBeNull() // the fingerprints cover different sets of files
+    expect(reusablePass({ ...standing, check: check("typecheck", "tsc") })).toBeNull() // without `when` it depends on everything
+    expect(reusablePass({ ...standing, fingerprint: "", latest: { seq: 40, checks: [result("")] } })).toBeNull()
   })
 })
 

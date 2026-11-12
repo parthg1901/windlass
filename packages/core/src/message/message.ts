@@ -226,6 +226,8 @@ export type Baseline = Infer<typeof baseline>
  * - `revert` / `undo`: a restore of the workspace announced by
  *   `revert.started` / `revert.undo_started`, with the fields recovery needs
  *   to finish it. The only kinds that are open while the session is idle.
+ * - `handover`: a turn ended (`turn.ended`) because queued item `messageId`
+ *   waits. Only that item's delivery closes it, in the same append.
  */
 export const openWork = variant("kind", {
   step: object({ kind: literal("step"), messageId }),
@@ -233,6 +235,7 @@ export const openWork = variant("kind", {
   checks: object({ kind: literal("checks"), run: integer(1), seq: integer(1) }),
   revert: object({ kind: literal("revert"), fromSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) }),
   undo: object({ kind: literal("undo"), revertSeq: integer(1), target: snapshotId, before: snapshotId, keep: array(string) }),
+  handover: object({ kind: literal("handover"), messageId }),
 })
 export type OpenWork = Infer<typeof openWork>
 
@@ -248,6 +251,8 @@ export function describeOpen(open: OpenWork): string {
       return `the revert to before seq ${open.fromSeq}`
     case "undo":
       return `the undo of the revert at seq ${open.revertSeq}`
+    case "handover":
+      return `the delivery of queued item ${open.messageId}`
   }
 }
 

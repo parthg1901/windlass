@@ -487,7 +487,6 @@ describe("blobs", () => {
     // The same bytes again, even under another media type, are the same reference.
     expect(store.putBlob(new Uint8Array(bytes), "image/webp")).toEqual(ref)
     expect(store.putBlob(new Uint8Array([0]), "image/png").hash).not.toBe(ref.hash)
-    expect(store.database.query("SELECT count(*) AS n FROM blob").get()).toEqual({ n: 2 })
     expect(store.getBlob(ref.hash)).toEqual({ hash: ref.hash, mediaType: "image/png", bytes })
     expect(store.getBlob("0".repeat(64))).toBeNull()
     expect(() => store.putBlob(bytes, "")).toThrow()

@@ -6,10 +6,11 @@
  */
 import type { EventData, SkippedFile, SnapshotPoint, StoredEvent } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
+import type { Projection } from "../message/message.ts"
 import type { Snapshot, SnapshotUnavailable, Snapshots } from "../snapshot/index.ts"
 
-/** The part of the snapshot module the loop uses. A test hands the engine a scripted one. */
-export type WorkspaceSnapshots = Pick<Snapshots, "workspace" | "take" | "changedFiles" | "restore">
+/** The part of the snapshot module the loop uses. A test hands the engine a scripted one. Without `prune` nothing is ever dropped. */
+export type WorkspaceSnapshots = Pick<Snapshots, "workspace" | "take" | "changedFiles" | "restore"> & Partial<Pick<Snapshots, "prune">>
 
 /** Opens the snapshots of a working directory, or says why there are none. */
 export type OpenSnapshots = (cwd: string) => Promise<WorkspaceSnapshots | SnapshotUnavailable>
@@ -79,4 +80,51 @@ export function coverageOf(snapshot: Pick<Snapshot, "skipped" | "nestedRepositor
   const skipped: SkippedFile[] = snapshot.skipped.map((file) => ({ path: file.path, reason: file.reason, bytes: file.reason === "too_large" ? file.bytes : null }))
   const byPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
   return { skipped: skipped.sort((a, b) => byPath(a.path, b.path)), nestedRepositories: [...snapshot.nestedRepositories].sort(byPath) }
+}
+
+/**
+ * The snapshots a revert or an undo of the session could still need, which
+ * retention therefore never removes:
+ *
+ * - the snapshot current when each user message was delivered that a revert
+ *   can still go back to (in the model's history, after the latest
+ *   compaction): what the workspace is restored to;
+ * - everything recorded since the latest of those messages: an undo of the
+ *   last turn tells the agent's changes from changes made by hand (or by
+ *   another session) by comparing them. A revert further back, across
+ *   snapshots that were dropped, cannot tell and asks about every file
+ *   instead of overwriting one silently;
+ * - both ends of every revert that can still be undone, everything recorded
+ *   since the latest one, and both ends of a restore that is open;
+ * - the latest snapshot, and the ones the verification gate compares with.
+ *
+ * `events` is the session's own log (a fork's inherited snapshots belong to
+ * its parent's refs).
+ */
+export function neededSnapshots(projection: Projection, events: readonly StoredEvent[]): string[] {
+  const session = projection.session
+  const needed = new Set<string>()
+  const keep = (id: string | null | undefined) => {
+    if (id !== null && id !== undefined) needed.add(id)
+  }
+  keep(session.workspace.snapshot?.id)
+  keep(session.verification.verified?.snapshot)
+  keep(session.verification.latest?.snapshot)
+  const floor = session.compaction?.seq ?? 0
+  const targets = projection.messages.filter((message) => message.kind === "user" && message.excluded === null && message.seq > floor)
+  for (const message of targets) keep(snapshotsSinceDelivery(events, message.seq).target)
+  const latest = targets.at(-1)
+  if (latest !== undefined) for (const item of snapshotsSinceDelivery(events, latest.seq).timeline) keep(item.id)
+  for (const revert of session.reverts) {
+    keep(revert.before)
+    keep(revert.after)
+  }
+  const undoable = session.reverts.at(-1)
+  if (undoable !== undefined) for (const item of snapshotsAfter(events, undoable.seq)) keep(item.id)
+  const open = session.open
+  if (open !== null && (open.kind === "revert" || open.kind === "undo")) {
+    keep(open.target)
+    keep(open.before)
+  }
+  return [...needed]
 }

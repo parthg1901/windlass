@@ -92,6 +92,8 @@ export interface Expect {
   readonly inbox?: readonly string[]
   /** How many reverts can still be undone. */
   readonly undoable?: number
+  /** Whether the session is hidden from the default listing. */
+  readonly archived?: boolean
 }
 
 /** A message reduced to what a UI shows. */
@@ -158,6 +160,15 @@ export const enqueue = (
   origin: string | null = null,
 ) => event("inbox.enqueued", { messageId: m(id), origin, delivery, content: text(value) })
 export const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
+/** The user takes back a prompt that was not delivered yet. It never becomes a message. */
+export const withdrawn = (id: string) => event("inbox.cancelled", { messageId: m(id) })
+/**
+ * The turn in progress may end, with what the gate found, and a queued message is delivered next. Without
+ * checks there is nothing to verify, which is the plain case.
+ */
+export const turnEnded = (verification: VerificationOutcome = { status: "not_configured" }) => event("turn.ended", { verification })
+export const archived = () => event("session.archived", {})
+export const unarchived = () => event("session.unarchived", {})
 /** An instruction that changed after the baseline. The fingerprint identifies the value the text carries. */
 export const instruction = (id: string, source: string, value: string) =>
   event("instruction.appended", { messageId: m(id), source, text: value, fingerprint: fingerprintOf(value) })
@@ -214,8 +225,13 @@ export const stepStarted = (id: string, attempt = 1, model = MODEL) => event("st
 export const stepEnded = (id: string, finish: "stop" | "tool_calls" | "length" = "stop") =>
   event("step.ended", { messageId: m(id), finish, usage })
 export const stepFailed = (id: string, error: StepError) => event("step.failed", { messageId: m(id), error, usage: null })
-export const stepInterrupted = (id: string, reason: InterruptReason) =>
-  stepFailed(id, { kind: "interrupted", reason })
+/**
+ * The open step is closed as interrupted. `during` says where it was cut: in the model call (`"call"`, the
+ * default), whose usage the provider had not reported yet, or while its tools ran (`"tools"`), after the call
+ * itself had finished and reported what it cost.
+ */
+export const stepInterrupted = (id: string, reason: InterruptReason, during: "call" | "tools" = "call") =>
+  event("step.failed", { messageId: m(id), error: { kind: "interrupted", reason }, usage: during === "tools" ? usage : null })
 export const stepCrashed = (id: string) => stepFailed(id, { kind: "crashed" })
 export const stepProviderFailed = (id: string, error: ProviderError) => stepFailed(id, { kind: "provider", error })
 export const stepRefused = (id: string, message: string, excludeFromSeq: number) =>
@@ -409,6 +425,12 @@ export function describeEvent(item: NewEvent): string {
       const detail = outcome.status === "unresolved" ? ` ${outcome.reason} failing=${outcome.failing.join(",")}` : ""
       return `execution.succeeded ${d.executionId} verification=${outcome.status}${detail}`
     }
+    case "turn.ended": {
+      const outcome = item.data.verification
+      if (outcome.status === "not_configured") return "turn.ended"
+      const detail = outcome.status === "unresolved" ? ` ${outcome.reason} failing=${outcome.failing.join(",")}` : ""
+      return `turn.ended verification=${outcome.status}${detail}`
+    }
     case "snapshot.taken":
       return `snapshot.taken ${d.id} ${d.point}${d.messageId === null ? "" : ` ${d.messageId}`}`
     case "snapshot.unavailable":
@@ -517,6 +539,7 @@ export function evidence(run: number, status: CheckStatus, changedFiles: readonl
         durationMs: 0,
         files: [...changedFiles],
         fingerprint: "fingerprint",
+        reusedFromSeq: null,
         outputPath: null,
         outputBytes: result.output.totalBytes,
         outputLines: result.output.totalLines,

@@ -46,6 +46,13 @@ export interface EngineLimits {
    * timeout already catches a connection that went quiet. `0` means no limit.
    */
   readonly modelCallTimeoutMs: number
+  /**
+   * Snapshot retention, per session: of the snapshots no revert or undo
+   * could still need, the newest this many are kept ...
+   */
+  readonly snapshotKeepLast: number
+  /** ... and none older than this. An archived session keeps none of them. */
+  readonly snapshotMaxAgeMs: number
 }
 
 export const ENGINE_LIMITS: EngineLimits = {
@@ -59,6 +66,8 @@ export const ENGINE_LIMITS: EngineLimits = {
   maxToolCallsPerStep: 32,
   toolStopGraceMs: 10_000,
   modelCallTimeoutMs: 30 * 60_000,
+  snapshotKeepLast: 100,
+  snapshotMaxAgeMs: 30 * 24 * 3600_000,
 }
 
 /**

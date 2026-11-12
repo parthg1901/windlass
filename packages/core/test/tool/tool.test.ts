@@ -72,7 +72,7 @@ describe("tool contract", () => {
   })
 
   test("tools of different input types fit in one registry", () => {
-    const other: Tool<{ path: string }> = { ...countdown, name: "read", execute: async () => ({ ...EMPTY }) }
+    const other: Tool<{ path: string }> = { ...countdown, name: "read", execute: async () => ({ ...EMPTY }), touches: (input) => [input.path] }
     const registry: AnyTool[] = [countdown, other]
     expect(registry.map((tool) => tool.effect)).toEqual(["read", "read"])
   })

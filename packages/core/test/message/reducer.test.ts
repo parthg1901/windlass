@@ -94,6 +94,8 @@ const baselineSet = event("baseline.set", {
 const enqueue = (id: string, value = "hello", delivery: "steer" | "queue" = "steer", origin: string | null = null) =>
   event("inbox.enqueued", { messageId: m(id), origin, delivery, content: text(value) })
 const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
+/** The turn may end (nothing was verified) and a queued item is delivered next. */
+const turnEnded = event("turn.ended", { verification: { status: "not_configured" } })
 const executionStarted = (id = "exe_1") => event("execution.started", { executionId: x(id) })
 const executionSucceeded = (id = "exe_1") => event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" } })
 const executionResumed = (id = "exe_1") => event("execution.resumed", { executionId: x(id) })
@@ -242,8 +244,11 @@ describe("session lifecycle", () => {
     const log = new Log()
     log.apply(created)
     expect(log.apply(event("session.renamed", { title: "Fix the bug" })).session.title).toBe("Fix the bug")
+    expect(log.reject(event("session.unarchived", {}))).toBe("invalid_transition")
     expect(log.apply(event("session.archived", {})).session.archived).toBe(true)
+    expect(log.reject(event("session.archived", {}))).toBe("invalid_transition")
     expect(log.apply(event("session.unarchived", {})).session.archived).toBe(false)
+    expect(log.reject(event("session.unarchived", {}))).toBe("invalid_transition")
     expect(log.state!.updatedAt).toBe(40)
   })
 })
@@ -268,6 +273,7 @@ describe("inbox", () => {
       deliver("s1"),
       stepStarted("a1"),
       stepEnded("a1"),
+      turnEnded,
       deliver("u1"),
     )
     expect(state.inbox).toEqual([])
@@ -282,7 +288,7 @@ describe("inbox", () => {
         content: text("build finished"),
         delivery: "steer",
       },
-      { kind: "user", id: m("u1"), seq: 9, time: 90, excluded: null, content: text("first"), delivery: "queue" },
+      { kind: "user", id: m("u1"), seq: 10, time: 100, excluded: null, content: text("first"), delivery: "queue" },
     ])
   })
 
@@ -968,7 +974,50 @@ describe("delivery order", () => {
     log.apply(stepStarted("a3"), textEnded("a3", "Done."), stepEnded("a3"), enqueue("u3", "wait", "steer"))
     expect(log.reject(deliver("q1"))).toBe("invalid_transition") // a steer waits
     log.apply(deliver("u3"), stepStarted("a4"), stepEnded("a4"))
+    // The session would go idle: whether the turn may end is the gate's decision, recorded before the delivery.
+    expect(log.reject(deliver("q1"))).toBe("invalid_transition")
+    log.apply(turnEnded)
     expect(log.reject(deliver("q1"))).toBe("accepted")
+  })
+
+  test("a turn ends for a queued item, which is delivered next and by nothing else", () => {
+    const log = inStep()
+    log.apply(enqueue("q1", "later", "queue"), enqueue("q2", "last", "queue"))
+    expect(log.reject(turnEnded)).toBe("invalid_transition") // a step is open
+    log.apply(stepEnded("a1", "tool_calls"))
+    expect(log.reject(turnEnded)).toBe("invalid_transition") // the model asked for tools
+    log.apply(stepStarted("a2"), textEnded("a2", "Done."), stepEnded("a2"), enqueue("u2", "now", "steer"))
+    expect(log.reject(turnEnded)).toBe("invalid_transition") // a steer does not wait for the turn to end
+    log.apply(deliver("u2"), stepStarted("a3"), stepEnded("a3"))
+    const ended = log.apply(turnEnded)
+    expect(ended.session.open).toEqual({ kind: "handover", messageId: m("q1") })
+    for (const next of [deliver("q2"), enqueue("u9"), event("inbox.cancelled", { messageId: m("q1") }), executionSucceeded(), stepStarted("a4"), turnEnded])
+      expect(log.reject(next), next.type).toBe("invalid_transition")
+    const delivered = log.apply(deliver("q1"))
+    expect(delivered.session.open).toBeNull()
+    expect(delivered.inbox.map((item) => item.messageId as string)).toEqual(["q2"])
+    expect(log.reject(turnEnded)).toBe("invalid_transition") // q1 is not answered
+  })
+
+  test("a turn does not end without a queued item, or before anything was said", () => {
+    const idle = running()
+    expect(idle.reject(turnEnded)).toBe("invalid_transition") // nothing waits
+    const first = new Log()
+    first.apply(created, enqueue("q1", "first", "queue"), executionStarted(), baselineSet)
+    expect(first.reject(turnEnded)).toBe("invalid_transition") // there is no turn to end
+    // As the first input under the claim a queued item follows no turn.
+    expect(first.reject(deliver("q1"))).toBe("accepted")
+  })
+
+  test("an unresolved turn may leave its check report unanswered when it ends for a queued item", () => {
+    const log = inStep()
+    const report = event("synthetic.appended", { messageId: m("r1"), origin: "check_report", content: text("1 failed") })
+    log.apply(enqueue("q1", "later", "queue"), stepEnded("a1"), report)
+    expect(log.reject(turnEnded)).toBe("invalid_transition") // the report asks for an answer
+    const evidence = { run: 1, afterSeq: 0, changedFiles: [], checks: [] }
+    const unresolved = event("turn.ended", { verification: { status: "unresolved", reason: "max_rounds", failing: ["test"], acknowledgement: null, evidence } })
+    log.apply(unresolved, deliver("q1"))
+    expect(ids(log.state!.messages).slice(-2)).toEqual(["r1", "q1"])
   })
 
   test("switching an item's mode moves it to the other line at its original place", () => {
@@ -1534,10 +1583,11 @@ describe("reducer properties", () => {
     expect(endedChanges.session).toBe(ended.session)
     expect(ids(endedChanges.messages)).toEqual(["a1"])
 
-    const deliveredFrom = log.state!
+    const deliveredFrom = log.apply(turnEnded)
     const delivered = log.apply(deliver("u2"))
     expect(projectionChanges(deliveredFrom, delivered)).toMatchObject({
-      session: null,
+      // The handover the turn's end opened is closed by the delivery.
+      session: delivered.session,
       messages: [{ id: m("u2"), kind: "user" }],
       inbox: [],
       inboxRemoved: [m("u2")],
@@ -1549,7 +1599,7 @@ describe("reducer properties", () => {
     expect(ids(revertChanges.messages)).toEqual(["a1", "u2", "a2"])
     // The session row changes too: it remembers the revert so that it can be undone.
     expect(revertChanges.session).toBe(revertedState.session)
-    expect(revertedState.session.reverts).toEqual([{ seq: revertedState.lastSeq, fromSeq: 6, before: null, after: null, excluded: [6, 11, 12] }])
+    expect(revertedState.session.reverts).toEqual([{ seq: revertedState.lastSeq, fromSeq: 6, before: null, after: null, excluded: [6, 12, 13] }])
   })
 
   test("projectionChanges from nothing returns everything, and reports a baseline change", () => {

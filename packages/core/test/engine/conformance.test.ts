@@ -604,7 +604,70 @@ const PLAYS: Record<string, Play> = {
     h.restart("claim")
   },
 
+  "A prompt is withdrawn before it is delivered": async (h, say) => {
+    h.provider.enqueue([call("call_1", "read", { path: "a.ts" }), U], answer("a is 1."))
+    h.tools.on("read", () => {
+      const sent = h.session.send(say[1]!)
+      expect(h.session.withdraw(sent)).toBe(true)
+      // Withdrawn once; and what was delivered is history, not something to withdraw.
+      expect(h.session.withdraw(sent)).toBe(false)
+      expect(h.session.withdraw(h.session.projection().messages[0]!.id)).toBe(false)
+      return "export const a = 1"
+    })
+    h.create().send(say[0]!)
+    await h.settled()
+    // The model never saw it.
+    expect(JSON.stringify(h.provider.requests)).not.toContain(say[1]!)
+  },
+
+  "The agent starts working in a directory that has its own instructions": async (h, say) => {
+    h.agents.set("/repo/packages/api", "Handlers return status codes, never bodies.")
+    h.provider.enqueue([call("call_1", "read", { path: "packages/api/handler.ts" }), U], answer("It returns 200."))
+    h.tools.on("read", "export const handler = () => 200")
+    h.create().send(say[0]!)
+    await h.settled()
+    // Appended, not folded into the frozen prefix: the second request is the first plus new items.
+    expect(h.provider.prefixBreaks()).toEqual([])
+    expect(h.provider.requests[1]!.instructions).toBe(h.provider.requests[0]!.instructions)
+    expect(JSON.stringify(h.provider.requests[1]!.input)).toContain("Handlers return status codes, never bodies.")
+  },
+
+  "A session is archived and brought back": async (h, say) => {
+    h.provider.enqueue(answer("2"), answer("4"))
+    const id = h.create().id
+    h.session.send(say[0]!)
+    await h.settled()
+    await h.engine.archiveSession(id)
+    // Archiving closed the session here and left it out of the default listing; twice is once.
+    await h.engine.archiveSession(id)
+    expect(h.engine.listSessions().map((summary) => summary.session.id)).toEqual([])
+    expect(h.engine.listSessions({ includeArchived: true }).map((summary) => summary.session.id)).toEqual([id])
+    await h.engine.unarchiveSession(id)
+    await h.engine.unarchiveSession(id)
+    expect(h.engine.listSessions().map((summary) => summary.session.id)).toEqual([id])
+    h.open().send(say[1]!)
+    await h.settled()
+  },
+
   // ---------------------------------------------------------------- verification
+
+  "A queued message waits for the checks": async (h, say) => {
+    h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."), write(SECOND_FIX), answer("Now it adds."), answer("Added the test."))
+    h.tools.on(
+      "write",
+      (input: Record<string, unknown>) => {
+        h.session.queue(say[1]!)
+        return writes(h, "Wrote add.ts")(input)
+      },
+      writes(h, "Wrote add.ts"),
+    )
+    h.checks.on("test", "failed", "passed")
+    h.create().send(say[0]!)
+    await h.settled()
+    // The gate ran twice before the follow-up was delivered, and not again after it: nothing had changed.
+    expect(h.checks.ran).toEqual(["test", "test"])
+    expect(h.provider.prefixBreaks()).toEqual([])
+  },
 
   "The checks pass": async (h, say) => {
     h.provider.enqueue(write(FIRST_FIX), answer("Fixed add."))
@@ -771,7 +834,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(54)
+    expect(scenarios).toHaveLength(58)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

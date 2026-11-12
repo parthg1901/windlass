@@ -1,3 +1,5 @@
 export * from "./store.ts"
 export * from "./schema.ts"
+export * from "./blobs.ts"
 export * from "./sqlite.ts"
+export * from "./directory.ts"

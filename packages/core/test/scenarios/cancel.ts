@@ -179,7 +179,7 @@ export const whileOneToolRuns: Scenario = {
       events: [
         interruptRequested("user"),
         settled("a1", "call_1", "error", "Stopped by the user after 4 s. Output so far:\n12 pass\n"),
-        stepInterrupted("a1", "user"),
+        stepInterrupted("a1", "user", "tools"),
         interruptMarker("s1", "user"),
         executionInterrupted("user"),
       ],
@@ -223,7 +223,7 @@ export const whileParallelToolsRunOneDone: Scenario = {
       events: [
         interruptRequested("user"),
         settled("a1", "call_2", "error", "Stopped by the user after 2 s. Output so far:\n3 pass\n"),
-        stepInterrupted("a1", "user"),
+        stepInterrupted("a1", "user", "tools"),
         interruptMarker("s1", "user"),
         executionInterrupted("user"),
       ],
@@ -263,7 +263,7 @@ export const beforeSideEffectReports: Scenario = {
       events: [
         interruptRequested("user"),
         settled("a1", "call_1", "effect_unknown", EFFECT_UNKNOWN),
-        stepInterrupted("a1", "user"),
+        stepInterrupted("a1", "user", "tools"),
         interruptMarker("s1", "user"),
         executionInterrupted("user"),
       ],
@@ -298,7 +298,7 @@ export const beforeReadReports: Scenario = {
       events: [
         interruptRequested("user"),
         settled("a1", "call_1", "error", INTERRUPTED_READ),
-        stepInterrupted("a1", "user"),
+        stepInterrupted("a1", "user", "tools"),
         interruptMarker("s1", "user"),
         executionInterrupted("user"),
       ],

@@ -152,7 +152,7 @@ describe("single writer", () => {
     expect((error as StoreError).code).toBe("locked")
     expect(((error as StoreError).cause as SQLiteError).code).toStartWith("SQLITE_BUSY")
     expect(performance.now() - startedAt).toBeLessThan(5_000)
-    // The ledger and the blob table are written under the same lock and fail the same way.
+    // The ledger is written under the same lock and fails the same way.
     expect(
       codeOf(() =>
         store.beginRequest({
@@ -166,7 +166,8 @@ describe("single writer", () => {
         }),
       ),
     ).toBe("locked")
-    expect(codeOf(() => store.putBlob(new Uint8Array([1]), "application/octet-stream"))).toBe("locked")
+    // Media is not in the database, so storing it waits for nobody.
+    expect(store.putBlob(new Uint8Array([1]), "application/octet-stream").hash).toHaveLength(64)
     intruder.run("ROLLBACK")
     intruder.close()
     expect(store.getSession("ses_1" as SessionId)!.lastSeq).toBe(1)

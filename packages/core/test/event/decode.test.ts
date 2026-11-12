@@ -24,6 +24,7 @@ const evidence = {
       durationMs: 420,
       files: ["src/a.ts"],
       fingerprint: "f0",
+      reusedFromSeq: null,
       outputPath: "/data/spill/check-test-0a.log",
       outputBytes: 120,
       outputLines: 4,
@@ -58,6 +59,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "inbox.delivery_changed": event("inbox.delivery_changed", { messageId, delivery: "queue" }),
   "inbox.cancelled": event("inbox.cancelled", { messageId }),
   "inbox.delivered": event("inbox.delivered", { messageId }),
+  "turn.ended": event("turn.ended", { verification: { status: "not_needed" } }),
   "synthetic.appended": event("synthetic.appended", {
     messageId,
     origin: "interrupt",

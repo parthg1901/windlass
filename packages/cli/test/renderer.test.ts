@@ -375,6 +375,7 @@ describe("verification, the workspace and reverts", () => {
     durationMs: 10,
     files: ["a.ts"],
     fingerprint: "f",
+    reusedFromSeq: null,
     outputPath: status === "passed" ? null : `/data/spill/checks/check-${name}-0a.log`,
     outputBytes: 0,
     outputLines: 0,

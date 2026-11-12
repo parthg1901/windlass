@@ -42,7 +42,7 @@ export const shutdownMidStep: Scenario = {
         toolStarted("a1", "call_1", "shell"),
         interruptRequested("shutdown"),
         settled("a1", "call_1", "error", "Stopped because the harness was shutting down. Output so far:\n12 pass\n"),
-        stepInterrupted("a1", "shutdown"),
+        stepInterrupted("a1", "shutdown", "tools"),
         interruptMarker("s1", "shutdown"),
       ],
       rejects: [

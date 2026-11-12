@@ -3,8 +3,13 @@
  *
  * `event` is the source of truth. `session`, `message` and `inbox` are
  * projections of it, written only by `Store.append` in the same transaction
- * as the event. `request` is the request ledger and `blob` holds media; both
- * sit beside the log and are never sent to the model as rows.
+ * as the event. `request` is the request ledger; it sits beside the log and
+ * is never sent to the model as rows. Media is not in the database: it lives
+ * in the blob store that sessions share (`blobs.ts`).
+ *
+ * The harness keeps one such database per session (`directory.ts`). Nothing
+ * in the schema depends on that: the tables are keyed by session, and a file
+ * that holds several sessions (a test, a tool) works the same.
  */
 
 /**
@@ -16,8 +21,11 @@
  *
  * 2: snapshots, verification and revert (new events, `execution.succeeded`
  *    and `history.reverted` data, workspace and verification state in `SessionState`).
+ * 3: one database per session: media left for the shared blob store (no `blob`
+ *    table); `turn.ended`, check results that are carried over, the directories a
+ *    session has worked in.
  */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 /**
  * Run on every connection, before anything else.
@@ -38,8 +46,9 @@ export const SCHEMA_SQL = `
 CREATE TABLE session (
   id               TEXT PRIMARY KEY,
   -- Lineage. All three are NULL for a root session. For a fork, the session's
-  -- history is the parent's events 1..parent_seq followed by its own.
-  parent_id        TEXT REFERENCES session (id),
+  -- history is the parent's events 1..parent_seq followed by its own. The
+  -- parent is usually in another file, so this is not a foreign key.
+  parent_id        TEXT,
   parent_kind      TEXT,
   parent_seq       INTEGER,
   cwd              TEXT NOT NULL,
@@ -66,7 +75,8 @@ CREATE INDEX session_claimed ON session (execution_status) WHERE execution_id IS
 CREATE INDEX session_parent ON session (parent_id) WHERE parent_id IS NOT NULL;
 
 -- The append-only log. (session_id, seq) is dense per session and is the only order.
--- A fork's rows start at parent_seq + 1; its inherited events are read from the parent, not copied.
+-- A fork's rows start at parent_seq + 1; its inherited events are read from the parent (in this
+-- file or, through the session directory, in the parent's own), not copied.
 CREATE TABLE event (
   session_id TEXT NOT NULL REFERENCES session (id),
   seq        INTEGER NOT NULL,
@@ -143,13 +153,4 @@ CREATE TABLE request (
 ) STRICT;
 
 CREATE INDEX request_session ON request (session_id, ordinal);
-
--- Content-addressed media. hash is the lowercase hex SHA-256 of data.
-CREATE TABLE blob (
-  hash         TEXT PRIMARY KEY,
-  media_type   TEXT NOT NULL,
-  size         INTEGER NOT NULL,
-  data         BLOB NOT NULL,
-  time_created INTEGER NOT NULL
-) STRICT;
 `

@@ -24,6 +24,7 @@ export function globTool(): Tool<GlobInput> {
       additionalProperties: false,
     },
     effect: "read",
+    touches: (input) => [input.path ?? "."],
     execute: async (input, context) => {
       if (isAbsolute(input.pattern)) return failure("pattern must be relative; put the directory to search in `path`.")
       const root = resolvePath(context.cwd, input.path ?? ".")

@@ -78,6 +78,7 @@ function check(state: Projection, expected: Expect, label: string) {
   if (expected.open !== undefined) expect(openLabel(state), label).toBe(expected.open)
   if (expected.inbox !== undefined) expect(state.inbox.map((item) => item.messageId as string), label).toEqual([...expected.inbox])
   if (expected.undoable !== undefined) expect(state.session.reverts.length, label).toBe(expected.undoable)
+  if (expected.archived !== undefined) expect(state.session.archived, label).toBe(expected.archived)
 }
 
 function attempt(state: Projection, item: NewEvent) {

@@ -46,6 +46,8 @@ export const enqueue = (
   origin: string | null = null,
 ) => event("inbox.enqueued", { messageId: m(id), origin, delivery, content: typeof value === "string" ? text(value) : value })
 export const deliver = (id: string) => event("inbox.delivered", { messageId: m(id) })
+/** The turn may end (nothing was verified); the queued item behind it is delivered next. */
+export const turnEnded = () => event("turn.ended", { verification: { status: "not_configured" } })
 export const changeDelivery = (id: string, delivery: "steer" | "queue") =>
   event("inbox.delivery_changed", { messageId: m(id), delivery })
 export const cancel = (id: string) => event("inbox.cancelled", { messageId: m(id) })
@@ -383,10 +385,12 @@ export const SCRIPTS: Record<string, Script> = {
       stepStarted("a1"),
       textEnded("a1", "Fixing it."),
       stepEnded("a1"),
+      turnEnded(),
       deliver("u1"),
       stepStarted("a2"),
       textEnded("a2", "Logs are clean."),
       stepEnded("a2"),
+      turnEnded(),
       deliver("b1"),
       stepStarted("a3"),
       textEnded("a3", "And the job succeeded."),

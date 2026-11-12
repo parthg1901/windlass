@@ -16,6 +16,12 @@ import {
   CHECKS_CONFIG,
   type Scenario,
   called,
+  deliver,
+  enqueue,
+  snap as snapshot,
+  toolStarted,
+  turnEnded,
+  wrote as edited,
   checkReport,
   checksFailed,
   checksFinished,
@@ -257,6 +263,61 @@ export const crashDuringChecks: Scenario = {
   ],
 }
 
+export const queuedWaitsForTheGate: Scenario = {
+  title: "A queued message waits for the checks",
+  description:
+    "The user queues a follow-up while the model works. \"After this turn\" means after the turn is done, and done is what the verification gate says, so the gate runs before the queued message is delivered, exactly as it would before the execution ends. The first run fails and the model is sent back, with the follow-up still waiting. When the checks pass, the turn ends with that evidence (`turn.ended`) and the queued message is delivered in the same append. A steer is different: it redirects the model and is delivered at once, with no checks in between. Had the turn ended unresolved (acknowledged, out of rounds, report mode), `turn.ended` would say so and the follow-up would be delivered all the same.",
+  provider: "write, answer; the check exits 1; then write, answer; the check exits 0; then the answer to the queued message",
+  setup,
+  phases: [
+    {
+      label: "the user queues a follow-up while the write runs; the model says it is done and the checks fail",
+      events: [
+        ...openingIn(),
+        stepStarted("a1"),
+        called("a1", "call_1", "write", FIRST_FIX),
+        snapshot("step_start", "w0", "a1"),
+        toolStarted("a1", "call_1", "write"),
+        enqueue("u2", "Then add a test for negative numbers.", "queue"),
+        settled("a1", "call_1", "success", "Wrote add.ts"),
+        snapshot("step_end", "w1", "a1"),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        say("a2", "Fixed add."),
+        stepEnded("a2"),
+        ...failingRun(1, "w1", "r1"),
+      ],
+      expect: { inbox: ["u2"], open: null, history: ["u1", "a1", "a2", "r1"] },
+      rejects: [
+        { event: deliver("u2"), code: "invalid_transition", why: "the turn has not ended: the checks failed and the model is sent back first" },
+        { event: turnEnded(passed(1, ["add.ts"])), code: "invalid_transition", why: "the report is unanswered, so the turn is not over" },
+      ],
+    },
+    {
+      label: "the model fixes the code, the checks pass, the turn ends and the follow-up is delivered",
+      events: [
+        ...edited("a3", SECOND_FIX, "Wrote add.ts", "w1", "w2"),
+        stepStarted("a4"),
+        say("a4", "Now it adds."),
+        stepEnded("a4"),
+        snapshot("checks_start", "w2"),
+        checksStarted(2),
+        snapshot("checks_end", "w2"),
+        checksFinished(2, "passed", ["add.ts"]),
+        snapshot("delivery", "w2"),
+        turnEnded(passed(2, ["add.ts"])),
+        deliver("u2"),
+      ],
+      expect: { inbox: [], open: null, execution: { status: "running", crashResumes: 0 }, history: ["u1", "a1", "a2", "r1", "a3", "a4", "u2"] },
+    },
+    {
+      label: "the follow-up is answered; nothing changed since the checks passed",
+      events: [stepStarted("a5"), say("a5", "Added the test."), stepEnded("a5"), snapshot("checks_start", "w2"), succeededWith({ status: "not_needed" })],
+      expect: { execution: null, history: ["u1", "a1", "a2", "r1", "a3", "a4", "u2", "a5"] },
+    },
+  ],
+}
+
 export const verificationScenarios = [
   checksPass,
   checksFailThenPass,
@@ -264,5 +325,4 @@ export const verificationScenarios = [
   checksAcknowledged,
   noChecksConfigured,
   cancelDuringChecks,
-  crashDuringChecks,
-]
+  crashDuringChecks, queuedWaitsForTheGate]

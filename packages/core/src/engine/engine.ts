@@ -35,9 +35,10 @@
  * - A revert announces its restore (`revert.started`) before it touches a
  *   file, so a session opened after a crash finishes it instead of guessing.
  */
+import { statSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join, relative, sep } from "node:path"
+import { dirname, join, relative, sep } from "node:path"
 import { brand } from "../brand.ts"
 import { type LoadedConfig, loadConfig } from "../config/load.ts"
 import type { CheckConfig } from "../config/schema.ts"
@@ -71,12 +72,14 @@ import { type BlockHash, hashRequest } from "../request/prefix.ts"
 import type { ModelRequest } from "../request/request.ts"
 import type { ChangeStatus } from "../snapshot/diff.ts"
 import { type KeptPath, type SnapshotId, type SnapshotUnavailable, openSnapshots } from "../snapshot/index.ts"
-import type { AppendOptions, RequestPurpose, SessionSummary, Store } from "../store/store.ts"
+import { StoreLockedError } from "../store/sqlite-lock.ts"
+import { type AppendOptions, type RequestPurpose, type SessionQuery, type SessionStores, type SessionSummary, type Store, StoreError, sharedSessionStores } from "../store/store.ts"
+import { resolvePath } from "../tools/common.ts"
 import { type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
 import type { AnyTool, ToolEffect } from "../tool/tool.ts"
 import { ACKNOWLEDGE_TOOL_NAME, acknowledgeTool } from "../verify/acknowledge.ts"
 import { type VerificationEvidence, buildEvidence } from "../verify/evidence.ts"
-import { fingerprintCheck } from "../verify/fingerprint.ts"
+import { fingerprintCheck, reusablePass } from "../verify/fingerprint.ts"
 import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
@@ -116,7 +119,7 @@ import {
   turnStartSeq,
   wouldGoIdle,
 } from "./state.ts"
-import { type OpenSnapshots, type WorkspaceSnapshots, coverageOf, firstDelivery, handEditedPaths, snapshotsAfter, snapshotsSinceDelivery } from "./workspace.ts"
+import { type OpenSnapshots, type WorkspaceSnapshots, coverageOf, firstDelivery, handEditedPaths, neededSnapshots, snapshotsAfter, snapshotsSinceDelivery } from "./workspace.ts"
 
 // ---------------------------------------------------------------- options
 
@@ -191,8 +194,16 @@ export class PrefixViolationError extends Error {
 
 export class EngineError extends Error {
   constructor(
-    readonly code: "session_not_found" | "closed" | "unknown_model",
+    /**
+     * - `session_not_found`: there is no such session.
+     * - `ambiguous_session`: an ID prefix names more than one session.
+     * - `session_in_use`: another live process holds the session; `holderPid` names it when it could be told.
+     * - `closed`: the engine or the session was closed.
+     * - `unknown_model`: the provider does not offer the model.
+     */
+    readonly code: "session_not_found" | "ambiguous_session" | "session_in_use" | "closed" | "unknown_model",
     message: string,
+    readonly holderPid: number | null = null,
   ) {
     super(message)
     this.name = "EngineError"
@@ -200,7 +211,13 @@ export class EngineError extends Error {
 }
 
 export interface EngineOptions {
-  readonly store: Store
+  /**
+   * Where sessions are stored. `SessionStores` gives every session a store of
+   * its own, held while the session is open here (the session directory:
+   * one file per session). A single `Store` holds every session, which is
+   * what tests and tools use; it stays open when the engine closes.
+   */
+  readonly store: Store | SessionStores
   readonly provider: Provider
   /** Every tool of every session. Their specs are frozen into each session's baseline. */
   readonly tools: readonly AnyTool[]
@@ -222,7 +239,7 @@ export interface EngineOptions {
    * `discoverSources` with the harness config directory (named from `brand`),
    * this platform and the engine's clock.
    */
-  readonly discover?: (input: Pick<DiscoveryInput, "cwd" | "known">) => InstructionSource[]
+  readonly discover?: (input: Pick<DiscoveryInput, "cwd" | "known" | "directories">) => InstructionSource[]
   /** Call settings that are the same for every request of this build. */
   readonly call?: CallOptions
   /**
@@ -357,8 +374,16 @@ export interface EngineSession {
   readonly interrupt: () => void
   /** Changes the model or the reasoning effort. Takes effect at the next step boundary. */
   readonly setSettings: (settings: SessionSettings) => void
+  /**
+   * Withdraws a prompt that was admitted and not delivered yet
+   * (`inbox.cancelled`): it never reaches the model. Returns whether it was
+   * still waiting; a prompt already delivered, or unknown, is left alone.
+   */
+  readonly withdraw: (messageId: MessageId) => boolean
   /** The session's stored state. */
   readonly projection: () => Projection
+  /** The session's stored events in `seq` order: its whole log, or the part after `afterSeq`. What a client replays to show history. */
+  readonly readEvents: (range?: { readonly afterSeq?: number; readonly limit?: number }) => readonly StoredEvent[]
   /**
    * Returns the session to the state before a user message (by default the
    * latest one): the workspace is restored from the snapshot that was current
@@ -375,9 +400,11 @@ export interface EngineSession {
   /** Resolves once no execution and no revert is being worked on in this process. */
   readonly settled: () => Promise<void>
   /**
-   * A graceful shutdown of this session: work in progress is stopped as a
-   * `shutdown`, which leaves the execution suspended and resumable, and
-   * `events` ends. Safe to call more than once.
+   * A graceful shutdown of this session, and of nothing else: work in
+   * progress is stopped as a `shutdown`, which leaves the execution suspended
+   * and resumable, `events` ends, and the session is let go of, so that this
+   * or another process can open it again. The engine and its other sessions
+   * carry on. Safe to call more than once.
    */
   readonly close: () => Promise<void>
 }
@@ -393,6 +420,32 @@ export interface Engine {
   /** The most recently updated session whose working directory is `cwd`. */
   readonly latestSession: (cwd: string) => SessionSummary | null
   /**
+   * Sessions, most recently updated first, whoever has them open: by working
+   * directory when `cwd` is given, without archived ones unless asked.
+   * Reading only; nothing is opened, held or closed.
+   */
+  readonly listSessions: (query?: SessionQuery) => readonly SessionSummary[]
+  /** One session's summary, or `null`. Works for a session another process holds. */
+  readonly getSession: (id: SessionId) => SessionSummary | null
+  /** The session an ID or a unique prefix of one names. Throws `session_not_found` or `ambiguous_session`. */
+  readonly resolveSession: (idOrPrefix: string) => SessionId
+  /**
+   * A session's stored events in `seq` order, without opening it: the log a
+   * client replays to show a session it loads. Works for a session another
+   * process is working in (it shows what is committed).
+   */
+  readonly readEvents: (id: SessionId, range?: { readonly afterSeq?: number; readonly limit?: number }) => readonly StoredEvent[]
+  /**
+   * Hides a session from the default listing (`session.archived`). A session
+   * open in this engine is closed first, as `EngineSession.close` does. The
+   * workspace snapshots that no revert or undo of it could still restore are
+   * dropped. Archiving an archived session does nothing. Rejects with
+   * `session_in_use` when another process holds the session.
+   */
+  readonly archiveSession: (id: SessionId) => Promise<void>
+  /** Puts an archived session back in the default listing (`session.unarchived`). Does nothing for one that is not archived. */
+  readonly unarchiveSession: (id: SessionId) => Promise<void>
+  /**
    * Checks settings before a session is created with them or switched to
    * them: rejects with `EngineError` `unknown_model`, naming the models the
    * provider offers, when `settings.model` is not one of them. Resolves when
@@ -405,7 +458,9 @@ export interface Engine {
    * (a normal end, SIGINT, SIGTERM, an uncaught error): every session is
    * closed as a shutdown, which stops every tool and waits for it. Safe to
    * call more than once; every call resolves when the shutdown is complete.
-   * It does not close the store, which belongs to whoever opened it.
+   * Each session's own store is closed with it; a single `Store` passed as
+   * `store`, or the `SessionStores` themselves, stay open: they belong to
+   * whoever opened them.
    */
   readonly close: () => Promise<void>
 }
@@ -413,10 +468,12 @@ export interface Engine {
 // ---------------------------------------------------------------- engine
 
 interface Core {
-  readonly store: Store
+  readonly stores: SessionStores
   readonly provider: Provider
   readonly runtime: ToolRuntime
   readonly effects: ReadonlyMap<string, ToolEffect>
+  /** By tool name: the paths a call says it touches (`Tool.touches`). */
+  readonly touches: ReadonlyMap<string, (input: unknown) => readonly string[]>
   readonly tools: readonly AnyTool[]
   /** The tool the model reports an unfixable check failure with. In the runtime always; in a session's tool list when verification was on at its baseline. */
   readonly acknowledge: AnyTool
@@ -429,7 +486,7 @@ interface Core {
   readonly random: () => number
   readonly limits: EngineLimits
   readonly prompt: string | undefined
-  readonly discover: (input: Pick<DiscoveryInput, "cwd" | "known">) => InstructionSource[]
+  readonly discover: (input: Pick<DiscoveryInput, "cwd" | "known" | "directories">) => InstructionSource[]
   readonly call: CallOptions
   readonly refreshAuth: (() => Promise<boolean>) | undefined
   readonly probe: ((point: ProbePoint, sessionId: SessionId) => void) | undefined
@@ -445,11 +502,13 @@ export function createEngine(options: EngineOptions): Engine {
   // A build that brings its own tool of that name keeps it.
   const acknowledge = options.tools.find((tool) => tool.name === ACKNOWLEDGE_TOOL_NAME) ?? (acknowledgeTool() as unknown as AnyTool)
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), acknowledge]
+  const stores = "append" in options.store ? sharedSessionStores(options.store) : options.store
   const core: Core = {
-    store: options.store,
+    stores,
     provider: options.provider,
-    runtime: createToolRuntime({ tools: runnable, spillDir, putBlob: options.store.putBlob }),
+    runtime: createToolRuntime({ tools: runnable, spillDir, putBlob: stores.putBlob }),
     effects: new Map(runnable.map((tool) => [tool.name, tool.effect])),
+    touches: new Map(runnable.flatMap((tool) => (tool.touches === undefined ? [] : [[tool.name, tool.touches as (input: unknown) => readonly string[]] as const]))),
     tools: options.tools.filter((tool) => tool !== acknowledge),
     acknowledge,
     spillDir,
@@ -474,35 +533,74 @@ export function createEngine(options: EngineOptions): Engine {
     probe: options.hooks?.probe,
     strict: options.strict ?? false,
     report: (diagnostic) => {
-      log(`[engine] ${diagnostic.kind}${diagnostic.sessionId === null ? "" : ` in ${diagnostic.sessionId}`}: ${diagnostic.message}`)
       options.onDiagnostic?.(diagnostic)
-      // A client of the session sees it too, as an event of the session's stream.
-      if (diagnostic.sessionId !== null) core.sessions.get(diagnostic.sessionId)?.diagnosed(diagnostic)
+      // Said once: to the clients of the session, as an event of its stream, or, when no open session can carry
+      // it, as a line of the log.
+      const live = diagnostic.sessionId === null ? undefined : core.sessions.get(diagnostic.sessionId)
+      if (live !== undefined && live.diagnosed(diagnostic)) return
+      log(`[engine] ${diagnostic.kind}${diagnostic.sessionId === null ? "" : ` in ${diagnostic.sessionId}`}: ${diagnostic.message}`)
     },
     sessions: new Map(),
   }
   let closing: Promise<void> | null = null
+  const assertOpen = () => {
+    if (closing !== null) throw new EngineError("closed", "the engine is closed")
+  }
+  /** Sets or clears the archived flag through the session's own log, holding the session only for that append. */
+  const setArchived = async (id: SessionId, archived: boolean): Promise<void> => {
+    assertOpen()
+    // A session open here is let go of first: its work stops as a shutdown and stays resumable.
+    await core.sessions.get(id)?.close()
+    const store = storeErrors(() => core.stores.open(id))
+    try {
+      const summary = store.getSession(id)
+      if (summary === null) throw new EngineError("session_not_found", `session ${id} does not exist`)
+      if (summary.session.archived === archived) return
+      store.append(id, [event(archived ? "session.archived" : "session.unarchived", {})])
+      if (archived) await retainSnapshots(core, store, id, "archived").catch(() => {})
+    } finally {
+      store.close()
+    }
+  }
 
   return {
     createSession: (input) => {
-      if (closing !== null) throw new EngineError("closed", "the engine is closed")
+      assertOpen()
       const id = core.ids.session()
-      const session = new LiveSession(core, id)
+      const store = storeErrors(() => core.stores.create(id))
+      const session = new LiveSession(core, id, store)
+      try {
+        session.write([event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, settings: input.settings })])
+      } catch (error) {
+        store.close()
+        throw error
+      }
       core.sessions.set(id, session)
-      session.write([event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, settings: input.settings })])
       return session
     },
     openSession: (id, open = {}) => {
-      if (closing !== null) throw new EngineError("closed", "the engine is closed")
+      assertOpen()
       const live = core.sessions.get(id)
       if (live !== undefined) return live
-      if (core.store.getSession(id) === null) throw new EngineError("session_not_found", `session ${id} does not exist`)
-      const session = new LiveSession(core, id)
+      const store = storeErrors(() => core.stores.open(id))
+      const session = new LiveSession(core, id, store)
       core.sessions.set(id, session)
-      session.recover(open.resume ?? "start")
+      try {
+        session.recover(open.resume ?? "start")
+      } catch (error) {
+        core.sessions.delete(id)
+        store.close()
+        throw error
+      }
       return session
     },
-    latestSession: (cwd) => core.store.listSessions().find((summary) => summary.session.cwd === cwd) ?? null,
+    latestSession: (cwd) => core.stores.list({ cwd, limit: 1 })[0] ?? null,
+    listSessions: (query) => core.stores.list(query),
+    getSession: (id) => core.stores.get(id),
+    resolveSession: (idOrPrefix) => storeErrors(() => core.stores.resolve(idOrPrefix)),
+    readEvents: (id, range) => storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, range))),
+    archiveSession: (id) => setArchived(id, true),
+    unarchiveSession: (id) => setArchived(id, false),
     validateSettings: async (settings) => {
       if (options.listModels === undefined) return
       const models = await options.listModels().catch(() => null)
@@ -548,6 +646,11 @@ type StepResult =
   /** The execution's terminal event was written. */
   | "done"
 
+/** What the gate found: as a step, or the turn may end with `verification` and a queued message is waiting to be delivered. */
+type GateResult = StepResult | { readonly verification: VerificationOutcome }
+
+const isSteer = (item: { readonly delivery: "steer" | "queue" }) => item.delivery === "steer"
+
 /** A restore that `restoreTo` is asked for: a revert to before a message, or the undo of the latest revert. */
 type RestoreRequest =
   | { readonly kind: "revert"; readonly fromSeq: number; readonly messageId: MessageId; readonly messages: number }
@@ -573,9 +676,16 @@ class LiveSession implements EngineSession {
   /** A revert, an undo of one or a preview of either that is in progress. The session is idle and must stay so until it ends. */
   private restoring: Promise<unknown> | null = null
 
+  /** Retention of this session's snapshots that is still running. Awaited before the session is let go of. */
+  private retaining: Promise<void> | null = null
+  /** The directories each settled step's tool calls touched, by message. A cache of a pure function of the log. */
+  private readonly touched = new Map<MessageId, readonly string[]>()
+
   constructor(
     private readonly core: Core,
     readonly id: SessionId,
+    /** This session's store, held for writing from the moment it was created or opened until `close`. */
+    private readonly store: Store,
   ) {}
 
   // ---- the public surface ----
@@ -597,7 +707,7 @@ class LiveSession implements EngineSession {
   }
 
   projection = (): Projection => {
-    const projection = this.core.store.getProjection(this.id)
+    const projection = this.store.getProjection(this.id)
     if (projection === null) throw new EngineError("session_not_found", `session ${this.id} does not exist`)
     return projection
   }
@@ -655,6 +765,16 @@ class LiveSession implements EngineSession {
     else this.changeSettings(settings)
   }
 
+  withdraw = (messageId: MessageId): boolean => {
+    this.assertOpen()
+    if (!this.projection().inbox.some((item) => item.messageId === messageId)) return false
+    this.write([event("inbox.cancelled", { messageId })])
+    this.turnLimits.delete(messageId)
+    return true
+  }
+
+  readEvents = (range?: { readonly afterSeq?: number; readonly limit?: number }): readonly StoredEvent[] => this.store.readEvents(this.id, range)
+
   settled = async (): Promise<void> => {
     while (this.run !== null || this.restoring !== null) await (this.run?.done ?? this.restoring?.catch(() => {}))
   }
@@ -663,9 +783,15 @@ class LiveSession implements EngineSession {
 
   undoRevert = (options: Omit<RevertOptions, "messageId"> = {}): Promise<RevertResult> => this.whileIdle(() => this.undoLatestRevert(options))
 
-  /** Shows a diagnostic about this session to whoever reads its events. */
-  diagnosed(diagnostic: Diagnostic): void {
+  /**
+   * Shows a diagnostic about this session to whoever reads its events.
+   * Returns whether it could: a closed session has no readers, and a failing
+   * listener is not told about its own failure through the listeners.
+   */
+  diagnosed(diagnostic: Diagnostic): boolean {
+    if (this.closing !== null || diagnostic.kind === "listener_failed") return false
     this.ephemeral({ type: "diagnostic", sessionId: this.id, kind: diagnostic.kind, message: diagnostic.message })
+    return true
   }
 
   close = (): Promise<void> => {
@@ -677,7 +803,7 @@ class LiveSession implements EngineSession {
 
   /** Appends to the session's log and publishes what was appended. The only way this session's state changes. */
   write(events: readonly NewEvent[], options?: AppendOptions): readonly StoredEvent[] {
-    const stored = this.core.store.append(this.id, events, options)
+    const stored = this.store.append(this.id, events, options)
     for (const item of stored) this.publish(item)
     return stored
   }
@@ -750,7 +876,7 @@ class LiveSession implements EngineSession {
         return
       }
       // A claim this process took up and never worked on is suspended, so the next start resumes it uncounted.
-      const projection = this.core.store.getProjection(this.id)
+      const projection = this.store.getProjection(this.id)
       const execution = projection?.session.execution ?? null
       if (projection && execution?.status === "running" && execution.interrupting === null && projection.session.open === null)
         this.write([
@@ -760,9 +886,16 @@ class LiveSession implements EngineSession {
     } catch (error) {
       this.core.report({ kind: "internal_error", sessionId: this.id, message: `closing failed: ${describe(error)}`, cause: error })
     } finally {
+      await this.retaining?.catch(() => {})
       this.channel.end()
       this.listeners.clear()
       this.core.sessions.delete(this.id)
+      // The session is let go of: this or another process can open it now.
+      try {
+        this.store.close()
+      } catch (error) {
+        this.core.report({ kind: "internal_error", sessionId: null, message: `closing the store of ${this.id} failed: ${describe(error)}`, cause: error })
+      }
     }
   }
 
@@ -805,6 +938,7 @@ class LiveSession implements EngineSession {
       this.abandon(run, error)
     } finally {
       this.run = null
+      this.retain()
       const again = this.restart && this.closing === null
       this.restart = false
       if (again) {
@@ -871,34 +1005,52 @@ class LiveSession implements EngineSession {
         }
       }
 
-      if (wouldGoIdle(before) && before.inbox.length === 0) {
-        // Nothing is left to do: whether the execution may end as done is the gate's decision.
-        if ((await this.gate(run)) === "done") return
-        continue
+      // The model has answered and no steer redirects it: whether the turn may end is the gate's decision. That
+      // holds when a queued message waits behind the turn too: "after this turn" means after it is done, and done
+      // is what the gate says. Only a queued message that is the first input under the claim follows no turn.
+      const idle = wouldGoIdle(before)
+      let ended: VerificationOutcome | null = null
+      if (idle && !before.inbox.some(isSteer) && (before.inbox.length === 0 || latest !== undefined)) {
+        const verdict = await this.gate(run)
+        if (verdict === "done") return
+        if (verdict === "continue") continue
+        ended = verdict.verification
       }
 
       // A step follows. The workspace is recorded first when input is about to enter history, so that a later
       // revert to before that input has a state to go back to, including what the user changed by hand since.
-      if (this.core.openSnapshots !== null && (before.inbox.some((item) => item.delivery === "steer") || (wouldGoIdle(before) && before.inbox.length > 0))) {
+      if (this.core.openSnapshots !== null && (before.inbox.some(isSteer) || ended !== null || (idle && before.inbox.length > 0))) {
         await this.snapshot("delivery")
         if (signal.aborted) return this.finishInterrupt(run)
       }
-      // Read again: input may have arrived while the snapshot was taken.
+      // Read again: input may have arrived, or been withdrawn, while the gate ran and the snapshot was taken.
       const waiting = this.projection()
-      const idle = wouldGoIdle(waiting)
-      const steers = waiting.inbox.filter((item) => item.delivery === "steer")
-      const queued = waiting.inbox.find((item) => item.delivery === "queue")
+      const steers = waiting.inbox.filter(isSteer)
+      const queued = waiting.inbox.find((item) => !isSteer(item))
+      const follows = latestSpoken(waiting) !== undefined
+      // Steers at any boundary, oldest first. One queued item only when the turn before it ended, or as the first input.
+      const handover = steers.length === 0 && queued !== undefined && (ended !== null || !follows) ? queued : undefined
+      // The turn may end and what waited behind it is gone: nothing follows, so the gate decides again, now alone.
+      if (ended !== null && steers.length === 0 && handover === undefined) continue
       // Instructions first, then the waiting input, so the request carries both.
       const prepared = prepareInstructions(waiting, {
         ...(this.core.prompt === undefined ? {} : { prompt: this.core.prompt }),
         tools: this.offeredTools(waiting),
-        sources: this.core.discover({ cwd: waiting.session.cwd, known: knownAgentsFiles(instructionState(selectModelHistory(waiting))) }),
+        sources: this.core.discover({
+          cwd: waiting.session.cwd,
+          known: knownAgentsFiles(instructionState(selectModelHistory(waiting))),
+          directories: this.workedDirectories(waiting),
+        }),
         newMessageId: ids.message,
       })
       if (prepared.length > 0) this.write(prepared)
-      // Steers at any boundary, oldest first; one queued item only when the turn before it has its answer.
-      const deliveries = steers.length > 0 ? steers : idle && queued !== undefined ? [queued] : []
-      if (deliveries.length > 0) this.write(deliveries.map((item) => event("inbox.delivered", { messageId: item.messageId })))
+      if (steers.length > 0) this.write(steers.map((item) => event("inbox.delivered", { messageId: item.messageId })))
+      else if (handover !== undefined)
+        // The end of the turn and the delivery it makes room for are one decision, so one append.
+        this.write([
+          ...(ended !== null && follows ? [event("turn.ended", { verification: ended })] : []),
+          event("inbox.delivered", { messageId: handover.messageId }),
+        ])
 
       const ready = this.projection()
       const input = turnInput(ready)
@@ -937,7 +1089,7 @@ class LiveSession implements EngineSession {
       // A retry resends the same request unchanged.
       const call = await this.callModel(run, { messageId, attempt, request, blocks, purpose: "step" })
       if (call.end.type === "aborted") {
-        this.finishInterrupt(run, call.partialText)
+        this.finishInterrupt(run, call.partialText, call.usage)
         return "done"
       }
       if (call.end.type === "finish") return this.finishStep(run, messageId, toolChoice, call.end.reason, call)
@@ -966,7 +1118,7 @@ class LiveSession implements EngineSession {
         refreshed = true
         const usable = await this.core.refreshAuth().catch(() => false)
         if (signal.aborted) {
-          this.finishInterrupt(run)
+          this.finishInterrupt(run, "", call.usage)
           return "done"
         }
         if (usable) continue
@@ -980,7 +1132,7 @@ class LiveSession implements EngineSession {
         this.probe("retry.scheduled")
         await clock.sleep(delayMs, signal)
         if (signal.aborted) {
-          this.finishInterrupt(run)
+          this.finishInterrupt(run, "", call.usage)
           return "done"
         }
         if (hasOutput) return "continue"
@@ -1036,19 +1188,20 @@ class LiveSession implements EngineSession {
       if (tracked) {
         await this.snapshot("step_start", messageId)
         if (run.interrupt.signal.aborted) {
-          this.finishInterrupt(run)
+          this.finishInterrupt(run, "", usage)
           return "done"
         }
       }
       await this.runTools(run, message, calls, toolChoice)
       if (run.interrupt.signal.aborted) {
-        this.finishInterrupt(run)
+        // The model call itself finished: what it cost is known, though its tools were cut short.
+        this.finishInterrupt(run, "", usage)
         return "done"
       }
       if (tracked) {
         await this.snapshot("step_end", messageId)
         if (run.interrupt.signal.aborted) {
-          this.finishInterrupt(run)
+          this.finishInterrupt(run, "", usage)
           return "done"
         }
       }
@@ -1093,7 +1246,8 @@ class LiveSession implements EngineSession {
       readonly purpose: RequestPurpose
     },
   ): Promise<ModelCall> {
-    const { store, provider, ids } = this.core
+    const { provider, ids } = this.core
+    const store = this.store
     const signal = run.interrupt.signal
     const { messageId, request } = input
     const step = input.purpose === "step"
@@ -1402,9 +1556,10 @@ class LiveSession implements EngineSession {
    * the step closed as interrupted, the marker for the model, the release
    * (cancel rules 3, 4 and 6). With no step open there is nothing to close;
    * a user's cancel still leaves the marker, a shutdown at a boundary cut
-   * nothing short and leaves none.
+   * nothing short and leaves none. `usage` is what the provider reported for
+   * the open step's model call, when it reported anything before the stop.
    */
-  private finishInterrupt(run: Run, partialText = ""): void {
+  private finishInterrupt(run: Run, partialText = "", usage: Usage | null = null): void {
     const reason = interruptReasonOf(run.interrupt.signal)
     if (reason === null) throw new Error("the execution is not interrupted")
     const projection = this.projection()
@@ -1415,7 +1570,7 @@ class LiveSession implements EngineSession {
     const step = openStep(projection)
     if (step !== null) {
       if (partialText !== "") events.push(event("text.ended", { messageId: step.id, text: partialText, providerData: null }))
-      events.push(...settleUnsettled(step, STOPPED), event("step.failed", { messageId: step.id, error, usage: null }))
+      events.push(...settleUnsettled(step, STOPPED), event("step.failed", { messageId: step.id, error, usage }))
       cutShort = true
     }
     const open = projection.session.open
@@ -1536,11 +1691,68 @@ class LiveSession implements EngineSession {
     if (this.core.openSnapshots === null) return
     const projection = this.projection()
     const to = projection.session.workspace.snapshot?.id
-    const from = firstDelivery(this.core.store.readEvents(this.id, { afterSeq: claimOf(projection).startedSeq }), 0)
+    const from = firstDelivery(this.store.readEvents(this.id, { afterSeq: claimOf(projection).startedSeq }), 0)
     if (to === undefined || from === null || from === to) return
     const store = await this.snapshots()
     const files = await store?.changedFiles(from as SnapshotId, to as SnapshotId).catch(() => null)
     if (files !== undefined && files !== null && files.length > 0) this.ephemeral({ type: "workspace.changes", sessionId: this.id, from, to, files })
+  }
+
+  /**
+   * Drops the snapshots of this session that the retention policy no longer
+   * keeps, in the background, after an execution: never one a revert or an
+   * undo could still restore (`neededSnapshots`). A failure costs disk
+   * space, nothing else, and is tried again after the next execution.
+   */
+  private retain(): void {
+    if (this.snapshotStore === null || this.retaining !== null || this.closing !== null) return
+    const done = retainSnapshots(this.core, this.store, this.id, "active", this.snapshotStore)
+      .catch(() => {})
+      .finally(() => {
+        if (this.retaining === done) this.retaining = null
+      })
+    this.retaining = done
+  }
+
+  /**
+   * The directories the session has worked in: where its tool calls read or
+   * wrote, going by what each tool says a call touches. Instruction files
+   * (AGENTS.md) there are discovered at the next step boundary and appended
+   * once, as messages; the frozen baseline is never rewritten. Derived from
+   * the calls in the log that are not reverted or refused, so a restart
+   * finds the same directories, and a revert forgets the ones only it visited.
+   */
+  private workedDirectories(projection: Projection): string[] {
+    const cwd = projection.session.cwd
+    const directories = new Set<string>()
+    for (const message of projection.messages) {
+      if (message.kind !== "assistant" || message.excluded !== null || message.status === "running") continue
+      let touched = this.touched.get(message.id)
+      if (touched === undefined) {
+        touched = message.parts.flatMap((part) => (part.type === "tool_call" ? this.directoriesOf(part, cwd) : []))
+        this.touched.set(message.id, touched)
+      }
+      for (const directory of touched) directories.add(directory)
+    }
+    return [...directories].sort()
+  }
+
+  /** The directories one call touched: none for a call that never began, or whose tool names no path. */
+  private directoriesOf(call: ToolCallPart, cwd: string): string[] {
+    const touches = this.core.touches.get(call.name)
+    if (touches === undefined || call.state.status !== "settled" || call.state.outcome === "not_started") return []
+    try {
+      return touches(JSON.parse(call.input)).flatMap((path) => {
+        if (typeof path !== "string" || path === "") return []
+        const absolute = resolvePath(cwd, path)
+        // A directory is itself; a file, or a path that is not there, stands for the directory it is in.
+        const info = statSync(absolute, { throwIfNoEntry: false })
+        return [info?.isDirectory() ? absolute : dirname(absolute)]
+      })
+    } catch {
+      // Arguments the tool itself refused name nothing.
+      return []
+    }
   }
 
   // ---- the verification gate ----
@@ -1561,7 +1773,7 @@ class LiveSession implements EngineSession {
    * Everything it decides from is stored state: the latest run of this turn,
    * the reports already sent, the acknowledgement, the snapshots.
    */
-  private async gate(run: Run): Promise<StepResult> {
+  private async gate(run: Run): Promise<GateResult> {
     const signal = run.interrupt.signal
     const loaded = this.config
     const interrupted = (): StepResult => {
@@ -1577,7 +1789,8 @@ class LiveSession implements EngineSession {
     const current = await this.snapshot("checks_start")
     if (signal.aborted) return interrupted()
     const state = this.projection()
-    if (state.inbox.length > 0 || !wouldGoIdle(state)) return "continue"
+    // A steer redirects the model, so nothing is decided now. A queued message waits for this very decision.
+    if (state.inbox.some(isSteer) || !wouldGoIdle(state)) return "continue"
     const recorded = state.session.verification.latest
     const latest = recorded !== null && recorded.seq > turnStartSeq(state) ? recorded : null
     const changed = await this.changedSinceVerified(state, current, loaded.projectDir)
@@ -1597,11 +1810,12 @@ class LiveSession implements EngineSession {
     const decision = decideGate(input)
     switch (decision.kind) {
       case "run_checks":
-        return this.check(run, { loaded, checks: selected, files: changed.files ?? [], number: (latest?.run ?? 0) + 1, input })
+        return this.check(run, { loaded, checks: selected, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
       case "report_and_continue": {
         // The model stopped again without changing a file and without saying it cannot fix them: the same report again.
         const previous = reportsThisTurn(state).at(-1)
-        if (previous === undefined) return this.check(run, { loaded, checks: selected, files: changed.files ?? [], number: (latest?.run ?? 0) + 1, input })
+        if (previous === undefined)
+          return this.check(run, { loaded, checks: selected, files: changed.files ?? [], filesKnown: changed.files !== null, number: (latest?.run ?? 0) + 1, input })
         this.write([event("synthetic.appended", { messageId: this.core.ids.message(), origin: HARNESS_ORIGIN.checkReport, content: previous.content })])
         return "continue"
       }
@@ -1622,14 +1836,18 @@ class LiveSession implements EngineSession {
   }
 
   /**
-   * Ends the execution as done with what the gate found, unless input
-   * arrived in the meantime: then only `before` is appended (a finished run
-   * of checks and its report stay on record) and the loop delivers the input.
+   * Ends the execution as done with what the gate found, unless input waits:
+   * then only `before` is appended (a finished run of checks and its report
+   * stay on record). A steer that arrived in the meantime redirects the
+   * model, so nothing ended and the loop delivers it. A queued message was
+   * waiting for exactly this: the turn may end with `verification`, and the
+   * loop writes that (`turn.ended`) together with the delivery.
    */
-  private finish(run: Run, verification: VerificationOutcome, before: readonly NewEvent[] = []): StepResult {
-    if (this.projection().inbox.length > 0) {
+  private finish(run: Run, verification: VerificationOutcome, before: readonly NewEvent[] = []): GateResult {
+    const inbox = this.projection().inbox
+    if (inbox.length > 0) {
       if (before.length > 0) this.write(before)
-      return "continue"
+      return inbox.some(isSteer) ? "continue" : { verification }
     }
     this.probe("execution.ending")
     this.write([...before, event("execution.succeeded", { executionId: run.executionId, verification })])
@@ -1655,33 +1873,59 @@ class LiveSession implements EngineSession {
    * runs; the results and what the gate decides from them are appended
    * together, so a crash can never leave a finished run without its
    * consequence. Checks are stopped by an interrupt like tools are.
+   *
+   * A selected check is not run when its last pass still stands: it names
+   * what it depends on, and every changed file it depends on is byte for
+   * byte what it was when it passed (`reusablePass`). Its result is carried
+   * into this run's evidence, marked as carried. In doubt, a check runs.
    */
   private async check(
     run: Run,
     work: {
       readonly loaded: Pick<LoadedConfig, "config" | "projectDir">
+      /** Every check that applies, in the configuration's order. */
       readonly checks: readonly CheckConfig[]
       readonly files: readonly string[]
+      /** Whether `files` comes from a snapshot diff. Without one nobody knows which files changed, and nothing is carried over. */
+      readonly filesKnown: boolean
       readonly number: number
       readonly input: GateInput
     },
-  ): Promise<StepResult> {
+  ): Promise<GateResult> {
     const signal = run.interrupt.signal
-    const { loaded, checks, files, number } = work
+    const { loaded, files, number } = work
     const interrupted = (): StepResult => {
       this.finishInterrupt(run)
       return "done"
     }
-    const fingerprints = Object.fromEntries(await Promise.all(checks.map(async (item) => [item.name, await fingerprintCheck(item, files, loaded.projectDir)] as const)))
+    const fingerprints = Object.fromEntries(await Promise.all(work.checks.map(async (item) => [item.name, await fingerprintCheck(item, files, loaded.projectDir)] as const)))
     if (signal.aborted) return interrupted()
-    if (this.projection().inbox.length > 0) return "continue"
+    const before = this.projection()
+    if (before.inbox.some(isSteer)) return "continue"
+    const { latest: recorded, verified } = before.session.verification
+    const carried = work.checks.flatMap((item) => {
+      const fromSeq = reusablePass({
+        check: item,
+        fingerprint: fingerprints[item.name] ?? "",
+        changedFilesKnown: work.filesKnown,
+        // Both runs measured the changed files from the same verified state: no run passed as a whole, and nothing was declared verified, in between.
+        sameBaseline: recorded !== null && verified !== null && verified.seq < recorded.seq,
+        latest: recorded === null ? null : { seq: recorded.seq, checks: recorded.evidence.checks },
+      })
+      return fromSeq === null ? [] : [{ check: item, fromSeq }]
+    })
+    // A run names at least one check. Should every pass still stand, the run that recorded them did not count as
+    // passed, which nothing explains: run them all.
+    const reused = carried.length === work.checks.length ? [] : carried
+    const checks = work.checks.filter((item) => !reused.some((entry) => entry.check === item))
     const [started] = this.write([event("checks.started", { run: number, checks: checks.map((item) => item.name) })])
     this.probe("checks.started")
 
     const running = this.core
       .runChecks(checks, {
         cwd: loaded.projectDir,
-        spillDir: join(this.core.spillDir, "checks"),
+        // Per session: a check's output is written under a working name first, and two sessions may run the same check at once.
+        spillDir: join(this.core.spillDir, "checks", this.id),
         signal,
         progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
       })
@@ -1705,10 +1949,10 @@ class LiveSession implements EngineSession {
     if (signal.aborted) return interrupted()
 
     const results = outcome.results
-    const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks, results, fingerprints })
+    const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks: work.checks, results, fingerprints, reused })
     const finished = event("checks.finished", { run: number, evidence })
     const after = this.projection()
-    const input: GateInput = { ...work.input, latest: results, changedSinceLatest: false, reportsSent: reportsThisTurn(after).length, acknowledgement: acknowledgementThisTurn(after) }
+    const input: GateInput = { ...work.input, latest: evidence.checks, changedSinceLatest: false, reportsSent: reportsThisTurn(after).length, acknowledgement: acknowledgementThisTurn(after) }
     const decision = decideGate(input)
     if (decision.kind === "finish" || decision.kind === "finish_unresolved") {
       // The execution is about to end: say what it changed. Nothing the decision rests on can change meanwhile
@@ -1803,7 +2047,7 @@ class LiveSession implements EngineSession {
     // The reducer holds this line too: what a compaction summarised cannot be taken out of the summary.
     if (target.seq <= (projection.session.compaction?.seq ?? 0))
       return refused("compacted", "that message is behind the latest compaction, and a revert cannot reach back past it")
-    const since = snapshotsSinceDelivery(this.core.store.readEvents(this.id), target.seq)
+    const since = snapshotsSinceDelivery(this.store.readEvents(this.id), target.seq)
     const messages = projection.messages.filter((message) => message.seq >= target.seq && message.excluded === null).length
     return this.restoreTo({ kind: "revert", fromSeq: target.seq, messageId: target.id, messages }, since.target, since.timeline, options)
   }
@@ -1812,7 +2056,7 @@ class LiveSession implements EngineSession {
     const last = this.projection().session.reverts.at(-1)
     if (last === undefined) return { kind: "refused", reason: "nothing_to_revert", message: "there is no revert to undo" }
     // Whatever changed since that revert's restore was changed by hand: nothing else ran.
-    const timeline = last.after === null ? [] : [{ id: last.after, point: "restore_end" as const }, ...snapshotsAfter(this.core.store.readEvents(this.id, { afterSeq: last.seq }), last.seq)]
+    const timeline = last.after === null ? [] : [{ id: last.after, point: "restore_end" as const }, ...snapshotsAfter(this.store.readEvents(this.id, { afterSeq: last.seq }), last.seq)]
     return this.restoreTo({ kind: "undo", revertSeq: last.seq, fromSeq: last.fromSeq, messages: last.excluded.length }, last.before, timeline, options)
   }
 
@@ -1939,7 +2183,7 @@ class LiveSession implements EngineSession {
    * is reported, and thrown only in strict mode.
    */
   private checkPrefix(projection: Projection, blocks: readonly BlockHash[]): void {
-    const store = this.core.store
+    const store = this.store
     const last = store.lastRequest(this.id, "step")
     if (last === null) return
     const served = projection.messages.findLast((message) => message.id === last.messageId)
@@ -1961,6 +2205,63 @@ class LiveSession implements EngineSession {
 /** The harness config directory, where the user-level AGENTS.md lives: `$XDG_CONFIG_HOME/<brand.directory>`. */
 function configDirectory(): string {
   return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), brand.directory)
+}
+
+/** Turns the store's refusals to hand out a session into the engine's own errors. */
+function storeErrors<T>(work: () => T): T {
+  try {
+    return work()
+  } catch (error) {
+    if (error instanceof StoreLockedError) throw new EngineError("session_in_use", error.message, error.holderPid)
+    if (error instanceof StoreError && (error.code === "session_not_found" || error.code === "ambiguous_session")) throw new EngineError(error.code, error.message)
+    throw error
+  }
+}
+
+/**
+ * The retention policy for a session's workspace snapshots.
+ *
+ * Never removed: every snapshot a revert or an undo of the session could
+ * still restore or needs to tell hand edits apart (`neededSnapshots`). Of the
+ * rest (the snapshots around steps and checks of older turns, those of
+ * history that was compacted away or reverted for good, refs that a crash
+ * left unrecorded), a session in use keeps the newest `snapshotKeepLast` and
+ * none older than `snapshotMaxAgeMs`; an archived session keeps none. A
+ * workspace that did not change is recorded as the same snapshot again and
+ * again, and one ref is kept for it.
+ *
+ * Only this session's refs are looked at, so sessions that share a workspace
+ * (and its private git directory) never remove each other's snapshots, and
+ * objects stay while any session's ref reaches them. What is needed is read
+ * after the refs are listed, so a snapshot recorded while this runs is
+ * either not in the list or already protected.
+ */
+async function retainSnapshots(
+  core: Core,
+  store: Store,
+  id: SessionId,
+  mode: "active" | "archived",
+  opened?: Promise<WorkspaceSnapshots | SnapshotUnavailable>,
+): Promise<void> {
+  if (core.openSnapshots === null) return
+  const session = store.getSession(id)?.session
+  if (session === undefined) return
+  const snapshots = await (opened ?? core.openSnapshots(session.cwd))
+  if ("reason" in snapshots || snapshots.prune === undefined) return
+  const needed = (): SnapshotId[] => {
+    const projection = store.getProjection(id)
+    if (projection === null) return []
+    // A fork's own events: the snapshots of its inherited history belong to its parent.
+    const events = store.readEvents(id, { afterSeq: projection.session.lineage?.throughSeq ?? 0 })
+    return neededSnapshots(projection, events) as SnapshotId[]
+  }
+  await snapshots.prune({
+    session: id,
+    protect: needed,
+    dedupe: true,
+    gc: "auto",
+    ...(mode === "archived" ? { keepLast: 0 } : { keepLast: core.limits.snapshotKeepLast, olderThanMs: core.limits.snapshotMaxAgeMs }),
+  })
 }
 
 const ABORTED = Symbol("aborted")

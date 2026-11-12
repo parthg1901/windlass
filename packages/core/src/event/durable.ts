@@ -249,9 +249,13 @@ export const durableEvents = {
   "settings.changed": define(1, sessionSettings),
   /** The session's title was set. */
   "session.renamed": define(1, object({ title: string })),
-  /** The session was hidden from the default list. Nothing is deleted. */
+  /**
+   * The session was hidden from the default list. Nothing is deleted from its
+   * log; the workspace snapshots no revert or undo of it could still restore
+   * are dropped. Rejected for a session that is already archived.
+   */
   "session.archived": define(1, empty),
-  /** The session was restored to the default list. */
+  /** The session was restored to the default list. Rejected for a session that is not archived. */
   "session.unarchived": define(1, empty),
 
   // ---- frozen request prefix ----
@@ -296,9 +300,20 @@ export const durableEvents = {
   "inbox.cancelled": define(1, object({ messageId })),
   /**
    * A waiting item became a message in history, at a step boundary
-   * (cancel rule 8). The item leaves the inbox in the same transaction.
+   * (cancel rule 8). The item leaves the inbox in the same transaction. A
+   * queued item that follows a turn is delivered right after that turn's
+   * `turn.ended`.
    */
   "inbox.delivered": define(1, object({ messageId })),
+  /**
+   * The turn in progress has its answer and the verification gate let it
+   * end, but a queued message waits, so the execution carries on with that
+   * message instead of ending: the next event is its `inbox.delivered`.
+   * `verification` is what `execution.succeeded` would have said, so a turn
+   * says what "done" rests on whether or not something was queued behind it.
+   * A queued message waits for this; a steer never does.
+   */
+  "turn.ended": define(1, object({ verification: verificationOutcome })),
   /**
    * The harness itself added a message to history at a step boundary, without
    * going through the inbox: the marker that the previous response was

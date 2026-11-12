@@ -6,7 +6,7 @@
  * path, so capping the same output twice gives the same bytes, and capped
  * output is itself within the limits (capping it again changes nothing).
  */
-import { mkdir } from "node:fs/promises"
+import { mkdir, rename } from "node:fs/promises"
 import { join } from "node:path"
 import type { Truncation } from "./tool.ts"
 
@@ -162,7 +162,11 @@ async function writeSpill(bytes: Uint8Array, spillDir: string): Promise<string |
   const path = join(spillDir, `output-${new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, 32)}.txt`)
   try {
     await mkdir(spillDir, { recursive: true })
-    await Bun.write(path, bytes)
+    // Named by content, and shared by every session and process: written aside and renamed, so a reader never
+    // sees half a file and two writers of the same output cannot interleave.
+    const temporary = `${path}.${process.pid}-${Math.random().toString(36).slice(2, 10)}.tmp`
+    await Bun.write(temporary, bytes)
+    await rename(temporary, path)
     return path
   } catch {
     // The cap must still produce its text when the spill directory is unusable; the marker says nothing was saved.

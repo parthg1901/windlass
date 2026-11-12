@@ -19,10 +19,18 @@
  * - No raw SQLite error leaves a write for a condition the contract names: a
  *   lock that is not released is `locked`, a reused request ID is
  *   `duplicate_request`, a file from another schema version is `schema_mismatch`.
+ * - A fork whose parent is not in this file reads the inherited part of its
+ *   log through `parentLog` (the session directory supplies it: the parent is
+ *   another file). Only events at or before the fork point are ever asked
+ *   for. They are committed and the log is append-only, so they never change,
+ *   whoever is writing to the parent in the meantime.
+ * - Media is not in the database: `putBlob` and `getBlob` go to a `BlobStore`
+ *   (`blobs.ts`), which sessions and processes share.
+ * - `readOnly` opens the file without the writer lock and without changing
+ *   it, next to whoever writes it: WAL readers do not block the writer and
+ *   see only committed transactions. Every write then throws `read_only`.
  */
 import { Database, SQLiteError } from "bun:sqlite"
-import { createHash } from "node:crypto"
-import type { BlobRef } from "../content.ts"
 import { decodeEvent, encodeEventData, validateEvent } from "../event/decode.ts"
 import type { NewEvent, StoredEvent } from "../event/durable.ts"
 import { messageId, requestId, sessionId as sessionIdValidator, type SessionId } from "../id.ts"
@@ -48,6 +56,7 @@ import {
   object,
   oneOf,
 } from "../validate.ts"
+import { type BlobStore, createFileBlobStore, createMemoryBlobStore } from "./blobs.ts"
 import { CONNECTION_PRAGMAS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema.ts"
 import { acquireWriterLock, isBusy } from "./sqlite-lock.ts"
 import {
@@ -59,7 +68,6 @@ import {
   type RequestStart,
   type SessionSummary,
   type Store,
-  type StoredBlob,
   StoreError,
 } from "./store.ts"
 
@@ -73,6 +81,18 @@ export interface SqliteStoreOptions extends OpenStoreOptions {
   readonly busyTimeoutMs?: number
   /** Called when a `subscribe` listener throws. Defaults to `console.error`. The append stays committed. */
   readonly onListenerError?: (error: unknown) => void
+  /** Where media goes. Defaults to memory for a store in memory, and to the directory `<path>-blobs` for a file. */
+  readonly blobs?: BlobStore
+  /**
+   * Reads the effective log of a session that is not in this file: the parent
+   * of a fork, when every session has its own file. Returns its events with
+   * `seq` in `(afterSeq, afterSeq + limit]`, in order, and throws `StoreError`
+   * `parent_missing` when that session cannot be found. Without it a parent
+   * must be in this file.
+   */
+  readonly parentLog?: (sessionId: SessionId, range: { readonly afterSeq: number; readonly limit: number }) => readonly StoredEvent[]
+  /** Open without the writer lock and without writing anything, next to the process that writes the file. */
+  readonly readOnly?: boolean
 }
 
 export interface SqliteStore extends Store {
@@ -106,9 +126,16 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
   const now = options.now ?? Date.now
   const onListenerError = options.onListenerError ?? ((error: unknown) => console.error("store listener failed:", error))
   const inMemory = options.path === ":memory:" || options.path === ""
-  const lock = inMemory ? null : acquireWriterLock(options.path)
-  const database = openDatabase(options.path, inMemory, options.busyTimeoutMs ?? 5000, lock)
+  const readOnly = options.readOnly === true
+  const lock = inMemory || readOnly ? null : acquireWriterLock(options.path)
+  const database = readOnly
+    ? openReader(options.path, options.busyTimeoutMs ?? 5000)
+    : openDatabase(options.path, inMemory, options.busyTimeoutMs ?? 5000, lock)
   const sql = prepare(database)
+  const blobs = options.blobs ?? (inMemory ? createMemoryBlobStore() : createFileBlobStore(`${options.path}-blobs`))
+  const writable = (what: string) => {
+    if (readOnly) throw new StoreError("read_only", `${what}: ${options.path} is open for reading only`)
+  }
   const cache = new Map<SessionId, Projection>()
   const listeners = new Set<(events: readonly StoredEvent[]) => void>()
 
@@ -144,9 +171,14 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
   const startingState = (first: NewEvent): Projection | null => {
     if (first.type !== "session.created" || first.data.lineage === null) return null
     const parent = first.data.lineage.parentSessionId
+    const through = first.data.lineage.throughSeq
     // The reducer rejects a fork whose parent is missing or shorter than `throughSeq`.
+    const inherited =
+      sql.head.get(parent) === null && options.parentLog !== undefined
+        ? options.parentLog(parent, { afterSeq: 0, limit: through })
+        : readEvents(parent, { limit: through })
     let state: Projection | null = null
-    for (const event of readEvents(parent, { limit: first.data.lineage.throughSeq })) state = reduce(state, event)
+    for (const event of inherited) state = reduce(state, event)
     return state
   }
 
@@ -192,6 +224,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
 
   const append: Store["append"] = (id, events, options = {}) => {
     sessionIdValidator(id, "sessionId")
+    writable(`append to session ${id}`)
     // Validation is pure, so it runs before the transaction is opened.
     const validated = events.map((event) => validateEvent(event))
     const result = writing(`append to session ${id}`, () => appendTransaction.immediate(id, validated, options))
@@ -208,14 +241,23 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
   }
 
   const readEvents: Store["readEvents"] = (id, range = {}) => {
-    const segments = lineage(sql, id)
+    const segments = lineage(sql, id, options.parentLog !== undefined)
     const afterSeq = range.afterSeq ?? 0
     let remaining = range.limit ?? Number.POSITIVE_INFINITY
     const events: StoredEvent[] = []
     for (const segment of segments) {
       if (remaining <= 0) break
+      const from = Math.max(segment.after, afterSeq)
+      if (segment.foreign) {
+        // The inherited part, from the parent's own file: nothing past the fork point is asked for.
+        if (from >= segment.through) continue
+        const inherited = options.parentLog!(segment.id as SessionId, { afterSeq: from, limit: Math.min(remaining, segment.through - from) })
+        events.push(...inherited)
+        remaining -= inherited.length
+        continue
+      }
       const limit = remaining === Number.POSITIVE_INFINITY ? -1 : remaining
-      const rows = sql.events.all(segment.id, Math.max(segment.after, afterSeq), segment.through, limit)
+      const rows = sql.events.all(segment.id, from, segment.through, limit)
       for (const row of rows) events.push(decodeEvent(row))
       remaining -= rows.length
     }
@@ -247,6 +289,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
 
   const beginRequest: Store["beginRequest"] = (start) => {
     const checked = requestStart(start, "request")
+    writable(`begin request ${checked.id}`)
     if (sql.head.get(checked.sessionId) === null)
       throw new StoreError("session_not_found", `session ${checked.sessionId} does not exist`)
     const row = writing(`begin request ${checked.id}`, () => {
@@ -273,6 +316,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
 
   const finishRequest: Store["finishRequest"] = (id, finish) => {
     const checked = requestFinish(finish, "finish")
+    writable(`finish request ${id}`)
     if ((checked.outcome === "error") !== (checked.errorKind !== null))
       throw new TypeError("errorKind is set exactly when the outcome is error")
     const row = writing(`finish request ${id}`, () =>
@@ -289,14 +333,6 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
     )
     if (row === null) throw new StoreError("request_not_pending", `request ${id} does not exist or is already finished`)
     return requestRecord(row)
-  }
-
-  const putBlob: Store["putBlob"] = (bytes, mediaType) => {
-    nonEmptyString(mediaType, "mediaType")
-    const hash = createHash("sha256").update(bytes).digest("hex")
-    writing(`store blob ${hash}`, () => sql.insertBlob.run(hash, mediaType, bytes.byteLength, bytes, clock()))
-    // The first media type stored for these bytes wins, so the same bytes always give the same reference.
-    return { hash, mediaType: sql.blobMediaType.get(hash)!.media_type } satisfies BlobRef
   }
 
   return {
@@ -329,12 +365,8 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
       return row === null ? null : requestRecord(row)
     },
     readRequests: (id) => sql.requests.all(id).map(requestRecord),
-    putBlob,
-    getBlob: (hash) => {
-      const row = sql.blob.get(hash)
-      if (row === null) return null
-      return { hash: row.hash, mediaType: row.media_type, bytes: new Uint8Array(row.data) } satisfies StoredBlob
-    },
+    putBlob: (bytes, mediaType) => blobs.put(bytes, mediaType),
+    getBlob: (hash) => blobs.get(hash),
     close: () => {
       listeners.clear()
       cache.clear()
@@ -367,6 +399,33 @@ function openDatabase(path: string, inMemory: boolean, busyTimeoutMs: number, lo
   } catch (error) {
     database.close()
     lock?.close()
+    throw error
+  }
+}
+
+/**
+ * A connection that only reads, for a file some other store may be writing.
+ * It takes no lock, creates nothing and changes no setting of the database;
+ * a file that is not a store database of this schema version is refused.
+ */
+function openReader(path: string, busyTimeoutMs: number): Database {
+  let database: Database
+  try {
+    database = new Database(path, { readonly: true })
+  } catch (error) {
+    if (error instanceof SQLiteError && error.code === "SQLITE_CANTOPEN") throw new StoreError("session_not_found", `${path} does not exist`, { cause: error })
+    throw error
+  }
+  try {
+    database.run(`PRAGMA busy_timeout = ${integer(0)(busyTimeoutMs, "busyTimeoutMs")}`)
+    const version = database.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version
+    if (version !== SCHEMA_VERSION)
+      throw new StoreSchemaError(`${path} has schema version ${version}; this build uses version ${SCHEMA_VERSION}`)
+    return database
+  } catch (error) {
+    database.close()
+    if (error instanceof SQLiteError && (error.code === "SQLITE_NOTADB" || error.code === "SQLITE_CORRUPT"))
+      throw new StoreSchemaError(`${path} is not a store database`)
     throw error
   }
 }
@@ -504,13 +563,6 @@ function prepare(database: Database) {
       "SELECT * FROM request WHERE session_id = ? AND purpose = ? ORDER BY ordinal DESC LIMIT 1",
     ),
     requests: database.query<RequestRow, [string]>("SELECT * FROM request WHERE session_id = ? ORDER BY ordinal"),
-    insertBlob: database.query<unknown, [string, string, number, Uint8Array, number]>(
-      "INSERT INTO blob (hash, media_type, size, data, time_created) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hash) DO NOTHING",
-    ),
-    blobMediaType: database.query<{ media_type: string }, [string]>("SELECT media_type FROM blob WHERE hash = ?"),
-    blob: database.query<{ hash: string; media_type: string; data: Uint8Array }, [string]>(
-      "SELECT hash, media_type, data FROM blob WHERE hash = ?",
-    ),
   }
 }
 
@@ -520,17 +572,22 @@ function prepare(database: Database) {
  * through `parent_seq`, which may itself be a fork. Inherited events keep the
  * parent's `sessionId`, which is what lets `reduceAll` fold the effective log.
  */
-function lineage(sql: ReturnType<typeof prepare>, id: string) {
-  const segments: { id: string; after: number; through: number }[] = []
+function lineage(sql: ReturnType<typeof prepare>, id: string, foreignParents: boolean) {
+  const segments: { id: string; after: number; through: number; foreign: boolean }[] = []
   let next: string | null = id
   let through = Number.MAX_SAFE_INTEGER
   while (next !== null) {
     const row = sql.lineage.get(next)
     if (row === null) {
       if (segments.length === 0) return []
-      throw new Error(`session ${segments.at(-1)!.id} names a parent ${next} that does not exist`)
+      // The parent lives in another file: everything up to the fork point comes from there, its own ancestors included.
+      if (foreignParents) {
+        segments.push({ id: next, after: 0, through, foreign: true })
+        break
+      }
+      throw new StoreError("parent_missing", `session ${segments.at(-1)!.id} names a parent ${next} that does not exist`)
     }
-    segments.push({ id: next, after: row.parent_seq ?? 0, through })
+    segments.push({ id: next, after: row.parent_seq ?? 0, through, foreign: false })
     through = row.parent_seq ?? 0
     next = row.parent_id
   }

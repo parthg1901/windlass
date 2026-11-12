@@ -11,7 +11,7 @@
 import { expect } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { type CheckConfig, type Config, type ConfigFile, resolveConfig } from "../../src/config/schema.ts"
 import type { NewEvent, SessionSettings, StoredEvent } from "../../src/event/durable.ts"
 import type { EngineEvent } from "../../src/engine/channel.ts"
@@ -27,7 +27,7 @@ import {
 } from "../../src/engine/engine.ts"
 import type { WorkspaceSnapshots } from "../../src/engine/workspace.ts"
 import type { ExecutionId, MessageId, RequestId, SessionId } from "../../src/id.ts"
-import { type InstructionSource, dateSource } from "../../src/instructions/source.ts"
+import { type InstructionSource, agentsSource, dateSource } from "../../src/instructions/source.ts"
 import { interruptReasonOf } from "../../src/interrupt.ts"
 import { encodeRequest } from "../../src/provider/openai-responses.ts"
 import { buildRequest } from "../../src/request/build.ts"
@@ -145,6 +145,8 @@ export class ScriptedTools {
       description: `The ${name} tool`,
       inputSchema: { type: "object" },
       effect: this.effects[name]!,
+      // As the standard file tools say it: a call touches the path it names.
+      touches: (input: Record<string, unknown>) => (typeof input.path === "string" ? [input.path] : []),
       execute: async (input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> => {
         this.ran.push({ name, input })
         const behaviour = this.queues.get(name)?.shift()
@@ -332,6 +334,8 @@ export class Harness {
   config: Config | null
   /** The date the instruction sources report: `[year, month, day]`. */
   date: [number, number, number] = [2026, 11, 12]
+  /** AGENTS.md files on the scripted disk, by directory. One is a source once the session works in its directory. */
+  readonly agents = new Map<string, string>()
   /** Everything the engines reported. A test that expects none asserts on it. */
   readonly diagnostics: Diagnostic[] = []
   /** Every event published by any incarnation of the session, in order. */
@@ -378,7 +382,16 @@ export class Harness {
       loadConfig: this.options.config === undefined ? null : async () => ({ config: this.config ?? resolveConfig({}), projectDir: "/repo" }),
       runChecks: this.checks.run,
       prompt: "You are a coding agent.",
-      discover: (): InstructionSource[] => [dateSource(...this.date)],
+      discover: (input): InstructionSource[] => [
+        // As discovery does: the files of the directories the session has worked in, and the ones the model already has.
+        ...[...new Set([...(input.directories ?? []).map((directory) => join(directory, "AGENTS.md")), ...(input.known ?? [])])]
+          .sort()
+          .flatMap((path) => {
+            const content = this.agents.get(dirname(path))
+            return content === undefined ? [] : [agentsSource(path, content)]
+          }),
+        dateSource(...this.date),
+      ],
       ids: {
         session: () => `ses_${++this.counters.session}` as SessionId,
         message: () => `msg_${++this.counters.message}` as MessageId,
@@ -576,7 +589,7 @@ export function comparable(events: readonly NewEvent[]): Plain[] {
       data.restore = { ...record, target: label("w", record.target), before: label("w", record.before), after: record.after === null ? null : label("w", record.after) }
     }
     if (item.type === "checks.finished") data.evidence = plainEvidence(item.data.evidence)
-    if (item.type === "execution.succeeded" && "evidence" in item.data.verification)
+    if ((item.type === "execution.succeeded" || item.type === "turn.ended") && "evidence" in item.data.verification)
       data.verification = { ...item.data.verification, evidence: plainEvidence(item.data.verification.evidence) }
     if (item.type === "baseline.set") return { type: item.type, data: { sources: data.sources } }
     if (item.type === "instruction.appended") return { type: item.type, data: { messageId: data.messageId, source: data.source } }

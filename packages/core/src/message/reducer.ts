@@ -12,7 +12,8 @@
  * - Messages enter history only at a step boundary and only under a running
  *   execution claim. A step needs a baseline to build its request from.
  * - Inbox items are delivered oldest first within their mode; a queued item
- *   only when no steer waits and the session would otherwise go idle.
+ *   only when no steer waits and the session would otherwise go idle, which,
+ *   after a turn, the gate says with `turn.ended` right before the delivery.
  * - An execution succeeds only when nothing waits in the inbox and the model
  *   has answered everything it was given.
  * - A tool call follows its state machine and settles exactly once.
@@ -31,6 +32,7 @@
  * - A revert and its undo happen only while idle; one that restores files is
  *   announced first and closed by exactly one event. Only the latest revert
  *   can be undone, and only until new work starts.
+ * - A session is archived once and unarchived once: each event changes something.
  *
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
@@ -172,6 +174,7 @@ const SCOPE = {
   "baseline.set": "work",
   "instruction.appended": "work",
   "inbox.delivered": "work",
+  "turn.ended": "work",
   "execution.started": "work",
   "execution.interrupt_requested": "work",
   "execution.resumed": "work",
@@ -221,6 +224,10 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     if (cutShort && !(event.type === "synthetic.appended" && event.data.origin === HARNESS_ORIGIN.interrupt))
       fail("invalid_transition", `step ${last.id} was cut short: the interrupt marker must follow it`)
   }
+  // A turn that ended for a queued item is followed by that item's delivery and by nothing else.
+  const handover = state.session.open?.kind === "handover" ? state.session.open : null
+  if (handover !== null && !(event.type === "inbox.delivered" && event.data.messageId === handover.messageId))
+    fail("invalid_transition", `the turn ended for queued item ${handover.messageId}: its delivery comes next`)
   /** A step or compaction closes as `interrupted` exactly when that interrupt was requested, and as nothing else then. */
   const closing = (error: StepError) => {
     const interrupting = held?.interrupting ?? null
@@ -249,11 +256,14 @@ function apply(state: Projection, event: AppliedEvent): Projection {
    * harness or assistant message, or when the latest of them is a completed
    * step that did not ask for tools.
    */
-  const wouldGoIdle = (startedSeq: number, unansweredReport = false) => {
-    const spoken = state.messages.filter(
+  /** What was said under the claim: user, harness and assistant messages. */
+  const spokenSince = (startedSeq: number) =>
+    state.messages.filter(
       (message) =>
         message.seq > startedSeq && (message.kind === "user" || message.kind === "synthetic" || message.kind === "assistant"),
     )
+  const wouldGoIdle = (startedSeq: number, unansweredReport = false) => {
+    const spoken = spokenSince(startedSeq)
     // The report of checks left unresolved is told to the model without sending it back.
     const last = spoken.at(-1)
     const reported = unansweredReport && last?.kind === "synthetic" && last.delivery === null && last.origin === HARNESS_ORIGIN.checkReport
@@ -346,8 +356,10 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     case "session.renamed":
       return session({ title: event.data.title })
     case "session.archived":
+      if (state.session.archived) fail("invalid_transition", "the session is already archived")
       return session({ archived: true })
     case "session.unarchived":
+      if (!state.session.archived) fail("invalid_transition", "the session is not archived")
       return session({ archived: false })
     case "settings.changed": {
       // A request in flight was built from the settings it started with.
@@ -413,17 +425,19 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     case "inbox.delivered": {
       const item = state.inbox.find((candidate) => candidate.messageId === event.data.messageId)
       if (item === undefined) return fail("not_found", `inbox item ${event.data.messageId} is not waiting`)
-      atBoundary()
+      if (handover === null) atBoundary()
       const current = claimed()
       const first = state.inbox.find((candidate) => candidate.delivery === item.delivery)
       if (first !== item)
         fail("invalid_transition", `${item.delivery} item ${first?.messageId} was admitted earlier and is delivered first`)
-      if (item.delivery === "queue") {
+      if (item.delivery === "queue" && handover === null) {
         const steer = state.inbox.find((candidate) => candidate.delivery === "steer")
         if (steer !== undefined)
           fail("invalid_transition", `steered item ${steer.messageId} is delivered before any queued item`)
-        if (!wouldGoIdle(current.startedSeq))
-          fail("invalid_transition", "a queued item is delivered only when the session would otherwise go idle")
+        // Whether a turn may end is the gate's decision, so a queued item behind a turn waits for `turn.ended`.
+        // Only as the first input under the claim is there no turn before it.
+        if (spokenSince(current.startedSeq).length > 0)
+          fail("invalid_transition", "a queued item is delivered only once the turn before it has ended (turn.ended comes first)")
       }
       const delivered: Message =
         item.origin === null
@@ -438,9 +452,30 @@ function apply(state: Projection, event: AppliedEvent): Projection {
             }
       return {
         ...state,
+        session: handover === null ? state.session : { ...state.session, open: null },
         inbox: state.inbox.filter((candidate) => candidate !== item),
         messages: [...state.messages, delivered],
       }
+    }
+    case "turn.ended": {
+      const current = claimed()
+      atBoundary()
+      const steer = state.inbox.find((candidate) => candidate.delivery === "steer")
+      if (steer !== undefined) fail("invalid_transition", `steered item ${steer.messageId} is delivered at once: a steer does not wait for the turn to end`)
+      const queued = state.inbox.find((candidate) => candidate.delivery === "queue")
+      if (queued === undefined) return fail("invalid_transition", "no queued item waits: an execution with nothing left to do ends (execution.succeeded)")
+      if (spokenSince(current.startedSeq).length === 0) fail("invalid_transition", "there is no turn to end under this execution")
+      const outcome = event.data.verification
+      if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
+        fail("invalid_transition", "the model has not answered everything it was given in this turn")
+      return session({
+        open: { kind: "handover", messageId: queued.messageId },
+        // As when an execution ends with nothing to check: what is there now is what later checks are selected against.
+        verification:
+          outcome.status === "not_needed"
+            ? { ...state.session.verification, verified: { seq: event.seq, snapshot: state.session.workspace.snapshot?.id ?? null } }
+            : state.session.verification,
+      })
     }
     case "synthetic.appended":
       if ((held?.interrupting ?? null) !== null && event.data.origin !== HARNESS_ORIGIN.interrupt)
@@ -743,9 +778,10 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       const current = claimed()
       atBoundary()
       if (event.data.checks.length === 0) fail("invalid_transition", "a run of checks names at least one check")
-      // Checks answer "is it done?", so they run only once the model says it is and nobody has said anything since.
-      const waiting = state.inbox[0]
-      if (waiting !== undefined) fail("invalid_transition", `inbox item ${waiting.messageId} is waiting: deliver it before checking`)
+      // Checks answer "is it done?", so they run only once the model says it is and nobody has redirected it since.
+      // A queued item waits for exactly this answer; a steer is delivered first.
+      const waiting = state.inbox.find((candidate) => candidate.delivery === "steer")
+      if (waiting !== undefined) fail("invalid_transition", `steered item ${waiting.messageId} is waiting: deliver it before checking`)
       if (!wouldGoIdle(current.startedSeq))
         fail("invalid_transition", "checks run only when the session would otherwise go idle")
       return session({ open: { kind: "checks", run: event.data.run, seq: event.seq } })

@@ -28,6 +28,7 @@ export function editTool(): Tool<EditInput> {
       additionalProperties: false,
     },
     effect: "write",
+    touches: (input) => [input.path],
     execute: async (input, context) => {
       const path = resolvePath(context.cwd, input.path)
       const shown = displayPath(context.cwd, path)

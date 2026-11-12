@@ -121,6 +121,13 @@ export interface Tool<Input = Json> extends ToolSpec {
    * `error`, or as `effect_unknown` when `effect` is not `read`.
    */
   readonly execute: (input: Input, context: ToolContext) => Promise<ToolResult>
+  /**
+   * The files or directories a call with this input reads or writes, as the
+   * model gave them (absolute, or relative to the working directory). The
+   * step loop looks for instruction files (AGENTS.md) in the directories a
+   * session works in. A tool that names no path (a shell command) leaves it out.
+   */
+  readonly touches?: (input: Input) => readonly string[]
 }
 
 /**

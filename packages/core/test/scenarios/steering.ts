@@ -1,6 +1,5 @@
 /** Steering and queueing: user input that arrives while the session is working (cancel rule 8). */
 import {
-  NOT_STARTED,
   type Scenario,
   called,
   deliver,
@@ -10,6 +9,7 @@ import {
   executionSucceeded,
   interruptMarker,
   interruptRequested,
+  NOT_STARTED,
   opening,
   ran,
   say,
@@ -18,6 +18,8 @@ import {
   stepInterrupted,
   stepStarted,
   toolStarted,
+  turnEnded,
+  withdrawn,
 } from "./script.ts"
 
 export const steerAtNextBoundary: Scenario = {
@@ -77,7 +79,7 @@ export const steerAtNextBoundary: Scenario = {
 export const queueWaitsForIdle: Scenario = {
   title: "A queued message waits until the session would go idle",
   description:
-    "While the model works, the user queues a follow-up. Unlike a steer it is not delivered at the next step boundary: the turn runs to its answer first. When the session would otherwise go idle, exactly one queued item is delivered and the loop carries on under the same claim.",
+    "While the model works, the user queues a follow-up. Unlike a steer it is not delivered at the next step boundary: the turn runs to its answer first. When the session would otherwise go idle, the turn ends (`turn.ended`, with what the verification gate found: here nothing is configured, so nothing was verified), exactly one queued item is delivered in the same append, and the loop carries on under the same claim.",
   provider: "step 1 finishes with a read call; step 2 answers with stop; then step 3 answers the queued message",
   phases: [
     {
@@ -108,11 +110,16 @@ export const queueWaitsForIdle: Scenario = {
           code: "invalid_transition",
           why: "the execution cannot succeed while input waits; it delivers the queued item instead",
         },
+        {
+          event: deliver("u2"),
+          code: "invalid_transition",
+          why: "whether the turn may end is the gate's decision: turn.ended comes before the delivery of what waited behind the turn",
+        },
       ],
     },
     {
-      label: "the session would go idle: deliver one queued item",
-      events: [deliver("u2"), stepStarted("a3"), say("a3", "Added the entry."), stepEnded("a3"), executionSucceeded()],
+      label: "the session would go idle: the turn ends and one queued item is delivered",
+      events: [turnEnded(), deliver("u2"), stepStarted("a3"), say("a3", "Added the entry."), stepEnded("a3"), executionSucceeded()],
       expect: {
         ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "u2", kind: "user" }, { id: "a3" }],
         history: ["u1", "a1", "a2", "u2", "a3"],
@@ -211,7 +218,7 @@ export const deliveryOrder: Scenario = {
     },
     {
       label: "the turn gets its answer; one queued item is delivered",
-      events: [stepStarted("a2"), say("a2", "a, b and c are fine."), stepEnded("a2"), deliver("q1")],
+      events: [stepStarted("a2"), say("a2", "a, b and c are fine."), stepEnded("a2"), turnEnded(), deliver("q1")],
       expect: { inbox: ["q2"], history: ["u1", "a1", "u2", "u3", "a2", "q1"] },
       rejects: [
         { event: deliver("q2"), code: "invalid_transition", why: "one queued item at a time: q1 has not been answered" },
@@ -223,6 +230,7 @@ export const deliveryOrder: Scenario = {
         stepStarted("a3"),
         say("a3", "Changelog updated."),
         stepEnded("a3"),
+        turnEnded(),
         deliver("q2"),
         stepStarted("a4"),
         say("a4", "Version bumped."),
@@ -238,4 +246,42 @@ export const deliveryOrder: Scenario = {
   ],
 }
 
-export const steeringScenarios = [steerAtNextBoundary, queueWaitsForIdle, steerSurvivesInterrupt, deliveryOrder]
+export const withdrawnBeforeDelivery: Scenario = {
+  title: "A prompt is withdrawn before it is delivered",
+  description:
+    "The user steers while a read runs and takes the message back before the step ends (a client that cancels a prompt it just sent). The withdrawal is an event of its own, `inbox.cancelled`: the item leaves the inbox and never becomes a message, so the model never sees it. Nothing else about the turn changes. A prompt that was already delivered cannot be withdrawn; that is what a revert is for.",
+  provider: "step 1 finishes with a read call; step 2 answers",
+  phases: [
+    {
+      label: "the user steers while the read runs, then takes it back",
+      events: [
+        ...opening(),
+        stepStarted("a1"),
+        called("a1", "call_1", "read", '{"path":"a.ts"}'),
+        toolStarted("a1", "call_1", "read"),
+        enqueue("u2", "Also check b.ts."),
+        withdrawn("u2"),
+        settled("a1", "call_1", "success", "export const a = 1"),
+        stepEnded("a1", "tool_calls"),
+      ],
+      expect: { inbox: [], open: null, history: ["u1", "a1"] },
+      rejects: [
+        { event: deliver("u2"), code: "not_found", why: "a withdrawn item is never delivered" },
+        { event: withdrawn("u2"), code: "not_found", why: "it is withdrawn once" },
+        { event: withdrawn("u1"), code: "not_found", why: "a delivered prompt is history and cannot be withdrawn" },
+      ],
+    },
+    {
+      label: "the turn ends without it",
+      events: [stepStarted("a2"), say("a2", "a is 1."), stepEnded("a2"), executionSucceeded()],
+      expect: {
+        ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }],
+        history: ["u1", "a1", "a2"],
+        inbox: [],
+        execution: null,
+      },
+    },
+  ],
+}
+
+export const steeringScenarios = [steerAtNextBoundary, queueWaitsForIdle, steerSurvivesInterrupt, deliveryOrder, withdrawnBeforeDelivery]

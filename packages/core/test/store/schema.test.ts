@@ -29,7 +29,7 @@ const insertEvent = (database: Database, sessionId: string, seq: number, data = 
   ])
 
 describe("SQLite schema", () => {
-  test("creates the six tables on an empty database", () => {
+  test("creates the five tables on an empty database", () => {
     const database = open()
     const tables = database
       .query<{ name: string }, []>(
@@ -37,7 +37,8 @@ describe("SQLite schema", () => {
       )
       .all()
       .map((row) => row.name)
-    expect(tables).toEqual(["blob", "event", "inbox", "message", "request", "session"])
+    // Media is not among them: it lives in the blob store that sessions share.
+    expect(tables).toEqual(["event", "inbox", "message", "request", "session"])
     expect(database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(SCHEMA_VERSION)
   })
 
@@ -77,7 +78,8 @@ describe("SQLite schema", () => {
          VALUES ('ses_3', 'ses_1', '/repo', 0, 0, 0, '{}')`,
       ),
     ).toThrow()
-    expect(() => insertSession(database, "ses_4", ["ses_missing", "fork", 1])).toThrow()
+    // The parent is usually in another file, so it is named, not referenced.
+    expect(() => insertSession(database, "ses_4", ["ses_missing", "fork", 1])).not.toThrow()
   })
 
   test("a message id is unique within a session and a fork may reuse its parent's ids", () => {
@@ -94,18 +96,6 @@ describe("SQLite schema", () => {
     insert("ses_2", 5, "msg_1")
     expect(() => insert("ses_1", 6, "msg_1")).toThrow()
     expect(() => insert("ses_1", 5, "msg_2")).toThrow()
-  })
-
-  test("a blob hash is stored once", () => {
-    const database = open()
-    const insert = () =>
-      database.run("INSERT INTO blob (hash, media_type, size, data, time_created) VALUES ('ab', 'image/png', 3, ?, 0)", [
-        new Uint8Array([1, 2, 3]),
-      ])
-    insert()
-    expect(insert).toThrow()
-    const row = database.query<{ data: Uint8Array }, []>("SELECT data FROM blob").get()
-    expect([...row!.data]).toEqual([1, 2, 3])
   })
 
   test("ledger rows are ordered by an increasing ordinal", () => {

@@ -33,6 +33,7 @@ export function readTool(): Tool<ReadInput> {
       additionalProperties: false,
     },
     effect: "read",
+    touches: (input) => [input.path],
     execute: async (input, context) => {
       const path = resolvePath(context.cwd, input.path)
       const shown = displayPath(context.cwd, path)

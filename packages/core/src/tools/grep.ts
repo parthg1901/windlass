@@ -68,6 +68,7 @@ export function grepTool(options: GrepOptions = {}): Tool<GrepInput> {
       additionalProperties: false,
     },
     effect: "read",
+    touches: (input) => [input.path ?? "."],
     execute: async (input, context) => {
       const target = resolvePath(context.cwd, input.path ?? ".")
       const shown = displayPath(context.cwd, target)

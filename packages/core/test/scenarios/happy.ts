@@ -1,6 +1,8 @@
 /** Happy paths: nothing goes wrong. */
 import {
   type Scenario,
+  archived,
+  unarchived,
   baseline,
   called,
   created,
@@ -259,4 +261,51 @@ export const modelSwitch: Scenario = {
   ],
 }
 
-export const happyPaths = [plainAnswer, oneToolCall, parallelToolCalls, severalSteps, twoTurns, modelSwitch]
+export const AGENTS_IN_API = "agents:/repo/packages/api/AGENTS.md"
+
+export const instructionsInAVisitedDirectory: Scenario = {
+  title: "The agent starts working in a directory that has its own instructions",
+  description:
+    "The session started in `/repo`, whose instructions are in the frozen baseline. The model reads a file in `packages/api`, a directory with an `AGENTS.md` of its own. The loop notes which directories the tool calls of a step touched, and at the next step boundary it looks for instruction files there: the file is appended once, as a message, with its text and fingerprint frozen. The baseline is not rewritten, so the next request is the previous one plus appended items. From then on the file is known, and is appended again only if it changes.",
+  provider: "step 1 finishes with a read call in packages/api; step 2 answers",
+  phases: [
+    {
+      label: "the model reads a file in packages/api",
+      events: [...opening("What does the handler return?"), stepStarted("a1"), ...ran("a1", "call_1", "read", '{"path":"packages/api/handler.ts"}', "export const handler = () => 200"), stepEnded("a1", "tool_calls")],
+      expect: { history: ["u1", "a1"], open: null },
+    },
+    {
+      label: "at the boundary the directory's instructions are appended, then the next step runs",
+      events: [instruction("i1", AGENTS_IN_API, "Handlers return status codes, never bodies."), stepStarted("a2"), say("a2", "It returns 200."), stepEnded("a2"), executionSucceeded()],
+      expect: {
+        ui: [{ id: "u1" }, { id: "a1" }, { id: "i1", kind: "instruction" }, { id: "a2" }],
+        history: ["u1", "a1", "i1", "a2"],
+        execution: null,
+      },
+      rejects: [{ event: baseline(), code: "invalid_transition", why: "the baseline is frozen until the next compaction: a newly found file is appended, never folded in" }],
+    },
+  ],
+}
+
+export const archiveAndUnarchive: Scenario = {
+  title: "A session is archived and brought back",
+  description:
+    "After a turn the user archives the session (an editor's \"delete\"). Archiving is an event in the session's own log, so it is recorded once and nothing is deleted: the session is only left out of the default listing, and the workspace snapshots that no revert or undo of it could still restore are dropped. Unarchiving is the opposite event, and the session works as before.",
+  provider: "answers each of the two prompts with stop",
+  phases: [
+    {
+      label: "a turn, then the session is archived",
+      events: [...opening("What is 1 + 1?"), stepStarted("a1"), say("a1", "2"), stepEnded("a1"), executionSucceeded(), archived()],
+      expect: { execution: null, archived: true, history: ["u1", "a1"] },
+      rejects: [{ event: archived(), code: "invalid_transition", why: "a session is archived once: an event records a change" }],
+    },
+    {
+      label: "it is unarchived and used again",
+      events: [unarchived(), enqueue("u2", "And 2 + 2?"), executionStarted("exe_2"), deliver("u2"), stepStarted("a2"), say("a2", "4"), stepEnded("a2"), executionSucceeded("exe_2")],
+      expect: { execution: null, archived: false, history: ["u1", "a1", "u2", "a2"] },
+      rejects: [{ event: unarchived(), code: "invalid_transition", why: "the session is not archived" }],
+    },
+  ],
+}
+
+export const happyPaths = [plainAnswer, oneToolCall, parallelToolCalls, severalSteps, twoTurns, modelSwitch, instructionsInAVisitedDirectory, archiveAndUnarchive]

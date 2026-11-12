@@ -34,6 +34,12 @@ export type StoreErrorCode =
   | "locked"
   /** The file was written with another schema version, or is not a store database. It was not touched. */
   | "schema_mismatch"
+  /** A fork's inherited events were asked for and its parent session cannot be found. The fork's own events and state are intact. */
+  | "parent_missing"
+  /** A write was attempted through a store that was opened for reading only. */
+  | "read_only"
+  /** A session ID prefix matches more than one session. */
+  | "ambiguous_session"
 
 export class StoreError extends Error {
   constructor(
@@ -88,7 +94,7 @@ export interface RequestFinish {
  * the event log, and it is never sent to the model.
  */
 export interface RequestRecord extends RequestStart {
-  /** Assigned by the store, increasing across all sessions. Orders ledger rows. */
+  /** Assigned by the store, increasing within a database file. Orders a session's ledger rows. */
   readonly ordinal: number
   readonly startedAt: number
   /** `null` while the call is in flight (or if the process died during it). */
@@ -124,7 +130,8 @@ export interface Store {
    *
    * The first event of a new session must be `session.created`. For a fork the
    * store folds the parent's log through `lineage.throughSeq` to get the
-   * starting state, and the fork's first `seq` is `throughSeq + 1`.
+   * starting state, and the fork's first `seq` is `throughSeq + 1`. The parent
+   * is read, never written, and may be open for writing elsewhere.
    *
    * Throws `EventDecodeError` (invalid event), `ReduceError` (the event would
    * break a log invariant) or `StoreError` (`session_not_found`,
@@ -138,7 +145,9 @@ export interface Store {
 
   /**
    * Reads a session's log in `seq` order. For a fork this is the effective
-   * log: the inherited parent events followed by its own.
+   * log: the inherited parent events followed by its own. Throws `StoreError`
+   * `parent_missing` when inherited events are asked for and the parent is
+   * gone; a range that starts at or after the fork point needs no parent.
    */
   readonly readEvents: (
     sessionId: SessionId,
@@ -226,6 +235,96 @@ export interface Store {
   readonly getBlob: (hash: string) => StoredBlob | null
 
   readonly close: () => void
+}
+
+/** Which sessions a listing returns. */
+export interface SessionQuery {
+  /** Only sessions whose working directory is exactly this path. */
+  readonly cwd?: string
+  readonly includeArchived?: boolean
+  readonly limit?: number
+}
+
+/**
+ * Where sessions live when each has a store of its own: the unit of the
+ * single-writer rule is the session. `create` and `open` hand out the one
+ * writer of a session; everything else reads, and works for any session,
+ * whoever holds it.
+ */
+export interface SessionStores {
+  /**
+   * Creates the storage of a new session and returns its store, held for
+   * writing until that store is closed. The caller appends `session.created`.
+   */
+  readonly create: (id: SessionId) => Store
+  /**
+   * Opens an existing session for writing, until the returned store is
+   * closed. Throws `StoreError` `session_not_found`, `schema_mismatch`, or
+   * `locked` when another store holds the session (a `SessionInUseError`
+   * naming the process, when the sessions are files).
+   */
+  readonly open: (id: SessionId) => Store
+  /** One session's summary, or `null` when there is no such session. Never takes the writer's place. */
+  readonly get: (id: SessionId) => SessionSummary | null
+  /** Sessions, most recently updated first. Archived sessions are left out unless asked for. */
+  readonly list: (query?: SessionQuery) => readonly SessionSummary[]
+  /** Runs `work` on a store that reads the session, without holding it for writing. Throws `session_not_found`. */
+  readonly read: <T>(id: SessionId, work: (store: Store) => T) => T
+  /**
+   * The session an ID or a prefix of one names. Throws `StoreError`
+   * `session_not_found` when nothing matches and `ambiguous_session` when
+   * more than one session starts with it.
+   */
+  readonly resolve: (idOrPrefix: string) => SessionId
+  /** Media, shared by all sessions. */
+  readonly putBlob: Store["putBlob"]
+  readonly getBlob: Store["getBlob"]
+  /** Closes every store still open and lets go of everything. */
+  readonly close: () => void
+}
+
+/**
+ * Sessions that all live in one `Store` (a database in memory, a single
+ * file): what tests and tools use. The store is shared, so there is nothing
+ * to hold per session and closing a session's store closes nothing; `close`
+ * leaves the store open too, because it belongs to whoever passed it in.
+ */
+export function sharedSessionStores(store: Store): SessionStores {
+  const view: Store = { ...store, close: () => {} }
+  const ids = () => store.listSessions({ includeArchived: true }).map((summary) => summary.session.id)
+  return {
+    create: () => view,
+    open: (id) => {
+      if (store.getSession(id) === null) throw new StoreError("session_not_found", `session ${id} does not exist`)
+      return view
+    },
+    get: (id) => store.getSession(id),
+    list: (query = {}) => {
+      const all = store.listSessions(query.includeArchived === undefined ? {} : { includeArchived: query.includeArchived })
+      const matching = query.cwd === undefined ? all : all.filter((summary) => summary.session.cwd === query.cwd)
+      return query.limit === undefined ? matching : matching.slice(0, query.limit)
+    },
+    read: (id, work) => {
+      if (store.getSession(id) === null) throw new StoreError("session_not_found", `session ${id} does not exist`)
+      return work(view)
+    },
+    resolve: (idOrPrefix) => resolveSessionId(ids(), idOrPrefix),
+    putBlob: store.putBlob,
+    getBlob: store.getBlob,
+    close: () => {},
+  }
+}
+
+/** Picks the session `idOrPrefix` names among `ids`: the exact ID, else the only one that starts with it. */
+export function resolveSessionId(ids: readonly SessionId[], idOrPrefix: string): SessionId {
+  if (idOrPrefix === "") throw new StoreError("session_not_found", "a session ID is needed")
+  const exact = ids.find((id) => id === idOrPrefix)
+  if (exact !== undefined) return exact
+  const matches = ids.filter((id) => id.startsWith(idOrPrefix))
+  if (matches.length === 1) return matches[0]!
+  if (matches.length === 0) throw new StoreError("session_not_found", `there is no session ${idOrPrefix}`)
+  const shown = matches.slice(0, 4).join(", ")
+  throw new StoreError("ambiguous_session", `${matches.length} sessions start with ${idOrPrefix} (${shown}${matches.length > 4 ? ", ..." : ""}); give more of the ID`)
 }
 
 export interface OpenStoreOptions {
