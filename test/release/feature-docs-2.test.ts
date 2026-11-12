@@ -629,6 +629,20 @@ describe("the module pages for integrators, where users read them too", () => {
     // Each interface draws the list from the tool's result (`display.todo`, read by `tasksOf`).
     for (const file of ["packages/cli/src/renderer.ts", "packages/tui/src/transcript.ts"]) expect(read(join(ROOT, file)), file).toContain("tasksOf(")
   })
+
+  test("the agents page says which problems a session's start misses, and that the clients are built", () => {
+    const agents = page("packages/core/src/agents/README.md")
+    expect(agents).not.toContain("(still to do)")
+    expect(agents).toContain("## For the clients (done)")
+    expect(agents).toContain("They are not\n  all delivered when a session starts.")
+    // Said while the session is created, before a client subscribes (the same fact docs/agents.md marks).
+    expect(read(join(ROOT, "packages/core/src/engine/engine.ts"))).toContain('for (const warning of start.warnings) session.say("agents", warning)')
+    // The clients' part: the option, the listing and the command exist.
+    expect(read(join(ROOT, "packages/acp/src/server.ts"))).toContain('agent: "agent"')
+    expect(read(join(ROOT, "packages/acp/src/extensions.ts"))).toContain("agents: `${prefix}/agents`")
+    expect(helpText()).toContain("--agent <name>")
+    for (const commandsOf of [COMMANDS, BUILTIN_COMMANDS.commands()]) expect(commandsOf.some((command) => command.name === "agent")).toBe(true)
+  })
 })
 
 describe("names against the code", () => {
