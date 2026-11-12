@@ -133,7 +133,7 @@ describe("at 80 columns", () => {
     const upTo = (text: string, start: string, end: string) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)) + end.length)
     const asked = upTo(hook, "? This project's configuration asks to run a hook", "/hooks approve tidy asks again")
     expect(squeezed(asked)).toContain(squeezed(command))
-    expect(squeezed(asked)).toContain(squeezed(`defined in ${file}`))
+    expect(squeezed(asked)).toContain(squeezed(`defined in: ${file}`))
     expect(asked).not.toContain("…")
     const started = upTo(server, "? Start the language server", "approve fixture asks again")
     expect(squeezed(started)).toContain(squeezed(`node server.js '${LONG}' --stdio`))
