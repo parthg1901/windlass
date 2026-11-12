@@ -97,6 +97,10 @@ Every key:
 | `checks` | the project's checks, a list (below) |
 | `verify` | what is done with the checks (below) |
 | `approval` | the approval policy (below) |
+| `mcp` | MCP servers: `servers`, by name, each started by a `command` or reached at a `url`; one a project's file names is not started until you approve it |
+| `skills` | skills: `paths` (extra directories, from your own file only) and `disabled` (names to leave out) |
+| `wake` | wake-ups: `enabled` (default on), `hourlyCeiling`, `maxActive`, `webhook`; a project's file can only tighten |
+| `memory` | memory: `enabled` (default off), `inRepository`, `projectChars`, `userChars` |
 
 | Key in `checks[]` | Value |
 |---|---|
