@@ -54,6 +54,83 @@ export function firstDelivery(events: readonly StoredEvent[], afterSeq: number):
   return snapshotsAfter(events, afterSeq).find((item) => item.point === "delivery")?.id ?? null
 }
 
+/** The snapshots around one turn of a stored session: from the workspace when its input was delivered to the last one recorded before it ended. */
+export interface TurnRange {
+  /** The `seq` of the event that ended the turn: `turn.ended`, or its execution's terminal event. */
+  readonly endSeq: number
+  readonly executionId: string
+  /** `null` when no snapshot was recorded for the turn's input (snapshots were off or unavailable then). */
+  readonly from: string | null
+  readonly to: string | null
+}
+
+/**
+ * Every turn of a log that has ended, in order, with the snapshots that
+ * bound it. A turn begins with the first input delivered under an execution
+ * and again with every queued message, which follows a `turn.ended`; a
+ * steer belongs to the turn it redirects. Its `delivery` snapshot is the one
+ * recorded right before that input entered history (for a queued message
+ * that is before the `turn.ended` of the turn in front of it), and its last
+ * snapshot is whatever was recorded last before the event that ends it. An
+ * execution that was shut down and resumed is one turn: its entry at the
+ * shutdown is followed by one at its real end, from the same beginning.
+ */
+export function turnRanges(events: readonly StoredEvent[]): TurnRange[] {
+  const turns: TurnRange[] = []
+  let execution: string | null = null
+  /** Whether the turn in progress has its input. */
+  let begun = false
+  let from: string | null = null
+  let last: string | null = null
+  /** A `delivery` snapshot whose input has not entered history yet. */
+  let waiting: string | null = null
+  const end = (seq: number) => {
+    if (execution !== null) turns.push({ endSeq: seq, executionId: execution, from: begun ? from : null, to: begun ? last : null })
+  }
+  for (const item of events) {
+    switch (item.type) {
+      case "execution.started":
+        execution = item.data.executionId
+        begun = false
+        from = last = waiting = null
+        break
+      case "snapshot.taken":
+        if (item.data.point === "delivery") waiting = item.data.id
+        else if (begun) last = item.data.id
+        break
+      case "snapshot.unavailable":
+        waiting = null
+        break
+      case "inbox.delivered":
+        if (!begun) {
+          begun = true
+          from = last = waiting
+        } else if (waiting !== null && from !== null) last = waiting
+        waiting = null
+        break
+      case "turn.ended":
+        end(item.seq)
+        // The delivery snapshot recorded just before belongs to the queued message that follows.
+        begun = false
+        from = last = null
+        break
+      case "execution.succeeded":
+      case "execution.failed":
+        end(item.seq)
+        execution = null
+        break
+      case "execution.interrupted":
+        end(item.seq)
+        // A shutdown keeps the claim: the turn goes on when the execution is resumed.
+        if (item.data.reason === "user") execution = null
+        break
+      default:
+        break
+    }
+  }
+  return turns
+}
+
 /**
  * Whether the stretch that begins at a snapshot taken at `point` is the
  * harness's own work: a step's tools, a run of checks, a restore. It runs to

@@ -45,7 +45,7 @@
  *   checkpoint built without the model.
  */
 import { randomBytes } from "node:crypto"
-import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, realpathSync, rmdirSync, statSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
@@ -205,6 +205,7 @@ import {
   neededSnapshots,
   snapshotsAfter,
   snapshotsSinceDelivery,
+  turnRanges,
 } from "./workspace.ts"
 
 // ---------------------------------------------------------------- options
@@ -624,6 +625,15 @@ export interface Admission {
   readonly untrusted?: UntrustedInput
 }
 
+/** The files one ended turn changed (`Engine.turnChanges`). */
+export interface TurnChanges {
+  /** The `seq` of the event that ended the turn. */
+  readonly endSeq: number
+  readonly executionId: ExecutionId
+  /** Paths relative to the session's working directory; `null` when no snapshot can tell. */
+  readonly files: readonly string[] | null
+}
+
 /** What a compaction the user asked for came to (`EngineSession.compact`). */
 export type CompactResult =
   /** Done: the older part of the conversation is a checkpoint now. The sizes are the estimates `compaction.started` and `compaction.ended` record. */
@@ -891,6 +901,18 @@ export interface Engine {
    * process is working in (it shows what is committed).
    */
   readonly readEvents: (id: SessionId, range?: { readonly afterSeq?: number; readonly limit?: number }) => readonly StoredEvent[]
+  /**
+   * The files each ended turn of a stored session changed, oldest first,
+   * worked out from the snapshots its log records: what differs between the
+   * workspace when the turn's input was delivered and the last snapshot
+   * before it ended. One entry per turn, keyed by the `seq` of the event
+   * that ended it (`turn.ended`, or the execution's terminal event), so a
+   * turn that ended because a queued message waited has its own list.
+   * `files` is `null` when no snapshot can tell. Each turn that changed
+   * something costs a tree comparison, so only the latest `last` turns
+   * (default 50) are looked at. Works for any session, open or not.
+   */
+  readonly turnChanges: (id: SessionId, options?: { readonly last?: number }) => Promise<readonly TurnChanges[]>
   /**
    * Hides a session from the default listing (`session.archived`). A session
    * open in this engine is closed first, as `EngineSession.close` does. The
@@ -1275,6 +1297,23 @@ export function createEngine(options: EngineOptions): Engine {
     getSession: (id) => core.stores.get(id),
     resolveSession: (idOrPrefix) => storeErrors(() => core.stores.resolve(idOrPrefix)),
     readEvents: (id, range) => storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, range))),
+    turnChanges: async (id, range = {}) => {
+      const summary = core.stores.get(id)
+      if (summary === null) throw new EngineError("session_not_found", `session ${id} does not exist`)
+      const turns = turnRanges(storeErrors(() => core.stores.read(id, (store) => store.readEvents(id)))).slice(-(range.last ?? 50))
+      // Opened only when a turn has two different snapshots to compare.
+      let opened: Promise<WorkspaceSnapshots | null> | null = null
+      const snapshots = () =>
+        (opened ??= core.openSnapshots === null ? Promise.resolve(null) : core.openSnapshots(summary.session.cwd).then((store) => ("reason" in store ? null : store), () => null))
+      const changes: TurnChanges[] = []
+      for (const turn of turns) {
+        const executionId = turn.executionId as ExecutionId
+        if (turn.from === null || turn.to === null) changes.push({ endSeq: turn.endSeq, executionId, files: null })
+        else if (turn.from === turn.to) changes.push({ endSeq: turn.endSeq, executionId, files: [] })
+        else changes.push({ endSeq: turn.endSeq, executionId, files: (await (await snapshots())?.changedFiles(turn.from as SnapshotId, turn.to as SnapshotId).catch(() => null)) ?? null })
+      }
+      return changes
+    },
     archiveSession: (id) => setArchived(id, true),
     unarchiveSession: (id) => setArchived(id, false),
     validateSettings: async (settings) => {
@@ -1422,6 +1461,8 @@ interface Director {
   readonly baseline: EventData<"baseline.set">
   /** The copy the replay runs tools in once it left the recording; `null` for the `stop` policy. */
   readonly copy: string | null
+  /** Whether the copy's directory was made for this replay: one it never used is removed again. */
+  readonly copyMade: boolean
   /** Whether the copy holds the recorded workspace: from the divergence on. */
   live: boolean
   /** The request overrides the model settings, so the recording's own changes of them are not replayed. */
@@ -2582,7 +2623,8 @@ class LiveSession implements EngineSession {
     if (calls.length > 0) {
       // A step is bracketed by two snapshots exactly when one of its calls can change files: a step of reads
       // changes nothing, and the snapshot before it is still the workspace.
-      const tracked = this.core.openSnapshots !== null && this.mayChangeFiles(calls, toolChoice) && !this.onTape()
+      const onTape = this.onTape()
+      const tracked = this.core.openSnapshots !== null && this.mayChangeFiles(calls, toolChoice) && !onTape
       if (tracked) {
         await this.snapshot("step_start", messageId)
         if (run.interrupt.signal.aborted) {
@@ -2608,7 +2650,8 @@ class LiveSession implements EngineSession {
         ])
         return "done"
       }
-      if (tracked) {
+      // Also when the replay left its recording during these tools: its `step_start` was taken as it went live.
+      if (tracked || (onTape && !this.onTape() && this.core.openSnapshots !== null)) {
         await this.snapshot("step_end", messageId)
         if (run.interrupt.signal.aborted) {
           this.finishInterrupt(run, "", usage)
@@ -3455,7 +3498,7 @@ class LiveSession implements EngineSession {
    * replay asks nobody and runs nothing outside the sandbox: its approval
    * settings are its own, whatever the user's are.
    */
-  beginReplay(setup: { readonly sourceId: SessionId; readonly tape: Tape; readonly source: readonly StoredEvent[]; readonly baseline: EventData<"baseline.set">; readonly request: ReplayRequest; readonly policy: ReplayPolicyKind; readonly copy: string | null }): Promise<ReplayOutcome> {
+  beginReplay(setup: { readonly sourceId: SessionId; readonly tape: Tape; readonly source: readonly StoredEvent[]; readonly baseline: EventData<"baseline.set">; readonly request: ReplayRequest; readonly policy: ReplayPolicyKind; readonly copy: string | null; readonly copyMade: boolean }): Promise<ReplayOutcome> {
     const { tape, request, copy } = setup
     let resolveOutcome: (outcome: ReplayOutcome) => void = () => {}
     const done = new Promise<ReplayOutcome>((resolve) => (resolveOutcome = resolve))
@@ -3484,6 +3527,7 @@ class LiveSession implements EngineSession {
       source: setup.source,
       baseline: setup.baseline,
       copy,
+      copyMade: setup.copyMade,
       live: false,
       keepSettings: request.model !== undefined || request.effort !== undefined,
       maxSteps: request.maxSteps ?? tape.steps.length + 10,
@@ -3580,6 +3624,11 @@ class LiveSession implements EngineSession {
     this.write([event("replay.diverged", { workspace: director.copy, snapshot, divergence: divergence.kind })])
     director.live = true
     this.probe("replay.diverged")
+    // The step in progress is the first whose tools run for real. Whether to bracket it with snapshots was decided
+    // while the replay was still on its recording (nothing ran then), so its `step_start` is taken here: the copy as
+    // it was restored, before the first tool touches it. Its `step_end` follows the tools (`closeStep`).
+    const inProgress = openStep(this.projection())
+    if (inProgress !== null && this.core.openSnapshots !== null) await this.snapshot("step_start", inProgress.id)
     // The copy's own configuration: its checks run there when the turn ends, in the sandbox like its commands.
     const load = this.core.loadConfig
     if (load !== null) this.config = await load(director.copy).catch(() => null)
@@ -3591,6 +3640,15 @@ class LiveSession implements EngineSession {
     if (director === null) return
     this.director = null
     const replay = director.replay
+    // A replay that never left its recording ran no tool: the directory made for its copy was never written to.
+    // (`rmdir` removes an empty directory only, so nothing a caller put there is ever lost.)
+    if (!director.live && director.copy !== null && director.copyMade) {
+      try {
+        rmdirSync(director.copy)
+      } catch {
+        // Not empty, or already gone: left as it is.
+      }
+    }
     try {
       const projection = this.projection()
       // It did not end by itself: an interrupt, a provider failure, a failure of the loop.
@@ -4391,15 +4449,20 @@ class LiveSession implements EngineSession {
   }
 
   /**
-   * Tells whoever watches which files this execution changed, right before
-   * it ends: the difference between the snapshot taken when its first input
-   * arrived and the latest one. For display; the snapshot IDs are the record.
+   * Tells whoever watches which files this turn changed, right before it
+   * ends: the difference between the snapshot taken when its input was
+   * delivered and the latest one. A turn that ends because a queued message
+   * waits says its own files, and the turn after it its own. For display;
+   * the snapshot IDs are the record (`Engine.turnChanges` reads them back).
    */
   private async announceChanges(): Promise<void> {
     if (this.core.openSnapshots === null) return
     const projection = this.projection()
     const to = projection.session.workspace.snapshot?.id
-    const from = firstDelivery(this.store.readEvents(this.id, { afterSeq: claimOf(projection).startedSeq }), 0)
+    const claim = claimOf(projection)
+    const events = this.store.readEvents(this.id, { afterSeq: claim.startedSeq })
+    const began = turnBeginning(projection)
+    const from = began === undefined ? firstDelivery(events, 0) : snapshotsSinceDelivery(events, began.seq).target
     if (to === undefined || from === null || from === to) return
     const store = await this.snapshots()
     const files = await store?.changedFiles(from as SnapshotId, to as SnapshotId).catch(() => null)
@@ -5198,6 +5261,7 @@ async function replaySession(core: Core, sourceId: SessionId, request: ReplayReq
   })()
   const id = core.ids.session()
   const copy = policy === "stop" ? null : resolve(request.workspace ?? join(core.workDir, "replays", id))
+  const copyMade = copy !== null && !existsSync(copy)
   if (copy !== null) mkdirSync(copy, { recursive: true })
   const store = storeErrors(() => core.stores.create(id))
   const session = new LiveSession(core, id, store)
@@ -5212,7 +5276,7 @@ async function replaySession(core: Core, sourceId: SessionId, request: ReplayReq
       }),
     ])
     core.sessions.set(id, session)
-    const done = session.beginReplay({ sourceId, tape: prepared.tape, source, baseline: prepared.baseline, request, policy, copy })
+    const done = session.beginReplay({ sourceId, tape: prepared.tape, source, baseline: prepared.baseline, request, policy, copy, copyMade })
     return { session, done }
   } catch (error) {
     core.sessions.delete(id)

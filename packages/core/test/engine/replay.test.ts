@@ -20,6 +20,7 @@ import { renderReport } from "../../src/replay/report.ts"
 import { STOPPED_OUTPUT } from "../../src/replay/replay.ts"
 import { tapeFromEvents } from "../../src/replay/tape.ts"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
+import { openSnapshots } from "../../src/snapshot/index.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SETTINGS, type Started, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
@@ -235,6 +236,38 @@ describe("a replay that leaves the recording", () => {
     expect(types(log).filter((type) => type === "snapshot.taken").length).toBeGreaterThan(0)
     expect(types(log).slice(-2)).toEqual(["execution.succeeded", "replay.ended"])
     check(recording, session)
+  })
+
+  test("the step in which the replay leaves its recording is bracketed by snapshots of the copy, so its log says what that step changed", async () => {
+    const recording = await record()
+    const copy = join(recording.root, "copy-bracketed")
+    const { session, log } = await replay(recording, { policy: "execute", workspace: copy }, { ...otherWrite(recording.directory), ...afterwards }, [say("Done.")])
+    const diverging = of(log, "replay.call").find((item) => item.data.result === "diverged")!
+    const around = of(log, "snapshot.taken").filter((item) => item.data.messageId === diverging.data.messageId)
+    // Taken as the replay went live (the copy as restored, before the tool ran) and after the step's tools.
+    expect(around.map((item) => item.data.point)).toEqual(["step_start", "step_end"])
+    expect(around[0]!.seq).toBeGreaterThan(of(log, "replay.diverged")[0]!.seq)
+    expect(around[0]!.seq).toBeLessThan(of(log, "tool.settled").find((item) => item.data.messageId === diverging.data.messageId && item.data.callId === diverging.data.callId)!.seq)
+    const snapshots = await openSnapshots(copy, { dataDir: join(recording.data, "snapshots") })
+    if (snapshots.kind !== "ready") throw new Error(snapshots.message)
+    expect(await snapshots.changedFiles(around[0]!.data.id as never, around[1]!.data.id as never)).toEqual(["a.txt"])
+    check(recording, session)
+  })
+
+  test("a replay that never leaves its recording removes the directory made for its copy; a directory it was given stays", async () => {
+    const recording = await record()
+    // Under a policy that runs tools a copy directory is made up front; the model does what the recording did, so nothing ever runs in it.
+    const stayed = await replay(recording, { policy: "execute" })
+    expect(stayed.outcome.report.status).toBe("identical")
+    expect(stayed.outcome.workspace).toBeNull()
+    const made = stayed.session.projection().session.cwd
+    expect(made).toContain(join("replays", stayed.session.id))
+    expect(existsSync(made)).toBe(false)
+    // A directory the caller made is the caller's: it is left where it is.
+    const given = recording.workspace("given", {})
+    const kept = await replay(recording, { policy: "execute", workspace: given })
+    expect(kept.outcome.workspace).toBeNull()
+    expect(existsSync(given)).toBe(true)
   })
 
   test("under execute-read-only: a read runs in the copy, a write ends the replay", async () => {

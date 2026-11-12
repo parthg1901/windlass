@@ -315,3 +315,50 @@ describe("renaming a session", () => {
       expect(session.projection().session.title).toBe("Importer, fixed")
     }))
 })
+
+describe("the files a turn changed", () => {
+  const changes = (h: Harness) => h.seenEvents.flatMap((item) => (item.type === "workspace.changes" ? [[...item.files]] : []))
+
+  test("each turn has its own, live and read back from the log: also a turn that ended because a queued message waited", () =>
+    project(async (h) => {
+      h.provider.enqueue(write("a.ts", "2\n"), say("Changed a."), write("b.ts", "2\n"), say("Changed b."), say("Nothing to do."))
+      h.create().send("Change a.ts.")
+      h.session.queue("Change b.ts.")
+      await h.settled()
+      h.session.send("Anything else?")
+      await h.settled()
+      // Live: announced right before each turn ends, and only that turn's files.
+      expect(changes(h)).toEqual([["a.ts"], ["b.ts"]])
+      // From the stored log, for a client that shows the session later: one entry per turn, keyed by the event that ended it.
+      const ends = h.log().filter((item) => item.type === "turn.ended" || item.type === "execution.succeeded")
+      expect(ends.map((item) => item.type)).toEqual(["turn.ended", "execution.succeeded", "execution.succeeded"])
+      const read = await h.engine.turnChanges(h.session.id)
+      expect(read).toEqual([
+        { endSeq: ends[0]!.seq, executionId: "exe_1", files: ["a.ts"] },
+        { endSeq: ends[1]!.seq, executionId: "exe_1", files: ["b.ts"] },
+        { endSeq: ends[2]!.seq, executionId: "exe_2", files: [] },
+      ] as never)
+      expect(await h.engine.turnChanges(h.session.id, { last: 1 })).toHaveLength(1)
+    }))
+
+  test("a steer's snapshot belongs to the turn it redirects; without snapshots nobody can tell", async () => {
+    await project(async (h) => {
+      h.provider.enqueue(write("a.ts", "2\n"), write("b.ts", "2\n"), say("Changed both."))
+      h.create().send("Change a.ts.")
+      await h.seen((item) => item.type === "tool.settled")
+      h.session.send("And b.ts.")
+      await h.settled()
+      expect(changes(h)).toEqual([["a.ts", "b.ts"]])
+      expect((await h.engine.turnChanges(h.session.id)).map((turn) => turn.files)).toEqual([["a.ts", "b.ts"]])
+    })
+    await project(
+      async (h) => {
+        h.provider.enqueue(write("a.ts", "2\n"), say("Changed a."))
+        h.create().send("Change a.ts.")
+        await h.settled()
+        expect((await h.engine.turnChanges(h.session.id)).map((turn) => turn.files)).toEqual([null])
+      },
+      { snapshots: false },
+    )
+  })
+})
