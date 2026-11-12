@@ -6280,13 +6280,37 @@ function lastFailure(projection: Projection): string | null {
 }
 
 /**
- * Forks `sourceId` at a step boundary (`Engine.forkSession`). The parent is
+ * The session a fork point belongs to. A fork's log begins with its
+ * parent's events through its own fork point, under the same numbers: a
+ * point there is a point of the parent's log (or of the parent's parent's),
+ * and forking the fork at it is forking that session at it. A point of the
+ * fork's own part, or no point (the latest boundary), is the fork's.
+ */
+function forkPointOwner(core: Core, id: SessionId, throughSeq: number | undefined, cannot: (message: string) => string): SessionId {
+  if (throughSeq === undefined) return id
+  let owner = id
+  for (;;) {
+    const summary = core.stores.get(owner)
+    // The history that holds the point is in a file that is gone: said in the store's words, which name the file.
+    if (summary === null && owner !== id) storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, { limit: 1 })), cannot)
+    const fork = forkOf(summary?.session.lineage ?? null)
+    if (fork === null || throughSeq > fork.throughSeq) return owner
+    owner = fork.parentSessionId
+  }
+}
+
+/**
+ * Forks a session at a step boundary (`Engine.forkSession`). The parent is
  * read through whatever holds it, never written: every event up to the fork
  * point is committed and the log is append-only, so the fork's inherited
- * history is the same whoever writes to the parent meanwhile.
+ * history is the same whoever writes to the parent meanwhile. The parent is
+ * the session the point belongs to (`forkPointOwner`): for a point a fork
+ * inherited, the session it inherited it from.
  */
-async function forkSession(core: Core, sourceId: SessionId, options: ForkOptions): Promise<LiveSession> {
-  const events = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)))
+async function forkSession(core: Core, askedId: SessionId, options: ForkOptions): Promise<LiveSession> {
+  const cannot = (message: string) => `session ${askedId} cannot be forked: ${message}`
+  const sourceId = forkPointOwner(core, askedId, options.throughSeq, cannot)
+  const events = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)), cannot)
   let state: Projection | null = null
   let point: Projection | null = null
   // What taint is derived from, folded along: the fork carries the part up to its fork point in its own first event.
@@ -6397,13 +6421,19 @@ function configDirectory(): string {
   return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), brand.directory)
 }
 
-/** Turns the store's refusals to hand out a session into the engine's own errors. */
-function storeErrors<T>(work: () => T): T {
+/**
+ * Turns the store's refusals to hand out a session, or its history, into the
+ * engine's own errors, which a client shows as they are worded. `missing`
+ * says what could not be done for want of a fork's inherited history; the
+ * store's message names the session it was inherited from and the file.
+ */
+function storeErrors<T>(work: () => T, missing: (message: string) => string = (message) => message): T {
   try {
     return work()
   } catch (error) {
     if (error instanceof StoreLockedError) throw new EngineError("session_in_use", error.message, error.holderPid)
     if (error instanceof StoreError && (error.code === "session_not_found" || error.code === "ambiguous_session")) throw new EngineError(error.code, error.message)
+    if (error instanceof StoreError && error.code === "parent_missing") throw new EngineError("invalid_request", missing(error.message))
     throw error
   }
 }

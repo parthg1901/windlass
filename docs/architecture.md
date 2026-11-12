@@ -1319,6 +1319,12 @@ verification state, the undo history, and the approvals remembered for the sessi
 line of work, and a fork is another that may go somewhere else (and may work in another directory); approvals
 remembered for the project still apply.
 
+*A point a fork inherited.* A fork's log begins with its parent's events through its fork point, under the same
+numbers, so an event there is the parent's event. Forking a fork at such a point (`throughSeq` at or before the
+fork's own fork point) forks the session the point belongs to, found by walking the lineage: the new session's
+lineage names that session, it starts with that session's settings and title as of the point, and with `shared` it
+works in that session's directory. A point in the fork's own part, and the default, fork the fork.
+
 *The workspace.* By default the fork works in the parent's working directory. That is two sessions editing the
 same files, with the rules of "Two sessions in one working directory": nothing prevents it, each records its own
 snapshots, and neither's undo overwrites the other's work without asking. With `workspace: { copyTo }` the fork
