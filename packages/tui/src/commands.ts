@@ -1,4 +1,5 @@
-/** The slash commands, and completion for a partly typed one. */
+/** The slash commands, and completion for a partly typed one: the interface's own, then the user's and the project's command files. */
+import type { CommandsResult } from "@windlass/acp/extensions"
 
 export interface CommandSpec {
   readonly name: string
@@ -6,6 +7,8 @@ export interface CommandSpec {
   readonly args: string
   readonly description: string
   readonly aliases?: readonly string[]
+  /** A command file's (its text is sent as the user's message): the file, and where it comes from. */
+  readonly file?: { readonly path: string; readonly scope: "project" | "config" | "user"; readonly agent: string | null }
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
@@ -43,23 +46,47 @@ export interface ParsedCommand {
   readonly rest: string
 }
 
-/** The command an entry is, or `null` when it is a message. A lone `/` or an unknown name is an unknown command. */
+/**
+ * The command an entry is, or `null` when it is a message. A name is letters,
+ * digits, `-`, `_`, `.`, and `:` between a folder and a file (`/frontend:test`),
+ * as the engine reads one. `spec` is the interface's own command of that name;
+ * `null` for any other name (a command file's, or none: `name` is as typed) and
+ * for a lone `/`.
+ */
 export function parseCommand(entry: string): ParsedCommand | null {
-  const match = /^\/([a-z-]*)(?:\s+([\s\S]*))?$/i.exec(entry.trim())
+  const match = /^\/([A-Za-z0-9][A-Za-z0-9._:-]*)?(?:\s+([\s\S]*))?$/.exec(entry.trim())
   if (match === null) return null
-  const name = match[1]!.toLowerCase()
+  const typed = match[1] ?? ""
+  const name = typed.toLowerCase()
   const spec = COMMANDS.find((command) => command.name === name || command.aliases?.includes(name)) ?? null
-  return { spec, name, rest: (match[2] ?? "").trim() }
+  return { spec, name: spec === null ? typed : name, rest: (match[2] ?? "").trim() }
+}
+
+/** The interface's own commands as the engine takes them: a file of one of these names is hidden, and their names count for a did-you-mean. */
+export const CLIENT_COMMANDS = COMMANDS.map((command) => ({ name: command.name, ...(command.aliases === undefined ? {} : { aliases: command.aliases }) }))
+
+/** The command files a session has, as commands: the ones a command of the interface's own does not hide. */
+export function fileCommands(listing: CommandsResult): CommandSpec[] {
+  return listing.commands.filter((command) => command.hiddenBy === null).map((command) => ({ name: command.name, args: command.argumentHint ?? "", description: command.description, file: { path: command.path, scope: command.scope, agent: command.agent } }))
+}
+
+/** The command file an entry names: as typed first (two files may differ only in case), then whatever the case. */
+export function findFileCommand(files: readonly CommandSpec[], name: string): CommandSpec | null {
+  return files.find((command) => command.name === name) ?? files.find((command) => command.name.toLowerCase() === name.toLowerCase()) ?? null
 }
 
 /**
  * The commands a partly typed entry could be: only while the entry is a
  * single line that starts with `/` and has no space yet. `available` filters
  * out commands the session cannot run (no undo in a demo, no compaction when
- * the server does not offer it).
+ * the server does not offer it). The command files (`files`) come after the
+ * interface's own.
  */
-export function complete(entry: string, available: (spec: CommandSpec) => boolean): CommandSpec[] {
-  if (!/^\/[a-z-]*$/i.test(entry)) return []
+export function complete(entry: string, available: (spec: CommandSpec) => boolean, files: readonly CommandSpec[] = []): CommandSpec[] {
+  if (!/^\/[A-Za-z0-9._:-]*$/.test(entry)) return []
   const typed = entry.slice(1).toLowerCase()
-  return COMMANDS.filter((command) => available(command) && (command.name.startsWith(typed) || (command.aliases ?? []).some((alias) => alias.startsWith(typed))))
+  return [
+    ...COMMANDS.filter((command) => available(command) && (command.name.startsWith(typed) || (command.aliases ?? []).some((alias) => alias.startsWith(typed)))),
+    ...files.filter((command) => command.name.toLowerCase().startsWith(typed)),
+  ]
 }

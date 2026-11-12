@@ -20,11 +20,11 @@ import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, Textare
 import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
-import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
-import { agentProblemLines, compactText, requestsText } from "./cli.ts"
+import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
+import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
 import { COPY_NOTE, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { hookAsk, hookAskId, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
-import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
+import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
@@ -102,6 +102,10 @@ export class App {
   private draft = ""
   private paletteIndex = 0
   private paletteDismissed: string | null = null
+  /** The session's command files as last listed: what the palette offers after the interface's own commands. */
+  private commandFiles: CommandsResult | null = null
+  /** The entry starts with a slash: the command files were listed when it began to. */
+  private typingCommand = false
   private contextWindows = new Map<string, number | null>()
   private timer: ReturnType<typeof setInterval> | null = null
   private pump: Promise<void> | null = null
@@ -228,6 +232,8 @@ export class App {
       this.unwatchMcp?.()
       const unwatch = [session.onMcp?.((state) => this.mcpChanged(session, state)), session.onHooks?.((state) => this.hooksChanged(session, state)), session.onLsp?.((state) => this.lspChanged(session, state))]
       this.unwatchMcp = () => unwatch.forEach((off) => off?.())
+      this.commandFiles = null
+      void this.listCommandFiles()
       void this.loadModels()
       void this.refreshApproval()
       void session.title?.().then(
@@ -404,7 +410,8 @@ export class App {
       if ((name === "return" || name === "kpenter") && !meta) {
         const chosen = palette[this.paletteIndex % palette.length]!
         const typed = parseCommand(text)
-        const exact = typed?.spec !== null && typed?.spec !== undefined
+        // Typed in full: one of the interface's own, or exactly the command file that is chosen.
+        const exact = (typed?.spec !== null && typed?.spec !== undefined) || (chosen.file !== undefined && typed?.name === chosen.name)
         if (!exact && chosen.args !== "") {
           this.setInput(`/${chosen.name} `)
           return handled()
@@ -560,6 +567,10 @@ export class App {
   private inputChanged(): void {
     const text = this.input.plainText
     if (this.paletteDismissed !== null && this.paletteDismissed !== text) this.paletteDismissed = null
+    // A command is being typed: the command files are looked for again, so one added a moment ago is offered.
+    const typing = text.startsWith("/")
+    if (typing && !this.typingCommand) void this.listCommandFiles()
+    this.typingCommand = typing
     this.paletteIndex = Math.min(this.paletteIndex, Math.max(0, this.palette().length - 1))
     this.layout()
   }
@@ -627,14 +638,49 @@ export class App {
   private palette(): CommandSpec[] {
     const text = this.input.plainText
     if (this.paletteDismissed === text || this.dialog.open) return []
-    return complete(text, (spec) => this.available(spec))
+    return complete(text, (spec) => this.available(spec), this.commandFiles === null ? [] : fileCommands(this.commandFiles))
+  }
+
+  /** The session's command files as they are now; `null` when the engine has none or cannot say. */
+  private async listCommandFiles(): Promise<CommandsResult | null> {
+    const session = this.session
+    const listing = session?.commands === undefined ? null : await session.commands(CLIENT_COMMANDS).catch(() => null)
+    if (session !== this.session) return null
+    this.commandFiles = listing?.available === true ? listing : null
+    this.layout()
+    return this.commandFiles
+  }
+
+  /**
+   * `/name` that is no command of the interface's own: a command file's, sent
+   * through the engine (which records the file); a file that cannot be used,
+   * said with why; or nothing, said with the nearest name of both.
+   */
+  private async fileCommand(name: string, rest: string): Promise<void> {
+    const session = this.session
+    const listing = await this.listCommandFiles()
+    const files = listing === null ? [] : fileCommands(listing)
+    const file = name === "" ? null : findFileCommand(files, name)
+    if (file !== null && session?.sendCommand !== undefined) {
+      if (this.connection !== "connected") return this.say("not sent: no session is open; /reconnect first, or /quit", "warn")
+      this.conversation.toBottom()
+      const delivery = this.transcript.activity.executing ? this.mode : "steer"
+      return session.sendCommand(file.name, rest, delivery).then(
+        (id) => {
+          if (id === null) this.say("not sent: the session is not taking input right now", "warn")
+        },
+        (error: unknown) => this.say(`not sent: ${error instanceof Error ? error.message : String(error)}`, "warn"),
+      )
+    }
+    const unusable = listing === null || name === "" ? null : unusableCommandLines(listing, name)
+    if (unusable !== null) return this.showLines(unusable, "warn", "⚠")
+    if (name === "") return this.say("type a command's name after the /; /help lists the commands", "warn")
+    const close = nearest(name, [...COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]), ...files.map((command) => command.name)])
+    this.say(`/${name} is not a command, so nothing was sent; ${close === null ? "/help lists the commands" : `did you mean /${close}? (/help lists them)`}. To send a message that starts with a slash, begin it with two: //${name}`, "warn")
   }
 
   private async command(spec: CommandSpec | null, name: string, rest: string): Promise<void> {
-    if (spec === null) {
-      const close = nearest(name, COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]))
-      return this.say(`/${name} is not a command, so nothing was sent; ${close === null ? "/help lists the commands" : `did you mean /${close}?`}. To send a message that starts with a slash, begin it with two: //${name}`, "warn")
-    }
+    if (spec === null) return this.fileCommand(name, rest)
     if (this.busyCommand && spec.name !== "quit" && spec.name !== "help") return this.say(`/${spec.name} waits for the command before it`, "warn")
     this.busyCommand = true
     try {
@@ -864,6 +910,8 @@ export class App {
   }
 
   private async help(): Promise<void> {
+    const listing = await this.listCommandFiles()
+    const files = listing === null ? [] : fileCommands(listing)
     const keys: [string, string][] = [
       ["Enter", "send (while the agent works: steer, or queue with Ctrl-T)"],
       ["Alt-Enter, Ctrl-J, \\ at the end", "new line"],
@@ -891,6 +939,13 @@ export class App {
           span(spec.description),
           span(this.available(spec) ? "" : " (not available now)", "dim"),
         ]),
+        // The command files: what each sends, and where it comes from (the file, in full).
+        ...(files.length === 0 ? [] : [[], [span("Your commands", undefined, { bold: true }), span(" · command files: their text is sent as your message", "dim")]]),
+        ...files.flatMap((spec) => [
+          [span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(KEY_COLUMN), "accent"), span(spec.description)],
+          [span("".padEnd(KEY_COLUMN)), span(`${COMMAND_SCOPE[spec.file!.scope]}${spec.file!.agent === null ? "" : ` · runs as the agent ${spec.file!.agent}`}: ${spec.file!.path}`, "dim")],
+        ]),
+        ...(listing === null ? [] : commandProblemLines(listing).map((line) => [span(`${" ".repeat(line.indent ?? 0)}${line.text}`, line.tone === "warn" ? "warn" : "dim")])),
       ],
       items: [],
       filterable: false,
@@ -1425,6 +1480,7 @@ export class App {
         break
       }
       case "reasoning":
+      case "user":
         row.expanded = !row.expanded
         break
       case "outcome":

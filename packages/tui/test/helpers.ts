@@ -165,6 +165,8 @@ export class ScriptSession implements BackendSession {
   wakeSecret?: BackendSession["wakeSecret"]
   memory?: BackendSession["memory"]
   memoryChange?: BackendSession["memoryChange"]
+  commands?: BackendSession["commands"]
+  sendCommand?: BackendSession["sendCommand"]
   private readonly mcpListeners = new Set<(state: McpStateResult) => void>()
 
   onMcp(listener: (state: McpStateResult) => void): () => void {

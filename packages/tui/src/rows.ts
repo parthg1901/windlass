@@ -76,7 +76,14 @@ export function isLive(row: Row): boolean {
 // ---------------------------------------------------------------- user and assistant
 
 function userLines(row: UserRow, columns: number): Span[][] {
-  const lines = row.text.split("\n").flatMap((line, index) => wrapLine([span(index === 0 ? "› " : "  ", "accent"), span(line, "user")], columns, [span("  ")]))
+  const command = row.command
+  // A command file's message is shown as it was typed; the text it stands for is under it when expanded.
+  const lines = (command?.typed ?? row.text).split("\n").flatMap((line, index) => wrapLine([span(index === 0 ? "› " : "  ", "accent"), span(line, "user")], columns, [span("  ")]))
+  if (command !== null) {
+    lines.push(...wrapLine([span(`  ${command.head} · ${command.where}: `, "dim"), span(command.path, "dim")], columns, [span("    ")]))
+    for (const note of command.notes) lines.push(...wrapLine([span("  ⚠ ", "warn"), span(note, "warn")], columns, [span("    ")]))
+    if (row.expanded) lines.push(...row.text.split("\n").flatMap((line) => wrapLine([span("  │ ", "dim"), span(line)], columns, [span("  │ ", "dim")])))
+  }
   if (row.delivered === null) return lines
   // How it reached the agent: after the message's last line when it fits there, otherwise on a line of its own; never cut.
   const tag = row.delivered === "steer" ? "↳ steered into the turn" : "↳ delivered from the queue"
@@ -88,7 +95,7 @@ function userLines(row: UserRow, columns: number): Span[][] {
 
 function undoneLines(row: UserRow, columns: number): Span[][] {
   const head = `↶ undone${row.turn === null ? "" : ` turn ${row.turn}`}: `
-  const text = row.text.split("\n").find((line) => line.trim() !== "") ?? ""
+  const text = (row.command?.typed ?? row.text).split("\n").find((line) => line.trim() !== "") ?? ""
   // The prompt comes first; the explanation is shortened before it is.
   const want = Math.min(textWidth(text), 30)
   const tail = [" · out of the conversation · /redo brings it back", " · /redo brings it back", ""].find((candidate) => columns - textWidth(head) - textWidth(candidate) - 2 >= want) ?? ""

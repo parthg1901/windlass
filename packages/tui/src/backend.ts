@@ -5,7 +5,7 @@
  * features a backend may lack; the TUI says so instead of offering them.
  */
 import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
-import type { AgentsResult, CompactResult } from "@windlass/acp/extensions"
+import type { AgentsResult, ClientCommand, CommandsResult, CompactResult } from "@windlass/acp/extensions"
 import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
@@ -105,6 +105,13 @@ export interface BackendSession {
   readonly events: AsyncIterable<StreamItem>
   /** Admits a message; resolves with its message ID once admitted, `null` when it was not. */
   send(text: string, delivery: Delivery): Promise<string | null>
+  /** The user's and the project's command files as they are now, with the ones that cannot be used; `builtins`: the interface's own commands, which hide a file of the same name. */
+  commands?(builtins: readonly ClientCommand[]): Promise<CommandsResult>
+  /**
+   * `send` for `/name args` of a command file: its text, with `args` put in, is admitted as the user's message
+   * and the log records the file. Rejects, with the sentence to show, when nothing was sent.
+   */
+  sendCommand?(name: string, args: string, delivery: Delivery): Promise<string | null>
   /** Stops the running turn (reason `user`). */
   interrupt(): void
   revert?(options: RevertOptions): Promise<RevertResult>

@@ -32,7 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { AgentsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
+import type { AgentsResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
 import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
@@ -225,6 +225,20 @@ export interface Session {
    * message ID once it is admitted, or `null` when it was not.
    */
   send(text: string, options?: SendOptions): Promise<MessageId | null>
+  /**
+   * The command files of the user and the project, as they are now, with the
+   * ones that cannot be used. `builtins`: the client's own commands, which
+   * hide a file of the same name. Optional: an engine without it has none.
+   */
+  commands?(builtins: readonly ClientCommand[]): Promise<CommandsResult>
+  /**
+   * `send` for `/name args` of a command file: its text, with `args` put in,
+   * is admitted as the user's message, and the log records the file
+   * (`command.expanded`, which follows the admission). Rejects, with the
+   * sentence to show, when nothing was sent: no such file, one that cannot
+   * be used, an agent it names that does not exist.
+   */
+  sendCommand?(name: string, args: string, options?: SendOptions): Promise<MessageId | null>
   /** Asks the running execution to stop with reason `user`. A no-op when nothing runs. */
   interrupt(): void
   /** `/undo`: goes back to before a user message (the latest by default), files and conversation. Only while idle. */

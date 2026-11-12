@@ -74,3 +74,12 @@ export function fenced(text: string, info = ""): string {
   const fence = "`".repeat(Math.max(3, longest + 1))
   return `${fence}${info}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}`
 }
+
+export type { SlashEntry } from "../../core/src/commands/lookup.ts"
+/**
+ * What a prompt that starts with `/` is, by the engine's rule: `/name args`
+ * is a command (`name` is empty for a lone `/`), `//text` is the text
+ * `/text`, and a first word that cannot be a command's name
+ * (`/usr/bin/env is missing`) is an ordinary prompt (`null`).
+ */
+export { parseSlash as slashEntry } from "../../core/src/commands/lookup.ts"

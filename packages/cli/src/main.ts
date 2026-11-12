@@ -41,7 +41,7 @@ import { JsonSink, PrettyRenderer, QuietSink, type Sink } from "./renderer.ts"
 import { selectEngine } from "./select-engine.ts"
 import { selfCommand } from "./self.ts"
 import { type EditorAction, Screen } from "./terminal.ts"
-import { BUILTIN_COMMANDS, helpLines, lookup, unknownCommandText } from "./slash.ts"
+import { BUILTIN_COMMANDS, clientCommands, commandProblemLines, helpLines, lookup, unknownCommandText, unusableCommandLines, userCommands } from "./slash.ts"
 import { colorEnabled, displayWidth, flatten, formatDuration, truncate } from "./text.ts"
 
 export interface Io {
@@ -234,10 +234,24 @@ export async function run(io: Io): Promise<number> {
   }
 
   const turns = new TurnWatcher(session, sink, watch)
-  const turn = async (text: string): Promise<TurnOutcome | "closed"> => {
+  const turn = async (entry: Entry): Promise<TurnOutcome | "closed" | "not_sent"> => {
     control.running = true
     const done = turns.next()
-    await session.send(text)
+    const command = entry.command
+    if (command === undefined) await session.send(entry.text)
+    else {
+      // A command file that cannot be sent after all (the agent it names is gone) starts no turn: said, and nothing waits.
+      const refused = await session.sendCommand!(command.name, command.args).then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      )
+      if (refused !== null) {
+        turns.forget()
+        control.running = false
+        sink.notice(`not sent: ${refused}`, "warn")
+        return "not_sent"
+      }
+    }
     const outcome = await done
     control.running = false
     return outcome
@@ -250,12 +264,14 @@ export async function run(io: Io): Promise<number> {
   ]
   const resumed = options.session !== null || options.continue
   const flow = async (): Promise<number> => {
-    if (autoplay) return playDemo(session as FakeSession, turn, options.demoSpeed)
+    if (autoplay) return playDemo(session as FakeSession, (text) => turn({ text }) as Promise<TurnOutcome | "closed">, options.demoSpeed)
     // Which session this is, before anything else: a new one, or the one resumed with its title and its turns.
     if (terminal !== null && demo === null) await sayOpened(sink as PrettyRenderer, session, resumed)
     if (terminal === null) {
-      const outcome = await turn(prompt!)
+      // A prompt that is `/name args` for a command file is sent as that command; anything else as it was typed.
+      const outcome = await turn(await commandEntry(session, prompt!))
       if (outcome === "closed") return 1
+      if (outcome === "not_sent") return EXIT.usage
       // Not a failure of the work: the run was not allowed to go on (`--unattended stop`).
       return turns.stoppedForApproval ? EXIT_APPROVAL_REQUIRED : exitCodeOf(outcome)
     }
@@ -348,11 +364,26 @@ async function playDemo(session: FakeSession, turn: (text: string) => Promise<Tu
   return code
 }
 
+/** What is sent to start a turn: text as typed, or `/name args` of a command file (then `text` is the entry as typed). */
+interface Entry {
+  readonly text: string
+  readonly command?: { readonly name: string; readonly args: string }
+}
+
+/** A one-prompt run's prompt: a command file's when its first word names one (and no command of the CLI's own), else the text. */
+async function commandEntry(session: Session, text: string): Promise<Entry> {
+  const found = lookup(text, [BUILTIN_COMMANDS])
+  if (found.kind !== "unknown" || session.commands === undefined) return { text }
+  const listing = await session.commands(clientCommands()).catch(() => null)
+  const again = listing === null ? found : lookup(text, [BUILTIN_COMMANDS, userCommands(listing)])
+  return again.kind === "command" ? { text, command: { name: again.command.name, args: again.rest } } : { text }
+}
+
 interface Interactive {
   readonly terminal: TerminalMode
   readonly renderer: PrettyRenderer
   readonly session: Session
-  readonly turn: (text: string) => Promise<TurnOutcome | "closed">
+  readonly turn: (entry: Entry) => Promise<TurnOutcome | "closed" | "not_sent">
   readonly control: { running: boolean }
   readonly onCtrlC: () => void
   readonly leave: (code: number) => void
@@ -369,15 +400,35 @@ interface Interactive {
 async function interactiveLoop(context: Interactive): Promise<number> {
   const { terminal, renderer, session, control } = context
   const screen = terminal.screen
-  let waiting: ((text: string | null) => void) | null = null
+  let waiting: ((entry: Entry | null) => void) | null = null
 
-  const steer = (message: string, queued: boolean) => {
-    session.send(message, { delivery: queued ? "queue" : "steer" }).then(
+  const steer = (message: string, queued: boolean, command?: Entry["command"]) => {
+    const delivery = queued ? "queue" : "steer"
+    const sent = command === undefined ? session.send(message, { delivery }) : session.sendCommand!(command.name, command.args, { delivery })
+    sent.then(
       (id) => {
         if (id === null) renderer.notice("not sent: the session is not taking input right now", "warn")
       },
-      (error: unknown) => renderer.notice(`not sent: ${error instanceof Error ? error.message : String(error)}`, "error"),
+      (error: unknown) => renderer.notice(`not sent: ${error instanceof Error ? error.message : String(error)}`, command === undefined ? "error" : "warn"),
     )
+  }
+  /** The command files as they are now, or `null` when the engine has none or cannot say. */
+  const commandFiles = async () => (session.commands === undefined ? null : await session.commands(clientCommands()).catch(() => null))
+  /**
+   * `/name` that is no command of the CLI's own: a command file's, sent through the engine (which records the file);
+   * a file that cannot be used, said with why; or nothing, said with the nearest name of both.
+   */
+  const fileCommand = async (text: string, unknown: Extract<ReturnType<typeof lookup>, { kind: "unknown" }>) => {
+    const listing = await commandFiles()
+    const found = listing === null ? unknown : lookup(text, [BUILTIN_COMMANDS, userCommands(listing)])
+    if (found.kind === "command") {
+      const command = { name: found.command.name, args: found.rest }
+      if (control.running) return steer(text.trim(), false, command)
+      return waiting?.({ text: text.trim(), command })
+    }
+    const unusable = listing === null ? null : unusableCommandLines(listing, unknown.name)
+    if (unusable !== null) return renderer.printLines(unusable)
+    if (found.kind === "unknown") renderer.notice(unknownCommandText(found), "warn")
   }
   terminal.start((action) => {
     switch (action.kind) {
@@ -392,10 +443,10 @@ async function interactiveLoop(context: Interactive): Promise<number> {
       case "submit": {
         // A `/word` is a command or nothing: an unknown one is never sent (it would cost a request and title the session).
         const found = lookup(action.text, [BUILTIN_COMMANDS])
-        if (found.kind === "unknown") return renderer.notice(unknownCommandText(found), "warn")
+        if (found.kind === "unknown") return void fileCommand(action.text, found)
         if (found.kind === "message") {
           if (control.running) return found.text.trim() === "" ? undefined : steer(found.text, false)
-          return waiting?.(found.text)
+          return waiting?.({ text: found.text })
         }
         const name = found.command.name
         switch (name) {
@@ -403,8 +454,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
             if (control.running) return context.leave(0)
             return waiting?.(null)
           case "help":
-            for (const line of helpLines([BUILTIN_COMMANDS])) renderer.notice(line)
-            return
+            // The CLI's own commands, then the command files with where each comes from, and the ones that cannot be used.
+            return void commandFiles().then((listing) => renderer.printLines([...helpLines(listing === null ? [BUILTIN_COMMANDS] : [BUILTIN_COMMANDS, userCommands(listing)]), ...(listing === null ? [] : commandProblemLines(listing))]))
           case "clear-taint":
             return void clearTaint(session, renderer, screen)
           case "approval":
@@ -430,7 +481,7 @@ async function interactiveLoop(context: Interactive): Promise<number> {
           case "queue":
             if (found.rest === "") return renderer.notice("/queue needs a message, e.g. /queue then update the changelog", "warn")
             // With nothing running there is nothing to queue behind: a queued message is a prompt.
-            return control.running ? steer(found.rest, true) : waiting?.(found.rest)
+            return control.running ? steer(found.rest, true) : waiting?.({ text: found.rest })
           case "undo":
           case "redo":
             // The editor runs `/undo` and `/redo` themselves; one with words after it reaches here.
@@ -442,24 +493,24 @@ async function interactiveLoop(context: Interactive): Promise<number> {
     }
   })
 
-  let pending = context.first
+  let pending: Entry | null = context.first === null ? null : await commandEntry(session, context.first)
   for (;;) {
-    let text = pending
+    let entry = pending
     pending = null
-    if (text === null) {
+    if (entry === null) {
       renderer.beforePrompt()
       screen.show("› ")
-      text = await new Promise<string | null>((done) => {
+      entry = await new Promise<Entry | null>((done) => {
         waiting = done
       })
       waiting = null
-      if (text === null) break
-      if (text.trim() === "") continue
-      renderer.prompt(text)
+      if (entry === null) break
+      if (entry.text.trim() === "") continue
+      renderer.prompt(entry.text)
     }
     screen.show("› ", STEER_HINT)
     // The events ended under a running turn: the engine went away. Leaving is the only thing left to do.
-    if ((await context.turn(text)) === "closed") return 1
+    if ((await context.turn(entry)) === "closed") return 1
   }
   return 0
 }
@@ -716,6 +767,11 @@ class TurnWatcher {
     return new Promise((resolve) => {
       this.waiter = resolve
     })
+  }
+
+  /** Nothing was sent after all: no turn is waited for. */
+  forget(): void {
+    this.waiter = null
   }
 
   private observe(item: EngineEvent, sink: Sink): void {

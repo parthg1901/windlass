@@ -89,7 +89,7 @@ export class Translator {
   private readonly tools = new Map<string, ToolState>()
   /** The hooks that refused a call, added a note to its result or could not answer, until the call settles (`hook.ran` comes first). */
   private readonly hookRuns = new Map<string, HookRun[]>()
-  private readonly inbox = new Map<string, { readonly text: string; readonly origin: string | null }>()
+  private readonly inbox = new Map<string, { readonly text: string; readonly origin: string | null; command?: EventData<"command.expanded"> }>()
   private model: string | null = null
   private turn = freshTurn()
 
@@ -150,6 +150,12 @@ export class Translator {
       case "inbox.enqueued":
         this.inbox.set(item.data.messageId, { text: contentText(item.data.content), origin: item.data.origin })
         break
+      // Which command file produced the message admitted just before: said with the message, where it is shown.
+      case "command.expanded": {
+        const waiting = this.inbox.get(item.data.messageId)
+        if (waiting !== undefined) waiting.command = item.data
+        break
+      }
       case "inbox.cancelled":
         this.inbox.delete(item.data.messageId)
         break
@@ -158,7 +164,14 @@ export class Translator {
         this.inbox.delete(item.data.messageId)
         out.push({ type: "delivered", messageId: item.data.messageId })
         if (waiting !== undefined && waiting.origin === null && (replay || this.options.echo(item.data.messageId)))
-          update({ sessionUpdate: "user_message_chunk", messageId: item.data.messageId, content: { type: "text", text: waiting.text } })
+          update({
+            sessionUpdate: "user_message_chunk",
+            messageId: item.data.messageId,
+            content: { type: "text", text: waiting.text },
+            ...(waiting.command === undefined
+              ? {}
+              : { _meta: { [META.command]: { name: waiting.command.name, arguments: waiting.command.arguments, path: waiting.command.path, scope: waiting.command.scope, missing: waiting.command.missing, unsupported: waiting.command.unsupported } } }),
+          })
         break
       }
       case "synthetic.appended":

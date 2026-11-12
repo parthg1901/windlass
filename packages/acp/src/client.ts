@@ -41,10 +41,13 @@ import {
   type AgentsResult,
   APPROVAL_META,
   type ApprovalStateResult,
+  type ClientCommand,
+  type CommandsResult,
   type CompactResult,
   type DiffParams,
   type DiffResult,
   EXT,
+  type ExpandCommandResult,
   type ForkParams,
   type ForkResult,
   type HooksStateResult,
@@ -61,6 +64,7 @@ import {
   type ReplayParams,
   type ReplayResult,
   type RevertParams,
+  type SendCommandResult,
   type StateNotification,
   type TaskItem,
   type TurnNotification,
@@ -423,6 +427,11 @@ export class HarnessConnection {
     return this.request<AgentsResult>(EXT.agents, { cwd })
   }
 
+  /** `<prefix>/commands` for a directory: the slash commands a session started there would have. `builtins`: the client's own commands, which hide a file of the same name. */
+  listCommands(cwd: string, builtins: readonly ClientCommand[] = []): Promise<CommandsResult> {
+    return this.request<CommandsResult>(EXT.commands, { cwd, builtins })
+  }
+
   /** `<prefix>/events`: a session's stored log, also of one another process holds. */
   async storedEvents(sessionId: string, range: { readonly afterSeq?: number; readonly limit?: number } = {}): Promise<StoredEvent[]> {
     return (await this.request<{ events: StoredEvent[] }>(EXT.events, { sessionId, ...range })).events
@@ -632,6 +641,33 @@ export class ClientSession {
       ...(options.maxSteps === null || options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
     })
     return admitted.messageId
+  }
+
+  /** `<prefix>/commands`: the session's slash commands as they are now. `builtins`: the client's own commands, which hide a file of the same name. */
+  commands(builtins: readonly ClientCommand[] = []): Promise<CommandsResult> {
+    return this.link.request<CommandsResult>(EXT.commands, { sessionId: this.id, builtins })
+  }
+
+  /** `<prefix>/expand_command`: what `/name args` would send, without sending it. */
+  expandCommand(name: string, args: string, builtins: readonly ClientCommand[] = []): Promise<ExpandCommandResult> {
+    return this.link.request<ExpandCommandResult>(EXT.expandCommand, { sessionId: this.id, name, args, builtins })
+  }
+
+  /**
+   * `<prefix>/send_command`: `/name args` expanded and admitted as the user's
+   * message. Rejects with a `ClientError` (`invalid_request`) whose message is
+   * the sentence to show when nothing was sent: no such command, a file that
+   * cannot be used, an agent it names that does not exist.
+   */
+  sendCommand(name: string, args: string, options: { readonly delivery?: "steer" | "queue"; readonly maxSteps?: number | null; readonly builtins?: readonly ClientCommand[] } = {}): Promise<SendCommandResult> {
+    return this.link.request<SendCommandResult>(EXT.sendCommand, {
+      sessionId: this.id,
+      name,
+      args,
+      delivery: options.delivery ?? "steer",
+      ...(options.maxSteps === null || options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
+      builtins: options.builtins ?? [],
+    })
   }
 
   /** `session/cancel`. A pending approval or hand-edit question is answered `cancelled` at once, as ACP asks. */

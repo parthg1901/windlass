@@ -2,7 +2,8 @@
  * The interactive CLI's slash commands: what an entry that starts with `/`
  * is, before anything is sent to the agent.
  *
- * An entry whose first word is `/<name>` (letters, digits, `-`, no second
+ * An entry whose first word is `/<name>` (letters, digits, `-`, `_`, `.`,
+ * and `:` between a folder and a file, as in `/frontend:test`; no second
  * `/`) is a command. A name no source knows is not sent: it would cost a
  * model request and title a new session "/<name>". The user is told it is
  * not a command, given the nearest one, and told how to send a message that
@@ -11,10 +12,15 @@
  * and goes to the agent as typed.
  *
  * Commands come from sources, looked up in order: the CLI's own first, then
- * whatever else is passed (user-defined commands, once there are any; such a
- * source lists its commands in the same shape and the caller runs them).
+ * the command files of the user and the project (`userCommands`): Markdown
+ * files whose text, with what was typed after the name put in, is sent as the
+ * user's message. The engine expands and records them; what is here is the
+ * lookup, and the words both interfaces use about them.
  */
-import { nearest } from "./text.ts"
+import type { EventData } from "@windlass/core"
+import type { ClientCommand, CommandInfo, CommandsResult } from "@windlass/acp/extensions"
+import type { Line } from "./features.ts"
+import { nearest, plural } from "./text.ts"
 
 export interface SlashCommand {
   readonly name: string
@@ -24,6 +30,8 @@ export interface SlashCommand {
   readonly aliases?: readonly string[]
   /** `idle`: at the prompt only; `working`: while the agent works only; `any`: both. */
   readonly when: "idle" | "working" | "any"
+  /** A command file's: the file, and where it comes from. */
+  readonly file?: Pick<CommandInfo, "path" | "scope" | "agent">
 }
 
 /** Where commands come from. */
@@ -70,12 +78,17 @@ export type Lookup =
 export function lookup(entry: string, sources: readonly CommandSource[] = [BUILTIN_COMMANDS]): Lookup {
   const trimmed = entry.trimStart()
   if (trimmed.startsWith("//")) return { kind: "message", text: trimmed.slice(1) }
-  const match = /^\/([A-Za-z][\w-]*)(?=\s|$)([\s\S]*)$/.exec(trimmed)
+  const match = /^\/([A-Za-z0-9][A-Za-z0-9._:-]*)(?=\s|$)([\s\S]*)$/.exec(trimmed)
   if (match === null) return { kind: "message", text: entry }
-  const name = match[1]!.toLowerCase()
+  const typed = match[1]!
+  const name = typed.toLowerCase()
   const rest = match[2]!.trim()
-  for (const source of sources)
-    for (const command of source.commands()) if (command.name === name || command.aliases?.includes(name)) return { kind: "command", command, source, rest }
+  for (const source of sources) {
+    const commands = source.commands()
+    // As typed first: two command files may differ only in case.
+    const command = commands.find((candidate) => candidate.name === typed) ?? commands.find((candidate) => candidate.name.toLowerCase() === name || candidate.aliases?.includes(name))
+    if (command !== undefined) return { kind: "command", command, source, rest }
+  }
   const names = sources.flatMap((source) => source.commands().flatMap((command) => [command.name, ...(command.aliases ?? [])]))
   return { kind: "unknown", name, suggestion: nearest(name, names) }
 }
@@ -86,23 +99,87 @@ export function unknownCommandText(found: Extract<Lookup, { kind: "unknown" }>):
   return `/${found.name} is not a command, so nothing was sent; ${instead}. To send a message that starts with a slash, begin it with two: //${found.name}`
 }
 
-/** The help: every command with what it does, then the keys. */
-export function helpLines(sources: readonly CommandSource[] = [BUILTIN_COMMANDS]): string[] {
-  const lines: string[] = []
+/** The help: every command with what it does (a command file's with where it comes from), then the keys. */
+export function helpLines(sources: readonly CommandSource[] = [BUILTIN_COMMANDS]): Line[] {
+  const lines: Line[] = []
+  const say = (text: string, indent = 0): Line => ({ text, tone: "dim", indent })
   for (const source of sources) {
     const commands = source.commands()
     if (commands.length === 0) continue
-    lines.push(`${source.label}:`)
+    lines.push(say(`${source.label}:`))
     const labels = commands.map((command) => `/${command.name}${command.args === "" ? "" : ` ${command.args}`}${command.aliases === undefined ? "" : ` (${command.aliases.map((alias) => `/${alias}`).join(", ")})`}`)
     const width = Math.max(...labels.map((label) => label.length))
-    commands.forEach((command, index) => lines.push(`  ${labels[index]!.padEnd(width)}  ${command.description}${command.when === "idle" ? " (while the agent is idle)" : ""}`))
+    commands.forEach((command, index) => {
+      lines.push(say(`${labels[index]!.padEnd(width)}  ${command.description}${command.when === "idle" ? " (while the agent is idle)" : ""}`, 2))
+      // The file on a line of its own: a path is for opening, and is never cut.
+      if (command.file !== undefined) lines.push(say(`${COMMAND_SCOPE[command.file.scope]}${command.file.agent === null ? "" : ` · runs as the agent ${command.file.agent}`}:`, 6), { text: command.file.path, tone: "dim", indent: 6, path: true })
+    })
   }
   lines.push(
-    "Keys:",
-    "  Enter sends; Alt-Enter or a trailing \\ starts a new line; Up and Down recall earlier entries.",
-    "  Ctrl-C stops the agent while it works (twice within 2 s exits), and clears the entry at the prompt.",
-    "  Ctrl-D on an empty prompt leaves.",
-    "  A message that starts with a slash: begin it with two (//etc sends /etc).",
+    say("Keys:"),
+    say("Enter sends; Alt-Enter or a trailing \\ starts a new line; Up and Down recall earlier entries.", 2),
+    say("Ctrl-C stops the agent while it works (twice within 2 s exits), and clears the entry at the prompt.", 2),
+    say("Ctrl-D on an empty prompt leaves.", 2),
+    say("A message that starts with a slash: begin it with two (//etc sends /etc).", 2),
   )
   return lines
+}
+
+// ---------------------------------------------------------------- command files
+
+/** The CLI's own commands as the engine takes them: a file of one of these names is hidden, and their names count for a did-you-mean. */
+export function clientCommands(source: CommandSource = BUILTIN_COMMANDS): ClientCommand[] {
+  return source.commands().map((command) => ({ name: command.name, ...(command.aliases === undefined ? {} : { aliases: command.aliases }) }))
+}
+
+/** Where a command file comes from, in a few words. */
+export const COMMAND_SCOPE = { project: "from this project", config: "from a directory your configuration names (commands.paths)", user: "your own, for every project" } as const
+
+/** The command files a session has, as a source: the ones a command of the client's own does not hide. */
+export function userCommands(listing: CommandsResult): CommandSource {
+  const commands = listing.commands
+    .filter((command) => command.hiddenBy === null)
+    .map((command): SlashCommand => ({ name: command.name, args: command.argumentHint ?? "", description: command.description, when: "any", file: { path: command.path, scope: command.scope, agent: command.agent } }))
+  return { label: "Your commands (command files: their text is sent as your message)", commands: () => commands }
+}
+
+/** A command file of that name that cannot be used, or one a command of the client's own hides: why, as lines for the user; `null` when there is none. */
+export function unusableCommandLines(listing: CommandsResult, name: string): Line[] | null {
+  const lower = name.toLowerCase()
+  const problem = listing.problems.find((candidate) => candidate.severity === "skipped" && candidate.name !== null && candidate.name.toLowerCase() === lower)
+  if (problem === undefined) return null
+  return [
+    { text: `/${problem.name} cannot be used, so nothing was sent: ${problem.reason}.`, tone: "warn" },
+    { text: problem.path, tone: "warn", indent: 2, path: true },
+  ]
+}
+
+/** The files `/help` says could not be used or are hidden, with why and where. */
+export function commandProblemLines(listing: CommandsResult): Line[] {
+  const lines: Line[] = []
+  for (const problem of listing.problems) {
+    const what = problem.severity === "skipped" ? "not usable" : problem.severity === "shadowed" ? "hidden" : "usable, but"
+    lines.push({ text: `${problem.name === null ? "a command file" : `/${problem.name}`}: ${what}: ${problem.reason}`, tone: problem.severity === "skipped" ? "warn" : "dim", indent: 2 })
+    lines.push({ text: problem.path, tone: "dim", indent: 6, path: true })
+  }
+  return lines.length === 0 ? [] : [{ text: "Command files with problems:", tone: "warn" }, ...lines]
+}
+
+const LEFT_AS_TEXT = {
+  shell: "a command file runs nothing when it is used; the agent can run it with its shell tool, which asks as usual",
+  include: "a command file reads no file into its text; the agent can read it with its tools",
+} as const
+
+/**
+ * What the transcript says about a message a command file produced
+ * (`command.expanded`): the entry as typed, where its text came from, and
+ * what expansion reported: an argument the file uses that was not given, and
+ * what another harness would have run or read and this one left as text.
+ */
+export function commandSent(use: Pick<EventData<"command.expanded">, "name" | "arguments" | "path" | "scope" | "missing" | "unsupported">, text: string | null): { readonly typed: string; readonly head: string; readonly where: string; readonly path: string; readonly notes: string[] } {
+  const typed = `/${use.name}${use.arguments === "" ? "" : ` ${use.arguments}`}`
+  const size = text === null ? "" : ` (${plural(text.split("\n").length, "line")})`
+  const missing = use.missing.length === 0 ? [] : [`${use.missing.length === 1 ? `argument ${use.missing[0]} was` : `arguments ${use.missing.join(", ")} were`} not given: ${use.missing.length === 1 ? "it is" : "they are"} empty in the text that was sent`]
+  const unsupported = use.unsupported.map((construct) => `${construct.text} (line ${construct.line}) was left as text: ${LEFT_AS_TEXT[construct.kind]}`)
+  return { typed, head: `the text of a command file was sent${size}`, where: COMMAND_SCOPE[use.scope], path: use.path, notes: [...missing, ...unsupported] }
 }

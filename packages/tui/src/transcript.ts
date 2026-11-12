@@ -12,7 +12,7 @@ import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } fr
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type AgentRecord, type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack, unsatisfiedText } from "./cli.ts"
-import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, callArgument, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, callArgument, commandSent, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -41,7 +41,13 @@ export interface UserRow extends RowBase {
   turn: number | null
   /** How a message sent while the agent worked reached it; `null` for the prompt that started a turn. */
   readonly delivered: "steer" | "queue" | null
+  /** The command file that produced `text` (`command.expanded`): the row shows the entry as typed, and `text` when expanded. */
+  command: CommandNote | null
+  expanded: boolean
 }
+
+/** What a row says about the command file its message came from: the entry as typed, the file, and what expansion reported. */
+export type CommandNote = ReturnType<typeof commandSent>
 
 export interface TextRow extends RowBase {
   readonly kind: "text"
@@ -289,6 +295,8 @@ export class Transcript {
   private readonly checks = new Map<number, { row: NoticeRow; startedAt: number }>()
   private readonly compactions = new Map<string, { row: NoticeRow; tokensBefore: number; model: string | null }>()
   private readonly inboxText = new Map<string, { text: string; delivery: "steer" | "queue"; midTurn: boolean }>()
+  /** The command files that produced messages not delivered yet, by message. */
+  private readonly commandNotes = new Map<string, CommandNote>()
   private readonly resumes = new Map<string, number>()
   private readonly stepModels = new Map<string, string>()
   private readonly callDiagnostics = new Map<string, string[]>()
@@ -333,7 +341,7 @@ export class Transcript {
     Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, agent: null, taint: null, forkedFrom: null, inheritedCalls: 0 })
     this.agentRecord = null
     Object.assign(this.activity, blankActivity())
-    for (const map of [this.background, this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
+    for (const map of [this.background, this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.commandNotes, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
     this.diagnosticsForNext = []
     this.turn = null
     this.cutOff = null
@@ -753,9 +761,21 @@ export class Transcript {
       }
       case "inbox.enqueued":
         return this.enqueued(event.data, replay)
+      case "command.expanded": {
+        // The message admitted just before is a command file's text: its row shows the entry as typed, with the file.
+        const note = commandSent(event.data, this.inboxText.get(event.data.messageId)?.text ?? null)
+        const shown = this.userRows.get(event.data.messageId)
+        if (shown !== undefined) this.touch(shown, () => (shown.command = note))
+        else this.commandNotes.set(event.data.messageId, note)
+        const at = this.pending.findIndex((entry) => entry.messageId === event.data.messageId)
+        if (at !== -1) this.pending[at] = { ...this.pending[at]!, text: note.typed }
+        return
+      }
       case "inbox.delivered": {
         const item = this.inboxText.get(event.data.messageId)
         this.inboxText.delete(event.data.messageId)
+        const command = this.commandNotes.get(event.data.messageId) ?? null
+        this.commandNotes.delete(event.data.messageId)
         const at = this.pending.findIndex((entry) => entry.messageId === event.data.messageId)
         const pending = at === -1 ? null : this.pending.splice(at, 1)[0]!
         // A prompt's row was added when it was admitted; it belongs where it became part of the conversation.
@@ -767,12 +787,13 @@ export class Transcript {
         }
         if (item === undefined || !item.midTurn) return
         const turnOfQueued = this.turns.turns.findLast((turn) => turn.messageSeq === event.seq)?.number ?? null
-        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery, turn: turnOfQueued }, replay)
+        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery, turn: turnOfQueued, command, expanded: false }, replay)
         return
       }
       case "inbox.cancelled": {
         const item = this.inboxText.get(event.data.messageId)
         this.inboxText.delete(event.data.messageId)
+        this.commandNotes.delete(event.data.messageId)
         const at = this.pending.findIndex((entry) => entry.messageId === event.data.messageId)
         if (at !== -1) this.pending.splice(at, 1)
         this.notice(SYMBOL.inbox, "dim", [span("withdrawn: ", "dim"), span(`"${oneLine(item?.text ?? event.data.messageId)}"`, "dim", { strike: true })], [], replay, "session")
@@ -1059,7 +1080,7 @@ export class Transcript {
     // The title the server derives for a session without one: the first line of its first message.
     if (this.session.title === null) this.session.title = deriveTitle(sanitize(text))
     if (!midTurn) {
-      this.userRows.set(data.messageId, this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null, turn: null }, replay))
+      this.userRows.set(data.messageId, this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null, turn: null, command: null, expanded: false }, replay))
       return
     }
     this.pending.push({ messageId: data.messageId, text: sanitize(text), delivery: data.delivery })
@@ -1250,7 +1271,7 @@ export function turnsLabel(turns: readonly TurnInfo[]): string | null {
 }
 
 export function expandable(row: Row): boolean {
-  return row.kind === "tool" || row.kind === "reasoning" || row.kind === "outcome" || (row.kind === "notice" && row.detail.length > 2)
+  return row.kind === "tool" || row.kind === "reasoning" || row.kind === "outcome" || (row.kind === "notice" && row.detail.length > 2) || (row.kind === "user" && row.command !== null)
 }
 
 /** Whether an execution was only a compaction the user asked for: no step, so no turn to draw an ending for. */

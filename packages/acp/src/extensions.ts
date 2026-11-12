@@ -98,11 +98,19 @@ export const EXT = {
   memory: `${prefix}/memory`,
   /** Request `MemoryChangeParams` → `MemoryChangeResult`: the user remembers, retracts, confirms, rejects or renews a note. */
   memoryChange: `${prefix}/memory_change`,
+  /** Request `{ sessionId }` or `{ cwd }`, with `builtins?` → `CommandsResult`: the user's and the project's slash commands, the ones a client's own command hides, and the files that could not be used. */
+  commands: `${prefix}/commands`,
+  /** Request `{ sessionId, name, args, builtins? }` → `ExpandCommandResult`: what `/name args` would send, without sending it. */
+  expandCommand: `${prefix}/expand_command`,
+  /** Request `SendCommandParams` → `SendCommandResult`: `/name args` expanded and admitted as the user's message, recorded as that command's (`command.expanded`). Answers once admitted; refused, with the sentence to show, when nothing was sent. */
+  sendCommand: `${prefix}/send_command`,
 } as const
 
 export const META = {
   /** On `session/prompt`: `"steer"` (the default) or `"queue"`. */
   delivery: `${META_NAMESPACE}/delivery`,
+  /** On a `user_message_chunk` whose text a slash command produced: `{ name, arguments, path, scope, missing, unsupported }` (`command.expanded`). */
+  command: `${META_NAMESPACE}/command`,
   /** On a settled `tool_call_update`: the harness outcome (`success`, `error`, `not_started`, `effect_unknown`). */
   outcome: `${META_NAMESPACE}/outcome`,
   /** On a settled `tool_call_update` of an edit a language server serves: `ToolDiagnostics`, what the servers said about it. */
@@ -676,6 +684,85 @@ export interface MemoryChangeResult {
   readonly id: string | null
   /** What happened, or why nothing did, as a sentence. */
   readonly message: string
+}
+
+/** A command of the client's own, by name and aliases: it wins over a command file of the same name, and counts for a did-you-mean. */
+export interface ClientCommand {
+  readonly name: string
+  readonly aliases?: readonly string[]
+}
+
+/** One slash command a file defines (`<prefix>/commands`). */
+export interface CommandInfo {
+  /** Without the slash: `release-notes`, `frontend:test`. */
+  readonly name: string
+  readonly description: string
+  /** What the file says follows the name (`argument-hint`), for a palette. */
+  readonly argumentHint: string | null
+  /** The agent the command switches to before its message, when it names one. */
+  readonly agent: string | null
+  /** The file that defines it. */
+  readonly path: string
+  /** `project`: from the repository; `config`: a directory the configuration names; `user`: the user's own. */
+  readonly scope: "project" | "config" | "user"
+  /** The client's own command that takes the name, when one does: the file cannot be run as `/<name>`. */
+  readonly hiddenBy: string | null
+}
+
+/** Result of `<prefix>/commands`. `available: false`: this engine offers no slash commands. */
+export interface CommandsResult {
+  readonly available: boolean
+  /** By name, hidden ones included. */
+  readonly commands: readonly CommandInfo[]
+  /** `skipped`: a file that cannot be used, with why; `shadowed`: a nearer file or a client's own command has the name; `warning`: usable, but something in it is not read. */
+  readonly problems: readonly { readonly path: string; readonly severity: "skipped" | "shadowed" | "warning"; readonly reason: string; readonly name: string | null }[]
+}
+
+/** What expanding a command reported, for the user: on `<prefix>/expand_command`, `<prefix>/send_command`, and (but for `unused`, `appended` and `notes`) in the `command.expanded` event. */
+export interface ExpansionReport {
+  /** 1-based positions the template uses that were not given: each is empty in the text. */
+  readonly missing: readonly number[]
+  /** 1-based positions given that the template does not use. */
+  readonly unused: readonly number[]
+  /** The template has no placeholder: what was typed was appended as a last paragraph. */
+  readonly appended: boolean
+  /** What another harness would run or read at this point and this one leaves in the text as written, with why. */
+  readonly unsupported: readonly { readonly kind: "shell" | "include"; readonly text: string; readonly line: number; readonly reason: string }[]
+  /** Anything else worth a line (a quote that was not closed). */
+  readonly notes: readonly string[]
+}
+
+/** Result of `<prefix>/expand_command`. */
+export type ExpandCommandResult =
+  /** The text that would be sent as the user's message, and what expansion reported. */
+  | ({ readonly kind: "command"; readonly command: CommandInfo; readonly text: string } & ExpansionReport)
+  /** The name is a command of the client's own (`builtins`). */
+  | { readonly kind: "builtin"; readonly name: string }
+  /** A file of that name exists and cannot be used; `message` says why. */
+  | { readonly kind: "broken"; readonly name: string; readonly message: string }
+  /** No such command; `suggestions` are the close names of both the client's and the files', `message` the sentence to show. */
+  | { readonly kind: "unknown"; readonly name: string; readonly suggestions: readonly string[]; readonly message: string }
+  /** This engine offers no slash commands. */
+  | { readonly kind: "unavailable"; readonly message: string }
+
+/** Params of `<prefix>/send_command`. */
+export interface SendCommandParams {
+  readonly sessionId: string
+  /** The command's name, without the slash. */
+  readonly name: string
+  /** What was typed after the name. */
+  readonly args: string
+  /** `steer` (the default) or `queue`, as for a prompt. */
+  readonly delivery?: "steer" | "queue"
+  readonly maxSteps?: number
+  /** The client's own commands: a name one of them takes is refused, and their names count for the did-you-mean. */
+  readonly builtins?: readonly ClientCommand[]
+}
+
+/** Result of `<prefix>/send_command`: the message admitted, the file it came from, and what expansion reported. */
+export interface SendCommandResult extends ExpansionReport {
+  readonly messageId: string
+  readonly command: CommandInfo
 }
 
 /** One agent a session can run as (`<prefix>/agents`). */

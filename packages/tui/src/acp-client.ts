@@ -36,7 +36,7 @@
  */
 import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
-import { EXT, type MemoryChangeParams, type MemoryChangeResult } from "@windlass/acp/extensions"
+import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult } from "@windlass/acp/extensions"
 import { type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
@@ -176,6 +176,8 @@ class AcpSession implements BackendSession {
   readonly rename?: (title: string) => Promise<string>
   readonly fork?: (options: { readonly copy: boolean; readonly throughSeq?: number }) => Promise<ForkInfo>
   readonly storedEvents?: (sessionId: string) => Promise<readonly EngineEvent[]>
+  readonly commands?: (builtins: readonly ClientCommand[]) => Promise<CommandsResult>
+  readonly sendCommand?: (name: string, args: string, delivery: Delivery) => Promise<string | null>
   private closing: Promise<void> | null = null
 
   constructor(
@@ -220,6 +222,13 @@ class AcpSession implements BackendSession {
       }
     if (session.offers(EXT.rename)) this.rename = (title) => this.call(() => session.rename(title))
     if (session.offers(EXT.agents)) this.agents = () => this.call(() => session.agents())
+    if (session.offers(EXT.commands) && session.offers(EXT.sendCommand)) {
+      this.commands = (builtins) => this.call(() => session.commands(builtins))
+      this.sendCommand = async (name, args, delivery) => {
+        if (session.gone) return null
+        return (await this.call(() => session.sendCommand(name, args, { delivery, maxSteps: this.maxSteps }))).messageId
+      }
+    }
   }
 
   async send(text: string, delivery: Delivery): Promise<string | null> {

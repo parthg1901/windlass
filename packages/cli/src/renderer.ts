@@ -12,6 +12,7 @@ import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, ag
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
 import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
+import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
@@ -228,6 +229,11 @@ export class PrettyRenderer implements Sink {
       // A path or a command is one word that may be longer than the line: it is broken, never cut. A command the
       // user is asked about is not even reflowed: every character of it is shown, in order, to its end.
       const room = Math.max(10, this.width - indent.length - 1)
+      // A path is one piece: under its indentation when it fits, else from the first column, where the terminal's own wrap keeps it whole.
+      if (item.path === true) {
+        this.uncut("info", displayWidth(item.text) <= room ? `${indent}${item.text}` : item.text, tone)
+        continue
+      }
       for (const text of item.verbatim === true ? hardWrap(sanitize(item.text), room) : wrapWhole(flatten(item.text), room)) this.line("info", [seg(`${indent}${text}`, tone)])
     }
     this.drawStatus()
@@ -559,6 +565,18 @@ export class PrettyRenderer implements Sink {
       }
       case "inbox.enqueued":
         return this.enqueued(event.data)
+      case "command.expanded": {
+        // The message admitted just before is a command file's text: said with the entry as typed, the file on a
+        // line of its own, and what expansion reported (an argument that was not given, what was left as text).
+        const item = this.inbox.get(event.data.messageId)
+        const said = commandSent(event.data, item?.text ?? null)
+        // Where the message is named again (its delivery, a withdrawal), it is named as it was typed.
+        if (item !== undefined) this.inbox.set(event.data.messageId, { ...item, text: said.typed })
+        this.lineWrapped([seg(`${SYMBOL.note} `, "dim"), seg(said.typed, "bold"), seg(` · ${said.head}`, "dim")])
+        this.pathLines(`  ${said.where}:`, said.path)
+        for (const note of said.notes) wrapWhole(note, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.unknown} ` : "    ", "yellow"), seg(line, "yellow")]))
+        return
+      }
       case "inbox.delivered": {
         const item = this.inbox.get(event.data.messageId)
         this.inbox.delete(event.data.messageId)
@@ -1240,7 +1258,7 @@ export class PrettyRenderer implements Sink {
   }
 
   /** A whole line that is never shortened, whatever the terminal width. */
-  private uncut(kind: Block, text: string, tone?: Tone): void {
+  private uncut(kind: Block, text: string, tone?: Tone | readonly Tone[]): void {
     this.endLine()
     this.gap(kind)
     this.raw(`${paint(this.options.color, tone, flatten(text))}\n`)

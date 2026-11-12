@@ -22,6 +22,11 @@ export interface Line {
    * its start.
    */
   readonly verbatim?: boolean
+  /**
+   * A path and nothing else: shown whole, never cut and never broken by the
+   * interface, so that it can be read to its end and copied in one piece.
+   */
+  readonly path?: boolean
 }
 
 /** A command the user is asked about, as a line of its own: whole and word for word. */

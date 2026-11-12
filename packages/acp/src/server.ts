@@ -78,17 +78,25 @@ import {
 } from "@windlass/core"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
+import type { CommandExpansion } from "../../core/src/engine/commands.ts"
+import type { Expansion } from "../../core/src/commands/expand.ts"
+import type { CommandListing, ListedCommand } from "../../core/src/commands/lookup.ts"
 import { compareReplay, renderComparison } from "../../core/src/replay/effects.ts"
 import {
   type AgentsResult,
   APPROVAL_META,
   type ApprovalRequestMeta,
   type ApprovalStateResult,
+  type ClientCommand,
   type ClientMeta,
+  type CommandInfo,
+  type CommandsResult,
   type CompactResult,
   type DiffFile,
   type DiffResult,
   type ErrorData,
+  type ExpandCommandResult,
+  type ExpansionReport,
   EXT,
   type ForkParams,
   type ForkResult,
@@ -98,6 +106,7 @@ import {
   type ReplayParams,
   type ReplayResult,
   type RevertParams,
+  type SendCommandResult,
   type SubagentRef,
   type SessionState,
   type StateNotification,
@@ -106,7 +115,7 @@ import {
 import { NO_HOOKS_KEY, NO_LSP_KEY, hookFailure, hooksKey, hooksState, lspKey, lspState, mcpKey, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
-import { promptText } from "./prompt.ts"
+import { promptText, slashEntry } from "./prompt.ts"
 import { type Output, Translator, type TurnEnd } from "./translate.ts"
 
 /** The instruction a signed-out user gets. */
@@ -164,9 +173,14 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged, EXT.hooksChanged, EXT.lspChanged],
   promptMeta: [META.delivery, META.maxSteps],
+  /**
+   * Slash commands: `session/prompt` expands a prompt that is `/name args` for a command file (and refuses one that
+   * names none, with the sentence to show); the commands are advertised with `available_commands_update`.
+   */
+  commands: true,
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
   /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
@@ -238,6 +252,15 @@ function buildAgent(state: ConnectionState): AgentApp {
       return state.rename(requireString(params, "sessionId"), params.title)
     })
     .onRequest(EXT.compact, parseObject, ({ params }) => state.compact(requireString(params, "sessionId")))
+    .onRequest(EXT.commands, parseObject, ({ params }) => state.commands(optionalString(params, "sessionId"), optionalString(params, "cwd"), clientCommands(params.builtins)))
+    .onRequest(EXT.expandCommand, parseObject, ({ params }) => state.expandCommand(requireString(params, "sessionId"), requireString(params, "name"), typeof params.args === "string" ? params.args : "", clientCommands(params.builtins)))
+    .onRequest(EXT.sendCommand, parseObject, ({ params }) =>
+      state.sendCommand(requireString(params, "sessionId"), requireString(params, "name"), typeof params.args === "string" ? params.args : "", {
+        delivery: oneOfOrNull(params.delivery, ["steer", "queue"] as const, "delivery") ?? "steer",
+        maxSteps: stepLimit(params.maxSteps),
+        builtins: clientCommands(params.builtins),
+      }),
+    )
     .onRequest(EXT.memory, parseObject, ({ params }) => memoryState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.memoryChange, parseObject, ({ params }) => {
       const action = oneOfOrNull(params.action, ["remember", "retract", "confirm", "reject", "renew"] as const, "action")
@@ -348,6 +371,8 @@ class ConnectionState {
     // A full-fidelity client gets the session from its first event, as the engine's own stream has it.
     if (this.fidelity.events) for (const item of session.readEvents()) view.queueEvent(item, false)
     await view.flushed()
+    // After the answer: a client learns the session's ID from it, and the commands are about that session.
+    setTimeout(() => view.advertiseCommands(), 0)
     return { sessionId: session.id, configOptions: await this.configOptions(view.settings, view.session) }
   }
 
@@ -410,6 +435,7 @@ class ConnectionState {
     }
     // What the open itself switched (`settings.changed`, `agent.switched`) reaches the client before the answer.
     if (asked.model !== null || asked.effort !== null || (meta?.agent ?? null) !== null) await view.drained()
+    view.advertiseCommands()
     await view.flushed()
     return { configOptions: await this.configOptions(view.settings, view.session) }
   }
@@ -516,8 +542,50 @@ class ConnectionState {
     const text = requirePromptText(blocks)
     const delivery = meta?.[META.delivery] === "queue" ? "queue" : "steer"
     const maxSteps = stepLimit(meta?.[META.maxSteps])
-    const messageId = view.session.send(text, { delivery, ...(maxSteps === undefined ? {} : { maxSteps }) })
+    const options = { delivery, ...(maxSteps === undefined ? {} : { maxSteps }) } as const
+    // The commands as they are now: a file added since the session was opened is offered from here on.
+    view.advertiseCommands()
+    // `/name args` is a command file's, or nothing: a name no file has is refused with the close names, and no
+    // request is sent. `//text` is the text `/text`. A client has run its own commands before it sends.
+    const entry = view.session.commands() === null ? null : slashEntry(text)
+    const messageId = entry === null ? view.session.send(text, options) : entry.kind === "text" ? view.session.send(entry.text, options) : this.engineErrors(() => view.session.sendCommand(entry.name, entry.args, options)).messageId
     return view.waitFor(messageId, signal)
+  }
+
+  /** `_<ns>/commands`: the command files of a session open here, or of a directory, as they are now. */
+  commands(sessionId: string | undefined, cwd: string | undefined, builtins: readonly ClientCommand[]): CommandsResult {
+    if (sessionId === undefined && cwd === undefined) throw RequestError.invalidParams(undefined, "sessionId or cwd is needed")
+    if (cwd !== undefined && !isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
+    const listing = this.engineErrors(() => (sessionId === undefined ? this.harness.engine.listCommands(cwd!, builtins) : this.requireView(sessionId).session.commands(builtins)))
+    return commandsResult(listing)
+  }
+
+  /** `_<ns>/expand_command`: what `/name args` would send, and what expansion has to say about it. Nothing is sent. */
+  expandCommand(sessionId: string, name: string, args: string, builtins: readonly ClientCommand[]): ExpandCommandResult {
+    const found = this.engineErrors(() => this.requireView(sessionId).session.expandCommand(name, args, builtins))
+    if (found === null) return { kind: "unavailable", message: "this engine offers no slash commands" }
+    return expandResult(found)
+  }
+
+  /**
+   * `_<ns>/send_command`: the command file of that name is expanded with
+   * what was typed after it and admitted as the user's message, and the log
+   * records which file produced it (`command.expanded`). Refused, with the
+   * sentence to show and nothing sent, when no file has the name (the close
+   * names of the client's own commands and of the files are suggested), the
+   * file cannot be used, or the agent it names cannot be found.
+   */
+  sendCommand(sessionId: string, name: string, args: string, options: { readonly delivery: "steer" | "queue"; readonly maxSteps: number | undefined; readonly builtins: readonly ClientCommand[] }): SendCommandResult {
+    const view = this.requireView(sessionId)
+    // Looked up with the client's own commands first: the refusal then names the nearest of both.
+    const found = this.engineErrors(() => view.session.findCommand(name, options.builtins))
+    if (found !== null && found.kind !== "command") {
+      const message = found.kind === "builtin" ? `/${found.name} is a command of the client's own` : found.message
+      throw new RequestError(-32602, message, errorData({ reason: "invalid_request", message }))
+    }
+    const sent = this.engineErrors(() => view.session.sendCommand(name, args, { delivery: options.delivery, ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }) }))
+    view.echo.add(sent.messageId)
+    return { messageId: sent.messageId, command: commandInfo({ ...listed(sent.command), hiddenBy: null }), ...expansionReport(sent.expansion) }
   }
 
   cancel(sessionId: string): void {
@@ -1198,6 +1266,39 @@ class SessionView {
     this.watchFeatures()
   }
 
+  /** The commands as last advertised (`available_commands_update`). */
+  private commandsSeen: string | null = null
+
+  /**
+   * Tells the client which slash commands the session has, the protocol's
+   * way (`available_commands_update`): after the session is opened, and
+   * again whenever the files changed by the time a prompt arrives. A command
+   * a client's own would hide is the client's to leave out.
+   */
+  advertiseCommands(): void {
+    if (this.detached) return
+    let listing: CommandListing | null = null
+    try {
+      listing = this.session.commands()
+    } catch {
+      return
+    }
+    if (listing === null) return
+    const availableCommands = listing.commands.map((command) => ({
+      name: command.name,
+      description: command.description,
+      ...(command.argumentHint === null ? {} : { input: { hint: command.argumentHint } }),
+      _meta: { [META.capabilities]: { path: command.path, scope: command.scope, agent: command.agent } },
+    }))
+    const key = JSON.stringify(availableCommands)
+    if (key === this.commandsSeen) return
+    // A session without command files has nothing to say, until it had some and they went.
+    const nothingYet = this.commandsSeen === null && availableCommands.length === 0
+    this.commandsSeen = key
+    if (nothingYet) return
+    this.enqueue(() => this.connection.sendUpdate(this.session.id, { sessionUpdate: "available_commands_update", availableCommands }))
+  }
+
   /** `<prefix>/hooks`: the session's hooks, with the ones that could not answer when they last ran here. */
   hooks() {
     return hooksState(this.session, this.hookFailures)
@@ -1632,6 +1733,51 @@ function agentChoices(session: EngineSession): { readonly current: string; reado
   } catch {
     return null
   }
+}
+
+/** The client's own commands a request names (`builtins`): a list of `{ name, aliases? }`. */
+function clientCommands(value: unknown): ClientCommand[] {
+  if (value === undefined || value === null) return []
+  const bad = () => RequestError.invalidParams(undefined, "builtins must be a list of { name, aliases? }")
+  if (!Array.isArray(value)) throw bad()
+  return value.map((item: unknown) => {
+    const entry = item as { name?: unknown; aliases?: unknown } | null
+    if (typeof entry !== "object" || entry === null || typeof entry.name !== "string" || entry.name === "") throw bad()
+    if (entry.aliases !== undefined && (!Array.isArray(entry.aliases) || entry.aliases.some((alias) => typeof alias !== "string"))) throw bad()
+    return { name: entry.name, ...(entry.aliases === undefined ? {} : { aliases: entry.aliases as string[] }) }
+  })
+}
+
+function commandInfo(command: ListedCommand): CommandInfo {
+  return { name: command.name, description: command.description, argumentHint: command.argumentHint, agent: command.agent, path: command.path, scope: command.scope, hiddenBy: command.hiddenBy }
+}
+
+/** A found command in the listing's shape. */
+function listed(command: { readonly name: string; readonly description: string; readonly argumentHint: string | null; readonly agent: string | null; readonly path: string; readonly root: { readonly scope: ListedCommand["scope"] } }): Omit<ListedCommand, "hiddenBy"> {
+  return { name: command.name, description: command.description, argumentHint: command.argumentHint, agent: command.agent, path: command.path, scope: command.root.scope }
+}
+
+/** What `<prefix>/commands` answers for a listing of the engine's. */
+function commandsResult(listing: CommandListing | null): CommandsResult {
+  if (listing === null) return { available: false, commands: [], problems: [] }
+  return { available: true, commands: listing.commands.map(commandInfo), problems: listing.problems.map((problem) => ({ path: problem.path, severity: problem.severity, reason: problem.reason, name: problem.name })) }
+}
+
+function expansionReport(expansion: Expansion): ExpansionReport {
+  return {
+    missing: [...expansion.missing],
+    unused: [...expansion.unused],
+    appended: expansion.appended,
+    unsupported: expansion.unsupported.map((construct) => ({ kind: construct.kind, text: construct.text, line: construct.line, reason: construct.reason })),
+    notes: [...expansion.notes],
+  }
+}
+
+function expandResult(found: CommandExpansion): ExpandCommandResult {
+  if (found.kind === "builtin") return { kind: "builtin", name: found.name }
+  if (found.kind === "broken") return { kind: "broken", name: found.name, message: found.message }
+  if (found.kind === "unknown") return { kind: "unknown", name: found.name, suggestions: [...found.suggestions], message: found.message }
+  return { kind: "command", command: commandInfo({ ...listed(found.command), hiddenBy: null }), text: found.expansion.text, ...expansionReport(found.expansion) }
 }
 
 /** What `<prefix>/agents` answers for a listing of the engine's. */

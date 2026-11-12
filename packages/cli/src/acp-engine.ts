@@ -33,6 +33,8 @@
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@windlass/acp/client"
 import {
   type AgentsResult,
+  type ClientCommand,
+  type CommandsResult,
   type CompactResult,
   type DiffResult,
   EXT,
@@ -248,6 +250,22 @@ class AcpSession implements Session {
     if (this.session.gone) return null
     try {
       return (await this.session.send(text, { delivery: options.delivery ?? "steer", maxSteps: this.maxSteps })) as MessageId
+    } catch (error) {
+      if (this.session.gone) return null
+      throw new Error(unavailable(error).message)
+    }
+  }
+
+  commands(builtins: readonly ClientCommand[]): Promise<CommandsResult> {
+    // A server from before command files has none to list.
+    if (!this.session.offers(EXT.commands)) return Promise.resolve({ available: false, commands: [], problems: [] })
+    return this.feature(EXT.commands, () => this.session.commands(builtins))
+  }
+
+  async sendCommand(name: string, args: string, options: SendOptions = {}): Promise<MessageId | null> {
+    if (this.session.gone) return null
+    try {
+      return (await this.session.sendCommand(name, args, { delivery: options.delivery ?? "steer", maxSteps: this.maxSteps })).messageId as MessageId
     } catch (error) {
       if (this.session.gone) return null
       throw new Error(unavailable(error).message)
