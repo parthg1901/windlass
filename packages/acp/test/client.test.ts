@@ -214,6 +214,8 @@ describe("as a child process", () => {
       clientInfo: { name: "client-test", title: "client test", version: "0.0.0" },
     })
     clients.push(client)
+    const servers = async () => (await Bun.$`pgrep -P ${process.pid} -f ${"main.ts acp"}`.nothrow().text()).trim().split("\n").filter((line) => line !== "").map(Number)
+    const before = new Set(await servers())
     const link = await client.connection()
     expect(link.offers(EXT.diff)).toBe(true)
     const session = await link.newSession(where.workspace)
@@ -221,8 +223,10 @@ describe("as a child process", () => {
     await collect(session, turnEnded)
 
     // The server dies: the session's items end, and how is said.
-    const pid = Number((await Bun.$`pgrep -P ${process.pid} -f ${"main.ts acp"}`.nothrow().text()).trim().split("\n")[0])
-    expect(pid).toBeGreaterThan(0)
+    // This test's server: other test files' servers may be children of this process too.
+    const started = (await servers()).filter((pid) => !before.has(pid))
+    expect(started).toHaveLength(1)
+    const pid = started[0]!
     process.kill(pid, "SIGKILL")
     await collect(session, () => false).catch(() => [])
     expect(session.lost()?.how).toBe("was killed (SIGKILL)")

@@ -10,6 +10,8 @@ import { join } from "node:path"
 import { SCRIPT_ENV } from "@light-harness/acp"
 import type { CallId, MessageId, Question } from "@light-harness/core"
 import { helpText, parseArgs } from "../src/args.ts"
+import { FakeProvider, script } from "@light-harness/core/testing"
+import { createAcpEngine } from "../src/acp-engine.ts"
 import { EXIT_APPROVAL_REQUIRED } from "../src/engine.ts"
 import { approverAt } from "../src/main.ts"
 
@@ -134,5 +136,46 @@ describe("an unattended run", () => {
     const events = result.out.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { type: string; data: { run?: unknown } })
     expect(events.find((item) => item.type === "tool.started")?.data.run).toEqual({ mode: "full", origin: "builtin", paths: [], sandbox: null })
     expect(existsSync(join(result.workspace, "ran.txt"))).toBe(true)
+  }, 60_000)
+})
+
+describe("the sandbox marker, /approval and /diff", () => {
+  test("a command shows how it ran: ⊡ in the sandbox, \"no sandbox\" with --approval full", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-marker-")))
+    scratch.push(root)
+    const runIn = async (args: readonly string[]) => {
+      const workspace = join(root, `work-${args.length}`)
+      mkdirSync(workspace)
+      const file = join(root, `script-${args.length}.json`)
+      writeFileSync(file, JSON.stringify({ responses: [[{ type: "tool_call", callId: "c1", name: "shell", input: { command: "echo hi" } }], [{ type: "text", text: "Done." }]] }))
+      const proc = Bun.spawn(["bun", CLI, "--cwd", workspace, ...args, "Run it."], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, XDG_DATA_HOME: join(root, "xdg"), [SCRIPT_ENV]: file } })
+      const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
+      return out
+    }
+    expect(await runIn([])).toMatch(/▸ shell echo hi\n  ✓ exit 0 ⊡ · /)
+    expect(await runIn(["--approval", "full"])).toMatch(/✓ exit 0 · no sandbox · /)
+  }, 60_000)
+
+  test("the session's approval mode is read and switched through the protocol; the latest turn's diff has its files and patches", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "lh-cli-diff-")))
+    scratch.push(root)
+    const workspace = join(root, "work")
+    mkdirSync(workspace)
+    const provider = new FakeProvider([[script.toolCall("c1", "write", { path: "a.txt", content: "one\ntwo\n" })], [script.text("Written.")]])
+    const engine = createAcpEngine({ transport: "memory", harness: { dataDir: join(root, "data"), provider, log: () => {}, engine: { discover: () => [], loadConfig: null } }, stderr: () => {} })
+    const session = await engine.open({ session: { kind: "new" }, cwd: workspace, model: null, effort: null, maxSteps: null, attended: true })
+    expect(await session.approvalMode!()).toEqual({ mode: "auto", tainted: false, taint: null })
+    expect((await session.approvalMode!("ask")).mode).toBe("ask")
+    await session.approvalMode!("auto")
+    const events = session.events[Symbol.asyncIterator]()
+    await session.send("write a")
+    for (;;) {
+      const next = await events.next()
+      if (next.done || next.value.type === "execution.succeeded") break
+    }
+    const diff = await session.diff!()
+    expect(diff.available && diff.files.map((file) => [file.path, file.status, file.added, file.removed])).toEqual([["a.txt", "added", 2, 0]])
+    expect(diff.available && diff.files[0]!.patch).toContain("+two")
+    await session.close()
   }, 60_000)
 })
