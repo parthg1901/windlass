@@ -103,8 +103,9 @@ refused outright.
 When a sandboxed command fails with an error the sandbox typically causes (no such host, connection refused,
 read-only file system, permission denied), its result ends with a note that tells the agent how to ask. A command
 whose failure a pipeline or `|| true` hid (`curl -sS ... | head`, `npm view x | cat`) gets the note too when its
-output shows a failed name lookup as curl, git, wget, npm, Node, Bun or Python report it; text that merely
-mentions DNS or an error code does not count. The note is a guess from the output and gives no access by itself.
+output shows a failed name lookup as curl, git, wget, npm, Node, Bun or Python print it, at the start of a line;
+text that mentions DNS or an error code, or quotes such a message in a sentence, a comment or a string, does not
+count. The note is a guess from the output and gives no access by itself.
 A command that swallows its failure and prints nothing about it (`curl -s ... | sed ...`) gets no note; tell the
 agent the sandbox has no network.
 

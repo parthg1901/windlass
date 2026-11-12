@@ -107,19 +107,31 @@ const NETWORK_MARKERS =
  * a lookup that fails, so this is the sandbox's refusal as programs report
  * it. It is matched also when the command exited 0, because a pipeline
  * (`curl ... | head`) or `|| true` hides the exit code: hence only these
- * shapes, which source code or a log that merely mentions DNS does not have
- * (a dotted host name, not a word, a `${host}` or a quote, must follow).
- * Seen under bubblewrap: curl and git, wget, Python, Node and npm, Bun.
+ * shapes, each where the client prints it, at the start of a line (`^`
+ * after a newline or a carriage return) with the client's own prefix, so a
+ * comment, a sentence or a string in source code that quotes the message
+ * does not count; and a dotted host name, not a word, a `${host}` or a quote,
+ * must follow. Seen under bubblewrap: curl (after its progress meter, on the
+ * same line, when the meter is shown) and git, ssh, wget, Python, Node and
+ * npm, Bun.
  */
 const HOST = "[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+(?![A-Za-z0-9${'\"`-]|\\.[A-Za-z0-9])"
 const NETWORK_REFUSALS = new RegExp(
   [
-    String.raw`Could not resolve host(?:name)?:? ${HOST}`,
-    String.raw`unable to resolve host address ['‘"]?${HOST}`,
-    String.raw`getaddrinfo (?:EAI_AGAIN|ENOTFOUND|ETIMEOUT) ${HOST}`,
-    String.raw`(?:\]|failed:|: ${HOST}:) Temporary failure in name resolution`,
-    String.raw`DNSResolveFailed downloading`,
+    String.raw`^(?:[^\n]*--:--:-- +[0-9.]+[kMG]?)?curl: \(6\) Could not resolve host: ${HOST}`,
+    String.raw`^fatal: unable to access '[^'\n]*': Could not resolve host: ${HOST}`,
+    String.raw`^ssh: Could not resolve hostname ${HOST}:`,
+    String.raw`^wget: unable to resolve host address ['‘"]?${HOST}`,
+    String.raw`^Resolving ${HOST} \([^)\n]*\)\.\.\. failed: Temporary failure in name resolution`,
+    String.raw`^[\w.-]+: ${HOST}: Temporary failure in name resolution`,
+    String.raw`^npm (?:ERR!|error) [^\n]*getaddrinfo (?:EAI_AGAIN|ENOTFOUND|ETIMEOUT) ${HOST}`,
+    // Node and Bun: the error, or the `[cause]` of `fetch failed`.
+    String.raw`^(?: +\[cause\]: )?(?:[A-Z]\w*)?Error: getaddrinfo (?:EAI_AGAIN|ENOTFOUND|ETIMEOUT) ${HOST}`,
+    // Python: the last line of the traceback, which starts with the exception's class.
+    String.raw`^(?:[A-Za-z_]\w*\.)*\w*(?:Error|Exception|gaierror): [^\n]*\[Errno -3\] Temporary failure in name resolution`,
+    String.raw`^error: DNSResolveFailed downloading`,
   ].join("|"),
+  "m",
 )
 /** A write git or a hook installer reports when the sandbox's read-only git configuration, hooks or project directory refused it. */
 const PROTECTED_MARKERS = new RegExp(
