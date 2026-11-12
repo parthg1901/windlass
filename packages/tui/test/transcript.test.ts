@@ -234,6 +234,19 @@ describe("undo and redo", () => {
   })
 })
 
+describe("undo and redo of a turn that changed no file", () => {
+  test("says that no file needed to change, not a count of none", () => {
+    const said = event("inbox.enqueued", { messageId: m("u1"), origin: null, delivery: "steer", content: [{ type: "text", text: "What is this?" }] })
+    const transcript = play([event("session.created", { cwd: "/w", title: null, lineage: null, settings: { model: "m", reasoningEffort: null } }), said, event("execution.started", { executionId: "exe_1" as never }), event("inbox.delivered", { messageId: m("u1") }), event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_configured" } })])
+    const restore = { target: "a".repeat(40), before: "b".repeat(40), after: "a".repeat(40), written: 0, removed: 0, changed: 0, kept: [], keptOmitted: 0 }
+    const last = () => layoutRow(transcript.rows.at(-1)!, 140, { now: CLOCK_START, debug: false, color: false }).map((line) => line.map((part) => part.text).join("").trimEnd())
+    transcript.apply({ ...event("history.reverted", { fromSeq: 3, restore } as never), sessionId: "s" as never, seq: 6, time: CLOCK_START })
+    expect(last()).toEqual(['↶ undone: turn 1 "What is this?" · out of the conversation · no file needed to change · /redo brings it back'])
+    transcript.apply({ ...event("history.restored", { revertSeq: 6, restore } as never), sessionId: "s" as never, seq: 7, time: CLOCK_START })
+    expect(last()).toEqual(['↷ redone: turn 1 "What is this?" · back in the conversation · no file needed to change'])
+  })
+})
+
 describe("a steered message", () => {
   test("says how it reached the agent in full, on its own line when the message fills the width", () => {
     const transcript = play([...opening("start"), stepStarted("a1")])

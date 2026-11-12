@@ -978,7 +978,8 @@ export class Transcript {
             ? undone
               ? " · no file was restored · /redo brings it back"
               : " · no file was restored"
-            : ` · ${restoredFiles(record.changed, undone)}${undone ? " · /redo brings it back" : ""}`
+            : // A turn that changed no file: nothing was restored, which "0 files as they were" says badly.
+              ` · ${record.changed === 0 ? "no file needed to change" : restoredFiles(record.changed, undone)}${undone ? " · /redo brings it back" : ""}`
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
