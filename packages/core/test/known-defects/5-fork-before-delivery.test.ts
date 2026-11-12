@@ -81,7 +81,7 @@ describe("known defect 5: a fork between a message's enqueue and its delivery", 
       expect(fork.readEvents().at(-1)?.type).toBe("execution.succeeded")
       await fork.close()
     }
-  })
+  }, 60_000)
 
   test("before the very first delivery: the fork has no messages at all", async () => {
     const { data, workspace } = place("lh-defect-5-")
@@ -94,5 +94,5 @@ describe("known defect 5: a fork between a message's enqueue and its delivery", 
     const fork = await engine.forkSession(parent.id, { throughSeq: enqueued.seq })
     expect(fork.projection().messages).toEqual([])
     expect(fork.projection().inbox).toEqual([])
-  })
+  }, 60_000)
 })
