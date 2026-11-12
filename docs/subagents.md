@@ -1,0 +1,126 @@
+# Subagents and background commands
+
+Two kinds of work can run beside the agent's own steps: a **subagent**, a second agent the first one hands a
+self-contained task to, and a **background command**, a shell command that keeps running while the agent does other
+things. Both are started by the model; you do not configure anything. Everything on this page was run against the
+program with a scripted model; `test/release/feature-docs.test.ts` checks the names and messages against the code.
+
+## Subagents
+
+The model calls the `subagent` tool with a task. A subagent is a session of its own: the same tools, the same
+working directory, the same model settings and approval mode as its parent, and a fresh conversation. It sees
+nothing of the parent's conversation, only its task and the project's `AGENTS.md` files. Several `subagent` calls in
+one response run at the same time; that is what they are for (one per module, one per question).
+
+You can ask for one in your prompt:
+
+```sh
+lh "use a subagent to count the lines in notes.txt"
+```
+
+```text
+▸ subagent Count the lines in notes.txt and report the number.
+  ▸ subagent ses_1ae04948 started
+    ↳ subagent ses_1ae04948 ✓ read notes.txt · 1 line
+  ✓ subagent ses_1ae04948 finished · 2 steps, 1 tool call · 232ms
+```
+
+The parent gets the child's final answer as the tool's result, followed by a line such as
+`[subagent ses_1ae0494804f409c64284c352: finished after 2 steps, 1 tool call]`. A child that failed, was stopped or
+ended without an answer comes back as an error that says so.
+
+- **Only one level.** A subagent cannot start subagents of its own.
+- **Follow-ups.** The model can send an earlier subagent a follow-up by its session ID; the child still has its
+  conversation.
+- **Its session.** A subagent's session is not shown by `lh --list-sessions`, but it opens like any other:
+  `lh --session <its id>` continues it with you instead of its parent.
+- **Checks.** The project's checks run for the parent's turn, once the children's work is in; children do not run
+  them.
+- **Stopping.** Ctrl-C (or closing the session) stops the parent and everything it started.
+
+### In the background
+
+With `background: true` the call returns at once (`Started subagent <id> in the background. ...`) and the parent
+carries on. When the child ends, its answer is delivered to the parent as a message, after the parent's current step:
+
+```text
+  ✓ subagent ses_98910ff9 finished · 1 step, 0 tool calls · 1.3s
+  ↳ its result is sent to the agent after the current step
+```
+
+The parent's turn does not end while a background subagent still works, so a one-shot run waits for it.
+
+### A worktree of its own
+
+With `worktree: true` (only in a git repository; elsewhere the call is refused and nothing starts) the child works on
+its own git worktree, on a new branch made from the parent's workspace as it stands, uncommitted and untracked files
+included. Your index, branches, `HEAD` and stash are not touched, and no git hook runs. The worktree is under the
+work directory beside the data directory, `~/.local/share/light-harness-work/worktrees/<child's session id>`, and the
+branch is `lh/subagent-<id>`.
+
+When the child finishes, every file it changed is merged into the parent's working directory (three ways: the
+branch's start, the child's result, the file as it is now). The files are written, not committed or staged, and the
+worktree and the branch are removed:
+
+```text
+  ✓ subagent ses_3ebb35c4 finished · 2 steps, 1 tool call · 661ms
+    merged 1 file into the workspace: child.txt
+```
+
+If a file the child changed was also changed in the workspace meanwhile, and the changes conflict, **nothing is
+merged**; the branch is kept with the child's work as a commit, and the model is told how to look at it:
+
+```text
+    ⚠ not merged, conflicts in: notes.txt
+    its work is on branch lh/subagent-47bbc88b69b9; nothing was changed in the workspace
+```
+
+Delete such a branch when you are done with it (`git branch -D lh/subagent-47bbc88b69b9`); nothing removes it for
+you. A child that did not finish has its work committed to its branch and nothing merged.
+
+### Questions a subagent asks
+
+A child's tool calls go through the approval layer like its parent's. Where someone can answer (the interactive
+`lh`, `lh tui`, an editor), the child's question is shown in the parent's place, naming the child:
+
+```text
+    ? subagent ses_ddb003f3 asks: Allow network access for this command?
+        echo net-ok
+for subagent "Check that the network works.": [a]llow once · this [s]ession · [N]o ›
+```
+
+In a one-shot run it is refused, as the parent's would be. A child has none of its parent's approvals for the
+session (approvals for the project apply to it). If the child took in untrusted content (a web page, an MCP result,
+a networked command's output), its result taints the parent too:
+`Content from subagent <id>, whose own conversation holds untrusted content, is in this conversation ...`
+
+## Background commands
+
+The `shell` tool's `background: true` starts a command (a long test run, a build, a server) and returns at once with
+a handle such as `bg_eb5eabc8`. It runs exactly as a foreground command would (in the sandbox, with the same
+approvals), without a time limit unless the model gives one. Its output goes to a file in the session's temp
+directory; the model reads it so far with `background_output` and stops it with `background_stop`.
+
+```text
+▸ shell sleep 3; echo built
+  ▸ background bg_98843659 · sleep 3; echo built
+  ✓ shell sleep 3; echo built ·  ⊡ · 23ms
+Started the build.
+✓ done · no checks configured · 2 steps · 643ms
+  ✓ background bg_98843659 exited with code 0 · 3.1s
+  ↳ its result is sent to the agent, which carries on
+The build finished and printed built.
+```
+
+When it exits, the model is sent a message with its exit code and the end of its output. In the interactive mode
+that message starts a new turn if the session is idle, as above.
+
+**In a one-shot run** the turn does not wait for a background command: when the agent's turn is done, `lh` exits
+and the command is stopped (`Background command <id> was stopped (the harness shut down) after <n> s.`). Its end is
+kept for the session's next turn (`lh -c`). For work that must finish, ask for a foreground command.
+
+## Recovery
+
+If `lh` dies while background work runs, the next time the session is opened the work is recorded as lost and the
+model is told; a background command was killed with the process. A subagent that had finished on its own delivers its
+answer then, and its worktree is merged then.
