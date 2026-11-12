@@ -186,6 +186,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...options.engine,
       // With a provider of the caller's the window is the caller's to give; the test setting lowers either.
       ...(options.provider === undefined || options.engine?.contextWindow !== undefined || lowered !== null ? { contextWindow } : {}),
+      // Subagents and background work are part of the real harness; a caller that passes `spawn: null` builds one without them.
+      ...(options.engine?.spawn === undefined ? { spawn: {} } : {}),
       store: sessions,
       provider,
       tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),

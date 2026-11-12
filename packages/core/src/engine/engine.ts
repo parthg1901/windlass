@@ -44,13 +44,17 @@
  *   summary, with the one it wrote when asked to repair it, or with a
  *   checkpoint built without the model.
  */
-import { statSync } from "node:fs"
+import { randomBytes } from "node:crypto"
+import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join, relative, sep } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
 import { type Grant, stampGrants } from "../approval/grants.ts"
 import type { ApprovalPolicy, ApprovalSection, ResolvedApproval } from "../approval/policy.ts"
+import type { CallMatch, Divergence } from "../replay/match.ts"
+import { type Replay, type ReplayWorkspace, createReplay } from "../replay/replay.ts"
+import { type Tape, tapeFromEvents } from "../replay/tape.ts"
 import { type CallRun, type ChoiceId, TaintHistory } from "../approval/record.ts"
 import { redact } from "../approval/redact.ts"
 import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
@@ -67,7 +71,10 @@ import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPro
 import { chooseTail } from "../context/tail.ts"
 import {
   type CompactionMode,
+  type EventData,
   type NewEvent,
+  type ReplayPolicyKind,
+  type WorktreeRecord,
   type RestoreRecord,
   type SessionSettings,
   type SnapshotPoint,
@@ -87,6 +94,7 @@ import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonO
 import type { Json } from "../json.ts"
 import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
+import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
 import type { Usage } from "../provider/usage.ts"
@@ -97,12 +105,12 @@ import { canonicalJson } from "../request/canonical.ts"
 import { type BlockHash, hashRequest } from "../request/prefix.ts"
 import type { ModelRequest } from "../request/request.ts"
 import type { ChangeStatus } from "../snapshot/diff.ts"
-import { type KeptPath, type SnapshotId, type SnapshotUnavailable, openSnapshots } from "../snapshot/index.ts"
+import { type KeptPath, type SnapshotId, type SnapshotUnavailable, exportSnapshot, openSnapshots } from "../snapshot/index.ts"
 import { StoreLockedError } from "../store/sqlite-lock.ts"
 import { type AppendOptions, type RequestPurpose, type SessionQuery, type SessionStores, type SessionSummary, type Store, StoreError, sharedSessionStores } from "../store/store.ts"
 import { resolvePath } from "../tools/common.ts"
-import { type Authorization, type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
-import type { AnyTool, TempDirectory, ToolEffect } from "../tool/tool.ts"
+import { type Authorization, type ToolCall, type ToolCallOutcome, type ToolRuntime, createToolRuntime } from "../tool/runtime.ts"
+import type { AnyTool, BackgroundCommand, TempDirectory, ToolContext, ToolEffect, ToolResult } from "../tool/tool.ts"
 import { ACKNOWLEDGE_TOOL_NAME, acknowledgeTool } from "../verify/acknowledge.ts"
 import { type VerificationEvidence, buildEvidence } from "../verify/evidence.ts"
 import { fingerprintCheck, reusablePass } from "../verify/fingerprint.ts"
@@ -127,6 +135,21 @@ import {
 } from "./constants.ts"
 import { historyTools } from "./history.ts"
 import { recover } from "./recovery.ts"
+import { DEFAULT_NORMALISERS, REPLAY_TEXT, type ReplayOutcome, type ReplayRequest, type ReplayRun, changedBaseline, snapshotAtDivergence } from "./replay.ts"
+import {
+  type ChildResult,
+  SUBAGENT_TOOL,
+  type SpawnSettings,
+  type SubagentInput,
+  childResult,
+  renderChildResult,
+  renderCommandEnd,
+  result as toolResult,
+  spawnTools,
+  taskMessage,
+  taskTitle,
+} from "./spawn.ts"
+import { type MergeOutcome, createWorktree, mergeWorktree, removeWorktree, salvageWorktree, worktreeBranch } from "./worktree.ts"
 import {
   STOPPED,
   acknowledgementThisTurn,
@@ -170,6 +193,8 @@ export interface EngineIds {
   readonly message: () => MessageId
   readonly execution: () => ExecutionId
   readonly request: () => RequestId
+  /** The handle of a piece of spawned work (a background command, a run of a subagent). */
+  readonly spawn: () => string
 }
 
 /**
@@ -214,6 +239,16 @@ export type ProbePoint =
   | "revert.started"
   /** The workspace is restored; the event that closes the revert is not yet written. */
   | "revert.restored"
+  /** A fork's copy of the workspace is made (when it gets one); its session does not exist yet. */
+  | "fork.copied"
+  /** `spawn.started` is durable; the child session does not exist yet, or the command is running. */
+  | "spawn.started"
+  /** A subagent's worktree merge is computed; no file of the parent's workspace was written. */
+  | "merge.computed"
+  /** The first file of a worktree merge was written. */
+  | "merge.writing"
+  /** A replay left its recording: the copy of the workspace is made and `replay.diverged` is durable; no tool ran in it yet. */
+  | "replay.diverged"
 
 export interface EngineHooks {
   readonly probe?: (point: ProbePoint, sessionId: SessionId) => void
@@ -247,8 +282,10 @@ export class EngineError extends Error {
      * - `session_in_use`: another live process holds the session; `holderPid` names it when it could be told.
      * - `closed`: the engine or the session was closed.
      * - `unknown_model`: the provider does not offer the model.
+     * - `invalid_request`: what was asked for cannot be done as asked (a fork point inside a step, a replay of a
+     *   recording without a step, a prompt for a replay session); the message says why.
      */
-    readonly code: "session_not_found" | "ambiguous_session" | "session_in_use" | "closed" | "unknown_model",
+    readonly code: "session_not_found" | "ambiguous_session" | "session_in_use" | "closed" | "unknown_model" | "invalid_request",
     message: string,
     readonly holderPid: number | null = null,
   ) {
@@ -346,6 +383,40 @@ export interface EngineOptions {
   readonly contextWindow?: (model: string) => number | null | Promise<number | null>
   /** The compaction policy's numbers, where they differ from `DEFAULT_COMPACTION_CONFIG`. */
   readonly compaction?: Partial<CompactionConfig>
+  /**
+   * Subagents and background work: the `subagent`, `background_output` and
+   * `background_stop` tools in every new session's tool list, and the shell
+   * tool's `background` argument carried out. Without it (or `null`) the
+   * engine offers none of them. `createHarness` switches it on.
+   */
+  readonly spawn?: Partial<SpawnSettings> | null
+  /**
+   * Writes a recorded snapshot of a working directory into another
+   * directory: what a fork with a workspace of its own and a replay that
+   * runs tools start from. Defaults to the snapshot module's, on
+   * `<dataDir>/snapshots`.
+   */
+  readonly exportSnapshot?: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number } | SnapshotUnavailable>
+}
+
+/** How a session is forked. */
+export interface ForkOptions {
+  /** The last event of the parent the fork inherits, which must be a step boundary. Default: the latest boundary of the parent's log. */
+  readonly throughSeq?: number
+  /** The fork's model settings. Default: the parent's at the fork point. */
+  readonly settings?: SessionSettings
+  /** Default: the parent's title. */
+  readonly title?: string | null
+  /**
+   * `shared` (the default): the fork works in the parent's working
+   * directory, as two sessions in one directory do. `{ copyTo }`: the
+   * workspace is written into a directory of the fork's own and the fork
+   * works there: the workspace as it stands when the fork point is the
+   * parent's latest state and the parent is idle, otherwise the snapshot
+   * that was current at the fork point. Default directory:
+   * `<dataDir>/workspaces/<fork id>`.
+   */
+  readonly workspace?: "shared" | { readonly copyTo?: string }
 }
 
 /** The configuration an execution runs under: the checks and where they run, and the files' approval sections. */
@@ -362,8 +433,17 @@ export interface ApprovalState {
   readonly attended: boolean
   /** The session's taint, derived from its log. */
   readonly taint: TaintState
-  /** The question that waits for an answer, if one does. */
-  readonly pending: { readonly messageId: MessageId; readonly callId: CallId; readonly question: Extract<Decision, { kind: "ask" }>["question"] } | null
+  /**
+   * The question that waits for an answer, if one does. `child` is set when
+   * it is a subagent's question that this session's client answers: the
+   * subagent's session and the first line of its task, to label it with.
+   */
+  readonly pending: {
+    readonly messageId: MessageId
+    readonly callId: CallId
+    readonly question: Extract<Decision, { kind: "ask" }>["question"]
+    readonly child?: { readonly sessionId: SessionId; readonly title: string }
+  } | null
 }
 
 /** What to do with files that were edited by hand after the point a restore goes back to. */
@@ -487,8 +567,14 @@ export interface EngineSession {
    * Says whether a person is there to answer questions. Nobody is until a
    * client says so: a call that would ask is then refused (or ends the run,
    * as the policy's `unattended` says) and nothing ever waits.
+   *
+   * `children: true` says that this client also answers the questions of
+   * the session's subagents: they then arrive as `child.event` items
+   * carrying the subagent's `approval.requested`, show as `approval().pending`
+   * with `child` set, and are answered through this session's `answer`.
+   * Without it a subagent has nobody to ask, whoever watches its parent.
    */
-  readonly setAttended: (present: boolean) => void
+  readonly setAttended: (present: boolean, options?: { readonly children?: boolean }) => void
   /**
    * The user's own approval settings for this session, as a command-line
    * flag or a client's control gives them. They go on top of the user's
@@ -502,9 +588,11 @@ export interface EngineSession {
    * Answers the pending question about a call with one of its choices, and
    * a note if the user wrote one. Returns whether it was taken: `false` when
    * that question is not pending (it was answered, or an interrupt withdrew
-   * it) or offers no such choice.
+   * it) or offers no such choice. A subagent's question is answered here
+   * too; `sessionId` names the subagent (without it the call is looked for
+   * in this session first, then in its subagents).
    */
-  readonly answer: (target: { readonly messageId: MessageId; readonly callId: CallId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }) => boolean
+  readonly answer: (target: { readonly messageId: MessageId; readonly callId: CallId; readonly sessionId?: SessionId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }) => boolean
   /** The user says the conversation is trustworthy again (`taint.cleared`). Returns whether the session was tainted. */
   readonly clearTaint: () => boolean
   /** Whether an execution is being worked on in this process. */
@@ -529,6 +617,23 @@ export interface Engine {
    * or shut down, it is recovered here, and what happens next is `resume`.
    */
   readonly openSession: (id: SessionId, options?: { readonly resume?: ResumeMode }) => EngineSession
+  /**
+   * Forks a session at a step boundary into a new session with a file of
+   * its own: the parent's history up to that point is its history, and it
+   * is typed as a fork in its log. It inherits the parent's baseline,
+   * settings, compaction and taint as of that point and the root session's
+   * cache key; it starts idle, with an empty inbox and no approvals of its
+   * own. The parent is only read, so it may be working in this or another
+   * process meanwhile. See `ForkOptions` for the workspace.
+   */
+  readonly forkSession: (id: SessionId, options?: ForkOptions) => Promise<EngineSession>
+  /**
+   * Replays a recorded session against a changed baseline: creates a replay
+   * session, runs the real model through the loop, and answers every tool
+   * call that is on the recording from the recording. See `ReplayRequest`.
+   * Rejects with `invalid_request` when the recording cannot be replayed at all.
+   */
+  readonly replaySession: (id: SessionId, request?: ReplayRequest) => Promise<ReplayRun>
   /** The most recently updated session whose working directory is `cwd`. */
   readonly latestSession: (cwd: string) => SessionSummary | null
   /**
@@ -613,6 +718,14 @@ interface Core {
   readonly strict: boolean
   readonly report: (diagnostic: Diagnostic) => void
   readonly sessions: Map<SessionId, LiveSession>
+  readonly dataDir: string
+  /** Subagents and background work; `null` when the build offers none. */
+  readonly spawn: SpawnSettings | null
+  /** The `subagent` tool, and the tools that read and stop background work. In the runtime always. */
+  readonly spawning: { readonly subagent: AnyTool; readonly management: readonly AnyTool[] }
+  /** The names of the tools whose calls need no decision and run side by side (`Tool.delegates`). */
+  readonly delegating: ReadonlySet<string>
+  readonly exportSnapshot: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number } | SnapshotUnavailable>
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -624,7 +737,10 @@ export function createEngine(options: EngineOptions): Engine {
   const stores = "append" in options.store ? sharedSessionStores(options.store) : options.store
   // The history tools read the store of the session that calls them. A build that brings its own tool of one of those names keeps it.
   const history = historyTools((sessionId) => core.sessions.get(sessionId)?.history ?? null).filter((tool) => !options.tools.some((other) => other.name === tool.name))
-  const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, acknowledge]
+  // The tools of spawned work are carried out by the session that calls them. A build that brings its own tool of one of those names keeps it.
+  const spawning = spawnTools((sessionId) => core.sessions.get(sessionId) ?? null)
+  const own = [spawning.subagent, ...spawning.management].filter((tool) => !options.tools.some((other) => other.name === tool.name))
+  const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, acknowledge]
   const core: Core = {
     stores,
     provider: options.provider,
@@ -648,6 +764,7 @@ export function createEngine(options: EngineOptions): Engine {
       message: options.ids?.message ?? (() => newId("message")),
       execution: options.ids?.execution ?? (() => newId("execution")),
       request: options.ids?.request ?? (() => newId("request")),
+      spawn: options.ids?.spawn ?? (() => `bg_${randomBytes(4).toString("hex")}`),
     },
     random: options.random ?? Math.random,
     limits: { ...ENGINE_LIMITS, ...options.limits },
@@ -668,6 +785,14 @@ export function createEngine(options: EngineOptions): Engine {
       log(`[engine] ${diagnostic.kind}${diagnostic.sessionId === null ? "" : ` in ${diagnostic.sessionId}`}: ${diagnostic.message}`)
     },
     sessions: new Map(),
+    dataDir: options.dataDir,
+    spawn: options.spawn == null ? null : { maxDepth: options.spawn.maxDepth ?? 1, worktreeDir: options.spawn.worktreeDir ?? join(options.dataDir, "worktrees") },
+    spawning: {
+      subagent: runnable.find((tool) => tool.name === SUBAGENT_TOOL)!,
+      management: spawning.management.map((tool) => runnable.find((other) => other.name === tool.name)!),
+    },
+    delegating: new Set(runnable.filter((tool) => tool.delegates === true).map((tool) => tool.name)),
+    exportSnapshot: options.exportSnapshot ?? ((workspace, snapshot, into) => exportSnapshot(workspace, snapshot, into, { dataDir: join(options.dataDir, "snapshots") })),
   }
   let closing: Promise<void> | null = null
   const assertOpen = () => {
@@ -720,6 +845,14 @@ export function createEngine(options: EngineOptions): Engine {
         throw error
       }
       return session
+    },
+    forkSession: async (id, fork = {}) => {
+      assertOpen()
+      return forkSession(core, id, fork)
+    },
+    replaySession: async (id, request = {}) => {
+      assertOpen()
+      return replaySession(core, id, request)
     },
     latestSession: (cwd) => core.stores.list({ cwd, limit: 1 })[0] ?? null,
     listSessions: (query) => core.stores.list(query),
@@ -835,6 +968,43 @@ type RestoreRequest =
   | { readonly kind: "revert"; readonly fromSeq: number; readonly messageId: MessageId; readonly messages: number }
   | { readonly kind: "undo"; readonly revertSeq: number; readonly fromSeq: number; readonly messages: number }
 
+/** A piece of spawned work this process runs: a background command, or one run of a subagent. */
+interface LiveSpawn {
+  readonly spawnId: string
+  readonly background: boolean
+  readonly child: LiveSession | null
+  /** Where in the child's log this piece of its work begins. */
+  readonly fromSeq: number
+  readonly command: BackgroundCommand | null
+  /** Who asked for it to stop, once someone did: an interrupt of this session, its shutdown, or the stop tool. */
+  stopping: "interrupt" | "shutdown" | "tool" | null
+  /** What the model is told about its end, once that is recorded. */
+  result: string | null
+  /** Resolves when its end is recorded. */
+  readonly done: Promise<void>
+}
+
+const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop" } as const
+
+/** The replay a session is, while it runs. Lost with the process: a replay is not taken up again. */
+interface Director {
+  readonly replay: Replay
+  readonly sourceId: SessionId
+  /** The events of the recording, for the snapshot a divergence restores. */
+  readonly source: readonly StoredEvent[]
+  readonly baseline: EventData<"baseline.set">
+  /** The copy the replay runs tools in once it left the recording; `null` for the `stop` policy. */
+  readonly copy: string | null
+  /** Whether the copy holds the recorded workspace: from the divergence on. */
+  live: boolean
+  /** The request overrides the model settings, so the recording's own changes of them are not replayed. */
+  readonly keepSettings: boolean
+  readonly maxSteps: number
+  /** How many calls of the step in progress the tape was asked about. */
+  asked: number
+  readonly resolve: (outcome: ReplayOutcome) => void
+}
+
 class LiveSession implements EngineSession {
   private readonly channel = new EventChannel()
   private readonly listeners = new Set<(event: EngineEvent) => void>()
@@ -877,6 +1047,18 @@ class LiveSession implements EngineSession {
   private readonly touched = new Map<MessageId, readonly string[]>()
   /** What no compaction can remove, in tokens: the instructions and the tool list of the baseline set at `seq`. A cache of a pure function of the log. */
   private fixed: { readonly seq: number; readonly tokens: number } | null = null
+  /** Whether the client of this session also answers the questions of its subagents. */
+  private childQuestions = false
+  /** The spawned work this process runs, by its ID. */
+  private readonly spawns = new Map<string, LiveSpawn>()
+  /** Ends of spawned work that are still being recorded. Awaited before the session is let go of. */
+  private readonly ending = new Set<Promise<void>>()
+  /** The child sessions this session started or opened here. Closed with it. */
+  private readonly children = new Set<LiveSession>()
+  /** Wakes the loop while it waits at a boundary for a subagent's result. */
+  private arrival: (() => void) | null = null
+  /** The replay this session is, while it runs. */
+  private director: Director | null = null
 
   constructor(
     private readonly core: Core,
@@ -916,6 +1098,7 @@ class LiveSession implements EngineSession {
 
   send = (value: string, options: SendOptions = {}): MessageId => {
     this.assertOpen()
+    if (this.projection().session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
     const messageId = this.core.ids.message()
     if (options.maxSteps !== undefined) this.turnLimits.set(messageId, options.maxSteps)
     this.write([event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(value) })])
@@ -981,12 +1164,16 @@ class LiveSession implements EngineSession {
     while (this.run !== null || this.restoring !== null) await (this.run?.done ?? this.restoring?.catch(() => {}))
   }
 
-  setAttended = (present: boolean): void => {
+  setAttended = (present: boolean, options: { readonly children?: boolean } = {}): void => {
     this.attended = present
+    if (options.children !== undefined) this.childQuestions = options.children
+    // A subagent asks through its parent's client, or nobody.
+    for (const child of this.children) child.setAttended(present && this.childQuestions, { children: this.childQuestions })
   }
 
   setApproval = (section: ApprovalSection): void => {
     this.override = { ...this.override, ...section }
+    for (const child of this.children) child.setApproval(section)
   }
 
   approval = (): ApprovalState | null => {
@@ -1000,15 +1187,31 @@ class LiveSession implements EngineSession {
       sandbox: approvals.sandbox().state,
       attended: this.attended,
       taint: this.taint(policy),
-      pending: pending === null ? null : { messageId: pending.messageId, callId: pending.callId, question: pending.asked.question },
+      pending: pending === null ? this.childQuestion() : { messageId: pending.messageId, callId: pending.callId, question: pending.asked.question },
     }
   }
 
-  answer = (target: { readonly messageId: MessageId; readonly callId: CallId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }): boolean => {
+  /** The question of a subagent that this session's client is to answer, labelled with the subagent it is from. */
+  private childQuestion(): NonNullable<ApprovalState["pending"]> | null {
+    for (const child of this.children) {
+      const pending = child.closing === null ? (child.approval()?.pending ?? null) : null
+      if (pending === null) continue
+      return pending.child === undefined ? { ...pending, child: { sessionId: child.id, title: child.projection().session.title ?? child.id } } : pending
+    }
+    return null
+  }
+
+  answer = (target: { readonly messageId: MessageId; readonly callId: CallId; readonly sessionId?: SessionId }, reply: { readonly choice: ChoiceId; readonly note?: string | null }): boolean => {
     this.assertOpen()
     const approvals = this.core.approvals
     const pending = this.question
-    if (approvals === null || pending === null || pending.messageId !== target.messageId || pending.callId !== target.callId) return false
+    const mine = target.sessionId === undefined || target.sessionId === this.id
+    if (!mine || pending === null || pending.messageId !== target.messageId || pending.callId !== target.callId) {
+      // Not this session's question: one of its subagents', asked through this session's client.
+      if (target.sessionId === this.id) return false
+      return [...this.children].some((child) => child.closing === null && child.answer(target, reply))
+    }
+    if (approvals === null) return false
     const chosen = pending.asked.question.choices.find((choice) => choice.id === reply.choice)
     const projection = this.projection()
     // An interrupt that was requested first wins: the question is withdrawn and the call does not start.
@@ -1067,6 +1270,8 @@ class LiveSession implements EngineSession {
     const stored = this.store.append(this.id, events, options)
     if (this.taintHistory !== null) for (const item of stored) this.taintHistory.add(item)
     for (const item of stored) this.publish(item)
+    // Input arrived: a loop that waits at a boundary for it carries on.
+    if (this.arrival !== null && stored.some((item) => item.type === "inbox.enqueued")) this.arrival()
     return stored
   }
 
@@ -1124,6 +1329,8 @@ class LiveSession implements EngineSession {
     this.write([event("execution.interrupt_requested", { executionId: execution.id, reason })])
     this.probe("interrupt.requested")
     run.interrupt.interrupt(reason)
+    // What the session spawned stops with it: its subagents and its background commands.
+    this.stopSpawned(reason === "user" ? "interrupt" : "shutdown")
     return true
   }
 
@@ -1132,6 +1339,8 @@ class LiveSession implements EngineSession {
       // A restore in progress is finished, not cut: it is short, and half of one helps nobody.
       // (No await when there is none: the interrupt below must be requested in this very turn of the event loop.)
       if (this.restoring !== null) await this.restoring.catch(() => {})
+      // Nothing the session spawned outlives it here: a command dies with the process anyway, and a subagent has nobody to answer to.
+      this.stopSpawned("shutdown")
       if (this.run !== null) {
         this.requestInterrupt("shutdown")
         await this.settled()
@@ -1148,6 +1357,9 @@ class LiveSession implements EngineSession {
     } catch (error) {
       this.core.report({ kind: "internal_error", sessionId: this.id, message: `closing failed: ${describe(error)}`, cause: error })
     } finally {
+      // The ends of spawned work are recorded, and the subagents let go of, before the session is.
+      while (this.ending.size > 0) await Promise.all([...this.ending]).catch(() => {})
+      await Promise.all([...this.children].map((child) => child.close())).catch(() => {})
       await this.retaining?.catch(() => {})
       this.channel.end()
       this.listeners.clear()
@@ -1176,6 +1388,15 @@ class LiveSession implements EngineSession {
     }
     const recovery = recover(projection, { crashResumeCap: this.core.limits.crashResumeCap, newMessageId: this.core.ids.message })
     if (recovery.events.length > 0) this.write(recovery.events, { expectedSeq: projection.lastSeq })
+    // What the log says was spawned and nobody here runs was lost with the process that ran it.
+    this.reapSpawned()
+    if (projection.session.replay !== undefined && this.director === null) {
+      // A replay is not taken up again: the process that ran it is gone, and so is where it stood on the tape.
+      if (recovery.claim !== "none") this.write([event("execution.failed", { executionId: claimOf(this.projection()).id, message: REPLAY_TEXT.ended(REPLAY_TEXT.crashed), cause: "replay" })])
+      if (this.projection().session.replay?.ended === null)
+        this.write([event("replay.ended", { outcome: "incomplete", reason: REPLAY_TEXT.crashed, report: { status: "incomplete", reason: REPLAY_TEXT.crashed } })])
+      return
+    }
     if (recovery.claim === "none" || mode === "wait") return
     const execution = claimOf(this.projection())
     if (recovery.claim === "suspended") this.write([event("execution.resumed", { executionId: execution.id })])
@@ -1195,10 +1416,11 @@ class LiveSession implements EngineSession {
       // The caller that started the execution returns first.
       await Promise.resolve()
       this.probe("execution.claimed")
-      if (await this.configure(run)) await this.loop(run)
+      if (await this.configure(run)) await (this.director === null ? this.loop(run) : this.replayLoop(run, this.director))
     } catch (error) {
       this.abandon(run, error)
     } finally {
+      this.concludeReplay()
       this.run = null
       this.retain()
       const again = this.restart && this.closing === null
@@ -1220,7 +1442,8 @@ class LiveSession implements EngineSession {
    * anything is sent: carrying on would silently switch the checks off.
    */
   private async configure(run: Run): Promise<boolean> {
-    const load = this.core.loadConfig
+    // A replay reads nothing of the workspace: no checks, and the approval settings are its own.
+    const load = this.director === null ? this.core.loadConfig : null
     if (load === null) {
       this.config = null
       this.announcePolicy()
@@ -1280,6 +1503,13 @@ class LiveSession implements EngineSession {
       // holds when a queued message waits behind the turn too: "after this turn" means after it is done, and done
       // is what the gate says. Only a queued message that is the first input under the claim follows no turn.
       const idle = wouldGoIdle(before)
+      if (idle && before.inbox.length === 0 && this.awaitsSubagents()) {
+        // The model has nothing more to do and its background subagents are still at work in the workspace: the turn
+        // is not over, and the checks would see their work half done. The loop waits here for the next result (or
+        // for anything else that arrives), and then decides again.
+        await this.arrived(signal)
+        continue
+      }
       let ended: VerificationOutcome | null = null
       if (idle && !before.inbox.some(isSteer) && (before.inbox.length === 0 || latest !== undefined)) {
         const verdict = await this.gate(run)
@@ -1303,8 +1533,8 @@ class LiveSession implements EngineSession {
       const handover = steers.length === 0 && queued !== undefined && (ended !== null || !follows) ? queued : undefined
       // The turn may end and what waited behind it is gone: nothing follows, so the gate decides again, now alone.
       if (ended !== null && steers.length === 0 && handover === undefined) continue
-      // Instructions first, then the waiting input, so the request carries both.
-      const prepared = prepareInstructions(waiting, {
+      // Instructions first, then the waiting input, so the request carries both. A replay's instructions are its recording's.
+      const prepared = waiting.session.replay !== undefined ? [] : prepareInstructions(waiting, {
         ...(this.core.prompt === undefined ? {} : { prompt: this.core.prompt }),
         tools: this.offeredTools(waiting),
         sources: this.core.discover({
@@ -1368,6 +1598,8 @@ class LiveSession implements EngineSession {
    * nobody knows it: then nothing is compacted ahead of time.
    */
   private async contextWindow(model: string): Promise<number | null> {
+    // A replay is never compacted: a compaction is something a recording cannot be compared across.
+    if (this.director !== null) return null
     const windows = this.core.windows
     const known = windows.get(model)
     // No await when it is known: the loop goes straight on.
@@ -1526,8 +1758,33 @@ class LiveSession implements EngineSession {
     }
   }
 
-  /** The model call finished: run what it asked for and close the step. */
+  /** The model call finished: run what it asked for, close the step, and, in a replay, tell the tape what the step was. */
   private async finishStep(
+    run: Run,
+    messageId: MessageId,
+    toolChoice: ModelRequest["toolChoice"],
+    reason: FinishReason,
+    call: ModelCall,
+  ): Promise<StepResult> {
+    const director = this.director
+    if (director !== null) director.asked = 0
+    const closed = await this.closeStep(run, messageId, toolChoice, reason, call)
+    if (director === null || closed !== "continue") return closed
+    const message = this.assistant(messageId)
+    if (message.status !== "completed") return closed
+    const calls = message.parts.filter((part): part is ToolCallPart => part.type === "tool_call")
+    // Calls that were written and never handed to the tape (a response cut at the output limit) cannot be compared.
+    if (calls.length !== director.asked) director.replay.fail("a response of the replay was cut at the output limit")
+    else
+      director.replay.endStep({
+        text: message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+        calls: calls.map((part) => ({ name: part.name, input: part.input })),
+        usage: message.usage,
+      })
+    return closed
+  }
+
+  private async closeStep(
     run: Run,
     messageId: MessageId,
     toolChoice: ModelRequest["toolChoice"],
@@ -1542,7 +1799,8 @@ class LiveSession implements EngineSession {
     if (reason === "length") {
       // A call cut off by the output limit was never recorded and never runs (retry rule 6). Calls that did end
       // are not run either: the response they belong to is incomplete.
-      const told = call.cutOff || calls.length > 0
+      // On the tape the recording's own notes are the model's notes.
+      const told = (call.cutOff || calls.length > 0) && !this.onTape()
       this.write([
         ...settleUnsettled(message, STOPPED),
         event("step.ended", { messageId, finish: "length", usage }),
@@ -1555,7 +1813,7 @@ class LiveSession implements EngineSession {
     if (calls.length > 0) {
       // A step is bracketed by two snapshots exactly when one of its calls can change files: a step of reads
       // changes nothing, and the snapshot before it is still the workspace.
-      const tracked = this.core.openSnapshots !== null && this.mayChangeFiles(calls, toolChoice)
+      const tracked = this.core.openSnapshots !== null && this.mayChangeFiles(calls, toolChoice) && !this.onTape()
       if (tracked) {
         await this.snapshot("step_start", messageId)
         if (run.interrupt.signal.aborted) {
@@ -1596,7 +1854,7 @@ class LiveSession implements EngineSession {
 
     const ended = event("step.ended", { messageId, finish: "stop", usage })
     const current = this.projection()
-    if (saysNothing(message) && !current.inbox.some((item) => item.delivery === "steer")) {
+    if (saysNothing(message) && !current.inbox.some((item) => item.delivery === "steer") && !this.onTape()) {
       // A response with no text and no call (nothing at all, or only reasoning) says nothing. It gets one nudge;
       // a second one in a row fails the execution (retry rule 8).
       const previous = current.messages.at(-2)
@@ -1831,29 +2089,43 @@ class LiveSession implements EngineSession {
     const place = this.tempContext()
     // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it too.
     const extras = approvals === null ? {} : { ...place, ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }), redact: redactor(approvals.secrets) }
+    const request = (call: ToolCallPart): ToolCall => ({
+      name: call.name,
+      argumentsText: call.input,
+      context: {
+        sessionId: this.id,
+        messageId,
+        callId: call.callId,
+        cwd: before.session.cwd,
+        signal,
+        progress: (update) => {
+          if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
+        },
+        ...extras,
+        // A tool that starts work in the background hands it to this session, which records it and stops it with itself.
+        ...(this.core.spawn === null ? {} : { background: { command: (work: BackgroundCommand) => this.backgroundCommand(messageId, call.callId, work) } }),
+      },
+    })
+    // In a replay the calls of the step are matched against the recording together, once, and each is answered from there.
+    const director = this.director
+    const plan = director === null ? null : director.replay.beginStep(calls.map(request))
+    if (director !== null) director.asked = calls.length
+    const matchOf = (call: ToolCallPart): CallMatch | undefined => plan?.matches[calls.indexOf(call)]
+    const recorded = (call: ToolCallPart) => {
+      const match = matchOf(call)
+      return match?.kind === "matched" || match?.kind === "dropped"
+    }
 
     /** One call, from its decision to its recorded result. */
     const launch = (call: ToolCallPart): Promise<void> => {
-      const effect = effects.get(call.name)
+      const match = matchOf(call)
+      // A recorded call started with the class the recording has for it, whatever this build's tools are.
+      const effect = effects.get(call.name) ?? (match?.kind === "matched" ? match.recorded.started?.effect : undefined)
       const key = callKey(messageId, call.callId)
       unsettled.add(call.callId)
-      return runtime
-        .run(
-          {
-            name: call.name,
-            argumentsText: call.input,
-            context: {
-              sessionId: this.id,
-              messageId,
-              callId: call.callId,
-              cwd: before.session.cwd,
-              signal,
-              progress: (update) => {
-                if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
-              },
-              ...extras,
-            },
-          },
+      const run$ = (hooks: Parameters<ToolRuntime["run"]>[1]) =>
+        plan === null ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(calls.indexOf(call), request(call), hooks)
+      return run$(
           {
             ...(approvals === null ? {} : { authorize: (tool: AnyTool, input: Json) => this.authorize(run, messageId, call, tool, input) }),
             // Synchronous, right before the tool runs: the start is durable before any side effect.
@@ -1865,19 +2137,20 @@ class LiveSession implements EngineSession {
             },
           },
         )
-        .then((result) => {
+        .then(({ outcome: result, executed }) => {
           this.probe("tool.finished")
           // A tool that came back after its grace period was already settled from its effect class.
           if (abandoned.has(call.callId)) return
           // The interrupt reached it while it waited for an answer: it never began, and the wind-down settles it.
-          if (result.kind === "not_started") return
+          // (In a replay a call may also be answered as never started: the recording's own, or the replay stopping.)
+          if (result.kind === "not_started" && (plan === null || signal.aborted)) return
           unsettled.delete(call.callId)
           const decided = this.decided.get(key)
           this.decided.delete(key)
           const settlement = this.settlement(result, effect, signal)
           // The note for a failure the sandbox causes, then the redaction: what is stored is what is replayed.
           const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets, place.temp) }
-          this.write([...(decided?.before ?? []), event("tool.settled", { messageId, callId: call.callId, ...shown })])
+          this.write([...(decided?.before ?? []), ...(match === undefined ? [] : [replayCall(messageId, call.callId, match, executed)]), event("tool.settled", { messageId, callId: call.callId, ...shown })])
           this.probe("tool.settled")
           if (decided?.stop != null) this.stopping ??= decided.stop
           this.noticeTaint()
@@ -1894,12 +2167,15 @@ class LiveSession implements EngineSession {
     const running = calls.flatMap((call, index): Promise<void>[] => {
       // Once an interrupt is requested nothing new starts; the call is settled as not started below.
       if (failure.failed || signal.aborted) return []
+      // A call the recording has is answered by the recording, also where the recording's loop refused it.
+      if (recorded(call)) return [launch(call)]
       if (toolChoice === "none") return refuse(call, TOOL_TEXT.toolsDisabled) && []
       if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
       if (repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
       const effect = effects.get(call.name)
-      // A read changes nothing, and a tool nobody knows is refused before it could: both go at once.
-      if (approvals === null || effect === undefined || effect === "read") return [launch(call)]
+      // A read changes nothing, and a tool nobody knows is refused before it could: both go at once. So does a
+      // call that hands its work to a subagent: several of them in one response are meant to run side by side.
+      if (approvals === null || effect === undefined || effect === "read" || this.core.delegating.has(call.name)) return [launch(call)]
       // The first of the line starts here and now, so that with nothing to wait for the calls start in the order written.
       const previous = line
       const next: Promise<void> = previous === null ? launch(call) : previous.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
@@ -1920,6 +2196,619 @@ class LiveSession implements EngineSession {
     if (failure.failed) throw failure.error
   }
 
+  // ---- spawned work: subagents and background commands ----
+
+  /** Whether the replay is still on its recording: nothing runs, nothing is recorded about a workspace, and the recording's notes are the notes. */
+  private onTape(): boolean {
+    return this.director !== null && !this.director.live
+  }
+
+  /** Whether a background subagent of this session is still at work here. */
+  private awaitsSubagents(): boolean {
+    return [...this.spawns.values()].some((live) => live.child !== null && live.background && live.result === null)
+  }
+
+  /** Resolves when input arrives in the inbox, or the execution is interrupted. */
+  private arrived(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        this.arrival = null
+        signal.removeEventListener("abort", done)
+        resolve()
+      }
+      this.arrival = done
+      if (signal.aborted) return done()
+      signal.addEventListener("abort", done, { once: true })
+    })
+  }
+
+  /** How deep in a chain of subagents this session is: 0 for one a person started. */
+  private depth(): number {
+    const lineage = this.projection().session.lineage
+    return lineage?.kind === "spawn" ? lineage.depth : 0
+  }
+
+  private track(work: Promise<void>): void {
+    const done = work
+      .catch((error: unknown) => this.core.report({ kind: "internal_error", sessionId: this.id, message: `spawned work could not be ended: ${describe(error)}`, cause: error }))
+      .finally(() => this.ending.delete(done))
+    this.ending.add(done)
+  }
+
+  /** Starts working again if the session is idle: a result arrived for it. */
+  private wake(): void {
+    if (this.closing !== null) return
+    try {
+      this.start()
+    } catch (error) {
+      this.core.report({ kind: "internal_error", sessionId: this.id, message: describe(error), cause: error })
+    }
+  }
+
+  /** Stops everything this session spawned that still runs: its subagents and its background commands. */
+  private stopSpawned(reason: "interrupt" | "shutdown"): void {
+    for (const live of this.spawns.values()) {
+      if (live.result !== null) continue
+      live.stopping ??= reason
+      if (live.command !== null) void live.command.stop().catch(() => {})
+      else live.child?.interrupt()
+    }
+  }
+
+  /**
+   * Records the end of spawned work and, when the model is to be told
+   * outside a tool result, the message that tells it, in one append.
+   */
+  private spawnEnded(spawnId: string, data: Omit<EventData<"spawn.ended">, "spawnId">, message: { readonly origin: string; readonly text: string } | null): void {
+    try {
+      this.write([
+        event("spawn.ended", { spawnId, ...data }),
+        ...(message === null ? [] : [event("inbox.enqueued", { messageId: this.core.ids.message(), origin: message.origin, delivery: "steer" as const, content: text(message.text) })]),
+      ])
+      // A subagent's taint is this session's from here on.
+      this.noticeTaint()
+    } catch (error) {
+      this.core.report({ kind: "internal_error", sessionId: this.id, message: `the end of spawned work ${spawnId} could not be recorded: ${describe(error)}`, cause: error })
+    }
+  }
+
+  /** `ToolContext.background.command`: takes over a command the shell tool just started. */
+  private backgroundCommand(messageId: MessageId, callId: CallId, work: BackgroundCommand): { readonly id: string } {
+    const spawnId = this.core.ids.spawn()
+    try {
+      this.write([event("spawn.started", { spawnId, messageId, callId, background: true, work: { kind: "command", command: work.command, logPath: work.logPath } })])
+    } catch (error) {
+      // It cannot be recorded (the session is being interrupted): it must not run unrecorded.
+      void work.stop().catch(() => {})
+      throw error
+    }
+    this.probe("spawn.started")
+    let finish = () => {}
+    const live: LiveSpawn = { spawnId, background: true, child: null, fromSeq: 0, command: work, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+    this.spawns.set(spawnId, live)
+    this.track(
+      work.exited.then((end) => {
+        const stopped = live.stopping
+        const secrets = this.core.approvals?.secrets
+        const rendered = renderCommandEnd(spawnId, { ...end, command: work.command, stopped: stopped === null ? null : STOPPED_BY[stopped], logPath: work.logPath })
+        // Its output is tool output: what the model is shown of it is redacted like any other.
+        const shown = secrets === undefined ? rendered : redact(aliased(rendered, this.tempContext().temp), secrets).text
+        live.result = shown
+        this.spawnEnded(
+          spawnId,
+          { outcome: stopped === null ? "completed" : "stopped", detail: shown.split("\n")[0] ?? "", exitCode: end.exitCode, usage: null, tainted: false, merge: null },
+          // The stop tool's own result says how it ended.
+          stopped === "tool" ? null : { origin: HARNESS_ORIGIN.backgroundCommand, text: shown },
+        )
+        this.spawns.delete(spawnId)
+        finish()
+        if (stopped === null) this.wake()
+      }),
+    )
+    return { id: spawnId }
+  }
+
+  /** The `subagent` tool: starts a child session on a task, or sends a follow-up to one, and waits for its answer unless it runs in the background. */
+  async subagent(input: SubagentInput, context: ToolContext): Promise<ToolResult> {
+    const settings = this.core.spawn
+    if (settings === null) return toolResult("error", "Subagents are not available here.")
+    if (context.signal.aborted) return toolResult("error", "Not started: the session was interrupted.")
+    const projection = this.projection()
+    if (input.session !== undefined) return this.followUp(input, context, projection)
+    const depth = this.depth()
+    if (depth >= settings.maxDepth)
+      return toolResult("error", `Not started: a subagent ${settings.maxDepth === 1 ? "cannot start subagents of its own" : `at depth ${depth} cannot start another (the limit is ${settings.maxDepth} levels)`}. Do the work yourself.`)
+    const childId = this.core.ids.session()
+    const spawnId = this.core.ids.spawn()
+    const title = taskTitle(input.task)
+    let worktree: WorktreeRecord | null = null
+    let cwd = projection.session.cwd
+    if (input.worktree === true) {
+      const made = await createWorktree({ cwd, directory: join(settings.worktreeDir, childId), branch: worktreeBranch(childId) })
+      if ("error" in made) return toolResult("error", `The subagent was not started: ${made.error}`)
+      worktree = made.worktree
+      cwd = made.cwd
+    }
+    const background = input.background === true
+    const discard = async (why: unknown) => {
+      if (worktree !== null) await removeWorktree(worktree, { keepBranch: false })
+      return toolResult("error", `The subagent was not started: ${describe(why)}`)
+    }
+    if (context.signal.aborted) return discard("the session was interrupted")
+    try {
+      // Write-ahead: the parent's log names the child before the child exists.
+      this.write([event("spawn.started", { spawnId, messageId: context.messageId, callId: context.callId, background, work: { kind: "subagent", sessionId: childId, worktree } })])
+    } catch (error) {
+      return discard(error)
+    }
+    this.probe("spawn.started")
+    let child: LiveSession
+    try {
+      const store = storeErrors(() => this.core.stores.create(childId))
+      child = new LiveSession(this.core, childId, store)
+      try {
+        child.write([event("session.created", { cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: projection.session.settings })])
+      } catch (error) {
+        store.close()
+        throw error
+      }
+      this.core.sessions.set(childId, child)
+    } catch (error) {
+      this.spawnEnded(spawnId, { outcome: "failed", detail: `It could not be started: ${describe(error)}`, exitCode: null, usage: null, tainted: false, merge: null }, null)
+      return discard(error)
+    }
+    return this.runChild({ spawnId, child, title, worktree, background, message: taskMessage(input.task) }, context)
+  }
+
+  /** A follow-up message to a subagent this session started earlier: delivered to it while it runs, or the start of new work when it has ended. */
+  private async followUp(input: SubagentInput, context: ToolContext, projection: Projection): Promise<ToolResult> {
+    const spawned = projection.session.spawned
+    const children = spawned?.children ?? []
+    const named = input.session!
+    const matches = children.includes(named as SessionId) ? [named as SessionId] : children.filter((id) => id.startsWith(named))
+    const childId = matches[0]
+    if (childId === undefined || matches.length > 1)
+      return toolResult("error", `This session has ${matches.length > 1 ? "more than one" : "no"} subagent ${named}.${children.length === 0 ? " It has started none." : ` Its subagents: ${children.join(", ")}.`}`)
+    const running = spawned?.running.find((entry) => entry.sessionId === childId)
+    if (running !== undefined) {
+      const child = this.spawns.get(running.spawnId)?.child
+      if (child == null || child.closing !== null) return toolResult("error", `Subagent ${childId} cannot be reached right now.`)
+      child.send(input.task)
+      return toolResult(
+        "success",
+        `Sent to subagent ${childId}, which is still working: it reads the message at its next step. Its answer arrives ${running.background ? "as a message when it finishes" : "as the result of the call that started it"}.`,
+        { subagent: { sessionId: childId, spawnId: running.spawnId, followUp: true } },
+      )
+    }
+    let child = this.core.sessions.get(childId)
+    try {
+      if (child === undefined) {
+        child = this.openChild(childId)
+        child.recover("wait")
+      }
+    } catch (error) {
+      return toolResult("error", `Subagent ${childId} cannot be opened: ${describe(error)}`)
+    }
+    const state = child.projection().session
+    const lineage = state.lineage
+    if (lineage?.kind !== "spawn" || lineage.parentSessionId !== this.id) return toolResult("error", `Session ${childId} is not a subagent of this session.`)
+    if (lineage.worktree !== null && !existsSync(lineage.worktree.path))
+      return toolResult("error", `Subagent ${childId} worked in a worktree of its own, which was removed when it finished. Start a new subagent for further work.`)
+    if (child.working || state.execution !== null) return toolResult("error", `Subagent ${childId} is busy.`)
+    const spawnId = this.core.ids.spawn()
+    const background = input.background === true
+    try {
+      this.write([event("spawn.started", { spawnId, messageId: context.messageId, callId: context.callId, background, work: { kind: "subagent", sessionId: childId, worktree: null } })])
+    } catch (error) {
+      return toolResult("error", `The follow-up was not sent: ${describe(error)}`)
+    }
+    return this.runChild({ spawnId, child, title: state.title ?? taskTitle(input.task), worktree: null, background, message: input.task }, context)
+  }
+
+  /** Opens a child session of this one for writing, without recovering or resuming it. */
+  private openChild(childId: SessionId): LiveSession {
+    const store = storeErrors(() => this.core.stores.open(childId))
+    const child = new LiveSession(this.core, childId, store)
+    this.core.sessions.set(childId, child)
+    return child
+  }
+
+  /**
+   * One piece of a subagent's work, from its message to its recorded end.
+   * In the foreground the call waits for it, and its end is the call's
+   * result; in the background the call returns at once and the end arrives
+   * as a message that wakes this session.
+   */
+  private async runChild(
+    work: { readonly spawnId: string; readonly child: LiveSession; readonly title: string; readonly worktree: WorktreeRecord | null; readonly background: boolean; readonly message: string },
+    context: ToolContext,
+  ): Promise<ToolResult> {
+    const { spawnId, child } = work
+    this.children.add(child)
+    // It asks through this session's client, or nobody; it runs under this session's approval settings.
+    child.setAttended(this.attended && this.childQuestions, { children: this.childQuestions })
+    if (this.override !== null) child.setApproval(this.override)
+    const fromSeq = child.projection().lastSeq
+    const forward = child.subscribe((item) => {
+      if ("seq" in item) this.ephemeral({ type: "child.event", sessionId: this.id, child: child.id, spawnId, title: work.title, event: item })
+    })
+    let finish = () => {}
+    const live: LiveSpawn = { spawnId, background: work.background, child, fromSeq, command: null, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+    this.spawns.set(spawnId, live)
+    const display = { subagent: { sessionId: child.id, spawnId, title: work.title, background: work.background } }
+
+    const ended = (async () => {
+      try {
+        child.send(work.message)
+        await child.settled()
+      } finally {
+        forward()
+      }
+      let found = childResult(child.readEvents({ afterSeq: fromSeq }))
+      // Stopped on request is said as that, whatever the child's log makes of the interrupt.
+      if (live.stopping !== null && found.outcome !== "completed") found = { ...found, outcome: "stopped", detail: `It was stopped before it finished: ${STOPPED_BY[live.stopping]}.` }
+      const tainted = child.approval()?.taint.tainted ?? false
+      const merge = work.worktree === null ? null : await this.finishWorktree(work.worktree, work.title, found.outcome === "completed")
+      const shown = renderChildResult(child.id, found, merge, tainted)
+      live.result = shown
+      return { found, merge, tainted, shown }
+    })()
+    const record = (end: { readonly found: ChildResult; readonly merge: MergeOutcome | null; readonly tainted: boolean; readonly shown: string }, message: { readonly origin: string; readonly text: string } | null) => {
+      const { found, merge } = end
+      this.spawnEnded(
+        spawnId,
+        {
+          outcome: found.outcome,
+          detail: found.detail,
+          exitCode: null,
+          usage: found.usage,
+          tainted: end.tainted,
+          merge: merge === null ? null : { status: merge.status, branch: merge.branch, commit: merge.commit, files: [...merge.files], conflicts: [...merge.conflicts], kept: merge.kept },
+        },
+        message,
+      )
+      this.spawns.delete(spawnId)
+      finish()
+    }
+    const lost = (error: unknown) => {
+      const found: ChildResult = { outcome: "failed", answer: "", detail: `It failed: ${describe(error)}`, steps: 0, toolCalls: 0, usage: null }
+      return { found, merge: null, tainted: false, shown: renderChildResult(child.id, found, null, false) }
+    }
+
+    if (!work.background) {
+      const stop = () => {
+        live.stopping ??= "interrupt"
+        child.interrupt()
+      }
+      if (context.signal.aborted) stop()
+      else context.signal.addEventListener("abort", stop, { once: true })
+      const end = await ended.catch(lost)
+      context.signal.removeEventListener("abort", stop)
+      record(end, null)
+      return toolResult(end.found.outcome === "completed" ? "success" : "error", end.shown, { subagent: { ...display.subagent, outcome: end.found.outcome, steps: end.found.steps, toolCalls: end.found.toolCalls } })
+    }
+    this.track(
+      ended.catch(lost).then((end) => {
+        const stopped = live.stopping
+        // The stop tool's own result says how it ended.
+        record(end, stopped === "tool" ? null : { origin: HARNESS_ORIGIN.subagentResult, text: end.shown })
+        if (stopped === null) this.wake()
+      }),
+    )
+    return toolResult(
+      "success",
+      `Started subagent ${child.id} in the background. Its answer arrives as a message when it finishes. Meanwhile ${"`background_output`"} shows what it is doing, ${"`background_stop`"} stops it, and ${"`subagent`"} with \`session\` sends it a follow-up.`,
+      display,
+    )
+  }
+
+  /** What becomes of a subagent's worktree when its work ends: merged into this workspace when it finished, kept on its branch otherwise. */
+  private finishWorktree(worktree: WorktreeRecord, title: string, completed: boolean): Promise<MergeOutcome> {
+    const work = completed
+      ? mergeWorktree(worktree, { title, probe: (point) => this.probe(point === "computed" ? "merge.computed" : "merge.writing") })
+      : salvageWorktree(worktree, title)
+    return work.catch(
+      (error: unknown): MergeOutcome => ({ status: "failed", branch: worktree.branch, commit: null, files: [], conflicts: [], kept: true, message: `Its worktree could not be merged or removed (${describe(error)}); nothing was changed in this workspace.` }),
+    )
+  }
+
+  private findSpawn(id: string): LiveSpawn | undefined {
+    const all = [...this.spawns.values()]
+    return all.find((live) => live.spawnId === id) ?? all.find((live) => live.child?.id === id) ?? all.find((live) => live.child?.id.startsWith(id) === true)
+  }
+
+  private noSuchSpawn(id: string): ToolResult {
+    const running = [...this.spawns.values()].map((live) => (live.child === null ? live.spawnId : live.child.id))
+    return toolResult("error", `No background work ${id} is running.${running.length === 0 ? "" : ` Running: ${running.join(", ")}.`} Work that has ended delivered its result as a message, or as the result of the call that started it.`)
+  }
+
+  /** The `background_output` tool. */
+  async output(id: string, _context: ToolContext): Promise<ToolResult> {
+    const live = this.findSpawn(id)
+    if (live === undefined) return this.noSuchSpawn(id)
+    if (live.command !== null) {
+      const secrets = this.core.approvals?.secrets
+      const printed = live.command.output()
+      const shown = secrets === undefined ? printed : redact(aliased(printed, this.tempContext().temp), secrets).text
+      return toolResult("success", `${live.spawnId} is still running.\n${shown.trim() === "" ? "It has printed nothing yet." : `Output so far:\n${shown.trimEnd()}`}`, { background: live.spawnId, running: true })
+    }
+    const child = live.child!
+    const found = childResult(child.readEvents({ afterSeq: live.fromSeq }))
+    return toolResult(
+      "success",
+      `Subagent ${child.id} is still working: ${found.steps} step${found.steps === 1 ? "" : "s"}, ${found.toolCalls} tool call${found.toolCalls === 1 ? "" : "s"} so far.${found.answer === "" ? "" : `\n\nIts latest words:\n${found.answer}`}`,
+      { subagent: { sessionId: child.id, spawnId: live.spawnId }, running: true },
+    )
+  }
+
+  /** The `background_stop` tool. */
+  async stop(id: string, _context: ToolContext): Promise<ToolResult> {
+    const live = this.findSpawn(id)
+    if (live === undefined) return this.noSuchSpawn(id)
+    live.stopping ??= "tool"
+    if (live.command !== null) void live.command.stop().catch(() => {})
+    else live.child!.interrupt()
+    await live.done
+    return toolResult("success", live.result ?? `${id} was stopped.`, live.command !== null ? { background: live.spawnId, running: false } : { subagent: { sessionId: live.child!.id, spawnId: live.spawnId }, running: false })
+  }
+
+  /**
+   * What the log says this session spawned and nobody here runs was lost
+   * with the process that ran it. A command died with that process (its
+   * guard killed it). A subagent is looked at: one that had finished on its
+   * own delivers its answer now; one that was cut off has its turn ended, so
+   * that nothing takes it up half done. Either way the model is told.
+   */
+  private reapSpawned(): void {
+    const running = this.projection().session.spawned?.running ?? []
+    for (const entry of running) {
+      if (this.spawns.has(entry.spawnId)) continue
+      if (entry.kind === "command") {
+        this.spawnEnded(
+          entry.spawnId,
+          { outcome: "lost", detail: "The harness restarted while it ran, and it was stopped with it.", exitCode: null, usage: null, tainted: false, merge: null },
+          {
+            origin: HARNESS_ORIGIN.spawnLost,
+            text: `Background command ${entry.spawnId} is gone: the harness restarted while it ran, and it was stopped with it.\nCommand: ${entry.command}${entry.logPath === null ? "" : `\nWhat it had printed is in ${entry.logPath}.`}`,
+          },
+        )
+        continue
+      }
+      // Held here, as work in progress, until its end is recorded.
+      let finish = () => {}
+      const live: LiveSpawn = { spawnId: entry.spawnId, background: entry.background, child: null, fromSeq: 0, command: null, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+      this.spawns.set(entry.spawnId, live)
+      this.track(
+        this.reapChild(entry.spawnId, entry.sessionId!, entry.worktree).finally(() => {
+          this.spawns.delete(entry.spawnId)
+          finish()
+        }),
+      )
+    }
+  }
+
+  private async reapChild(spawnId: string, childId: SessionId, worktree: WorktreeRecord | null): Promise<void> {
+    let found: ChildResult = { outcome: "lost", answer: "", detail: "It was never started: the harness restarted first.", steps: 0, toolCalls: 0, usage: null }
+    let tainted = false
+    let title = childId as string
+    try {
+      const summary = this.core.stores.get(childId)
+      if (summary !== null) {
+        title = summary.session.title ?? title
+        let cut = false
+        if (summary.session.execution !== null) {
+          // Cut off with this session, or shut down with it. Its turn is ended here.
+          const open = this.core.sessions.get(childId)
+          const child = open ?? this.openChild(childId)
+          cut = child.endClaim()
+          if (open === undefined) await child.close()
+        }
+        const events = this.core.stores.read(childId, (store) => store.readEvents(childId))
+        const started = events.findLastIndex((item) => item.type === "execution.started")
+        found = childResult(started === -1 ? events : events.slice(started))
+        if (cut || found.outcome !== "completed") found = { ...found, outcome: "lost", detail: "It was cut off when the harness restarted." }
+        tainted = this.core.stores.get(childId)?.session.approval?.taint != null
+      }
+    } catch (error) {
+      found = { ...found, outcome: "lost", detail: `It was lost when the harness restarted, and its session cannot be read: ${describe(error)}` }
+    }
+    const merge = worktree === null ? null : await this.finishWorktree(worktree, title, found.outcome === "completed")
+    this.spawnEnded(
+      spawnId,
+      {
+        outcome: found.outcome,
+        detail: found.detail,
+        exitCode: null,
+        usage: found.usage,
+        tainted,
+        merge: merge === null ? null : { status: merge.status, branch: merge.branch, commit: merge.commit, files: [...merge.files], conflicts: [...merge.conflicts], kept: merge.kept },
+      },
+      { origin: found.outcome === "completed" ? HARNESS_ORIGIN.subagentResult : HARNESS_ORIGIN.spawnLost, text: renderChildResult(childId, found, merge, tainted) },
+    )
+  }
+
+  /**
+   * Ends a claim that nobody works on, as an interrupt by the session's
+   * user: for a subagent whose parent lost it. Returns whether there was one.
+   */
+  endClaim(): boolean {
+    if (this.run !== null) return false
+    this.recover("wait")
+    const execution = this.projection().session.execution
+    if (execution === null) return false
+    if (execution.status === "suspended") this.write([event("execution.resumed", { executionId: execution.id })])
+    this.write([event("execution.interrupt_requested", { executionId: execution.id, reason: "user" })])
+    // Recovery finishes a requested interrupt: the marker and the release.
+    this.recover("wait")
+    return true
+  }
+
+  // ---- replay ----
+
+  /**
+   * Makes this (new) session the replay of a recording and starts it. The
+   * replay asks nobody and runs nothing outside the sandbox: its approval
+   * settings are its own, whatever the user's are.
+   */
+  beginReplay(setup: { readonly sourceId: SessionId; readonly tape: Tape; readonly source: readonly StoredEvent[]; readonly baseline: EventData<"baseline.set">; readonly request: ReplayRequest; readonly policy: ReplayPolicyKind; readonly copy: string | null }): Promise<ReplayOutcome> {
+    const { tape, request, copy } = setup
+    let resolveOutcome: (outcome: ReplayOutcome) => void = () => {}
+    const done = new Promise<ReplayOutcome>((resolve) => (resolveOutcome = resolve))
+    const originals = [...new Set([resolve(tape.cwd), ...(existsSync(tape.cwd) ? [realpathSync(tape.cwd)] : [])])].filter((path) => path !== "/")
+    const swap = (value: string, from: readonly string[], to: string) => from.reduce((mapped, path) => (path === to ? mapped : mapped.split(path).join(to)), value)
+    const workspace: ReplayWorkspace | null =
+      copy === null
+        ? null
+        : {
+            cwd: copy,
+            runtime: this.core.runtime,
+            prepare: (divergence) => this.leaveTape(divergence),
+            // A path the model writes as the recording's workspace means the copy, and the copy is named as the recording's workspace again.
+            mapArguments: (value) => swap(value, originals, copy),
+            mapOutput: (value) => swap(value, [copy, ...(existsSync(copy) ? [realpathSync(copy)] : [])], tape.cwd),
+          }
+    const replay = createReplay(tape, {
+      tools: this.core.runtime.tools,
+      strict: request.strict === true,
+      normalisers: request.normalisers ?? DEFAULT_NORMALISERS,
+      policy: setup.policy === "stop" || workspace === null ? { kind: "stop" } : { kind: setup.policy, workspace },
+    })
+    this.director = {
+      replay,
+      sourceId: setup.sourceId,
+      source: setup.source,
+      baseline: setup.baseline,
+      copy,
+      live: false,
+      keepSettings: request.model !== undefined || request.effort !== undefined,
+      maxSteps: request.maxSteps ?? tape.steps.length + 10,
+      asked: 0,
+      resolve: resolveOutcome,
+    }
+    this.attended = false
+    this.override = { mode: "auto", unattended: "deny" }
+    const executionId = this.core.ids.execution()
+    this.write([event("execution.started", { executionId })])
+    this.launch(executionId)
+    return done
+  }
+
+  /**
+   * The replay loop: before each step the recording's inputs that are due
+   * are added as the messages they were, then one model call is made and its
+   * calls are answered from the recording (`runTools`). It ends when the
+   * recording does, when the model leaves it under the `stop` policy, or
+   * where the recording does something a replay cannot reproduce. Once the
+   * model has left the recording under a policy that runs tools, the replay
+   * is an ordinary turn in the copy of the workspace, and the ordinary loop
+   * finishes it: its step limit, its checks, its ending.
+   */
+  private async replayLoop(run: Run, director: Director): Promise<void> {
+    const signal = run.interrupt.signal
+    const replay = director.replay
+    if (this.projection().baseline === null) this.write([event("baseline.set", director.baseline)])
+    for (let made = 0; ; made += 1) {
+      this.probe("step.boundary")
+      if (signal.aborted) return this.finishInterrupt(run)
+      if (replay.status === "on_tape") this.deliverRecorded(director, replay.takeInputs())
+      if (replay.status === "off_tape") return this.loop(run)
+      if (replay.status === "on_tape" && made >= director.maxSteps) replay.fail(`gave up after ${made} model calls: the recording has ${replay.tape.steps.length} steps`)
+      if (replay.status !== "on_tape") return this.endReplayRun(run, replay.report().reason)
+      if ((await this.step(run, this.prepare(this.projection(), "auto"))) === "done") return
+    }
+  }
+
+  /** Adds the recording's inputs to history as what they were: the user's messages, the harness's notes, instruction updates, settings. */
+  private deliverRecorded(director: Director, inputs: ReturnType<Replay["takeInputs"]>): void {
+    const ids = this.core.ids
+    for (const input of inputs) {
+      switch (input.kind) {
+        case "message": {
+          const messageId = ids.message()
+          // A user's message goes through the inbox, as it did; a harness message is appended where it was.
+          if (input.from === "user")
+            this.write([event("inbox.enqueued", { messageId, origin: null, delivery: "steer", content: input.content }), event("inbox.delivered", { messageId })])
+          else this.write([event("synthetic.appended", { messageId, origin: input.origin ?? "harness", content: input.content })])
+          break
+        }
+        case "instruction":
+          this.write([event("instruction.appended", { messageId: ids.message(), source: input.source, text: input.text, fingerprint: input.fingerprint })])
+          break
+        case "settings":
+          if (!director.keepSettings) this.changeSettings(input.settings)
+          break
+        // The first baseline is the replay's own, changed; a later one follows a compaction, where the replay has stopped.
+        case "baseline":
+        case "unsupported":
+          break
+      }
+    }
+  }
+
+  /**
+   * Ends the execution of a replay that is over. Where the model has
+   * answered, it ends as any turn does (nothing was verified); where it has
+   * not (the replay stopped at a call, or the recording itself ends there),
+   * the execution has no answer to end on and says so.
+   */
+  private endReplayRun(run: Run, reason: string): void {
+    const projection = this.projection()
+    if (wouldGoIdle(projection) && projection.inbox.length === 0) this.write([event("execution.succeeded", { executionId: run.executionId, verification: { status: "not_configured" } })])
+    else this.write([event("execution.failed", { executionId: run.executionId, message: REPLAY_TEXT.ended(reason), cause: "replay" })])
+  }
+
+  /**
+   * The replay left its recording under a policy that runs tools: the
+   * recorded workspace, as it was at that point, is restored into the copy,
+   * and from here the session works there. Called once, before the first
+   * tool runs for real.
+   */
+  private async leaveTape(divergence: Divergence): Promise<void> {
+    const director = this.director
+    if (director === null || director.copy === null) throw new Error("the replay has no copy of the workspace")
+    const step = divergence.recordedStep === null ? undefined : director.replay.tape.steps[divergence.recordedStep]
+    const snapshot = snapshotAtDivergence(director.source, step?.seq ?? null)
+    if (snapshot !== null) {
+      const exported = await this.core.exportSnapshot(director.replay.tape.cwd, snapshot, director.copy)
+      if ("kind" in exported) throw new Error(exported.message)
+    }
+    this.write([event("replay.diverged", { workspace: director.copy, snapshot, divergence: divergence.kind })])
+    director.live = true
+    this.probe("replay.diverged")
+    // The copy's own configuration: its checks run there when the turn ends, in the sandbox like its commands.
+    const load = this.core.loadConfig
+    if (load !== null) this.config = await load(director.copy).catch(() => null)
+  }
+
+  /** Records how the replay ended and hands the outcome to whoever started it. Called when its execution is over, however that came about. */
+  private concludeReplay(): void {
+    const director = this.director
+    if (director === null) return
+    this.director = null
+    const replay = director.replay
+    try {
+      const projection = this.projection()
+      // It did not end by itself: an interrupt, a provider failure, a failure of the loop.
+      if (replay.status === "on_tape" || (replay.status === "off_tape" && projection.session.execution !== null) || (replay.status === "off_tape" && !wouldBeDone(projection)))
+        replay.fail(lastFailure(projection) ?? REPLAY_TEXT.interrupted)
+      const report = replay.report()
+      if (projection.session.replay?.ended === null)
+        this.write([event("replay.ended", { outcome: report.status, reason: report.reason, report: JSON.parse(JSON.stringify(report)) as Json })])
+      const requests = this.store.readRequests(this.id)
+      director.resolve({
+        sessionId: this.id,
+        sourceSessionId: director.sourceId,
+        report,
+        workspace: director.live ? director.copy : null,
+        usage: requests.reduce<Usage | null>((sum, row) => addUsage(sum, row.usage), null),
+        requests: requests.length,
+      })
+    } catch (error) {
+      this.core.report({ kind: "internal_error", sessionId: this.id, message: `the replay's end could not be recorded: ${describe(error)}`, cause: error })
+      director.resolve({ sessionId: this.id, sourceSessionId: director.sourceId, report: replay.report(), workspace: director.live ? director.copy : null, usage: null, requests: 0 })
+    }
+  }
+
   // ---- approval ----
 
   /**
@@ -1938,6 +2827,11 @@ class LiveSession implements EngineSession {
     const known = callFacts(tool, input, context)
     if ("invalid" in known) return { kind: "refuse", output: `Invalid arguments for ${tool.name}: ${known.invalid}\nFix them and call ${tool.name} again.` }
     const facts = known.facts
+    if (tool.delegates === true) {
+      // Nothing to decide here: what the subagent does is decided call by call in its own session.
+      this.decided.set(key, { run: runRecord(this.policy().policy, facts, null), before: [], stop: null })
+      return { kind: "run" }
+    }
     const workspace = realWorkspace(context.cwd)
     const decideNow = (present = this.attended) => {
       const policy = this.policy().policy
@@ -2372,12 +3266,25 @@ class LiveSession implements EngineSession {
    */
   private offeredTools(projection: Projection): readonly AnyTool[] {
     const baseline = projection.baseline
+    const lineage = projection.session.lineage
+    const depth = lineage?.kind === "spawn" ? lineage.depth : 0
     const offered =
       baseline === null
-        ? this.config !== null && this.config.config.verify.mode !== "off"
+        ? // A subagent's turn is not verified (its parent's is), so it has nothing to acknowledge.
+          this.config !== null && this.config.config.verify.mode !== "off" && depth === 0
         : baseline.tools.some((tool) => tool.name === ACKNOWLEDGE_TOOL_NAME)
+    const spawn = this.core.spawn
+    // The tools of spawned work, like the acknowledgement tool, are in the list or not from the first baseline on. A
+    // session at the depth limit is not offered `subagent`: it could only be refused.
+    const spawning =
+      baseline !== null
+        ? [this.core.spawning.subagent, ...this.core.spawning.management].filter((tool) => baseline.tools.some((known) => known.name === tool.name))
+        : spawn === null
+          ? []
+          : [...this.core.spawning.management, ...(depth < spawn.maxDepth ? [this.core.spawning.subagent] : [])]
     // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
-    const tools = [...this.core.tools, ...this.core.history]
+    const own = new Set([this.core.spawning.subagent, ...this.core.spawning.management].map((tool) => tool.name))
+    const tools = [...this.core.tools.filter((tool) => !own.has(tool.name)), ...this.core.history, ...spawning]
     return offered ? [...tools, this.core.acknowledge] : tools
   }
 
@@ -2394,6 +3301,8 @@ class LiveSession implements EngineSession {
   private async snapshots(): Promise<WorkspaceSnapshots | null> {
     const open = this.core.openSnapshots
     if (open === null) return null
+    // A replay's working directory is the recording's until it has a copy of its own: nothing there is recorded or restored.
+    if (this.projection().session.replay !== undefined && this.director?.live !== true) return null
     this.snapshotStore ??= open(this.projection().session.cwd).catch(
       (error: unknown): SnapshotUnavailable => ({ kind: "unavailable", reason: "storage_failed", message: describe(error) }),
     )
@@ -2522,7 +3431,9 @@ class LiveSession implements EngineSession {
    */
   private async gate(run: Run): Promise<GateResult> {
     const signal = run.interrupt.signal
-    const loaded = this.config
+    // A subagent's turn is not verified: its parent's turn is, once the subagent's work is in. (Several subagents
+    // each running the project's whole check suite in one workspace would mostly report each other's half-done work.)
+    const loaded = this.projection().session.lineage?.kind === "spawn" ? null : this.config
     const interrupted = (): StepResult => {
       this.finishInterrupt(run)
       return "done"
@@ -2764,6 +3675,8 @@ class LiveSession implements EngineSession {
     const projection = this.projection()
     if (this.run !== null || this.restoring !== null || projection.session.execution !== null || projection.session.open !== null)
       return Promise.resolve({ kind: "refused", reason: "busy", message: "the session can be reverted only while it is idle" })
+    // A replay's working directory is the recording's, or a throwaway copy: there is nothing of its own to restore.
+    if (projection.session.replay !== undefined) return Promise.resolve({ kind: "refused", reason: "nothing_to_revert", message: "a replay session is not reverted" })
     return this.exclusive(work)
   }
 
@@ -3002,6 +3915,139 @@ class LiveSession implements EngineSession {
     const message = this.projection().messages.findLast((candidate) => candidate.id === messageId)
     if (message?.kind !== "assistant") throw new Error(`step ${messageId} has no assistant message`)
     return message
+  }
+}
+
+/** What `replay.call` records for one call of a replayed step. */
+function replayCall(messageId: MessageId, callId: CallId, match: CallMatch, executed: boolean): NewEvent<"replay.call"> {
+  const base = { messageId, callId, executed }
+  switch (match.kind) {
+    case "matched":
+      return event("replay.call", { ...base, result: match.via === "exact" ? "matched" : "normalised", recorded: { step: match.recordedStep, call: match.recorded.index }, divergence: null })
+    case "dropped":
+      return event("replay.call", { ...base, result: "dropped", recorded: null, divergence: null })
+    case "diverged":
+      return event("replay.call", { ...base, result: "diverged", recorded: null, divergence: match.divergence.kind })
+    case "off_tape":
+      return event("replay.call", { ...base, result: "off_tape", recorded: null, divergence: null })
+  }
+}
+
+/** Whether the session's latest execution ended with the model's answer. */
+function wouldBeDone(projection: Projection): boolean {
+  const last = projection.messages.findLast((message) => message.kind === "assistant" || message.kind === "user" || message.kind === "synthetic")
+  return last?.kind === "assistant" && last.status === "completed" && last.finish !== "tool_calls"
+}
+
+/** Why the session's latest step failed, for a person; `null` when it did not. */
+function lastFailure(projection: Projection): string | null {
+  const last = projection.messages.findLast((message) => message.kind === "assistant")
+  if (last?.kind !== "assistant" || last.status !== "failed" || last.error === null) return null
+  const error = last.error
+  if (error.kind === "provider") return `the provider failed: ${error.error.message}`
+  if (error.kind === "interrupted") return REPLAY_TEXT.interrupted
+  return error.kind === "internal" ? `the harness failed: ${error.message}` : REPLAY_TEXT.crashed
+}
+
+/**
+ * Forks `sourceId` at a step boundary (`Engine.forkSession`). The parent is
+ * read through whatever holds it, never written: every event up to the fork
+ * point is committed and the log is append-only, so the fork's inherited
+ * history is the same whoever writes to the parent meanwhile.
+ */
+async function forkSession(core: Core, sourceId: SessionId, options: ForkOptions): Promise<LiveSession> {
+  const events = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)))
+  let state: Projection | null = null
+  let point: Projection | null = null
+  for (const item of events) {
+    if (options.throughSeq !== undefined && item.seq > options.throughSeq) break
+    state = reduce(state, item)
+    // A boundary: nothing is open, so the history up to here is whole.
+    if (state.session.open === null) point = state
+  }
+  if (state === null || point === null) throw new EngineError("session_not_found", `session ${sourceId} does not exist`)
+  if (options.throughSeq !== undefined && point.lastSeq !== options.throughSeq)
+    throw new EngineError(
+      "invalid_request",
+      `seq ${options.throughSeq} of session ${sourceId} is ${options.throughSeq > state.lastSeq ? "past its end" : "inside a step"}: a session is forked at a step boundary (the nearest one before it is seq ${point.lastSeq})`,
+    )
+  if (point.session.replay !== undefined) throw new EngineError("invalid_request", "a replay session is not forked: replay the recording again instead")
+  const id = core.ids.session()
+  let cwd = point.session.cwd
+  let copied: { readonly snapshot: string | null; readonly from: string } | undefined
+  if (options.workspace !== undefined && options.workspace !== "shared") {
+    const into = resolve(options.workspace.copyTo ?? join(core.dataDir, "workspaces", id))
+    // The workspace as it stands when the fork point is the parent's latest state and nothing works in it; otherwise as it was recorded then.
+    const atEnd = point.lastSeq === events.at(-1)!.seq && point.session.execution === null
+    let snapshot = point.session.workspace.snapshot?.id ?? null
+    if (atEnd && core.openSnapshots !== null) {
+      const store = await core.openSnapshots(cwd).catch(() => null)
+      if (store !== null && !("reason" in store)) snapshot = (await store.take({ session: id })).id
+    }
+    if (snapshot === null)
+      throw new EngineError("invalid_request", `no snapshot of ${cwd} was recorded at seq ${point.lastSeq}, so the fork cannot be given a copy of the workspace as it was then; fork into the same workspace instead`)
+    const exported = await core.exportSnapshot(cwd, snapshot, into)
+    if ("kind" in exported) throw new EngineError("invalid_request", `the workspace could not be copied for the fork: ${exported.message}`)
+    copied = { snapshot, from: cwd }
+    cwd = into
+  }
+  core.probe?.("fork.copied", id)
+  const store = storeErrors(() => core.stores.create(id))
+  const session = new LiveSession(core, id, store)
+  try {
+    session.write([
+      event("session.created", {
+        cwd,
+        title: options.title === undefined ? point.session.title : options.title,
+        lineage: { kind: "fork", parentSessionId: sourceId, throughSeq: point.lastSeq, ...(copied === undefined ? {} : { copied }) },
+        settings: options.settings ?? point.session.settings,
+      }),
+    ])
+  } catch (error) {
+    store.close()
+    throw error
+  }
+  core.sessions.set(id, session)
+  return session
+}
+
+/** Starts the replay of a recorded session (`Engine.replaySession`). */
+async function replaySession(core: Core, sourceId: SessionId, request: ReplayRequest): Promise<ReplayRun> {
+  const all = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)))
+  const source = request.throughSeq === undefined ? all : all.filter((item) => item.seq <= request.throughSeq!)
+  const last = source.at(-1)
+  if (last === undefined) throw new EngineError("session_not_found", `session ${sourceId} has no event to replay`)
+  const policy = request.policy ?? "stop"
+  const prepared = (() => {
+    try {
+      const tape = tapeFromEvents(source)
+      return { tape, ...changedBaseline(source, tape.settings, request) }
+    } catch (error) {
+      throw new EngineError("invalid_request", `session ${sourceId} cannot be replayed: ${describe(error)}`)
+    }
+  })()
+  const id = core.ids.session()
+  const copy = policy === "stop" ? null : resolve(request.workspace ?? join(core.dataDir, "replays", id))
+  if (copy !== null) mkdirSync(copy, { recursive: true })
+  const store = storeErrors(() => core.stores.create(id))
+  const session = new LiveSession(core, id, store)
+  try {
+    session.write([
+      event("session.created", {
+        // Until it leaves the recording a replay works nowhere; then in its copy. The `stop` policy never has one.
+        cwd: copy ?? prepared.tape.cwd,
+        title: `Replay of ${sourceId}`,
+        lineage: { kind: "replay", sourceSessionId: sourceId, throughSeq: last.seq, policy, strict: request.strict === true, changed: prepared.changed },
+        settings: prepared.settings,
+      }),
+    ])
+    core.sessions.set(id, session)
+    const done = session.beginReplay({ sourceId, tape: prepared.tape, source, baseline: prepared.baseline, request, policy, copy })
+    return { session, done }
+  } catch (error) {
+    core.sessions.delete(id)
+    store.close()
+    throw error instanceof EngineError ? error : new EngineError("invalid_request", `session ${sourceId} cannot be replayed: ${describe(error)}`)
   }
 }
 

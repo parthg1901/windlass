@@ -9,7 +9,7 @@
  * Tool-call input and tool progress are told apart by `callId`.
  */
 import type { CallId, MessageId, SessionId } from "../id.ts"
-import type { EventType } from "./durable.ts"
+import type { EventType, StoredEvent } from "./durable.ts"
 
 export type EphemeralEvent =
   /** More of the text the model is writing. */
@@ -70,6 +70,24 @@ export type EphemeralEvent =
       readonly sessionId: SessionId
       readonly kind: "sandbox_unavailable" | "approval_ignored" | "checks_not_run"
       readonly message: string
+    }
+
+  /**
+   * Something happened in a subagent of this session: `event` is a durable
+   * event of the child session `child`, as that session recorded it (its
+   * `sessionId` is the child's). A client shows the child's activity from
+   * these, compactly, and an `approval.requested` among them is a question
+   * of the child's to put to the user, labelled with `title`. Not stored
+   * here: the child's own log is the record.
+   */
+  | {
+      readonly type: "child.event"
+      readonly sessionId: SessionId
+      readonly child: SessionId
+      readonly spawnId: string
+      /** The first line of the child's task. */
+      readonly title: string
+      readonly event: StoredEvent
     }
 
 export type EphemeralEventType = EphemeralEvent["type"]

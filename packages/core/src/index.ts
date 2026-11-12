@@ -36,3 +36,5 @@ export {
   redact,
 } from "./approval/index.ts"
 export { type CommandSandbox, type CommandSandboxOptions, createCommandSandbox, workspacePolicy } from "./sandbox/command.ts"
+export { type ReplayReport, renderReport as renderReplayReport, renderReportJson as renderReplayReportJson } from "./replay/report.ts"
+export type { Divergence, DivergenceKind, MatchStats } from "./replay/match.ts"

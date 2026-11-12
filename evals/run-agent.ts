@@ -37,6 +37,7 @@ const EPHEMERAL: Record<EphemeralEventType, true> = {
   "workspace.changes": true,
   diagnostic: true,
   notice: true,
+  "child.event": true,
 }
 const OUTCOMES = ["success", "error", "not_started", "effect_unknown"] as const satisfies readonly ToolOutcome[]
 

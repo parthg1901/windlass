@@ -121,6 +121,8 @@ export type TapeInput =
       readonly messageId: MessageId
       readonly source: string
       readonly text: string
+      /** The fingerprint the recording stored for the value; `null` when the message says the source is gone. */
+      readonly fingerprint: string | null
     }
   | { readonly kind: "settings"; readonly beforeStep: number; readonly seq: number; readonly settings: SessionSettings }
   | {
@@ -252,7 +254,7 @@ export function tapeFromEvents(events: readonly LogEvent[]): Tape {
         })
         return
       case "instruction.appended":
-        addInput({ kind: "instruction", beforeStep, seq, messageId: item.data.messageId, source: item.data.source, text: item.data.text })
+        addInput({ kind: "instruction", beforeStep, seq, messageId: item.data.messageId, source: item.data.source, text: item.data.text, fingerprint: item.data.fingerprint })
         return
       case "compaction.ended":
         addInput({ kind: "unsupported", beforeStep, seq, what: "compaction" })

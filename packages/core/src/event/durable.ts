@@ -410,9 +410,12 @@ export const durableEvents = {
    * The execution gave up (a non-retryable error, attempts exhausted).
    * Releases the claim. `cause` is `approval` when it was ended because a call
    * needed the user's approval and nobody was there to give it (the
-   * unattended behaviour `stop`); absent for every other failure.
+   * unattended behaviour `stop`), and `replay` when a replay session's
+   * replay ended where the model had not answered (it left the recording, or
+   * the recording itself ends there): not a failure of anything, but the
+   * execution has no answer to end on. Absent for every other failure.
    */
-  "execution.failed": define(1, object({ executionId, message: string, cause: optional(oneOf(["approval"])) })),
+  "execution.failed": define(1, object({ executionId, message: string, cause: optional(oneOf(["approval", "replay"])) })),
   /**
    * An interrupt was asked for: the user cancelled, or the process is shutting
    * down. Written the moment the abort fires, before any tool has stopped, so

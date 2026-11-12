@@ -43,6 +43,35 @@ export interface ReplayWorkspace {
   readonly cwd: string
   /** A tool runtime for that copy. Its `tools` decide each call's effect class. */
   readonly runtime: ToolRuntime
+  /**
+   * Makes the copy ready (restores the recorded workspace into `cwd`).
+   * Called once, right before the first tool runs for real, with the
+   * divergence that left the tape; the tool waits for it.
+   */
+  readonly prepare?: (divergence: Divergence) => Promise<void>
+  /**
+   * Rewrites the argument text of a call that runs for real, so that a path
+   * the model writes as the recording's workspace means the copy. The
+   * matcher never sees the result: matching compares what the model wrote.
+   */
+  readonly mapArguments?: (argumentsText: string) => string
+  /** Rewrites the output of a call that ran for real, so that the copy is named as the recording's workspace again. */
+  readonly mapOutput?: (output: string) => string
+}
+
+/** What became of one call of a replayed step. */
+export interface AnsweredCall {
+  readonly outcome: ToolCallOutcome
+  /** The tool ran for real, in the copy. */
+  readonly executed: boolean
+}
+
+/** One replayed step's calls, matched together, each to be answered once. */
+export interface StepPlan {
+  /** How each call relates to the tape, in call order. */
+  readonly matches: readonly CallMatch[]
+  /** Answers call `index`: from the tape, or by the policy. */
+  readonly run: (index: number, call: ToolCall, hooks?: RunHooks) => Promise<AnsweredCall>
 }
 
 export type ReplayPolicy =
@@ -87,6 +116,12 @@ export interface EndOfStep {
 export interface Replay {
   readonly tape: Tape
   readonly executor: ToolRuntime
+  /**
+   * Matches all calls of the step in progress against the tape, once, and
+   * returns how to answer each. What a step loop uses when it starts its
+   * calls one by one (with its own hooks per call) instead of `executor.runAll`.
+   */
+  readonly beginStep: (calls: readonly ToolCall[]) => StepPlan
   readonly status: ReplayStatus
   readonly divergence: Divergence | null
   /** Inputs to add to history before the next step. Stops with `unsupported` at a compaction, revert or refusal. */
@@ -137,24 +172,45 @@ export function createReplay(tape: Tape, options: ReplayOptions): Replay {
     options.onStop?.(divergence)
   }
 
-  const answer = async (match: CallMatch, call: ToolCall, hooks: RunHooks): Promise<ToolCallOutcome> => {
-    if (match.kind === "matched") return recordedOutcome(match.recorded, toolNames, hooks)
-    if (match.kind === "dropped") return notStarted(DROPPED_OUTPUT)
+  let prepared: Promise<void> | null = null
+  const answer = async (match: CallMatch, call: ToolCall, hooks: RunHooks): Promise<AnsweredCall> => {
+    const from = (outcome: ToolCallOutcome): AnsweredCall => ({ outcome, executed: false })
+    if (match.kind === "matched") return from(recordedOutcome(match.recorded, toolNames, hooks))
+    if (match.kind === "dropped") return from(notStarted(DROPPED_OUTPUT))
     if (match.kind === "diverged" && policy.kind === "stop") stop(match.divergence)
     if (match.kind === "diverged" && status === "on_tape") status = "off_tape"
-    if (status === "stopped" || workspace === null) return notStarted(STOPPED_OUTPUT)
+    if (status === "stopped" || workspace === null) return from(notStarted(STOPPED_OUTPUT))
     const effect = effects.get(call.name) ?? null
     // An unknown tool is refused by the runtime before anything runs.
     if (policy.kind === "execute-read-only" && effect !== null && effect !== "read") {
       stop(matcher.divergence!, `${call.name} has effect ${effect}; execute-read-only runs only read tools`)
-      return notStarted(STOPPED_OUTPUT)
+      return from(notStarted(STOPPED_OUTPUT))
     }
-    if (effect !== null && effect !== "read" && namesOriginal(call.argumentsText, tape.cwd)) {
+    const argumentsText = workspace.mapArguments?.(call.argumentsText) ?? call.argumentsText
+    if (effect !== null && effect !== "read" && namesOriginal(argumentsText, tape.cwd)) {
       stop(matcher.divergence!, `${call.name} names the original workspace ${tape.cwd} in its arguments`)
-      return notStarted(STOPPED_OUTPUT)
+      return from(notStarted(STOPPED_OUTPUT))
+    }
+    if (workspace.prepare !== undefined) {
+      prepared ??= workspace.prepare(matcher.divergence!)
+      try {
+        await prepared
+      } catch (error) {
+        stop(matcher.divergence!, `the copy of the workspace could not be made: ${error instanceof Error ? error.message : String(error)}`)
+        return from(notStarted(STOPPED_OUTPUT))
+      }
+      // A stop may have been asked for while the copy was made.
+      if ((status as ReplayStatus) === "stopped") return from(notStarted(STOPPED_OUTPUT))
     }
     counts.executed += 1
-    return workspace.runtime.run({ ...call, context: { ...call.context, cwd: workspace.cwd } }, hooks)
+    const outcome = await workspace.runtime.run({ ...call, argumentsText, context: { ...call.context, cwd: workspace.cwd } }, hooks)
+    const mapped = workspace.mapOutput === undefined ? outcome : ({ ...outcome, settlement: { ...outcome.settlement, output: workspace.mapOutput(outcome.settlement.output) } } as ToolCallOutcome)
+    return { outcome: mapped, executed: outcome.kind === "completed" || outcome.kind === "crashed" }
+  }
+
+  const beginStep = (calls: readonly ToolCall[]): StepPlan => {
+    const matches = matcher.matchCalls(calls.map((call) => ({ name: call.name, argumentsText: call.argumentsText })))
+    return { matches, run: (index, call, hooks = {}) => answer(matches[index]!, call, hooks) }
   }
 
   const snapshot = (): ReplaySnapshot => ({
@@ -170,13 +226,14 @@ export function createReplay(tape: Tape, options: ReplayOptions): Replay {
     unsupported,
   })
 
-  const runAll: ToolRuntime["runAll"] = (calls, hooks = {}) => {
-    const matches = matcher.matchCalls(calls.map((call) => ({ name: call.name, argumentsText: call.argumentsText })))
-    return Promise.all(matches.map((match, index) => answer(match, calls[index]!, { onStart: () => hooks.onStart?.(index) })))
+  const runAll: ToolRuntime["runAll"] = async (calls, hooks = {}) => {
+    const plan = beginStep(calls)
+    return (await Promise.all(calls.map((call, index) => plan.run(index, call, { onStart: () => hooks.onStart?.(index) })))).map((answered) => answered.outcome)
   }
 
   return {
     tape,
+    beginStep,
     executor: {
       tools: options.tools,
       runAll,

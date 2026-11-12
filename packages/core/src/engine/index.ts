@@ -4,3 +4,12 @@ export * from "./channel.ts"
 export * from "./recovery.ts"
 export * from "./engine.ts"
 export { type ApprovalSetup, environmentSecrets } from "./approval.ts"
+export {
+  type ReplayOutcome,
+  type ReplayRequest,
+  type ReplayRun,
+  DEFAULT_NORMALISERS,
+  REPLAY_TEXT,
+} from "./replay.ts"
+export { type ChildResult, type SpawnSettings, type SubagentInput, BACKGROUND_OUTPUT_TOOL, BACKGROUND_STOP_TOOL, SUBAGENT_TOOL, SUBAGENT_NOTE, childResult } from "./spawn.ts"
+export { type MergeOutcome } from "./worktree.ts"

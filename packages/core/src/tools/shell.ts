@@ -29,6 +29,11 @@ export interface ShellInput {
    * user), and tells the tool how to run through `ToolContext.sandbox`.
    */
   readonly sandbox?: { readonly network?: boolean; readonly write?: readonly string[] }
+  /**
+   * Start the command and return at once with a handle. It keeps running
+   * beside the session's steps; its exit is delivered as a message.
+   */
+  readonly background?: boolean
 }
 
 export interface ShellOptions extends ToolOptions {
@@ -67,19 +72,21 @@ export function shellTool(options: ShellOptions): Tool<ShellInput> {
   return {
     name: "shell",
     description:
-      "Run a shell command in the working directory and return its combined stdout and stderr. stdin is empty. The command is stopped after `timeout` seconds (default 120). Background processes it starts are stopped when it finishes. Long output keeps its beginning and end, and the full output is saved to a file whose path is given. Commands normally run in a sandbox: no network, and writes only inside the working directory and the temp directory ($TMPDIR, which is /tmp on Linux; it is private to this session and the file tools see the same files there). When a command needs more, pass `sandbox`.",
+      "Run a shell command in the working directory and return its combined stdout and stderr. stdin is empty. The command is stopped after `timeout` seconds (default 120). Background processes it starts are stopped when it finishes. Long output keeps its beginning and end, and the full output is saved to a file whose path is given. Commands normally run in a sandbox: no network, and writes only inside the working directory and the temp directory ($TMPDIR, which is /tmp on Linux; it is private to this session and the file tools see the same files there). When a command needs more, pass `sandbox`. With `background` the command is started and the call returns at once with a handle: use it for something slow (a long test run, a build, a server) while you do other work. You get a message when it exits, `background_output` shows its output so far and `background_stop` stops it; it has no time limit unless you pass `timeout`, and it is stopped when the session is interrupted or closed.",
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string", minLength: 1, description: "The command line, run with `-c`." },
         timeout: { type: "integer", minimum: 1, maximum: MAX_TIMEOUT_SECONDS, description: "Seconds before the command is stopped. Default 120." },
         sandbox: escalationSchema,
+        background: { type: "boolean", description: "Start it in the background and return a handle at once." },
       },
       required: ["command"],
       additionalProperties: false,
     },
     effect: "exec",
-    execute: (input, context) => runShell(input, context, { shell, graceMs, spillLimit, spillDir: options.spillDir, sandbox: options.sandbox ?? null }),
+    execute: (input, context) =>
+      (input.background === true ? startBackground : runShell)(input, context, { shell, graceMs, spillLimit, spillDir: options.spillDir, sandbox: options.sandbox ?? null }),
   }
 }
 
@@ -158,6 +165,97 @@ async function runShell(
     startedAt,
     spill: { path: spillPath, limit: options.spillLimit },
   })
+}
+
+/**
+ * Starts the command and hands it to the session (`ToolContext.background`),
+ * which records it, stops it with the session and tells the model when it
+ * exits. It is spawned exactly as a foreground command is: the same sandbox
+ * decision, its own process group, the guard that kills the group when this
+ * process dies. Its output goes to a log file as it arrives.
+ */
+async function startBackground(
+  input: ShellInput,
+  context: ToolContext,
+  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string; sandbox: CommandSandbox | null },
+): Promise<ToolResult> {
+  const refused = (output: string): ToolResult => ({ status: "error", output, truncation: null, attachments: [], display: { exitCode: null, signal: null, timedOut: false, interrupted: null } })
+  const host = context.background
+  if (host === undefined) return refused("Background commands are not available here. Run the command without `background`.")
+  if (interruptReasonOf(context.signal) !== null) return refused("The command was not started: the session was interrupted.")
+  const wrapped = context.sandbox === undefined || context.sandbox === null ? null : sandboxed(input.command, context, options)
+  if (wrapped !== null && "refused" in wrapped) return refused(`Could not start the command: ${wrapped.refused}`)
+
+  const spillDir = context.spillDir ?? options.spillDir
+  await mkdir(spillDir, { recursive: true })
+  const logPath = join(spillDir, `shell-bg-${safeName(context.messageId)}-${safeName(context.callId)}.log`)
+  const sink = Bun.file(logPath).writer()
+  // No progress events: the call is over long before the command prints anything.
+  const buffer = createOutputBuffer(sink, options.spillLimit, { ...context, progress: () => {} })
+  const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })
+  if (spawned instanceof Error) {
+    await buffer.close()
+    await unlink(logPath).catch(() => {})
+    return refused(`Could not start the command: ${spawned.message}`)
+  }
+  const child = spawned
+  const group = createGroup(child.pid, options.graceMs)
+  const guard = guardGroup(child.pid)
+  const startedAt = performance.now()
+  let timedOut = false
+  const timer =
+    input.timeout === undefined
+      ? null
+      : setTimeout(() => {
+          timedOut = true
+          void group.terminate()
+        }, input.timeout * 1000)
+  const readers = [child.stdout.getReader(), child.stderr.getReader()]
+  const pumps = Promise.all(
+    readers.map(async (reader) => {
+      for (;;) {
+        const next = await reader.read().catch(() => ({ done: true as const, value: undefined }))
+        if (next.done) return
+        buffer.append(next.value)
+        // The log is read while the command runs.
+        void sink.flush()
+      }
+    }),
+  )
+  const shown = () => renderBody(buffer, { path: logPath, limit: options.spillLimit }).body
+  const exited = (async () => {
+    const exitCode = await child.exited
+    if (timer !== null) clearTimeout(timer)
+    await group.terminate()
+    guard.release()
+    const drained = await Promise.race([pumps.then(() => true), Bun.sleep(DRAIN_MS).then(() => false)])
+    if (!drained) await Promise.all(readers.map((reader) => reader.cancel().catch(() => {})))
+    await buffer.close()
+    return {
+      exitCode: child.signalCode === null ? exitCode : null,
+      signal: child.signalCode === null ? null : String(child.signalCode),
+      timedOut,
+      durationMs: Math.round(performance.now() - startedAt),
+      output: shown(),
+    }
+  })()
+  const { id } = host.command({
+    command: input.command,
+    logPath,
+    stop: async () => {
+      await group.terminate()
+      await exited
+    },
+    output: shown,
+    exited,
+  })
+  return {
+    status: "success",
+    output: `Started in the background as ${id}. Its output is written to ${logPath}. You will get a message when it exits; meanwhile ${"`background_output`"} shows its output so far and ${"`background_stop`"} stops it.`,
+    truncation: null,
+    attachments: [],
+    display: { background: id, logPath },
+  }
 }
 
 /** What to spawn for a command that runs in the sandbox, or why it cannot. */
@@ -343,23 +441,7 @@ async function finish(run: {
   spill: { path: string; limit: number } | null
 }): Promise<ToolResult> {
   const buffer = run.buffer
-  const capped = buffer !== null && run.spill !== null && !fitsLimits(buffer.totalBytes, buffer.totalLines, BODY_LIMITS)
-  const body =
-    buffer === null || buffer.totalBytes === 0
-      ? ""
-      : capped
-        ? renderCapped(
-            {
-              head: buffer.head(),
-              tail: buffer.tail().bytes,
-              tailAtLineStart: buffer.tail().atLineStart,
-              totalBytes: buffer.totalBytes,
-              totalLines: buffer.totalLines,
-            },
-            { path: run.spill!.path, savedBytes: buffer.spilledBytes },
-            BODY_LIMITS,
-          )
-        : decoder.decode(buffer.head())
+  const { body, capped } = renderBody(buffer, run.spill)
   if (!capped && run.spill !== null) await unlink(run.spill.path).catch(() => {})
   const status = statusLine(run)
   const text = body === "" ? "(no output)" : body
@@ -376,6 +458,18 @@ async function finish(run: {
       interrupted: run.stopReason === "user" || run.stopReason === "shutdown" ? run.stopReason : null,
       durationMs: Math.round(performance.now() - run.startedAt),
     },
+  }
+}
+
+/** What a command printed, as the model is shown it: all of it when it fits, else its beginning and end with the path of the whole. */
+function renderBody(buffer: OutputBuffer | null, spill: { path: string; limit: number } | null): { readonly body: string; readonly capped: boolean } {
+  const capped = buffer !== null && spill !== null && !fitsLimits(buffer.totalBytes, buffer.totalLines, BODY_LIMITS)
+  if (buffer === null || buffer.totalBytes === 0) return { body: "", capped }
+  if (!capped) return { body: decoder.decode(buffer.head()), capped }
+  const tail = buffer.tail()
+  return {
+    body: renderCapped({ head: buffer.head(), tail: tail.bytes, tailAtLineStart: tail.atLineStart, totalBytes: buffer.totalBytes, totalLines: buffer.totalLines }, { path: spill!.path, savedBytes: buffer.spilledBytes }, BODY_LIMITS),
+    capped,
   }
 }
 

@@ -77,6 +77,29 @@ export interface TempDirectory {
   readonly alias: string | null
 }
 
+/** A command a tool started that outlives the tool's call, as it hands it to the session. */
+export interface BackgroundCommand {
+  readonly command: string
+  /** Where its whole output is written as it arrives. */
+  readonly logPath: string | null
+  /** Stops it (the whole process group) and resolves once it is gone. */
+  readonly stop: () => Promise<void>
+  /** Its output so far, capped for the model. */
+  readonly output: () => string
+  /** Resolves when it is gone, however it ended. */
+  readonly exited: Promise<{ readonly exitCode: number | null; readonly signal: string | null; readonly timedOut: boolean; readonly durationMs: number; readonly output: string }>
+}
+
+/**
+ * What a tool is given to start work that outlives its call. The session
+ * records the work durably, stops it when the session is interrupted or
+ * closed, and tells the model when it ends.
+ */
+export interface BackgroundHost {
+  /** Registers a command that was just spawned. Returns the handle the model refers to it by. */
+  readonly command: (work: BackgroundCommand) => { readonly id: string }
+}
+
 /** Everything a tool is given besides its input. */
 export interface ToolContext {
   readonly sessionId: SessionId
@@ -124,6 +147,8 @@ export interface ToolContext {
    * arguments stands for instead of writing the placeholder into the file.
    */
   readonly redact?: (text: string) => readonly RedactedText[]
+  /** For a tool that can start work in the background. Absent where there is no session to own that work. */
+  readonly background?: BackgroundHost
 }
 
 /** Stores bytes under their SHA-256 and returns the reference. The signature of `Store.putBlob`. */
@@ -186,6 +211,15 @@ export interface Tool<Input = Json> extends ToolSpec {
    * session works in. A tool that names no path (a shell command) leaves it out.
    */
   readonly touches?: (input: Input) => readonly string[]
+  /**
+   * The tool hands its work to something that is decided on its own: a
+   * subagent, whose every call goes through the approval layer of its own
+   * session. Such a call needs no decision itself and runs side by side with
+   * the other calls of its step instead of waiting in the line of calls
+   * that can change something. Its effect class still says whether the step
+   * may have changed files.
+   */
+  readonly delegates?: boolean
 }
 
 /**
