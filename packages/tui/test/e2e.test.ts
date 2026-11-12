@@ -195,7 +195,8 @@ describe("against windlass acp with a scripted model", () => {
     await term.waitFor("○ done", { timeoutMs: 20_000 })
     term.type("/new")
     term.keys("Enter")
-    await term.waitFor((frame) => frame.includes(READY) && !frame.includes("write the notes"))
+    // The new session is empty; the note about the one before names it and how to go back.
+    await term.waitFor((frame) => frame.includes(READY) && !frame.includes("› write the notes") && conversation(frame).includes('the one before, "write the notes", is kept: /sessions goes back to it'))
     term.type("/sessions")
     term.keys("Enter")
     const picker = await term.waitFor("+ new session")
