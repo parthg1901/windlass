@@ -26,7 +26,7 @@ import {
   unapprovedText,
   WAKE_CHECK_ANSWERS,
   wakeAddEntry,
-  wakeAddUsageLines,
+  wakeAddFormLines,
   wakeCheckAccess,
   wakeCheckQuestionLines,
   wakeCreatedLines,
@@ -189,7 +189,7 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
 async function addWake(rest: string, session: Session, io: FeatureIo): Promise<void> {
   const out = io.out
   if (session.createWake === undefined) return out.notice("/wakeups add is not available with this engine", "warn")
-  if (rest.trim() === "") return out.lines(wakeAddUsageLines())
+  if (rest.trim() === "") return out.lines(wakeAddFormLines())
   const entry = wakeAddEntry(rest, Date.now())
   if ("problem" in entry) return out.notice(entry.problem, "warn")
   const create = async (run?: WakeRun): Promise<void> => {

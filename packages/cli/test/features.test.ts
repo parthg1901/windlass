@@ -21,8 +21,9 @@ import { createAcpEngine } from "../src/acp-engine.ts"
 import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { Session } from "../src/engine.ts"
 import { FeatureWatch } from "../src/feature-commands.ts"
-import { localTime, mcpApprovedText, mcpNotWaitingText, mcpStateWords, wakeAddEntry, wakeCheckAccess, wakeCheckQuestionLines, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
+import { localTime, mcpApprovedText, mcpNotWaitingText, mcpStateWords, wakeAddEntry, wakeAddFormLines, wakeCheckAccess, wakeCheckQuestionLines, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
 import { successSummary } from "../src/tools.ts"
+import { PrettyRenderer } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
 
@@ -205,6 +206,19 @@ describe("/skills, /wakeups and /memory", () => {
     // What each answer to the check's question lets the command do.
     expect([wakeCheckAccess("s"), wakeCheckAccess("N"), wakeCheckAccess(null), wakeCheckAccess("u"), wakeCheckAccess("w")]).toEqual([{ kind: "sandboxed", network: false, writableRoots: [] }, null, null, { kind: "unsandboxed" }, { kind: "sandboxed", network: true, writableRoots: [] }])
     expect(wakeCheckQuestionLines({ command: "gh run view 123", every: "5m" }).map((line) => line.text).slice(0, 2)).toEqual(["? Run this command every 5m until it exits 0?", "gh run view 123"])
+  })
+
+  test("/wakeups add with nothing after it: each form on a row of its own, what it sets up under it, whatever the width", () => {
+    let out = ""
+    const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false })
+    renderer.printLines(wakeAddFormLines())
+    const rows = out.split("\n")
+    expect(rows).toContain('  /wakeups add check <duration> "<command>" <message>')
+    expect(rows[rows.indexOf("  /wakeups add in <duration> <message>") + 1]).toBe("      once, after a delay: /wakeups add in 20m look at the deploy again")
+    // A description that wraps stays under itself, never under the form.
+    const check = rows.indexOf('  /wakeups add check <duration> "<command>" <message>')
+    expect(rows.slice(check + 1, check + 3)).toEqual(["      runs the command every <duration> and fires once it exits 0 (you are", "      asked how it may run)"])
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(80)
   })
 
   test("/wakeups add at the prompt: each kind is set up and listed, a check's command is asked about first, a webhook's secret is shown once, and the engine's refusal is its sentence", async () => {

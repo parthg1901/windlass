@@ -329,6 +329,19 @@ export function wakeAddUsageLines(): Line[] {
   return [line("Set a wake-up of your own: the agent is told the message when it fires, as a new turn.", "bold"), ...WAKE_ADD_USAGE.map((text) => line(text, "dim", 2))]
 }
 
+/**
+ * The same forms for the line interface: each form on its own row, and what it sets up on the rows under it, so
+ * that on a terminal too narrow for the two side by side the description does not wrap under the form.
+ */
+export function wakeAddFormLines(): Line[] {
+  const forms = WAKE_ADD_USAGE.flatMap((text) => {
+    const at = text.search(/\s{2,}/)
+    if (at === -1) return [line(text, "dim", 2)]
+    return [line(text.slice(0, at), "plain", 2), line(text.slice(at).trim(), "dim", 6)]
+  })
+  return [line("Set a wake-up of your own: the agent is told the message when it fires, as a new turn.", "bold"), ...forms]
+}
+
 /** The question about a check's command, with what each answer lets the command do: asked like any command the agent would run. */
 export function wakeCheckQuestionLines(check: { readonly command: string; readonly every: string }): Line[] {
   return [
