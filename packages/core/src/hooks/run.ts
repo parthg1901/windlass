@@ -5,7 +5,9 @@
  * It goes through the checks' runner (`../verify/run.ts`, i.e. the shell tool), as the wake-up checks do: its own
  * process group, the timeout with SIGTERM then SIGKILL to the group, a guard that kills the group if this process
  * dies, and the output kept as a bounded head and tail however much is printed. A hook planned to run in the
- * sandbox runs there with exactly that access, or not at all.
+ * sandbox runs there with exactly that access, or not at all. Its output is redacted as it arrives, as a check's
+ * and a command's is (`RunCheckOptions.redact`): the file it is written to while the hook runs holds the
+ * placeholders, and so does every part of it that is cut out afterwards, so a cut never leaves half a value.
  *
  * The command is wrapped so that it gets the event on stdin and its stdout can be told from its stderr (the
  * shell tool interleaves them):
@@ -14,17 +16,23 @@
  *   __hook_out="${TMPDIR:-/tmp}/<P>-hook-stdout-$$"
  *   (
  *   <the hook's command>
- *   ) <<'<P>_HOOK_EVENT_<nonce>' >"$__hook_out"      a subshell, so an `exit` in the command ends only it
+ *   ) <<'<P>_HOOK_EVENT_<nonce>' 2>&1 >"$__hook_out"   a subshell, so an `exit` in the command ends only it;
+ *                                                     its stderr goes out on the wrapper's stdout as it is written
  *   <the event JSON, one line>
  *   <P>_HOOK_EVENT_<nonce>
  *   __hook_status=$?
  *   printf '\n%s %s\n' '<marker>' "$(wc -c <"$__hook_out")"   then the first bytes of stdout
+ *   printf '\n%s\n' '<marker>_END'
  *
- * The marker line says the command ran to its end and how much it printed on stdout. A run that exited without
- * it (a syntax error in the command, which bash reports with exit 2) is `could_not_start`, never an answer.
+ * The marker line says the command ran to its end and how much it printed on stdout; the end line says where
+ * that stdout stops. The answer is exactly what lies between them. The hook's stderr is written to the same
+ * pipe as those lines, so it is read before them in the order it was written (two pipes are read in no fixed
+ * order, and stderr read after the marker would be taken for the answer), and a value replaced in the answer
+ * changes its length, so a byte count could not say where it ends. A run that exited without the marker (a syntax
+ * error in the command, which bash reports with exit 2) is `could_not_start`, never an answer.
  */
 import { rm } from "node:fs/promises"
-import { redact } from "../approval/redact.ts"
+import { redact, redactPieces, unfinishedSecret } from "../approval/redact.ts"
 import { createInterrupt, interruptReasonOf } from "../interrupt.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import type { SandboxRun } from "../tool/tool.ts"
@@ -90,14 +98,20 @@ export function createHookRunner(options: HookRunnerOptions): HookRunner {
           ...(options.shell === undefined ? {} : { shell: options.shell }),
           ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
           spillLimitBytes: 4 * 1024 * 1024,
+          // A hook's output is tool output: redacted as it arrives, before it is kept, cut or read back.
+          redact: (value: string) => redactPieces(value, secrets),
+          unfinishedSecret: (value: string) => unfinishedSecret(value, secrets),
           ...(request.sandbox === null ? {} : { sandbox: { sandbox: options.sandbox!, run: request.sandbox, sessionId: request.sessionId } }),
         },
       )
       if (result.output.path !== null) await rm(result.output.path, { force: true })
       const text = decoder.decode(result.output.source.tail)
       const at = text.lastIndexOf(`\n${marker} `)
-      const before = at === -1 ? text : text.slice(0, at)
-      const stderr = redact(before.length > STDERR_KEPT_CHARS ? before.slice(-STDERR_KEPT_CHARS) : before, secrets).text.trim()
+      const endLine = `\n${marker}_END\n`
+      const end = at === -1 ? -1 : text.indexOf(endLine, at)
+      // Everything that is not the answer is for the user: what came before it, and what was read after it.
+      const around = at === -1 ? text : `${text.slice(0, at)}\n${end === -1 ? "" : text.slice(end + endLine.length)}`.trim()
+      const stderr = redact(around.length > STDERR_KEPT_CHARS ? around.slice(-STDERR_KEPT_CHARS) : around, secrets).text.trim()
       switch (result.status) {
         case "interrupted":
           return { kind: "interrupted" }
@@ -108,22 +122,21 @@ export function createHookRunner(options: HookRunnerOptions): HookRunner {
         case "passed":
         case "failed": {
           if (result.exitCode === null) return { kind: "killed", signal: result.signal ?? "unknown", stderr, durationMs: result.durationMs }
-          if (at === -1)
+          if (at === -1 || end === -1)
             return { kind: "could_not_start", message: `the command did not run to its end (exit ${result.exitCode}; a syntax error?)${stderr === "" ? "" : `: ${firstLine(stderr)}`}` }
-          const rest = text.slice(at + marker.length + 2)
-          const newline = rest.indexOf("\n")
-          const stdoutBytes = Number.parseInt(rest.slice(0, newline), 10)
-          // The checks' runner takes off the status line the shell tool appends (`[Exit code 2]`), but leaves the
-          // newline put before it; what was read is at most the bytes the hook printed, up to the read limit.
-          const readBytes = Number.isFinite(stdoutBytes) ? Math.min(stdoutBytes, STDOUT_READ_BYTES) : STDOUT_READ_BYTES
-          const bytes = encoder.encode(rest.slice(newline + 1))
-          // `stream: true` holds back a character the read limit cut in two instead of decoding it as U+FFFD.
-          const stdout = new TextDecoder().decode(bytes.subarray(0, readBytes), { stream: true })
+          const lineEnd = text.indexOf("\n", at + 1)
+          const printed = Number.parseInt(text.slice(at + marker.length + 2, lineEnd), 10)
+          const cut = Number.isFinite(printed) && printed > STDOUT_READ_BYTES
+          // A character the read limit cut in two arrives as U+FFFD: it is the limit's doing, not the hook's.
+          const stdout = redact(cut ? text.slice(lineEnd + 1, end).replace(/\uFFFD+$/, "") : text.slice(lineEnd + 1, end), secrets).text
+          const length = encoder.encode(stdout).length
           return {
             kind: "exited",
             exitCode: result.exitCode,
-            stdout: redact(stdout, secrets).text,
-            stdoutBytes: Number.isFinite(stdoutBytes) ? stdoutBytes : 0,
+            stdout,
+            // How much the hook printed, in the terms of the text given here: a replaced value changes the length, and
+            // only a text the read limit cut is longer than what was read back.
+            stdoutBytes: cut ? Math.max(printed, length + 1) : length,
             stderr,
             durationMs: result.durationMs,
           }
@@ -144,12 +157,13 @@ export function wrap(command: string, event: HookEvent, nonce: string, marker: s
     `__hook_out="\${TMPDIR:-/tmp}/${HOOK_ENV_PREFIX.toLowerCase()}stdout-$$-${nonce.slice(0, 8)}"`,
     "(",
     command,
-    `) <<'${delimiter}' >"$__hook_out"`,
+    `) <<'${delimiter}' 2>&1 >"$__hook_out"`,
     event.stdin,
     delimiter,
     "__hook_status=$?",
     `printf '\\n%s %s\\n' '${marker}' "$(wc -c <"$__hook_out" | tr -d ' ')"`,
     `head -c ${STDOUT_READ_BYTES} "$__hook_out"`,
+    `printf '\\n%s\\n' '${marker}_END'`,
     `rm -f "$__hook_out"`,
     `exit "$__hook_status"`,
     "",

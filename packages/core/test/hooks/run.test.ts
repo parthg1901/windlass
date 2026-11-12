@@ -87,6 +87,21 @@ describe("the answer format, on real processes", () => {
     const { result } = await run(`echo ${secret} >&2; echo "token ${secret}"; exit 2`, { secrets: [secret] })
     expect(JSON.stringify(result)).not.toContain(secret)
   })
+
+  test("its output is redacted as it arrives: a cut never leaves half a value, and a replaced value is not a cut answer", async () => {
+    const secret = "s3cr3t-value-0123456789"
+    // The value sits where the kept end of stderr begins: cut first and redacted afterwards, its second half would stay.
+    const cut = await run(`printf '%s' '${secret}' >&2; head -c 2030 /dev/zero | tr '\\0' x >&2; exit 0`, { secrets: [secret] })
+    expect(JSON.stringify(cut.result)).not.toContain("0123456789")
+    // An answer that holds a value: the placeholder is shorter than the value, and the answer is whole.
+    const { result } = await run(`echo "the token is ${secret}, rotate it"; exit 2`, { secrets: [secret] })
+    if (result.kind !== "exited") throw new Error(`expected an exit, got ${result.kind}`)
+    expect(result.stdout.trim()).toMatch(/^the token is \[REDACTED:[a-z_-]+\], rotate it$/)
+    expect(parseAnswer(result, 2000)).toEqual({ kind: "no", text: result.stdout.trim(), cut: false })
+    // Written in two pieces: a value is replaced once it is whole, in the file the output is kept in while the hook runs too.
+    const pieces = await run(`printf 's3cr3t-value-' >&2; sleep 0.3; printf '0123456789\n' >&2; exit 0`, { secrets: [secret] })
+    expect(JSON.stringify(pieces.result)).not.toContain("0123456789")
+  })
 })
 
 describe("what the hook is given", () => {
