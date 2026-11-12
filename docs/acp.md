@@ -225,6 +225,10 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | A subagent's tool calls, one indented line each | `child.event` in the events |
 | `--models` | `_windlass/models` |
 | `/mcp`, the question about a project's server, a server that failed to start | `_windlass/mcp`, `_windlass/mcp_approve`, `_windlass/mcp_changed` |
+| `/hooks`, the question about a project's hook, how to approve it in a run with nobody to ask | `_windlass/hooks`, `_windlass/hook_approve`, `_windlass/hooks_changed` (and at once after a `diagnostic` of kind `hooks`) |
+| `/lsp`, the question about a project's language server | `_windlass/lsp`, `_windlass/lsp_approve`, `_windlass/lsp_changed` (and at once after a `diagnostic` of kind `lsp`) |
+| A call a hook refused, a note a hook added, a stop hook that sent the agent back, a turn that ended with one unsatisfied | the `hook.ran` events (before the `tool.settled`, the `stop_hook` message or the ending they belong to) and `hooks.unsatisfied` on `execution.succeeded` and `turn.ended`; for other clients `_meta["windlass/hooks"]` on the settled call, a `notice`, and `hooks` in `_windlass/turn` |
+| An edit that got diagnostics: how many, from which server | `tool.settled`'s `diagnostics`; for other clients `_meta["windlass/diagnostics"]` on the settled call |
 | `/skills` | `_windlass/skills` |
 | `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_windlass/wakeups`, `_windlass/wake_cancel`, `_windlass/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
 | `/memory`, `/remember`, `/forget` | `_windlass/memory`, `_windlass/memory_change` |
@@ -316,6 +320,8 @@ do not ask get the standard updates exactly as before, and none of this.
   verification?: object,            // execution.succeeded's verification: { status: "passed", evidence } | { status: "not_needed", unverified?: true }
                                     //   | { status: "not_configured" } | { status: "left_to_parent" }
                                     //   | { status: "unresolved", reason, failing, acknowledgement, evidence }
+  hooks?: { unsatisfied: string[] }, // stop hooks still objected after the agent had been sent back as often as a turn
+                                    //   allows (hooks.maxStopRounds): the turn ended anyway, with these hooks unsatisfied
   message?: string,                 // failed: why
   reason?: "user" | "shutdown",     // interrupted: by whom
   changedFiles: string[] | null,    // also on a replay (from the turn's snapshots); null when no snapshot could tell
@@ -484,7 +490,12 @@ does everything that only reads or copies sessions (`session/list`, `_windlass/e
 **`_windlass/diagnostic`** (notification) `{ sessionId, kind, message }`: something the engine noticed that is
 not part of the log (`prefix_violation`, `internal_error`, `tool_crashed`, `listener_failed`), or about what it
 could not use as configured (`skills`, `mcp`, `wake`, `memory`, `agents`: an agent definition that was skipped or
-is hidden by another, an agent that asks for a looser approval mode than the user's).
+is hidden by another, an agent that asks for a looser approval mode than the user's), or about a hook or a language
+server (`hooks`: a project's hook that is skipped until the user approves it, a hook that could not answer and what
+that means for the call, a turn that ended with a stop hook unsatisfied; `lsp`: a project's server that is not
+started until approved, and why an edit got no diagnostics, said once per server and reason). The last two kinds are
+for the user to read and are no failure of the harness: the `notice` a client that shows notices gets for them is
+titled `Hooks` (severity `warning`) and `Language servers` (severity `info`), not `Internal problem`.
 
 **`_windlass/approval`** (request) `{ sessionId, mode?, unattended?, attended? }` → `{ sessionId, enabled, mode,
 unattended, attended, sandboxUnavailable: { reason, remedy } | null, tainted, taint, ignored }`: how the session's
@@ -560,7 +571,7 @@ load or resume.
 ```
 
 **The session's features.** What the engine runs for a session that a client shows the user: its MCP servers, its
-skills, its wake-ups, and its memory. Every request takes `{ sessionId }` of a session open on this connection; what
+hooks, its language servers, its skills, its wake-ups, and its memory. Every request takes `{ sessionId }` of a session open on this connection; what
 they say is in the engine's own words where it has them.
 
 **`_windlass/mcp`** (request) → `{ sessionId, available, servers }`, and **`_windlass/mcp_changed`**
@@ -574,6 +585,8 @@ servers: {
   state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started",
   transport: "stdio" | "http" | null,
   target: string | null,          // the command with its arguments, or the address
+  argv: string[] | null,          // the command and each argument, one string each; null for an address, and for a
+                                  //   question about a definition the file no longer holds
   tools: number | null,           // once running
   hiddenTools: number,            // hidden by the allow/deny list
   error: string | null,           // failed: why, with the end of its stderr
@@ -585,10 +598,105 @@ servers: {
 
 `not_started`: a file names it and no turn has read the configuration yet (servers start with a turn).
 
+A client that asks the user about a command shows all of it, to its last character, and where each argument ends:
+`quotedCommand(argv)` (`packages/acp/src/extensions.ts`) gives the line, with every argument that is not plain text in
+single quotes, so `bash -c "a b"` reads `bash -c 'a b'` and never `bash -c a b`. The same holds for a language
+server's `argv` and for a hook's `command` (one string, run by the shell as it is).
+
 **`_windlass/mcp_approve`** (request) `{ sessionId, name, fingerprint }` → `{ approved, servers }`: the user starts
 a server the project's configuration names, exactly the definition `fingerprint` identifies (from `question`); it is
 remembered for the project for 30 days and starts at once. `approved: false` when no such server waits (the definition
 changed: ask again).
+
+**`_windlass/hooks`** (request) → `{ sessionId, available, hooks, maxStopRounds, ignored }`, and
+**`_windlass/hooks_changed`** (notification, the same object) whenever what a client shows changed: the
+configuration was read and names hooks, a project's hook waits for the user's approval or was approved, a hook could
+not answer or answers again. The server looks every half second, the first time a moment after the session was
+opened, so a client has the question before the first message. `available: false`: the engine runs no hooks.
+`maxStopRounds` is how often per turn stop hooks may send the agent back; `ignored` is what the project's file asked
+for beyond what the user's allows.
+
+```ts
+hooks: {                           // in the order they run: per point the user's first, then the project's
+  name: string,
+  point: "beforeTool" | "afterTool" | "stop",
+  state: "in_force" | "awaiting_approval" | "failed",
+  command: string,                 // word for word
+  tools: string[] | null,          // the tools it applies to; null: every tool (always for a stop hook)
+  paths: string[] | null,          // the path patterns it applies to; null: any call
+  timeoutSeconds: number,
+  onError: "refuse" | "allow",     // a before hook that cannot answer: the call is refused, or goes through
+  sandbox: boolean,                // false: the user's own hook that asked to run outside the sandbox
+  origin: "user" | "project", file: string | null,   // the file that defines it
+  fingerprint: string,             // exactly this definition: what hook_approve takes
+  error: string | null,            // failed: why it could not answer the last time it ran in this session
+  question: string | null          // awaiting_approval: the engine's question, word for word
+}[]
+```
+
+`awaiting_approval`: the project's file names the hook and the user has not approved this definition; it is skipped
+(the call runs as if the hook were not there) until then. `question` is the whole question as the engine words it:
+a first sentence, the command indented by four spaces, what it applies to and how it runs. `failed`: the hook is
+still run the next time it applies; a later run that answers puts it back `in_force`.
+
+**`_windlass/hook_approve`** (request) `{ sessionId, fingerprint }` → `{ approved, hooks }`: the user allows a hook
+the project's configuration names, exactly the definition `fingerprint` identifies. It is remembered for the project
+for 30 days and the hook runs from the next call it applies to. An edited hook has another fingerprint and waits
+again. `approved: false` when no such hook waits.
+
+**`_windlass/lsp`** (request) → `{ sessionId, available, off, waitMs, servers }`, and **`_windlass/lsp_changed`**
+(notification, the same object) whenever what a client shows changed: a server started, failed, waits for the user's
+approval, or was approved (looked at every half second, like the hooks). `available: false`: the engine offers no
+diagnostics. `off`: a sentence when servers are configured and no edit gets diagnostics (`lsp.enabled: false`,
+`lsp.waitMs: 0`), else `null`. `waitMs`: how long an edit's result may wait; `null` when nothing is configured.
+
+```ts
+servers: {
+  name: string,
+  state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started",
+  command: string,                 // with its arguments
+  argv: string[] | null,           // the command and each argument, one string each (see quotedCommand above)
+  languages: { languageId: string, patterns: string[] }[],   // the files it serves, relative to the working directory
+  processes: { root: string, state: "running" | "starting" | "failed" | "stopped" | "not_started",
+               error: string | null, restarts: number, openDocuments: number }[],   // one per workspace root
+  error: string | null,            // failed or stopped: why
+  origin: "user" | "project" | null, file: string | null,   // the file that defines it
+  question: { fingerprint, subject, details: string[] } | null   // awaiting_approval: the engine's question
+}[]
+```
+
+`not_started`: a server starts when the agent reads or edits a file it serves. A server's `state` is that of the
+process that most needs the user's eye (`failed`, then `starting`, `running`, `stopped`). `failed` is not final: the
+server is started again at a later edit, after a backoff.
+
+**`_windlass/lsp_approve`** (request) `{ sessionId, name, fingerprint }` → `{ approved, servers }`: the user allows a
+language server the project's configuration names or changes, exactly the definition `fingerprint` identifies (from
+`question`). It is remembered for the project for 30 days and the server starts at the next file it serves.
+
+**What a hook did and what the language servers said, for a client without the harness's events.** A client that
+takes the events has `hook.ran` and `tool.settled.diagnostics`. Any other gets, on the settled `tool_call_update`:
+
+```ts
+_meta: {
+  "windlass/outcome": "success" | "error" | "not_started" | "effect_unknown",
+  "windlass/hooks"?: {             // the hooks that refused the call, added a note to its result, or could not answer
+    point: "beforeTool" | "afterTool" | "stop", name: string, origin: "user" | "project",
+    answer: "yes" | "no" | "failed" | "interrupted" | "skipped",   // here only "no" and "failed"
+    failure: string | null,        // failed: why
+    toModel: string | null,        // the hook's own text the model was given: the reason, or the note
+    forUser: string                // what it printed for the user (its stderr), bounded
+  }[],
+  "windlass/diagnostics"?: {       // an edit of a file a language server serves
+    noteAdded: boolean,            // a note with the new diagnostics follows the tool's own output
+    listed: number, omitted: number, waitedMs: number,
+    servers: { name: string, origin: "user" | "project", outcome: string, new: number, preExisting: number, fixed: number }[]
+  }                                // outcome: compared, unchanged, timeout, not_running, crashed, not_approved, interrupted
+}
+```
+
+A stop hook that sends the agent back is a `notice` (`warning`, titled with the hook's name, its text as the
+description) to a client that shows notices; a turn that ends with stop hooks still objecting has `hooks.unsatisfied`
+in `_windlass/turn` and in the prompt response's `_meta`.
 
 **`_windlass/skills`** (request) → `{ sessionId, available, skills: { name, description, path, scope, root }[],
 problems: { path, severity: "skipped" | "shadowed" | "warning", reason }[], roots: { dir, scope }[] }`: the skills of
