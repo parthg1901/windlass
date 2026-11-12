@@ -24,6 +24,7 @@ import { join } from "node:path"
 import { brand } from "../../packages/core/src/brand.ts"
 import { parseConfigFile } from "../../packages/core/src/config/schema.ts"
 import { MCP_START_WAIT_MS } from "../../packages/core/src/engine/mcp.ts"
+import { type McpBridgeBackend, mcpResultSource, mcpSearchTool } from "../../packages/core/src/mcp/bridge.ts"
 import { worktreeBranch } from "../../packages/core/src/engine/worktree.ts"
 import { DEFAULT_CALL_TIMEOUT_SECONDS, DEFAULT_STARTUP_TIMEOUT_SECONDS, MAX_CALL_TIMEOUT_SECONDS, MAX_STARTUP_TIMEOUT_SECONDS } from "../../packages/core/src/mcp/config.ts"
 import { defaultExpiry, parseEntryFile } from "../../packages/core/src/memory/entry.ts"
@@ -190,6 +191,41 @@ describe("configuration", () => {
     expect(skills).toContain(`at most ${MAX_SKILL_BYTES / 1024} KiB`)
     expect(MAX_DEPTH).toBe(3)
     expect(skills).toContain("up to three levels below")
+  })
+})
+
+describe("MCP trust against the code", () => {
+  const page = text["docs/mcp.md"]
+
+  test("a search taints only with text the catalogue never carries (docs/mcp.md, Trust and taint)", async () => {
+    expect(page).toContain("An `mcp_search` result does not taint")
+    expect(page).not.toContain("An `mcp_search` result counts too")
+    const tool = { name: "create_issue", title: null, description: "Create a new issue in a repository.", inputSchema: { type: "object", properties: {} } }
+    const ready = { name: "tracker", transport: "stdio", state: "ready", era: "modern", protocolVersion: null, serverInfo: null, tools: 1, hiddenTools: 0, rejectedTools: [], error: null, retryInMs: null, pid: null }
+    const backend = (more: { instructions?: string; untrusted?: boolean; down?: boolean } = {}) =>
+      ({
+        servers: () => [{ name: "tracker", untrusted: more.untrusted ?? true, instructions: more.instructions ?? null, tools: [tool] }],
+        status: () => [ready, ...(more.down === true ? [{ ...ready, name: "docs", state: "failed", tools: 0, error: "the server process exited with code 1", retryInMs: 5000 }] : [])],
+        call: async () => {
+          throw new Error("a search calls nothing")
+        },
+      }) as unknown as McpBridgeBackend
+    const untrusted = async (given: McpBridgeBackend, input: { query: string; server?: string; includeSchema?: boolean }) => {
+      const result = await mcpSearchTool(() => given).execute(input, {} as never)
+      return { untrusted: mcpResultSource(result.display ?? null)?.untrusted, output: result.output }
+    }
+    // The tools of a server at the default trust, with and without their schemas: not untrusted content.
+    expect((await untrusted(backend(), { query: "issue" })).untrusted).toBe(false)
+    expect((await untrusted(backend(), { query: "issue", includeSchema: true })).untrusted).toBe(false)
+    // The server's own notes, shown when the search names the server, unless the configuration trusts it.
+    expect((await untrusted(backend({ instructions: "Notes." }), { query: "" })).untrusted).toBe(false)
+    expect((await untrusted(backend({ instructions: "Notes." }), { query: "", server: "tracker" })).untrusted).toBe(true)
+    expect((await untrusted(backend({ instructions: "Notes.", untrusted: false }), { query: "", server: "tracker" })).untrusted).toBe(false)
+    // The line about a server that could not start.
+    const down = await untrusted(backend({ down: true }), { query: "" })
+    expect(down.output).toContain("Not available right now: ")
+    expect(down.untrusted).toBe(true)
+    expect(page).toContain("`Not available right now: ...` line")
   })
 })
 

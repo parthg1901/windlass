@@ -152,17 +152,23 @@ text. An image in a result is attached for the model to see.
   shows the arguments that would be sent (`arguments sent: {...}`, cut after 600 characters with how much more there
   is), and `windlass tui` shows them in the dock (`sends: {...}`); the call's row reads `mcp_call <server>/<tool>`. In a one-shot run, with
   nobody to ask, it is refused: `Not run: this call needs the user's approval for using <server>/<tool>, and this run has no one to approve it.`
-  Use `--approval full` (or the interactive mode) to let calls run.
-- With `untrusted: true` (the default), the first result from the server *taints* the session:
+  Use `--approval full` (or the interactive mode) to let calls run. `mcp_search` only reads the list of tools and
+  runs without a question in every mode.
+- With `untrusted: true` (the default), the first result of a call to the server *taints* the session:
 
   ```text
   ⚠ untrusted content:
     Content from the MCP tool <server>/<tool> is in this conversation and may contain instructions aimed at the model. From here on, anything that can send data out asks again, and earlier approvals for it no longer apply. /clear-taint says you trust what is there.
   ```
 
-  An `mcp_search` result counts too, because it quotes the server's descriptions and schemas. From then on even
-  `--approval full` asks before the next MCP call, and in a one-shot run refuses it.
-  [safety.md](safety.md) explains taint; `/clear-taint` ends it.
+  From then on even `--approval full` asks before the next MCP call, and in a one-shot run refuses it: a one-shot
+  run with `--approval full` can search and make its first call to a server at the default trust, and no call
+  after that. [safety.md](safety.md) explains taint; `/clear-taint` ends it.
+- An `mcp_search` result does not taint: the names, descriptions and input schemas it shows are what the catalogue
+  already gave the model, so finding a tool does not change how the call that follows is decided. A search counts
+  only when it carries text the catalogue never does: the server's own notes (shown when the search names one
+  server with `server`, unless that server is `untrusted: false`), or the `Not available right now: ...` line of
+  a server that could not start.
 - `untrusted: false` says you trust the server's output. Its results then taint nothing, and with
   `--approval full` its calls run without asking.
 
