@@ -120,7 +120,9 @@ export class TaintHistory {
           tool,
           effect: began.effect,
           origin: began.run?.origin ?? "builtin",
-          paths: began.run?.paths ?? [],
+          // The paths whose content the result may show. A tool that writes shows none of what was in the file (a line
+          // count, a line number), so writing outside the workspace brings nothing into the conversation; reading does.
+          paths: began.effect === "read" ? (began.run?.paths ?? []) : [],
           networkGranted: began.run?.sandbox?.network ?? false,
         })
         return

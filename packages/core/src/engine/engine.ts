@@ -1884,7 +1884,7 @@ class LiveSession implements EngineSession {
     }
 
     /** The line of calls that can change something: each starts when the one before it has its result. */
-    let line: Promise<void> = Promise.resolve()
+    let line: Promise<void> | null = null
     const running = calls.flatMap((call, index): Promise<void>[] => {
       // Once an interrupt is requested nothing new starts; the call is settled as not started below.
       if (failure.failed || signal.aborted) return []
@@ -1894,8 +1894,11 @@ class LiveSession implements EngineSession {
       const effect = effects.get(call.name)
       // A read changes nothing, and a tool nobody knows is refused before it could: both go at once.
       if (approvals === null || effect === undefined || effect === "read") return [launch(call)]
-      line = line.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
-      return [line]
+      // The first of the line starts here and now, so that with nothing to wait for the calls start in the order written.
+      const previous = line
+      const next: Promise<void> = previous === null ? launch(call) : previous.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
+      line = next
+      return [next]
     })
 
     const all = Promise.all(running)

@@ -376,6 +376,11 @@ export class Harness {
     this.boot()
   }
 
+  /** The data directory of the engines this harness boots. */
+  get dataDir(): string {
+    return this.directory
+  }
+
   /** Opens the store and a fresh engine on it: a process start. */
   boot(): void {
     if (this.alive) throw new Error("the previous process is still alive: kill it or close it first")
