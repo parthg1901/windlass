@@ -278,6 +278,7 @@ is sent as typed. Commands of your own are files: [commands.md](commands.md).
 | `/help` | the commands and keys | the keys and commands |
 | `/undo`, `/redo` | yes | yes |
 | `/diff` | the last turn's changes | the selected step's or turn's, in a reader |
+| `/review` | | the selected turn's changes line by line, to comment on; the comments are sent as one message |
 | `/approval [ask\|auto\|full]` | yes | yes, with a picker |
 | `/clear-taint` | yes | yes |
 | `/agent [name\|none]` | the agents and the one in force; a name switches | yes, with a picker |
@@ -325,6 +326,52 @@ as it is now: those changes and the agent's in it both, while the other files ar
 Undo needs `git` (2.25 or newer) on `PATH`, but the project does not have to be a git repository: snapshots are
 kept in a private git directory per project inside the data directory, and your own repository is never touched. A steer you sent while the agent
 worked counts as a message, so `/undo` goes back past it first.
+
+## Reviewing a turn's changes
+
+In the full-screen interface `/review` opens the changes of a turn to comment on: the latest turn that ended, or
+the one whose ending row is selected (Alt-Up). `r` in the `/diff` reader opens the same view. It lists the changed
+files, then shows each file's patch with the line numbers of the old and the new file, and a cursor on one line.
+
+| Key | What it does |
+|---|---|
+| Up, Down, PageUp, PageDown, Home, End | move the cursor by line, by screenful, to the start or the end |
+| `[`, `]` | to the previous or the next hunk's first changed line |
+| `p`, `n` | to the previous or the next file |
+| `c` or Enter | write a comment on the line under the cursor, or edit the one that is there |
+| `d`, `u` | delete the line's comment; bring the last deleted one back |
+| `s` | show the message for a last look, with room for an overall note; Enter sends it, Esc goes back |
+| Esc or `q` | leave the review |
+
+- While a comment is written, Enter saves it, Alt-Enter (or a `\` at the end of the line) starts a new line and
+  Esc cancels. A comment saved empty is deleted.
+- A comment goes on an added, a removed or an unchanged line, or on a file's own line, where it is about the file
+  as a whole: the way to comment on a binary file, or on one whose patch was left out because the turn's diff is
+  too large. Such a file says what it is under its line.
+- A line with a comment is marked `◆` and shows the comment under it. The first row always has the count
+  (`◆ 2 comments`), and the list of files has each file's.
+
+Sending the review sends one ordinary message, which the conversation shows exactly as the agent gets it:
+
+```
+Review of the changes in turn 2 (the latest turn): 2 comments on 2 files.
+
+Overall: Two small things.
+
+1. README.md, line 1 of the old file (removed)
+   > # demo
+   Keep the short title.
+
+2. notes.md, line 1 (added)
+   > first note
+   Say what this note is for.
+```
+
+A line is numbered in the new file, and a removed line in the old file, which the message says. While the agent
+works the message is delivered like any other you send: into the running turn, or after it in queue mode (Ctrl-T).
+Leaving without sending keeps the comments for that turn until the session is closed, and a line says so;
+`/review` opens them again. A review that was not sent is not stored anywhere. A turn that changed no file, or
+whose diff cannot be had (no snapshot was taken), gets a line saying that instead of an empty view.
 
 ## Compaction and the history tools
 
