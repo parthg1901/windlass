@@ -6425,11 +6425,16 @@ class LiveSession implements EngineSession {
     this.probe("revert.restored")
     const after = await this.snapshot("restore_end")
     const left = [...(result?.kept ?? []), ...open.keep.map((path) => ({ path, reason: "hand_edited" as const }))]
+    // A file the target does not have was removed; every other change wrote one. A client says which, never "restored" for both.
+    const changes = result?.changes ?? []
+    const removed = changes.filter((change) => change.status === "deleted").length
     const restore: RestoreRecord = {
       target: open.target,
       before: open.before,
       after,
-      changed: result?.changes.length ?? 0,
+      written: changes.length - removed,
+      removed,
+      changed: changes.length,
       kept: left.slice(0, KEPT_LIMIT),
       keptOmitted: Math.max(0, left.length - KEPT_LIMIT),
     }

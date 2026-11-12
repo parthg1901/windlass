@@ -603,7 +603,9 @@ is a new version with a decoder for the old one.
   compaction), so a configuration change never changes the list. The tool runtime always has it.
 - *Revert.* `revert()` returns the session to the state before a user message (by default the latest): it looks
   (a dry run of the restore, and which of those files were changed outside the harness's own work since), records
-  the workspace as it is, announces the restore, restores, and records the result with `history.reverted`. Files
+  the workspace as it is, announces the restore, restores, and records the result with `history.reverted`. The
+  record a revert and its undo return and store counts the files the restore wrote (`written`) apart from the ones
+  it removed (`removed`: they did not exist in the snapshot it went back to); `changed` is both. Files
   edited by hand since are never overwritten silently: the default is to stop and report them, and the caller
   chooses to overwrite (the undo point keeps them) or to keep them. A target with no snapshot rewinds the
   conversation only, and says so. `undoRevert()` restores the snapshot taken before the latest revert and puts its

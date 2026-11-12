@@ -166,7 +166,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "revert.started": event("revert.started", { fromSeq: 7, target: "aaa1", before: "bbb2", keep: ["notes.md"] }),
   "history.reverted": event("history.reverted", {
     fromSeq: 7,
-    restore: { target: "aaa1", before: "bbb2", after: "aaa1", changed: 2, kept: [{ path: "notes.md", reason: "hand_edited" }], keptOmitted: 0 },
+    restore: { target: "aaa1", before: "bbb2", after: "aaa1", written: 1, removed: 1, changed: 2, kept: [{ path: "notes.md", reason: "hand_edited" }], keptOmitted: 0 },
   }),
   "revert.undo_started": event("revert.undo_started", { revertSeq: 20, target: "bbb2", before: "aaa1", keep: [] }),
   "history.restored": event("history.restored", { revertSeq: 20, restore: null }),

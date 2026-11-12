@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 9 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 10 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -1425,7 +1425,9 @@ What a restore did to the workspace.
 - `target`: the snapshot that was restored.
 - `before`: the workspace just before the restore. Restoring it undoes the restore.
 - `after`: the workspace just after it; equal to `target` unless something was kept. `null` when it could not be taken.
-- `changed`: how many files the restore wrote or removed.
+- `written`: how many files the restore wrote: created, or given other content, another mode or another type.
+- `removed`: how many files the restore removed: they did not exist in `target`.
+- `changed`: both together, `written + removed`.
 - `kept`: paths the restore left as they were, and why: ignored, in a nested repository or never captured (the snapshot module's reasons), or edited by hand since and kept on request. At most `KEPT_LIMIT` are listed; `keptOmitted` counts the rest.
 
 | Field | Type | Required |
@@ -1433,6 +1435,8 @@ What a restore did to the workspace.
 | `target` | string, not empty | yes |
 | `before` | string, not empty | yes |
 | `after` | string, not empty, or `null` | yes |
+| `written` | integer ≥ 0 | yes |
+| `removed` | integer ≥ 0 | yes |
 | `changed` | integer ≥ 0 | yes |
 | `kept` | list of objects | yes |
 | `kept[].path` | string | yes |

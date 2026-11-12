@@ -255,7 +255,9 @@ export const snapshotUnavailableReason = oneOf(["git_not_found", "git_too_old", 
  * - `target`: the snapshot that was restored.
  * - `before`: the workspace just before the restore. Restoring it undoes the restore.
  * - `after`: the workspace just after it; equal to `target` unless something was kept. `null` when it could not be taken.
- * - `changed`: how many files the restore wrote or removed.
+ * - `written`: how many files the restore wrote: created, or given other content, another mode or another type.
+ * - `removed`: how many files the restore removed: they did not exist in `target`.
+ * - `changed`: both together, `written + removed`.
  * - `kept`: paths the restore left as they were, and why: ignored, in a nested
  *   repository or never captured (the snapshot module's reasons), or edited by
  *   hand since and kept on request. At most `KEPT_LIMIT` are listed; `keptOmitted` counts the rest.
@@ -264,6 +266,8 @@ export const restoreRecord = object({
   target: snapshotId,
   before: snapshotId,
   after: nullable(snapshotId),
+  written: integer(0),
+  removed: integer(0),
   changed: integer(0),
   kept: array(object({ path: string, reason: oneOf(["ignored", "nested_repository", "not_captured", "hand_edited"]) })),
   keptOmitted: integer(0),

@@ -1061,7 +1061,7 @@ export const unresolved = (
 ): VerificationOutcome => ({ status: "unresolved", reason, failing: [CHECK.name], acknowledgement, evidence: evidence(run, "failed", changedFiles) })
 
 /** What a restore did: from `before` to `target`, `changed` files written or removed, nothing kept. */
-export const restore = (target: string, before: string, changed: number): RestoreRecord => ({ target, before, after: target, changed, kept: [], keptOmitted: 0 })
+export const restore = (target: string, before: string, changed: number, removed = 0): RestoreRecord => ({ target, before, after: target, written: changed - removed, removed, changed, kept: [], keptOmitted: 0 })
 export const revertStarted = (fromSeq: number, target: string, before: string) => event("revert.started", { fromSeq, target, before, keep: [] })
 export const historyReverted = (fromSeq: number, record: RestoreRecord | null) => event("history.reverted", { fromSeq, restore: record })
 export const undoStarted = (revertSeq: number, target: string, before: string) => event("revert.undo_started", { revertSeq, target, before, keep: [] })

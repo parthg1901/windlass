@@ -475,7 +475,7 @@ describe("verification, the workspace and reverts", () => {
   })
 
   test("a revert says what was restored and what was kept, and a failed one that nothing changed", () => {
-    const restore = { target: "w0", before: "w1", after: "w0", changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
+    const restore = { target: "w0", before: "w1", after: "w0", written: 3, removed: 0, changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
     expect(lines([event("history.reverted", { fromSeq: 6, restore })])).toEqual([
       "↶ went back · 3 files as they were before the turn · /redo brings it back",
       "  left as they are now, the outside changes and the agent's both: notes.md",
@@ -489,7 +489,7 @@ describe("verification, the workspace and reverts", () => {
   test("/undo and /redo name the turn they take out of the conversation or put back", () => {
     const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
     const turn = (id: string, exe: string, prompt: string) => [said(id, prompt), event("execution.started", { executionId: exe as never }), event("inbox.delivered", { messageId: m(id) }), event("execution.succeeded", { executionId: exe as never, verification: { status: "not_configured" } })]
-    const restore = { target: "w0", before: "w1", after: "w0", changed: 1, kept: [], keptOmitted: 0 }
+    const restore = { target: "w0", before: "w1", after: "w0", written: 1, removed: 0, changed: 1, kept: [], keptOmitted: 0 }
     const history = [...turn("u1", "exe_1", "Write the notes."), ...turn("u2", "exe_2", "Now add a test.")]
     const shown = lines([...history, event("history.reverted", { fromSeq: 7, restore }), event("history.restored", { revertSeq: 9, restore })], 140)
     expect(shown.filter((line) => /^[↶↷]/.test(line))).toEqual([

@@ -51,8 +51,10 @@
  *    output: `tool.cancel_requested`, `watch.started`, `watch.fired` and
  *    `watch.ended` are new, a tool call may carry the request to stop it
  *    (`cancel`), and a running background command the watches set on it.
+ * 10: the record of a restore (`history.reverted`, `history.restored`) says
+ *    how many files it wrote and how many it removed (`written`, `removed`).
  */
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 /**
  * Run on every connection, before anything else.

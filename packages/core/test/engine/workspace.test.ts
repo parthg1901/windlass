@@ -446,6 +446,38 @@ describe("with the real snapshot module and the real tools", () => {
     return { root, workspace, store, provider, engine, diagnostics }
   }
 
+  test("the record of a restore tells the files it wrote from the files it removed, for a revert and for its undo", async () => {
+    const { workspace, store, provider, engine } = project()
+    try {
+      provider.enqueue(
+        [script.toolCall("call_1", "write", { path: "b.txt", content: "new\n" }), script.toolCall("call_2", "write", { path: "c.txt", content: "new too\n" }), script.toolCall("call_3", "edit", { path: "a.txt", old_string: "alpha", new_string: "beta" })],
+        say("Done."),
+      )
+      const session = engine.createSession({ cwd: workspace, settings: { model: "gpt-test", reasoningEffort: null } })
+      session.send("Change things.")
+      await session.settled()
+
+      // Going back removes the two files the turn created and writes the one it edited.
+      const reverted = await session.revert()
+      expect(reverted).toMatchObject({ kind: "reverted", restore: { written: 1, removed: 2, changed: 3 } })
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false)
+      expect(existsSync(join(workspace, "c.txt"))).toBe(false)
+      expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("alpha\n")
+      // The undo writes all three and removes none.
+      const undone = await session.undoRevert()
+      expect(undone).toMatchObject({ kind: "reverted", restore: { written: 3, removed: 0, changed: 3 } })
+      expect(readFileSync(join(workspace, "c.txt"), "utf8")).toBe("new too\n")
+      // What was returned is what the log holds.
+      const stored = store.readEvents(session.id)
+      expect(stored.find((item) => item.type === "history.reverted")!.data).toMatchObject({ restore: reverted.kind === "reverted" ? reverted.restore : null })
+      expect(stored.find((item) => item.type === "history.restored")!.data).toMatchObject({ restore: undone.kind === "reverted" ? undone.restore : null })
+      expectRebuildEqualsLive(store, session.id)
+    } finally {
+      await engine.close()
+      store.close()
+    }
+  })
+
   test("a turn's files are restored by a revert and brought back by its undo, and an ignored file is never touched", async () => {
     const { root, workspace, store, provider, engine, diagnostics } = project()
     try {
@@ -461,7 +493,7 @@ describe("with the real snapshot module and the real tools", () => {
       expect(readFileSync(join(workspace, "b.txt"), "utf8")).toBe("new\n")
 
       const reverted = await session.revert()
-      expect(reverted).toMatchObject({ kind: "reverted", restore: { changed: 2, kept: [] } })
+      expect(reverted).toMatchObject({ kind: "reverted", restore: { written: 1, removed: 1, changed: 2, kept: [] } })
       expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("alpha\n")
       expect(existsSync(join(workspace, "b.txt"))).toBe(false)
       expect(readFileSync(join(workspace, "ignored.log"), "utf8")).toBe("kept whatever happens\nmore\n")
