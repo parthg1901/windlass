@@ -66,6 +66,28 @@ describe("parsing and completing", () => {
   })
 })
 
+describe("arguments a command file has no place for", () => {
+  test("the command's row says which were typed and not used, in the transcript and in a session opened again", async () => {
+    const { session } = await open(220)
+    const expanded = (id: string, typed: string, unused: number[]) => [
+      event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text: "Draft the release notes for version 1.4." }] }),
+      event("command.expanded", { messageId: m(id), name: "release-notes", path: "/work/.claude/commands/release-notes.md", scope: "project", fingerprint: "f".repeat(64), arguments: typed, missing: [], unused, unsupported: [] }),
+    ]
+    session.emit(...expanded("i1", '1.4 extra "two words"', [2, 3]), started(), event("inbox.delivered", { messageId: m("i1") }), ...step("a1"), succeeded({ status: "not_configured" }))
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain('› /release-notes 1.4 extra "two words"')
+    expect(frame).toContain('⚠ arguments 2, 3 ("extra", "two words") were not used: the command file has no place for them, so they are not in the text that was sent')
+    session.emit(...expanded("i2", "1.4 extra", [2]), started("exe_2"), event("inbox.delivered", { messageId: m("i2") }), ...step("a2"), succeeded({ status: "not_configured" }, "exe_2"))
+    await mounted!.settle()
+    expect(flat(await mounted!.frame())).toContain('⚠ argument 2 ("extra") was not used: the command file has no place for it, so it is not in the text that was sent')
+    // Every argument used: nothing is said.
+    session.emit(...expanded("i3", "1.5", []), started("exe_3"), event("inbox.delivered", { messageId: m("i3") }), ...step("a3"), succeeded({ status: "not_configured" }, "exe_3"))
+    await mounted!.settle()
+    expect(flat(await mounted!.frame()).match(/not used/g)).toHaveLength(2)
+  })
+})
+
 describe("in the app", () => {
   test("a command file's name is sent through the engine with what was typed after it; the row says where its text came from", async () => {
     const { backend, session, sent } = await open(220)
