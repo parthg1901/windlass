@@ -60,6 +60,37 @@ test("cancel mid-command: the prompt answers cancelled after the last update, an
   expect(harness.provider.requests).toHaveLength(1)
 })
 
+test("cancel_call stops one running command and nothing else: the turn goes on with what it printed, and a call that is not running says why", async () => {
+  h = await startHarness({
+    responses: [[script.toolCall("call_1", "shell", { command: "echo started; echo $$ > pid.txt; exec sleep 30.4172" })], [script.text("The command was stopped; carrying on.")]],
+  })
+  await h.initialize()
+  const harness = h
+  const ext = <T>(method: string, params: Record<string, unknown>) => harness.connection.agent.request<T>(method, params)
+  const sessionId = await harness.newSession()
+  const turn = harness.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "wait a long time" }] })
+  await pidIn(join(harness.workspace, "pid.txt"))
+  // A call that is not there is not stopped, and the answer says so.
+  expect(await ext(EXT.cancelCall, { sessionId, callId: "call_nope" })).toEqual({ stopped: false, message: "There is no call call_nope in the step in progress. Nothing was stopped." })
+  expect(await ext(EXT.cancelCall, { sessionId, callId: "call_1" })).toEqual({ stopped: true, message: null })
+  // Asked twice: the first request stands.
+  const again = await ext<{ stopped: boolean; message: string | null }>(EXT.cancelCall, { sessionId, callId: "call_1" })
+  expect(again.stopped).toBe(false)
+  // The turn was not interrupted: the model read the result and answered.
+  expect((await turn).stopReason).toBe("end_turn")
+  expect(alive(0)).toBe(false)
+  const finals = harness.of(sessionId, "tool_call_update").filter((update) => "rawOutput" in update) as Record<string, unknown>[]
+  expect(finals.map((update) => [update.status, (update._meta as Record<string, unknown>)[META.outcome]])).toEqual([["failed", "error"]])
+  // What it had printed, and that the user stopped it.
+  expect(JSON.stringify(finals[0]!.content)).toContain("started")
+  expect(JSON.stringify(finals[0]!.content)).toContain("Stopped by the user")
+  expect(harness.provider.requests).toHaveLength(2)
+  expect(JSON.stringify(harness.provider.requests[1])).toContain("Stopped by the user")
+  expect(harness.of(sessionId, "agent_message_chunk").map((update) => (update as { content: { text: string } }).content.text).join("")).toBe("The command was stopped; carrying on.")
+  // With no turn running there is no call to stop.
+  expect(await ext(EXT.cancelCall, { sessionId, callId: "call_1" })).toEqual({ stopped: false, message: "No turn is running, so no call is. Nothing was stopped." })
+})
+
 test("a prompt sent right after a cancel is not withdrawn: it starts the next execution", async () => {
   h = await startHarness({
     responses: [[script.toolCall("call_1", "shell", { command: "echo $$ > pid.txt; exec sleep 30.4172" })], [script.text("Fresh answer.")]],

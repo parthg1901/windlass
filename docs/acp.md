@@ -217,6 +217,7 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | `/clear-taint` | `_windlass/clear_taint` |
 | Exit code 4 (`--unattended stop`) | `execution.failed` with `cause: "approval"` in the events; for other clients the prompt's error with `reason: "approval_required"` |
 | Ctrl-C (first press) | `session/cancel` |
+| `/stop [<number>]` (in the TUI: Ctrl-X on the selected running call): one running tool call is stopped and the turn goes on | `_windlass/cancel_call`; the `tool.cancel_requested` event, then the call's `tool.settled` with what came of it |
 | Exit while working (`/exit`, SIGTERM, Ctrl-C at the prompt, a closed pipe) | `session/close` with `_meta["windlass"].shutdown`, then the connection is closed and `windlass acp` exits |
 | `/undo`, `/redo` | `_windlass/revert`, `_windlass/undo_revert`: a dry run first, then `handEdits: "ask"`; the hand-edit question is `session/request_permission` |
 | The three turn endings and exit code 3 | `execution.succeeded`'s `verification` in the events; for other clients `_windlass/turn` and the prompt response's `_meta` |
@@ -276,7 +277,7 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   notifications: turn endings, state, usage, taint, notices, MCP changes, in arrival order), `send` (steer or queue), `cancel`,
   `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `mcp`, `approveMcp`,
   `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `agents`, `setAgent`, `rename`,
-  `compact`, `commands`, `expandCommand`, `sendCommand`, `close`. `offers(method)` says whether a server (of another version) has a method.
+  `compact`, `commands`, `expandCommand`, `sendCommand`, `cancelCall`, `close`. `offers(method)` says whether a server (of another version) has a method.
 - `fork(params)` (`_windlass/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
   (`_windlass/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
   `_windlass/replay_started` names it, so its `events` are the progress and its `cancel()` ends the replay; the
@@ -492,6 +493,18 @@ no `_windlass/child`. Nothing of it is stored in the parent: the subagent's own 
   event: object               // the subagent's stored event, as in its own log
 }
 ```
+
+**`_windlass/cancel_call`** (request) `{ sessionId, callId, messageId?, childSessionId? }` → `{ stopped: boolean,
+message: string | null }`: the user stops one running tool call and nothing else (`EngineSession.cancelCall`); the
+turn is not interrupted. `callId` is the call as `tool.called` names it; `messageId` is its step (the assistant
+message), and without it the call is looked for in the step in progress; `childSessionId` names a subagent of the
+session whose call it is. With `stopped: true` the request is in the log (`tool.cancel_requested`), and the call
+settles like any running call: a command with what it had printed and a line that says the user stopped it (outcome
+`error`), a subagent call with the subagent's last words, a call that cannot be stopped midway (a read, one write)
+with its ordinary result. The model reads the result in its next request. With `stopped: false` nothing was asked
+of the call and `message` says why in a sentence: no turn runs, the whole turn is being stopped, there is no such
+call in the step in progress, it has not started or already has its result, or it was already asked to stop. A
+client that takes the standard updates sees the call's final `tool_call_update` and nothing else of it.
 
 **`_windlass/withdraw`** (request) `{ sessionId, messageId }` → `{ withdrawn: boolean }`: takes back a message
 that was admitted and not delivered yet (`inbox.cancelled`); `false` when it was delivered or is unknown.

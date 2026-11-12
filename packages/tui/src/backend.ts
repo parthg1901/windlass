@@ -116,6 +116,8 @@ export interface BackendSession {
   sendCommand?(name: string, args: string, delivery: Delivery): Promise<string | null>
   /** Stops the running turn (reason `user`). */
   interrupt(): void
+  /** Stops one running tool call and nothing else: the turn goes on. Resolves with whether the request was taken, and why not. */
+  cancelCall?(target: { readonly messageId: string; readonly callId: string }): Promise<{ readonly stopped: boolean; readonly message: string | null }>
   revert?(options: RevertOptions): Promise<RevertResult>
   undoRevert?(options: RevertOptions): Promise<RevertResult>
   /** Switches the model, the effort or the agent from the next step boundary, or the approval mode from the next tool call. */

@@ -29,7 +29,7 @@ import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
-import { type OutcomeRow, type Row, Transcript, expandable } from "./transcript.ts"
+import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable } from "./transcript.ts"
 import { forkPointOfTurn } from "@windlass/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
@@ -465,6 +465,10 @@ export class App {
       this.mode = this.mode === "steer" ? "queue" : "steer"
       return handled()
     }
+    if (ctrl && name === "x") {
+      void this.stopCall()
+      return handled()
+    }
     if (ctrl && name === "p") {
       this.panelChoice = this.panelVisible() ? "hidden" : "shown"
       this.layout()
@@ -579,6 +583,44 @@ export class App {
     this.say("press Ctrl-D or type /quit to leave")
   }
 
+  /**
+   * The running tool call Ctrl-X would stop: the selected row when it is
+   * one, else the only call that is running. `null` when there is none to
+   * pick: nothing runs, or several do and none is selected.
+   */
+  private stoppable(): ToolRow | null {
+    const selected = this.conversation.selectedRow()
+    if (selected?.kind === "tool" && selected.phase === "running") return selected
+    const running = this.transcript.runningCalls()
+    return selected?.kind === "tool" || running.length !== 1 ? null : running[0]!
+  }
+
+  /**
+   * Ctrl-X: stops one running tool call and nothing else, so the turn goes
+   * on. What came of it is on the call's own row (`■ ... stopped by you`,
+   * with what it had printed; or that it could not be stopped midway and
+   * finished). A request the engine did not take is said with why.
+   */
+  private async stopCall(): Promise<void> {
+    const session = this.session
+    if (session?.cancelCall === undefined) return this.say(`stopping one tool call is not available with this engine (${this.options.backend.label}); Ctrl-C stops the whole turn`, "warn")
+    const row = this.stoppable()
+    if (row === null) {
+      const running = this.transcript.runningCalls().length
+      const selected = this.conversation.selectedRow()
+      if (selected?.kind === "tool") return this.say("the selected tool call is not running, so there is nothing to stop", "warn")
+      return this.say(running === 0 ? "no tool call is running, so there is nothing for Ctrl-X to stop" : `${running} tool calls are running: select one with Alt-Up or Alt-Down, then Ctrl-X stops it (Ctrl-C stops the whole turn)`, "warn")
+    }
+    if (row.stopAsked) return this.say("that call was already asked to stop; it ends once its tool has stopped")
+    try {
+      const result = await session.cancelCall({ messageId: row.messageId, callId: row.callId })
+      if (!result.stopped) this.say(`not stopped: ${result.message ?? "the engine did not take the request"}`, "warn")
+    } catch (error) {
+      this.say(`could not stop the call: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+    this.redraw()
+  }
+
   private remember(text: string): void {
     if (this.history.at(-1) !== text) this.history.push(text)
     if (this.history.length > HISTORY_LIMIT) this.history.shift()
@@ -675,6 +717,8 @@ export class App {
         return this.connection !== "connected" && this.connection !== "starting"
       case "queue":
         return this.transcript.activity.executing
+      case "stop":
+        return session?.cancelCall !== undefined && this.transcript.activity.executing
       default:
         return true
     }
@@ -744,6 +788,9 @@ export class App {
         case "queue":
           if (rest === "") return this.say("/queue needs a message, e.g. /queue then update the changelog", "warn")
           return this.send(rest, this.transcript.activity.executing ? "queue" : "steer")
+        case "stop":
+          if (rest !== "") return this.say("/stop takes nothing after it: it stops the selected running tool call (Alt-Up, Alt-Down), or the only one running", "warn")
+          return await this.stopCall()
         case "undo":
         case "redo":
           return await this.revert(spec.name === "undo")
@@ -973,6 +1020,7 @@ export class App {
       ["PageUp, PageDown, wheel", "scroll; Esc or Ctrl-End follows the output again"],
       ["Alt-Up, Alt-Down", "select a tool call, thought or turn ending"],
       ["Ctrl-O, click", "expand or collapse it (twice on a tool call: its full output)"],
+      ["Ctrl-X", "stop the selected running tool call (or the only one running): the turn goes on"],
       ["Ctrl-P", "show or hide the session panel"],
       ["Shift + drag", "select text with the mouse (most terminals)"],
     ]
@@ -1790,6 +1838,14 @@ export class App {
       })
     }
     const running = this.transcript.activity.executing
+    // A running tool call can be stopped by itself: said while there is one the key would act on.
+    const stoppable = running && this.session?.cancelCall !== undefined ? this.stoppable() : null
+    if (stoppable !== null && !stoppable.stopAsked) {
+      const what = `${stoppable.name || "this call"}${stoppable.arg === "" ? "" : ` ${stoppable.arg}`}`
+      const full = `Ctrl-X stops ${what} only (the turn goes on) · Ctrl-C stops the turn · Enter ${this.mode === "steer" ? "steers" : "queues"}`
+      const brief = "Ctrl-X stop this call · Ctrl-C stop the turn"
+      return [[span(truncate(textWidth(full) <= columns ? full : brief, columns), "dim")]]
+    }
     // The long form when it fits whole, else the short one: a hint is never cut in the middle of a key.
     const [long, short] = running
       ? this.mode === "steer"

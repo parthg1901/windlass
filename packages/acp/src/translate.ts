@@ -367,6 +367,8 @@ export class Translator {
       case "instruction.appended":
       case "inbox.delivery_changed":
       case "execution.interrupt_requested":
+      // The user asked one call to stop: its result, which follows, says what came of it.
+      case "tool.cancel_requested":
       case "session.archived":
       case "session.unarchived":
       case "history.reverted":

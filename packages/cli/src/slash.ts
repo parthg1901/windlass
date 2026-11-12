@@ -62,6 +62,7 @@ export const BUILTIN_COMMANDS: CommandSource = {
     { name: "remember", args: "[--me] <text>", description: "save a note for later sessions (this project; --me: about you, everywhere)", when: "any" },
     { name: "forget", args: "<id>", description: "retract a note: no later session is given it", when: "any" },
     { name: "queue", args: "<message>", description: "while the agent works: hold a message until the turn is done", when: "any" },
+    { name: "stop", args: "[<number>]", description: "while the agent works: stop one running tool call and let the turn go on (with several running it lists them; Ctrl-C stops the whole turn)", when: "any" },
     { name: "help", args: "", description: "these commands and keys", when: "any" },
     { name: "exit", args: "", description: "leave (running work is stopped as a shutdown)", aliases: ["quit"], when: "any" },
   ],

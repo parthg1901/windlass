@@ -41,6 +41,7 @@ import {
   type AgentsResult,
   APPROVAL_META,
   type ApprovalStateResult,
+  type CancelCallResult,
   type ClientCommand,
   type CommandsResult,
   type CompactResult,
@@ -685,6 +686,14 @@ export class ClientSession {
     this.interrupted = abort
     setTimeout(() => this.interrupted === abort && abort(), CANCEL_ANSWER_MS)
     this.link.agent.notify(methods.agent.session.cancel, { sessionId: this.id }).catch(() => {})
+  }
+
+  /**
+   * `<prefix>/cancel_call`: stops one running tool call and nothing else; the turn goes on. `stopped: false` with
+   * the reason when nothing was asked of the call. `childSessionId`: a subagent of the session whose call it is.
+   */
+  cancelCall(target: { readonly callId: string; readonly messageId?: string; readonly childSessionId?: string }): Promise<CancelCallResult> {
+    return this.link.request<CancelCallResult>(EXT.cancelCall, { sessionId: this.id, ...target })
   }
 
   /** `session/set_config_option`: `model`, `effort`, `approval` or `agent`. Resolves with the options as they now are. */

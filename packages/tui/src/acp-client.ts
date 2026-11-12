@@ -174,6 +174,7 @@ class AcpSession implements BackendSession {
   readonly compact?: () => Promise<CompactResult>
   readonly agents?: () => Promise<AgentsResult>
   readonly rename?: (title: string) => Promise<string>
+  readonly cancelCall?: (target: { readonly messageId: string; readonly callId: string }) => Promise<{ readonly stopped: boolean; readonly message: string | null }>
   readonly fork?: (options: { readonly copy: boolean; readonly throughSeq?: number }) => Promise<ForkInfo>
   readonly storedEvents?: (sessionId: string) => Promise<readonly EngineEvent[]>
   readonly commands?: (builtins: readonly ClientCommand[]) => Promise<CommandsResult>
@@ -221,6 +222,7 @@ class AcpSession implements BackendSession {
         const forked = await this.call(() => session.connection.fork({ sessionId: session.id, ...(copy ? { workspace: {} } : {}), ...(throughSeq === undefined ? {} : { throughSeq }) }))
         return { sessionId: forked.sessionId, parentSessionId: forked.parentSessionId, cwd: forked.cwd, copiedFrom: forked.copiedFrom, title: forked.title }
       }
+    if (session.offers(EXT.cancelCall)) this.cancelCall = (target) => this.call(() => session.cancelCall(target))
     if (session.offers(EXT.rename)) this.rename = (title) => this.call(() => session.rename(title))
     if (session.offers(EXT.agents)) this.agents = () => this.call(() => session.agents())
     if (session.offers(EXT.commands) && session.offers(EXT.sendCommand)) {

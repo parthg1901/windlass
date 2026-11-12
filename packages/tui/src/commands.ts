@@ -33,6 +33,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "forget", args: "<id>", description: "retract a note: no later session is given it" },
   { name: "rename", args: "<title>", description: "give the session a title" },
   { name: "queue", args: "<message>", description: "hold a message until the running turn is done" },
+  { name: "stop", args: "", description: "stop the selected running tool call (or the only one running) and let the turn go on (Ctrl-X)" },
   { name: "panel", args: "", description: "show or hide the session panel (Ctrl-P)" },
   { name: "debug", args: "", description: "show or hide events this client does not know" },
   { name: "reconnect", args: "", description: "start the engine again and reopen this session" },

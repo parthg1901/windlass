@@ -74,6 +74,10 @@ const PROMPT_HEAD = 6
 interface Call {
   readonly name: string
   readonly arg: string
+  /** Its number among the calls this turn started, as `/stop` lists and takes them. */
+  number?: number
+  /** The user asked for this one call to stop (`tool.cancel_requested`): its result says what came of it. */
+  stopAsked?: boolean
   /** The call's arguments as the model wrote them (for an MCP call's question: what leaves the machine). */
   readonly input?: string
   startedAt: number | null
@@ -158,6 +162,8 @@ export class PrettyRenderer implements Sink {
   private stop: "hint" | "shown" | null = null
   /** The call whose approval question waits for the user's answer. */
   private asking: string | null = null
+  /** How many calls the turn has started: the number `/stop` names the next one by. */
+  private started = 0
   /** The next text block continues a response that a provider error cut off. */
   private continuing = false
   private status: string | null = null
@@ -478,7 +484,16 @@ export class PrettyRenderer implements Sink {
         if (call !== undefined) call.startedAt = event.time
         else this.calls.set(id, { name: "tool", arg: event.data.callId, startedAt: event.time, after: -1 })
         if (event.data.run !== undefined) this.calls.get(id)!.sandbox = event.data.run.sandbox
+        this.started += 1
+        this.calls.get(id)!.number = this.started
         this.running.add(id)
+        return
+      }
+      case "tool.cancel_requested": {
+        // The user stopped this one call: said at once, and the call's own line says what came of it.
+        const call = this.calls.get(key(event.data.messageId, event.data.callId))
+        if (call !== undefined) call.stopAsked = true
+        this.lineWithArg("info", [seg(`${SYMBOL.stop} `, "yellow"), seg("stopping ", "yellow"), seg(call?.name ?? "the call", "bold"), seg(call === undefined || call.arg === "" ? "" : " ")], call?.arg ?? "", [seg(" · this call only; the turn goes on", "dim")])
         return
       }
       case "tool.settled":
@@ -648,6 +663,7 @@ export class PrettyRenderer implements Sink {
       }
       case "execution.started":
         this.executing = true
+        this.started = 0
         this.cutOff = null
         this.turn = { start: event.time, steps: 0, usage: null, lastError: null, requestId: null }
         return
@@ -929,7 +945,10 @@ export class PrettyRenderer implements Sink {
       for (const line of excerpt(answer, this.width - 4, SUBAGENT_ANSWER_ROWS)) this.line("info", [seg(`    ${line}`, "dim")])
       return
     }
-    const described = describeOutcome(call.name, data)
+    // The user stopped this one call (`/stop`): said as that, not as a failure, with what it had printed under it. A
+    // call that could not be stopped midway finished, and its ordinary result follows with a line that says so.
+    const stopped = call.stopAsked === true && data.outcome !== "success"
+    const described = stopped ? { symbol: SYMBOL.stop, tone: "yellow" as const, text: data.outcome === "effect_unknown" ? "stopped by you · it may have taken effect" : "stopped by you" } : describeOutcome(call.name, data)
     // On a narrow terminal the loop-decided outcomes drop their explanation before the call's argument is cut short.
     const room = this.width - displayWidth(`  ✓ ${call.name} · ${described.text}${suffix([duration])}`)
     const outcome = !adjacent && room < 16 && described.short !== undefined ? { ...described, text: described.short } : described
@@ -941,7 +960,8 @@ export class PrettyRenderer implements Sink {
     else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · ", "dim"), ...tail])
     // A command started in the background: its line above says where its output is, as this machine names the file.
     const background = call.name === "shell" && typeof (data.display as { background?: unknown } | null)?.background === "string"
-    if (!background) for (const detail of detailLines(call.name, data)) this.line("info", [seg(`    ${detail}`, "dim")])
+    if (!background) for (const detail of detailLines(call.name, stopped ? { ...data, outcome: "error" } : data)) this.line("info", [seg(`    ${detail}`, "dim")])
+    if (call.stopAsked === true && !stopped) this.line("info", [seg("    it could not be stopped midway and finished: this is its result", "yellow")])
     this.hookLines(hooks, call.startedAt !== null)
     if (data.truncation !== null) {
       const spill = data.truncation.spillPath
@@ -1253,6 +1273,19 @@ export class PrettyRenderer implements Sink {
       const then = this.options.afterTurn === "exits" ? `${running.length === 1 ? "it is" : "they are"} stopped now that ${brand.binary} exits; the agent is told when the session is next opened` : `the agent is told when ${running.length === 1 ? "it ends" : "each ends"}`
       for (const line of wrap(`◌ ${what} still running (${ids}): ${then}`, this.width - 2)) this.line("summary", [seg(`  ${line}`, "dim")])
     }
+  }
+
+  /**
+   * The tool calls that are running now, oldest first, each with the number
+   * it has in this turn (the order they started in): what `/stop` lists and
+   * stops. A call that was already asked to stop is among them until it has.
+   */
+  runningCalls(): { readonly number: number; readonly messageId: string; readonly callId: string; readonly name: string; readonly arg: string; readonly startedAt: number | null; readonly stopAsked: boolean }[] {
+    return [...this.running].flatMap((id) => {
+      const call = this.calls.get(id)
+      const at = id.indexOf("\u0000")
+      return call === undefined || call.number === undefined ? [] : [{ number: call.number, messageId: id.slice(0, at), callId: id.slice(at + 1), name: call.name, arg: call.arg, startedAt: call.startedAt, stopAsked: call.stopAsked === true }]
+    })
   }
 
   /** Background work still running, by ID: what leaving stops. */

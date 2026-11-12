@@ -32,7 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { AgentsResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
+import type { AgentsResult, CancelCallResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
 import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
@@ -252,6 +252,11 @@ export interface Session {
   sendCommand?(name: string, args: string, options?: SendOptions): Promise<MessageId | null>
   /** Asks the running execution to stop with reason `user`. A no-op when nothing runs. */
   interrupt(): void
+  /**
+   * `/stop`: stops one running tool call and nothing else; the turn goes on, and the call's result says what
+   * came of it. Resolves with whether the request was taken, and why not when it was not.
+   */
+  cancelCall?(target: { readonly messageId: MessageId; readonly callId: CallId }): Promise<CancelCallResult>
   /** `/undo`: goes back to before a user message (the latest by default), files and conversation. Only while idle. */
   revert?(options?: SessionRevertOptions): Promise<RevertResult>
   /** `/redo`: undoes the latest revert. Only while idle. */

@@ -102,6 +102,8 @@ export const EXT = {
   commands: `${prefix}/commands`,
   /** Request `{ sessionId, name, args, builtins? }` → `ExpandCommandResult`: what `/name args` would send, without sending it. */
   expandCommand: `${prefix}/expand_command`,
+  /** Request `CancelCallParams` → `CancelCallResult`: the user stops one running tool call and nothing else; the turn goes on. */
+  cancelCall: `${prefix}/cancel_call`,
   /** Request `SendCommandParams` → `SendCommandResult`: `/name args` expanded and admitted as the user's message, recorded as that command's (`command.expanded`). Answers once admitted; refused, with the sentence to show, when nothing was sent. */
   sendCommand: `${prefix}/send_command`,
 } as const
@@ -836,6 +838,30 @@ export type CompactResult =
  */
 export function quotedCommand(argv: readonly string[]): string {
   return argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" ")
+}
+
+/** Params of `<prefix>/cancel_call`. */
+export interface CancelCallParams {
+  readonly sessionId: string
+  /** The call, as `tool.called` names it. */
+  readonly callId: string
+  /** The step it belongs to (the assistant message), when the client has it: without it the call is looked for in the step in progress. */
+  readonly messageId?: string
+  /** A subagent of the session whose call it is. */
+  readonly childSessionId?: string
+}
+
+/**
+ * Result of `<prefix>/cancel_call`. `stopped: true`: the request was taken
+ * (`tool.cancel_requested` is in the log) and the call settles like any
+ * running call: a command with what it had printed and a line that says the
+ * user stopped it, a call that cannot be stopped midway (a read, one write)
+ * with its ordinary result. `stopped: false`: nothing was asked of the call,
+ * and `message` says why in a sentence.
+ */
+export interface CancelCallResult {
+  readonly stopped: boolean
+  readonly message: string | null
 }
 
 /** A file of a revert plan (`RevertPlan.changes`), as far as the hand-edit question needs it. */

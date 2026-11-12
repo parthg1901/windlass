@@ -33,6 +33,7 @@
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@windlass/acp/client"
 import {
   type AgentsResult,
+  type CancelCallResult,
   type ClientCommand,
   type CommandsResult,
   type CompactResult,
@@ -287,6 +288,10 @@ class AcpSession implements Session {
 
   interrupt(): void {
     this.session.cancel()
+  }
+
+  cancelCall(target: { readonly messageId: MessageId; readonly callId: CallId }): Promise<CancelCallResult> {
+    return this.feature(EXT.cancelCall, () => this.session.cancelCall(target))
   }
 
   revert(options: SessionRevertOptions = {}): Promise<RevertResult> {

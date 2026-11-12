@@ -51,6 +51,7 @@ import {
 } from "@agentclientprotocol/sdk"
 import {
   type AgentListing,
+  type CallId,
   EngineError,
   type EngineEvent,
   type EngineSession,
@@ -85,6 +86,7 @@ import { compareReplay, renderComparison } from "../../core/src/replay/effects.t
 import {
   type AgentsResult,
   APPROVAL_META,
+  type CancelCallResult,
   type ApprovalRequestMeta,
   type ApprovalStateResult,
   type ClientCommand,
@@ -179,7 +181,7 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged, EXT.hooksChanged, EXT.lspChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /**
@@ -266,6 +268,9 @@ function buildAgent(state: ConnectionState): AgentApp {
         maxSteps: stepLimit(params.maxSteps),
         builtins: clientCommands(params.builtins),
       }),
+    )
+    .onRequest(EXT.cancelCall, parseObject, ({ params }) =>
+      state.cancelCall(requireString(params, "sessionId"), { callId: requireString(params, "callId"), messageId: optionalString(params, "messageId"), childSessionId: optionalString(params, "childSessionId") }),
     )
     .onRequest(EXT.memory, parseObject, ({ params }) => memoryState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.memoryChange, parseObject, ({ params }) => {
@@ -589,6 +594,39 @@ class ConnectionState {
 
   cancel(sessionId: string): void {
     this.views.get(sessionId)?.cancel()
+  }
+
+  /**
+   * `_<ns>/cancel_call`: the user stops one running tool call and nothing
+   * else (`EngineSession.cancelCall`); the turn goes on, and the call
+   * settles like any running call, with a result that says what came of
+   * it. When the engine does not take the request, why is said from what
+   * the log holds about the call.
+   */
+  cancelCall(sessionId: string, target: { readonly callId: string; readonly messageId: string | undefined; readonly childSessionId: string | undefined }): CancelCallResult {
+    const session = this.requireView(sessionId).session
+    const stopped = this.engineErrors(() =>
+      session.cancelCall({
+        callId: target.callId as CallId,
+        ...(target.messageId === undefined ? {} : { messageId: target.messageId as MessageId }),
+        ...(target.childSessionId === undefined ? {} : { sessionId: target.childSessionId as SessionId }),
+      }),
+    )
+    if (stopped) return { stopped: true, message: null }
+    // A subagent's call is in the subagent's own log, which this session does not hold.
+    if (target.childSessionId !== undefined) return { stopped: false, message: "That call of the subagent is not running, or the subagent has ended. Nothing was stopped." }
+    const projection = session.projection()
+    const execution = projection.session.execution
+    if (execution === null || execution.status !== "running") return { stopped: false, message: "No turn is running, so no call is. Nothing was stopped." }
+    if (execution.interrupting !== null) return { stopped: false, message: "The whole turn is being stopped, which stops every call in it." }
+    const part = projection.messages
+      .flatMap((message) => (message.kind === "assistant" && (target.messageId === undefined || message.id === target.messageId) ? message.parts : []))
+      .findLast((candidate) => candidate.type === "tool_call" && candidate.callId === target.callId)
+    if (part?.type !== "tool_call") return { stopped: false, message: `There is no call ${target.callId} in the step in progress. Nothing was stopped.` }
+    if (part.cancel !== undefined && part.state.status === "running") return { stopped: false, message: "That call was already asked to stop; it ends once its tool has stopped." }
+    if (part.state.status === "running") return { stopped: false, message: "That call cannot be stopped from here (it is answered from a recording, or its tool has already come back). Nothing was stopped." }
+    if (part.state.status === "pending") return { stopped: false, message: "That call has not started yet, so there is nothing to stop; Ctrl-C stops the whole turn." }
+    return { stopped: false, message: "That call already has its result. Nothing was stopped." }
   }
 
   /** `_<ns>/steer` and `_<ns>/queue`: admit input without waiting for the turn. */

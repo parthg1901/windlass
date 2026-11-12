@@ -162,6 +162,8 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
       if (reason !== null) lines.push(...clip(wrapLine([span(`${INDENT}${reason}`)], columns, [span(INDENT)]), HOOK_TEXT_ROWS))
     }
     else if (row.phase === "settled" && row.outcome === "error") for (const detail of detailLines(row.name, settledData(row)).slice(-3)) lines.push([span(`${INDENT}${truncate(detail, columns - INDENT.length)}`, "dim")])
+    // A call that cannot be stopped midway (a read, one write) finished after the user asked it to stop.
+    if (row.stopAsked && row.phase === "settled" && row.outcome === "success") lines.push([span(`${INDENT}it could not be stopped midway and finished: this is its result`, "warn")])
     lines.push(...hookLines(row, columns))
     return lines
   }
@@ -279,6 +281,8 @@ function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[]
       return fit([span("▸ ", "accent"), name, span(row.arg === "" ? "" : " ")], [span(" · waiting to run", "dim")])
     case "running": {
       const elapsed = row.runningSince === null ? "" : ` · ${formatDuration(Math.max(0, context.now - row.runningSince))}`
+      // Asked to stop by the user (this call only): it says so until its tool has stopped.
+      if (row.stopAsked) return fit([span("■ ", "warn"), name, span(row.arg === "" ? "" : " ")], [...sandboxMark(row), span(` · stopping${elapsed}`, "warn")])
       return fit([span("⋯ ", "accent"), name, span(row.arg === "" ? "" : " ")], [...sandboxMark(row), span(` · running${elapsed}`, "dim")])
     }
     case "settled": {
@@ -319,6 +323,8 @@ function approvalMark(row: ToolRow): Span[] {
 function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: string } {
   const data = settledData(row)
   const approval = row.approval
+  // The user stopped this one call and the turn went on: not a failure, and what it had printed is under the row.
+  if (row.stopAsked && row.outcome !== "success") return { symbol: "■", role: "warn", text: row.outcome === "effect_unknown" ? "stopped by you · it may have taken effect" : "stopped by you" }
   if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: "not allowed by you" }
   if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: approval.refusal.head }
   if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }

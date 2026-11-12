@@ -15,7 +15,7 @@
 import { appendFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import type { CommandsResult } from "@windlass/acp/extensions"
-import { brand, versionLine, versionString } from "@windlass/core"
+import { type CallId, type MessageId, brand, versionLine, versionString } from "@windlass/core"
 import { agentLines, compactText, taskLines, tasksProgress } from "./agents.ts"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
@@ -525,6 +525,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
           case "remember":
           case "forget":
             return void runFeatureCommand(name as FeatureCommand, found.rest, session, context.features)
+          case "stop":
+            return void stopCall(session, renderer, found.rest, control.running)
           case "queue":
             if (found.rest === "") return renderer.notice("/queue needs a message, e.g. /queue then update the changelog", "warn")
             // With nothing running there is nothing to queue behind: a queued message is a prompt.
@@ -714,6 +716,42 @@ async function compactNow(session: Session, renderer: PrettyRenderer): Promise<v
     if (said !== null) renderer.notice(said.text, said.tone)
   } catch (error) {
     renderer.notice(`/compact failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+  }
+}
+
+/**
+ * `/stop [<number>]`: stops one running tool call and nothing else, so the
+ * turn goes on. With one call running it is that one; with several they
+ * are listed, each with the number it has in this turn, and `/stop
+ * <number>` stops one. What came of it is the call's own line (`■ ...
+ * stopped by you`, with what it had printed); a request the engine did not
+ * take is said with why.
+ */
+async function stopCall(session: Session, renderer: PrettyRenderer, rest: string, working: boolean): Promise<void> {
+  if (session.cancelCall === undefined) return renderer.notice("/stop is not available with this engine", "warn")
+  const running = renderer.runningCalls()
+  const word = rest.trim()
+  const listed = (): Line[] => [
+    { text: `Running tool calls (${running.length}): /stop <number> stops one and the turn goes on; Ctrl-C stops the whole turn`, tone: "dim" },
+    ...running.map((call): Line => ({ text: `${call.number}  ${call.name}${call.arg === "" ? "" : ` ${call.arg}`}${call.startedAt === null ? "" : ` · ${formatDuration(Math.max(0, Date.now() - call.startedAt))}`}${call.stopAsked ? " · stopping" : ""}`, tone: "plain", indent: 2 })),
+  ]
+  if (running.length === 0) return renderer.notice(working ? "no tool call is running right now, so there is nothing for /stop to stop; Ctrl-C stops the whole turn" : "nothing is running, so there is nothing to stop")
+  let chosen = running[0]!
+  if (word === "") {
+    if (running.length > 1) return renderer.printLines(listed())
+  } else {
+    const found = /^\d+$/.test(word) ? running.find((call) => call.number === Number(word)) : undefined
+    if (found === undefined) {
+      renderer.notice(/^\d+$/.test(word) ? `call ${word} is not running (it has its result, or there is none with that number)` : "/stop takes the number of a running tool call, or nothing when one is running", "warn")
+      return renderer.printLines(listed())
+    }
+    chosen = found
+  }
+  try {
+    const result = await session.cancelCall({ messageId: chosen.messageId as MessageId, callId: chosen.callId as CallId })
+    if (!result.stopped) renderer.notice(`not stopped: ${result.message ?? "the engine did not take the request"}`, "warn")
+  } catch (error) {
+    renderer.notice(`/stop failed: ${error instanceof Error ? error.message : String(error)}`, "error")
   }
 }
 

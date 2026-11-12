@@ -70,6 +70,9 @@ export interface ToolRow extends RowBase {
   readonly kind: "tool"
   readonly key: string
   readonly messageId: string
+  readonly callId: string
+  /** The user asked for this one call to stop while it ran (`tool.cancel_requested`): its result says what came of it. */
+  stopAsked: boolean
   name: string
   input: string
   arg: string
@@ -421,6 +424,11 @@ export class Transcript {
     return true
   }
 
+  /** The tool calls that are running now, oldest first: what the key that stops one call can act on. */
+  runningCalls(): ToolRow[] {
+    return this.rows.filter((row): row is ToolRow => row.kind === "tool" && row.phase === "running")
+  }
+
   /**
    * The model's task list as it stands: what its latest `todo` call that
    * succeeded and was not undone left, from the events (so a session opened
@@ -574,6 +582,12 @@ export class Transcript {
           row.runningSince = this.now()
           if (run !== undefined) row.sandbox = run.sandbox
         })
+        return
+      }
+      case "tool.cancel_requested": {
+        // The user stopped this one call: its row says so until it settles, and then what came of it.
+        const row = this.tools.get(key(event.data.messageId, event.data.callId))
+        if (row !== undefined) this.touch(row, () => (row.stopAsked = true))
         return
       }
       case "hook.ran": {
@@ -1030,6 +1044,8 @@ export class Transcript {
         kind: "tool",
         key: key(messageId, callId),
         messageId,
+        callId,
+        stopAsked: false,
         name,
         input,
         arg: input === "" ? "" : oneLine(callArgument(name, input)),
