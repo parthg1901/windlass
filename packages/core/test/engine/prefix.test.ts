@@ -181,7 +181,7 @@ describe("verification and revert keep the prefix property", () => {
       expect(verdicts(h)).toEqual(["first", "extension", "extension", "extension", "extension", "break:revert", "extension"])
       // The report is where the third request grew: it is the last item, after the answer it responds to.
       const third = h.provider.requests[2]!
-      expect(third.input.slice(0, h.provider.requests[1]!.input.length)).toEqual(h.provider.requests[1]!.input)
+      expect(third.input.slice(0, h.provider.requests[1]!.input.length)).toEqual([...h.provider.requests[1]!.input])
       expect(JSON.stringify(third.input.at(-1))).toContain('<harness origin=\\"check_report\\">')
       // The loop's own runtime check agreed: it reported nothing.
       expect(h.diagnostics).toEqual([])
