@@ -141,3 +141,10 @@ Reading a result:
 - Under heavy load (five agents on two cores: load average 15 to 20) tests time out at the default 5 s. Re-run a timeout alone, or with `--timeout 60000`, before believing it.
 - prefixlens is a separate repository that may be changing under you: a failing `packages/core/test/trace/export.test.ts` can mean the sibling checkout moved (its trace format, how it records images), not that the harness broke. Check `git -C ../prefixlens log` first.
 
+## Client commands for MCP, skills, wake-ups and memory (2026-11-12)
+
+- A scripted `LH_ACP_SCRIPT` response without a `usage` item records no model call (the TUI panel then says "no model call yet").
+- A background command's log is named in the tool output by the sandbox's path (`/tmp/.spill/...`); the path on the host is `spawn.started.data.work.logPath`, and the clients print that one.
+- Approvals of a project's MCP server are kept under `XDG_DATA_HOME`, so a fresh data directory asks again. A one-prompt run cannot approve: it prints how (`/mcp approve <name>` in an interactive run).
+- At a load average above 10 the killed-CLI subprocess test, the undo/redo test and the TUI crash test have each timed out and then passed alone. Re-run a failing file alone before treating it as a failure.
+
