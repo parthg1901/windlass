@@ -211,6 +211,8 @@ describe("stop", () => {
     expect(decideStop({ verdicts: [{ hook: clean, answer: no("x") }], roundsSent: 3, maxRounds: 3 })).toEqual({
       kind: "end_unsatisfied",
       hooks: [clean],
+      // What it said this last time, which nobody is sent back with.
+      objections: [{ hook: clean, text: "x" }],
       failed: [],
       notice: 'The turn ended although the stop hook "clean" still objected: the agent was sent back 3 times already, the most a turn allows.',
     })

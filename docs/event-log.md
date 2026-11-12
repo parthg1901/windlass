@@ -320,8 +320,7 @@ The turn in progress has its answer and the verification gate let it end, but a 
 | Field | Type | Required |
 | --- | --- | --- |
 | `verification` | [verificationOutcome](#verificationoutcome) | yes |
-| `hooks` | object | may be absent |
-| `hooks.unsatisfied` | list of string, not empty | yes |
+| `hooks` | [hookEnding](#hookending) | may be absent |
 
 ### `synthetic.appended`
 
@@ -367,8 +366,7 @@ The session ran until it had nothing left to do: the inbox is empty and the mode
 | --- | --- | --- |
 | `executionId` | string, not empty | yes |
 | `verification` | [verificationOutcome](#verificationoutcome) | yes |
-| `hooks` | object | may be absent |
-| `hooks.unsatisfied` | list of string, not empty | yes |
+| `hooks` | [hookEnding](#hookending) | may be absent |
 
 ### `execution.failed`
 
@@ -1185,6 +1183,19 @@ One of these, told apart by `kind`:
 | `tool` | string, not empty | yes |
 
 Declared in `packages/core/src/approval/grants.ts`.
+
+### `hookEnding`
+
+What stop hooks left behind when a turn ended although they still objected: the names of the hooks that were not satisfied (`hooks/`). The turn had been sent back as often as it may be (`maxStopRounds`), so it ended anyway, and a client shows that as its own kind of ending, beside what the gate found. `objections` is what each of them said this last time, in the order they ran, at most the length a stop hook's message may have (`text` is empty for a hook that gave no reason). It was sent to nobody: the `hook.ran` of that round has `toModel: null`, and this is where the ending has the hook's words from, for the user.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `unsatisfied` | list of string, not empty | yes |
+| `objections` | list of objects | yes |
+| `objections[].hook` | string, not empty | yes |
+| `objections[].text` | string | yes |
+
+Declared in `packages/core/src/event/durable.ts`.
 
 ### `instructionDetail`
 

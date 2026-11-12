@@ -52,7 +52,7 @@
  * as the same objects, so `projectionChanges` can find what to write.
  */
 import { AGENT_KEY } from "../agents/use.ts"
-import { type StepError, type StoredEvent, HARNESS_ORIGIN, WATCH_LIMITS } from "../event/durable.ts"
+import { type HookEnding, type StepError, type StoredEvent, HARNESS_ORIGIN, WATCH_LIMITS } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
 import { sumUsage } from "../provider/usage.ts"
@@ -329,11 +329,14 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       latest === undefined || (latest.kind === "assistant" && latest.status === "completed" && latest.finish !== "tool_calls")
     )
   }
-  /** An ending that names stop hooks names at least one, each once. */
-  const unsatisfied = (hooks: { readonly unsatisfied: readonly string[] } | undefined) => {
+  /** An ending that names stop hooks names at least one, each once, and has what each of them said, and nobody else's words. */
+  const unsatisfied = (hooks: HookEnding | undefined) => {
     if (hooks === undefined) return
     if (hooks.unsatisfied.length === 0) fail("invalid_transition", "an ending names the stop hooks that were not satisfied only when there is one")
     if (new Set(hooks.unsatisfied).size !== hooks.unsatisfied.length) fail("invalid_transition", "an ending names each stop hook that was not satisfied once")
+    const spoke = new Set(hooks.objections.map((objection) => objection.hook))
+    if (spoke.size !== hooks.unsatisfied.length || hooks.unsatisfied.some((name) => !spoke.has(name)))
+      fail("invalid_transition", "an ending carries what each stop hook that was not satisfied said, and only theirs")
   }
   const unused = (id: MessageId) => {
     if (state.messages.some((message) => message.id === id) || state.inbox.some((item) => item.messageId === id))

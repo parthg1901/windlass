@@ -5883,7 +5883,8 @@ class LiveSession implements EngineSession {
         return "continue"
       }
       if (decision.kind === "end_unsatisfied") {
-        unsatisfied = { unsatisfied: [...new Set(decision.hooks.map((hook) => hook.name))] }
+        // What they said this last time is sent to nobody; the ending carries it, so that a client can say why the turn ended this way.
+        unsatisfied = { unsatisfied: [...new Set(decision.hooks.map((hook) => hook.name))], objections: decision.objections.map(({ hook, text }) => ({ hook: hook.name, text })) }
         this.core.report({ kind: "hooks", sessionId: this.id, message: decision.notice })
       }
     }

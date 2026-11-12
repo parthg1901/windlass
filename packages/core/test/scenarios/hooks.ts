@@ -115,7 +115,7 @@ export const STOP_MESSAGE = sentBack.message
 export const stopHookSendsBack: Scenario = {
   title: "A stop hook sends the model back, and at its bound the turn ends with the hook unsatisfied",
   description:
-    "The user's configuration has a stop hook and allows it one round per turn (`maxStopRounds: 1`). When the model has answered and the verification gate says the turn may end, the stop hooks are asked. The hook objects: its message is appended as a harness message (origin `stop_hook`), with the hook's record, in one append, and the model is sent back, exactly as a check report sends it back. The message must be answered: the execution cannot end on it. When the model stops again the hook is asked again and still objects, but the turn has been sent back as often as it may be (the rounds are counted from the stop messages in the log, so a restart counts the same): the turn ends, and its ending says which hooks were not satisfied (`hooks.unsatisfied`), next to what the gate found. The hook's second answer sent nobody back, so it reached the user and not the model. A stop hook never loops, and one that cannot answer lets the turn end.",
+    "The user's configuration has a stop hook and allows it one round per turn (`maxStopRounds: 1`). When the model has answered and the verification gate says the turn may end, the stop hooks are asked. The hook objects: its message is appended as a harness message (origin `stop_hook`), with the hook's record, in one append, and the model is sent back, exactly as a check report sends it back. The message must be answered: the execution cannot end on it. When the model stops again the hook is asked again and still objects, but the turn has been sent back as often as it may be (the rounds are counted from the stop messages in the log, so a restart counts the same): the turn ends, and its ending says which hooks were not satisfied (`hooks.unsatisfied`) and what each of them said this last time (`hooks.objections`), next to what the gate found. The hook's second answer sent nobody back, so it reached the user and not the model: its record has no text for the model, and the ending is where a client reads the hook's words. A stop hook never loops, and one that cannot answer lets the turn end.",
   provider: "step 1 answers; the hook exits 2 with its message; step 2 answers; the hook exits 2 again",
   features: { hooks: SCRATCH_HOOKS },
   phases: [
@@ -132,11 +132,13 @@ export const stopHookSendsBack: Scenario = {
       rejects: [
         { event: succeededUnsatisfied([]), code: "invalid_transition", why: "an ending names the stop hooks that were not satisfied only when there is one" },
         { event: succeededUnsatisfied(["no-scratch", "no-scratch"]), code: "invalid_transition", why: "an ending names each unsatisfied stop hook once" },
+        { event: succeededUnsatisfied(["no-scratch"], SCRATCH_REASON, "exe_1", []), code: "invalid_transition", why: "an ending carries what each unsatisfied stop hook said" },
+        { event: succeededUnsatisfied(["no-scratch"], SCRATCH_REASON, "exe_1", ["no-scratch", "another"]), code: "invalid_transition", why: "an ending carries the words of the unsatisfied stop hooks only" },
       ],
     },
     {
       label: "the hook still objects, at its bound: the turn ends and says so",
-      events: [hookRan(SCRATCH, null, "no"), succeededUnsatisfied(["no-scratch"])],
+      events: [hookRan(SCRATCH, null, "no"), succeededUnsatisfied(["no-scratch"], SCRATCH_REASON)],
       expect: { ui: [{ id: "u1" }, { id: "a1" }, { id: "s1" }, { id: "a2", status: "completed" }], history: ["u1", "a1", "s1", "a2"], execution: null },
       rejects: [{ event: hookRan(SCRATCH, null, "yes"), code: "invalid_transition", why: "a hook runs under an execution: there is none" }],
     },

@@ -311,9 +311,12 @@ export type VerificationOutcome = Infer<typeof verificationOutcome>
 /**
  * What stop hooks left behind when a turn ended although they still objected: the names of the hooks that were
  * not satisfied (`hooks/`). The turn had been sent back as often as it may be (`maxStopRounds`), so it ended
- * anyway, and a client shows that as its own kind of ending, beside what the gate found.
+ * anyway, and a client shows that as its own kind of ending, beside what the gate found. `objections` is what
+ * each of them said this last time, in the order they ran, at most the length a stop hook's message may have
+ * (`text` is empty for a hook that gave no reason). It was sent to nobody: the `hook.ran` of that round has
+ * `toModel: null`, and this is where the ending has the hook's words from, for the user.
  */
-export const hookEnding = object({ unsatisfied: array(nonEmptyString) })
+export const hookEnding = object({ unsatisfied: array(nonEmptyString), objections: array(object({ hook: nonEmptyString, text: string })) })
 export type HookEnding = Infer<typeof hookEnding>
 
 /**

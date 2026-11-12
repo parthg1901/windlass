@@ -255,7 +255,8 @@ describe("a stop hook", () => {
       // The third answer sent nobody back: it reached the user, never the model.
       ["no", null],
     ])
-    expect(of(h, "execution.succeeded")[0]!.data).toMatchObject({ verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"] } })
+    // The ending has the hook's last words, so a client can say why the turn ended this way.
+    expect(of(h, "execution.succeeded")[0]!.data).toEqual({ executionId: of(h, "execution.started")[0]!.data.executionId, verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"], objections: [{ hook: "no-scratch", text: "SCRATCH.md still exists." }] } })
     expect(said(h, "hooks")).toEqual(['The turn ended although the stop hook "no-scratch" still objected: the agent was sent back 2 times already, the most a turn allows.'])
     expect(h.provider.remaining).toBe(0)
     h.verify()
@@ -297,11 +298,11 @@ describe("a stop hook", () => {
     h.session.send("Tidy up.")
     await h.settled()
     const ended = of(h, "turn.ended")[0]!
-    expect(ended.data).toEqual({ verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"] } })
+    expect(ended.data).toEqual({ verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"], objections: [{ hook: "no-scratch", text: "SCRATCH.md still exists." }] } })
     // The delivery follows the turn's ending at once; the second turn is held by the hook in its own right.
     expect(h.log().find((item) => item.seq === ended.seq + 1)!.type).toBe("inbox.delivered")
     expect(of(h, "synthetic.appended").filter((item) => item.data.origin === HARNESS_ORIGIN.stopHook)).toHaveLength(2)
-    expect(of(h, "execution.succeeded")[0]!.data.hooks).toEqual({ unsatisfied: ["no-scratch"] })
+    expect(of(h, "execution.succeeded")[0]!.data.hooks).toEqual({ unsatisfied: ["no-scratch"], objections: [{ hook: "no-scratch", text: "SCRATCH.md still exists." }] })
     h.verify()
     await h.dispose()
   })

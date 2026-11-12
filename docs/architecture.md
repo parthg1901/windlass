@@ -111,7 +111,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
 | Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `command.expanded` (the message admitted right before it was produced by a slash command: the command's name and file, the fingerprint of the file as it was read, the arguments, the positions that were not given, what was left as text), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
-| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
+| Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` with `hooks.objections`, their last words, when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
 | Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.cancel_requested` (the user asked for this one running call to stop; the turn goes on), `tool.settled` (for an edit a language server was asked about also `diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts) |
@@ -225,7 +225,7 @@ is a new version with a decoder for the old one.
     boundary. A record says `skipped` exactly when the hook did not run for want of the user's approval, and only
     a hook that answered no has text that reached the model. While an interrupt is wound down the records of the
     hooks that had finished are still accepted. An ending names unsatisfied stop hooks only when there is one,
-    each once. The message a stop hook sends the model back with is a harness message like any other: it must be
+    each once, and carries what each of them said and nobody else's words. The message a stop hook sends the model back with is a harness message like any other: it must be
     answered before the execution can end.
   - *Commands.* `command.expanded` names a message of the user's that waits in the inbox and follows its
     admission at once (the two are one append): never a harness component's message, never one admitted earlier,
@@ -1044,7 +1044,9 @@ next turn. Hooks of a point run one after another, the user's first, then the pr
   the turn: the stop hooks are asked. One that objects sends the model back with its message, a harness message of
   origin `stop_hook`, appended with the records and with whatever the gate was about to write (a run's
   `checks.finished`) in one append. The rounds are counted from those messages in the log (`stopRoundsSent`),
-  never kept in memory. At `maxStopRounds` the turn ends anyway: its ending carries `hooks.unsatisfied`, and the
+  never kept in memory. At `maxStopRounds` the turn ends anyway: its ending carries `hooks.unsatisfied` and
+  `hooks.objections` (what each of those hooks said this last time, which was sent to nobody, so the `hook.ran`
+  of that round has no text for the model and the ending is where a client reads the hook's words), and the
   user is told by a `diagnostic` of kind `hooks`. A stop hook that cannot answer lets the turn end. Gate first,
   then hooks: a turn the gate sends back is not asked about, and after a stop hook's round that changed files the
   gate runs again before the hooks do. A subagent's turn runs no stop hooks (its parent's turn does, as with the

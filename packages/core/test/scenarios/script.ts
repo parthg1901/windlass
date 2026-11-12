@@ -455,8 +455,8 @@ export function hookRan(hook: Hook, call: readonly [string, string] | null, answ
 }
 
 /** The execution ends as done although stop hooks still objected: the turn had been sent back as often as it may be. */
-export const succeededUnsatisfied = (unsatisfied: readonly string[], id = "exe_1") =>
-  event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" }, hooks: { unsatisfied: [...unsatisfied] } })
+export const succeededUnsatisfied = (unsatisfied: readonly string[], text = "", id = "exe_1", objections: readonly string[] = [...new Set(unsatisfied)]) =>
+  event("execution.succeeded", { executionId: x(id), verification: { status: "not_configured" }, hooks: { unsatisfied: [...unsatisfied], objections: objections.map((hook) => ({ hook, text })) } })
 
 /** A result with the structured data its tool reported for a client to show (a command's exit code). */
 export const settledWith = (id: string, callId: string, outcome: ToolOutcome, output: string, display: { readonly [key: string]: number | string | null }) =>

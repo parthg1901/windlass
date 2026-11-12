@@ -147,8 +147,12 @@ export type StopDecision =
   | { readonly kind: "end"; readonly failed: readonly Hook[] }
   /** Append `message` (frozen) as a harness message and continue the turn. */
   | { readonly kind: "continue"; readonly hooks: readonly Hook[]; readonly message: string; readonly round: number }
-  /** The bound was reached and these hooks still object: the turn ends and says so. `notice` is for the user. */
-  | { readonly kind: "end_unsatisfied"; readonly hooks: readonly Hook[]; readonly failed: readonly Hook[]; readonly notice: string }
+  /**
+   * The bound was reached and these hooks still object: the turn ends and says so. `notice` is for the user.
+   * `objections` is what each of them said this last time, in the order they ran (the text is empty for a hook
+   * that gave no reason): nobody is sent back with it, so it is the ending's to carry.
+   */
+  | { readonly kind: "end_unsatisfied"; readonly hooks: readonly Hook[]; readonly objections: readonly { readonly hook: Hook; readonly text: string }[]; readonly failed: readonly Hook[]; readonly notice: string }
   | { readonly kind: "interrupted" }
 
 export function decideStop(input: StopInput): StopDecision {
@@ -161,6 +165,7 @@ export function decideStop(input: StopInput): StopDecision {
     return {
       kind: "end_unsatisfied",
       hooks,
+      objections: objecting.map(({ hook, answer }) => ({ hook, text: answer.kind === "no" ? answer.text : "" })),
       failed,
       notice: `The turn ended although ${hooks.length === 1 ? "the stop hook" : "the stop hooks"} ${hooks.map((hook) => `"${hook.name}"`).join(", ")} still objected: the agent was sent back ${input.maxRounds} ${input.maxRounds === 1 ? "time" : "times"} already, the most a turn allows.`,
     }
