@@ -63,6 +63,22 @@ describe("rows from a scripted turn", () => {
     expect(transcript.rows.some((row) => row.kind === "notice" && row.text.some((part) => part.text.includes("prompt cache")))).toBe(true)
   })
 
+  test("what the engine says about the project's configuration marks no call: a server waiting for approval is not a fault of the request", () => {
+    const transcript = new Transcript(() => CLOCK_START)
+    const said = (kind: string) => transcript.apply({ type: "diagnostic", sessionId: "s" as never, kind, message: `about ${kind}` } as never)
+    // Before the first call (at open), and while a call runs.
+    said("mcp")
+    said("skills")
+    for (const item of stamp(findScenario("find-and-fix-a-failing-test")!.scenario)) {
+      transcript.apply(item)
+      if (item.type === "step.started") for (const kind of ["mcp", "hooks", "skills", "memory", "wake", "watch"]) said(kind)
+    }
+    expect(transcript.calls.length).toBeGreaterThan(1)
+    expect(transcript.calls.every((call) => call.diagnostics.length === 0)).toBe(true)
+    // Each is still said on a row of its own.
+    expect(transcript.rows.filter((row) => row.kind === "notice" && row.text.some((part) => part.text.startsWith("about mcp"))).length).toBeGreaterThan(1)
+  })
+
   test("an event this client does not know is a debug row, counted", () => {
     const transcript = new Transcript()
     transcript.apply({ type: "memory.recalled", sessionId: "s", seq: 1, time: 0, v: 1, data: { note: "x" } } as never)

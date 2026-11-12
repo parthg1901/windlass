@@ -487,8 +487,10 @@ export class Transcript {
         }
         const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind === "hooks" ? "hook" : event.kind.replace(/_/g, " ")
         this.notice(SYMBOL.unknown, "warn", [span(`${what}: `, "warn"), span(sanitize(event.message))], [], replay, "work")
-        // A definition that could not be used is about the files, not about a model call, and so is a hook: no call is marked for it.
-        if (event.kind === "agents" || event.kind === "hooks") return
+        // Only what is about a model call or its tools marks a call's bar in the panel. What the engine says about the
+        // project's configuration and the session's features (a server or hook that waits for an approval, a skill
+        // or agent that could not be read, a wake-up, a watch) is said on its row and is not a fault of any request.
+        if (!CALL_DIAGNOSTICS.has(event.kind)) return
         const call = this.activity.call
         if (event.kind !== "prefix_violation" && call !== null) this.callDiagnostics.set(call.messageId, [...(this.callDiagnostics.get(call.messageId) ?? []), event.kind])
         else this.diagnosticsForNext.push(event.kind)
@@ -1432,6 +1434,9 @@ function pathArgument(input: string): string | null {
     return null
   }
 }
+
+/** The diagnostics that are about a model call (its request, its tools, what listened to it): the ones a call's bar is marked for. */
+const CALL_DIAGNOSTICS: ReadonlySet<string> = new Set(["prefix_violation", "internal_error", "tool_crashed", "listener_failed"])
 
 /** Where the user reads what an instruction source told the model. */
 const INSTRUCTION_LISTED: Record<string, string> = { "agent-index": "/agent", skills: "/skills", mcp: "/mcp", memory: "/memory" }
