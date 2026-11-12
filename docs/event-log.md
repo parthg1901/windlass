@@ -161,6 +161,8 @@ A session exists. Always the first event of a session's own log. For a fork, `li
 | `title` | string, or `null` | yes |
 | `lineage` | [lineage](#lineage), or `null` | yes |
 | `settings` | [sessionSettings](#sessionsettings) | yes |
+| `inherited` | object | may be absent |
+| `inherited.taint` | list of [storedHistoryEntry](#storedhistoryentry) | yes |
 
 ### `settings.changed`
 
@@ -1371,6 +1373,58 @@ Declared in `packages/core/src/approval/record.ts`.
 | --- | --- | --- |
 | `network` | boolean | yes |
 | `write` | list of [storedPathFact](#storedpathfact) | yes |
+
+Declared in `packages/core/src/approval/record.ts`.
+
+### `storedHistoryEntry`
+
+One entry of the history taint is folded from (`HistoryEntry` in `taint.ts`), as a fork's `session.created` stores the entries of its inherited history.
+
+One of these, told apart by `kind`:
+
+`kind: "tool_result"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"tool_result"` | yes |
+| `at` | integer ≥ 0 | yes |
+| `tool` | string, not empty | yes |
+| `effect` | one of `"read"`, `"write"`, `"exec"`, `"network"` | yes |
+| `origin` | one of `"builtin"`, `"mcp"` | yes |
+| `paths` | list of [storedPathFact](#storedpathfact) | yes |
+| `networkGranted` | boolean | yes |
+| `untrusted` | boolean, or `null` | may be absent |
+
+`kind: "subagent_result"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"subagent_result"` | yes |
+| `at` | integer ≥ 0 | yes |
+| `session` | string, not empty | yes |
+
+`kind: "untrusted_input"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"untrusted_input"` | yes |
+| `at` | integer ≥ 0 | yes |
+| `wakeId` | string, not empty | yes |
+| `carries` | one of `"webhook_body"`, `"check_output"` | yes |
+
+`kind: "taint_cleared"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"taint_cleared"` | yes |
+| `at` | integer ≥ 0 | yes |
+
+`kind: "compaction"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"compaction"` | yes |
+| `at` | integer ≥ 0 | yes |
 
 Declared in `packages/core/src/approval/record.ts`.
 

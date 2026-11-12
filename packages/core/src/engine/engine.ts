@@ -61,7 +61,7 @@ import type { ApprovalPolicy, ApprovalSection, ResolvedApproval } from "../appro
 import type { CallMatch, Divergence } from "../replay/match.ts"
 import { type Replay, type ReplayWorkspace, createReplay } from "../replay/replay.ts"
 import { type Tape, tapeFromEvents } from "../replay/tape.ts"
-import { type CallRun, type ChoiceId, TaintHistory } from "../approval/record.ts"
+import { type CallRun, type ChoiceId, TaintHistory, inheritableTaint } from "../approval/record.ts"
 import { redact, unfinishedSecret } from "../approval/redact.ts"
 import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
@@ -1067,8 +1067,7 @@ export function createEngine(options: EngineOptions): Engine {
         if (live !== undefined) return runAllowedNow(wake, live.commandsNow())
         // Not open here: what its log says about untrusted content, under the user's own mode.
         try {
-          const history = new TaintHistory()
-          for (const item of core.stores.read(wake.sessionId as SessionId, (store) => store.readEvents(wake.sessionId as SessionId))) history.add(item)
+          const history = core.stores.read(wake.sessionId as SessionId, (store) => taintHistoryOf(store, wake.sessionId as SessionId))
           const policy = effectivePolicy({ file: null, process: core.approvals.user, session: null, project: null }).policy
           return runAllowedNow(wake, { mode: policy.mode, tainted: policy.taint === "enforce" && deriveTaint(history.entries, { untrustedPaths: policy.untrustedPaths }).tainted })
         } catch (error) {
@@ -1302,7 +1301,8 @@ export function createEngine(options: EngineOptions): Engine {
     turnChanges: async (id, range = {}) => {
       const summary = core.stores.get(id)
       if (summary === null) throw new EngineError("session_not_found", `session ${id} does not exist`)
-      const turns = turnRanges(storeErrors(() => core.stores.read(id, (store) => store.readEvents(id)))).slice(-(range.last ?? 50))
+      // A fork whose parent's file is gone has the turns of its own: the inherited ones were the parent's, with the parent's snapshots.
+      const turns = turnRanges(storeErrors(() => core.stores.read(id, (store) => eventsWithoutMissingParent(store, id)))).slice(-(range.last ?? 50))
       // Opened only when a turn has two different snapshots to compare.
       let opened: Promise<WorkspaceSnapshots | null> | null = null
       const snapshots = () =>
@@ -1626,7 +1626,8 @@ class LiveSession implements EngineSession {
   private admitted(messageId: MessageId): boolean {
     const projection = this.projection()
     if (projection.messages.some((message) => message.id === messageId) || projection.inbox.some((item) => item.messageId === messageId)) return true
-    return this.store.readEvents(this.id).some((item) => item.type === "inbox.enqueued" && item.data.messageId === messageId)
+    // A fork looks at its own events: what it inherited of its parent's inbox is the delivered messages, which are its rows.
+    return ownEvents(this.store, this.id).some((item) => item.type === "inbox.enqueued" && item.data.messageId === messageId)
   }
 
   /** Whether the session was opened here only to hand it a wake-up's firing, and nobody else has taken it since. */
@@ -1864,7 +1865,7 @@ class LiveSession implements EngineSession {
       if (outcome === "compacted" && made?.kind === "compaction" && made.status === "completed")
         answer({ kind: "compacted", tokensBefore: made.tokensBefore, tokensAfter: made.tokensAfter ?? 0, source: made.source ?? "model", detail: made.detail })
       else if (outcome === "nothing") answer({ kind: "nothing", message: MANUAL_COMPACTION_TEXT.nothingToRemove })
-      else answer({ kind: "failed", message: run.interrupt.signal.aborted ? MANUAL_COMPACTION_TEXT.interrupted : MANUAL_COMPACTION_TEXT.ended(lastExecutionFailure(this.readEvents()) ?? "the summary could not be had") })
+      else answer({ kind: "failed", message: run.interrupt.signal.aborted ? MANUAL_COMPACTION_TEXT.interrupted : MANUAL_COMPACTION_TEXT.ended(lastExecutionFailure(ownEvents(this.store, this.id)) ?? "the summary could not be had") })
       return outcome
     } catch (error) {
       answer({ kind: "failed", message: MANUAL_COMPACTION_TEXT.ended(describe(error)) })
@@ -2159,7 +2160,7 @@ class LiveSession implements EngineSession {
       // made behind the user's back later: whoever asked is told.
       const unmade = this.compactRequests.splice(0)
       if (unmade.length > 0) {
-        const message = this.closing !== null ? MANUAL_COMPACTION_TEXT.closed : run.interrupt.signal.aborted ? MANUAL_COMPACTION_TEXT.interrupted : MANUAL_COMPACTION_TEXT.ended(lastExecutionFailure(this.store.readEvents(this.id)) ?? "the turn ended first")
+        const message = this.closing !== null ? MANUAL_COMPACTION_TEXT.closed : run.interrupt.signal.aborted ? MANUAL_COMPACTION_TEXT.interrupted : MANUAL_COMPACTION_TEXT.ended(lastExecutionFailure(ownEvents(this.store, this.id)) ?? "the turn ended first")
         for (const resolve of unmade) resolve({ kind: "failed", message })
       }
       this.retain()
@@ -2197,18 +2198,22 @@ class LiveSession implements EngineSession {
       this.announcePolicy()
       return asAgent()
     }
+    // Only what reads the files is a configuration problem. Anything that fails after them (the store, a server
+    // that cannot be attached) is the harness's own failure and is reported as that, in its own words.
+    let loaded: SessionConfig
     try {
-      this.config = await load(this.projection().session.cwd)
-      this.configRead = true
-      this.announcePolicy()
-      // The servers this configuration names are started now, in the background: nothing waits for one here.
-      this.attachMcp()
-      return run.interrupt.signal.aborted ? true : asAgent()
+      loaded = await load(this.projection().session.cwd)
     } catch (error) {
       if (run.interrupt.signal.aborted) this.finishInterrupt(run)
       else this.write([event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.config(describe(error)) })])
       return false
     }
+    this.config = loaded
+    this.configRead = true
+    this.announcePolicy()
+    // The servers this configuration names are started now, in the background: nothing waits for one here.
+    this.attachMcp()
+    return run.interrupt.signal.aborted ? true : asAgent()
   }
 
   /** Works until the execution has its terminal event: succeeded, failed or interrupted. */
@@ -3840,13 +3845,14 @@ class LiveSession implements EngineSession {
     return state.available ? { available: true } : { available: false, reason: state.reason }
   }
 
-  /** The session's taint, derived from its log: the fold of `approval/taint.ts` over every tool result, clearing and compaction in it. */
+  /**
+   * The session's taint, derived from its log: the fold of `approval/taint.ts`
+   * over every tool result, clearing and compaction in it. A fork's log is
+   * its own events, after what its first event carries of the history it
+   * inherited: the parent's file is never read for it.
+   */
   private taint(policy: ApprovalPolicy): TaintState {
-    if (this.taintHistory === null) {
-      const history = new TaintHistory()
-      for (const item of this.store.readEvents(this.id)) history.add(item)
-      this.taintHistory = history
-    }
+    this.taintHistory ??= taintHistoryOf(this.store, this.id)
     return deriveTaint(this.taintHistory.entries, { untrustedPaths: policy.untrustedPaths })
   }
 
@@ -4932,7 +4938,9 @@ class LiveSession implements EngineSession {
     if (target.kind !== "user" || target.excluded !== null) return refused("not_found", `message ${target.id} is not a user message in the model's history`)
     // A target before a compaction is fine: the range then holds that compaction, and model history goes back to
     // what it was before it (which fit the window when the target was delivered).
-    const since = snapshotsSinceDelivery(this.store.readEvents(this.id), target.seq)
+    // A fork has the snapshots of its own events: the ones of the history it inherited are its parent's, so a
+    // revert to before an inherited message rewinds the conversation and restores no file.
+    const since = snapshotsSinceDelivery(ownEvents(this.store, this.id), target.seq)
     const messages = projection.messages.filter((message) => message.seq >= target.seq && message.excluded === null).length
     return this.restoreTo({ kind: "revert", fromSeq: target.seq, messageId: target.id, messages }, since.target, since.timeline, options, since.timeline[0]?.seq ?? target.seq)
   }
@@ -5133,6 +5141,37 @@ class LiveSession implements EngineSession {
   }
 }
 
+/**
+ * A session's own events: for a fork, the ones from its fork point on,
+ * `session.created` first. The events before that are its parent's, in
+ * another file that may be gone; what a fork needs of them at run time was
+ * copied into it when it was made (its message rows, its baseline, the
+ * taint entries in `session.created`), so nothing the loop does reads them.
+ */
+function ownEvents(store: Store, id: SessionId): readonly StoredEvent[] {
+  return store.readEvents(id, { afterSeq: forkOf(store.getSession(id)?.session.lineage ?? null)?.throughSeq ?? 0 })
+}
+
+/** A session's whole log, or, for a fork whose parent's file is gone, the part of it that is the fork's own. */
+function eventsWithoutMissingParent(store: Store, id: SessionId): readonly StoredEvent[] {
+  try {
+    return store.readEvents(id)
+  } catch (error) {
+    if (error instanceof StoreError && error.code === "parent_missing") return ownEvents(store, id)
+    throw error
+  }
+}
+
+/** The history a session's taint is derived from, built from its own events: a fork's begins with what it carries of its parent's. */
+function taintHistoryOf(store: Store, id: SessionId): TaintHistory {
+  const history = new TaintHistory()
+  for (const item of ownEvents(store, id)) {
+    if (item.type === "session.created" && item.data.inherited !== undefined) history.seed(item.data.inherited.taint)
+    history.add(item)
+  }
+  return history
+}
+
 /** Why the latest execution of a log failed, in its own words; `null` when it did not. */
 function lastExecutionFailure(events: readonly StoredEvent[]): string | null {
   const last = events.findLast((item) => item.type === "execution.failed" || item.type === "execution.succeeded" || item.type === "execution.interrupted")
@@ -5258,12 +5297,20 @@ async function forkSession(core: Core, sourceId: SessionId, options: ForkOptions
   const events = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)))
   let state: Projection | null = null
   let point: Projection | null = null
+  // What taint is derived from, folded along: the fork carries the part up to its fork point in its own first event.
+  const taint = new TaintHistory()
+  let entriesAtPoint = 0
   for (const item of events) {
     if (options.throughSeq !== undefined && item.seq > options.throughSeq) break
     state = reduce(state, item)
+    taint.add(item)
     // A boundary: nothing is open, so the history up to here is whole.
-    if (state.session.open === null) point = state
+    if (state.session.open === null) {
+      point = state
+      entriesAtPoint = taint.entries.length
+    }
   }
+  const carried = inheritableTaint(taint.entries.slice(0, entriesAtPoint))
   if (state === null || point === null) throw new EngineError("session_not_found", `session ${sourceId} does not exist`)
   if (options.throughSeq !== undefined && point.lastSeq !== options.throughSeq)
     throw new EngineError(
@@ -5300,6 +5347,8 @@ async function forkSession(core: Core, sourceId: SessionId, options: ForkOptions
         title: options.title === undefined ? point.session.title : options.title,
         lineage: { kind: "fork", parentSessionId: sourceId, throughSeq: point.lastSeq, ...(copied === undefined ? {} : { copied }) },
         settings: options.settings ?? point.session.settings,
+        // Copied, like the messages: the fork decides its calls without its parent's file.
+        ...(carried.length === 0 ? {} : { inherited: { taint: carried } }),
       }),
     ])
   } catch (error) {

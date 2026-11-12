@@ -9,7 +9,7 @@
  * taint fold reads (`taintHistory`), so that taint is a function of the log.
  */
 import { toolEffect } from "../tool/tool.ts"
-import { type Infer, type Validator, array, boolean, integer, literal, nonEmptyString, nullable, object, oneOf, string, variant } from "../validate.ts"
+import { type Infer, type Validator, array, boolean, integer, literal, nonEmptyString, nullable, object, oneOf, optional, string, variant } from "../validate.ts"
 import type { Choice, Question, RunDecision } from "./decide.ts"
 import type { Escalation } from "./escalation.ts"
 import { type Need, grantRule, grantScope } from "./grants.ts"
@@ -80,6 +80,50 @@ export const callRun = object({
 })
 export type CallRun = Infer<typeof callRun>
 
+/**
+ * One entry of the history taint is folded from (`HistoryEntry` in
+ * `taint.ts`), as a fork's `session.created` stores the entries of its
+ * inherited history.
+ */
+export const storedHistoryEntry = variant("kind", {
+  tool_result: object({
+    kind: literal("tool_result"),
+    at: integer(0),
+    tool: nonEmptyString,
+    effect: toolEffect,
+    origin: oneOf(["builtin", "mcp"]),
+    paths: array(storedPathFact),
+    networkGranted: boolean,
+    untrusted: optional(nullable(boolean)),
+  }),
+  subagent_result: object({ kind: literal("subagent_result"), at: integer(0), session: nonEmptyString }),
+  untrusted_input: object({ kind: literal("untrusted_input"), at: integer(0), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) }),
+  taint_cleared: object({ kind: literal("taint_cleared"), at: integer(0) }),
+  compaction: object({ kind: literal("compaction"), at: integer(0) }),
+}) satisfies Validator<HistoryEntry>
+
+/**
+ * What a fork carries of its parent's taint history, so that deciding its
+ * calls never needs the parent's log: the entries since the conversation
+ * was last declared trustworthy that can be a source under some policy.
+ * Left out are the entries that never are one, whatever the policy says
+ * (a write, a command without granted network, a tool that names no path,
+ * a bridge result that holds nothing untrusted, a compaction), so
+ * `deriveTaint` gives the same answer over the carried entries as over the
+ * inherited events, for every `untrustedPaths`.
+ */
+export function inheritableTaint(entries: readonly HistoryEntry[]): HistoryEntry[] {
+  const cleared = entries.findLastIndex((entry) => entry.kind === "taint_cleared")
+  return entries.slice(cleared + 1).filter((entry) => {
+    if (entry.kind === "compaction") return false
+    if (entry.kind !== "tool_result") return true
+    if (entry.untrusted != null) return entry.untrusted
+    if (entry.origin === "mcp" || entry.effect === "network") return true
+    if (entry.effect === "exec") return entry.networkGranted
+    return entry.paths.length > 0
+  })
+}
+
 /** The events `taintHistory` reads, reduced to what it needs of them. */
 export type TaintEvent =
   | { readonly type: "tool.called"; readonly data: { readonly messageId: string; readonly callId: string; readonly name: string } }
@@ -95,7 +139,9 @@ export type TaintEvent =
  * Folds stored events into the history `deriveTaint` reads, oldest first. A
  * result counts when its call started: a call that was denied, declined or
  * never began brought nothing in. Feed it every event of the log in order;
- * it keeps what it needs of the calls that are still open.
+ * it keeps what it needs of the calls that are still open. A fork is fed
+ * its own events only, after `seed` gave it the entries its
+ * `session.created` carries of the history it inherited.
  */
 export class TaintHistory {
   readonly entries: HistoryEntry[] = []
@@ -103,6 +149,11 @@ export class TaintHistory {
   private readonly started = new Map<string, { readonly effect: Infer<typeof toolEffect>; readonly run: CallRun | undefined }>()
   /** The child session of each subagent that is running, by its spawned work. */
   private readonly children = new Map<string, string>()
+
+  /** The entries of a history that is not fed event by event: what a fork inherited. Before the first `add`. */
+  seed(entries: readonly HistoryEntry[]): void {
+    this.entries.push(...entries)
+  }
 
   add(item: { readonly type: string; readonly seq?: number; readonly data?: unknown }): void {
     const event = item as TaintEvent

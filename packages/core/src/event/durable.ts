@@ -26,7 +26,7 @@
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
 import { approvalMode } from "../approval/policy.ts"
-import { callRun, choiceId, storedEscalation, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
+import { callRun, choiceId, storedEscalation, storedHistoryEntry, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
 import { blobRef, content } from "../content.ts"
 import { callId, executionId, messageId, sessionId, type SessionId } from "../id.ts"
 import { interruptReason } from "../interrupt.ts"
@@ -344,7 +344,21 @@ export const durableEvents = {
    */
   "session.created": define(
     1,
-    object({ cwd: nonEmptyString, title: nullable(string), lineage: nullable(lineage), settings: sessionSettings }),
+    object({
+      cwd: nonEmptyString,
+      title: nullable(string),
+      lineage: nullable(lineage),
+      settings: sessionSettings,
+      /**
+       * For a fork: what it needs at run time of the events it inherited,
+       * copied here so that nothing but reading those events themselves
+       * needs the parent's file. `taint`: the entries of the inherited
+       * history that taint is derived from (`inheritableTaint`); the fork's
+       * own events follow them in the fold. Absent when nothing in the
+       * inherited history can be a source.
+       */
+      inherited: optional(object({ taint: array(storedHistoryEntry) })),
+    }),
   ),
   /**
    * The session's model or reasoning effort changed, from here on. Accepted

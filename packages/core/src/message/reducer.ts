@@ -135,6 +135,7 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     // A root, a subagent and a replay all start a history of their own.
     if (state !== null) throw new ReduceError("out_of_order", "the session already exists", event)
     if (event.seq !== 1) throw new ReduceError("out_of_order", `a ${lineage === null ? "root" : lineage.kind} session starts at seq 1`, event)
+    if (event.data.inherited !== undefined) throw new ReduceError("invalid_transition", "only a fork inherits history: nothing is carried into a session that starts its own", event)
     const started: SessionState = lineage?.kind === "replay" ? { ...session, replay: { workspace: null, ended: null } } : session
     return { lastSeq: 1, updatedAt: event.time, session: started, baseline: null, messages: [], inbox: [] }
   }
@@ -148,6 +149,8 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     throw new ReduceError("out_of_order", `a fork's first event has seq ${lineage.throughSeq + 1}`, event)
   if (state.session.open !== null)
     throw new ReduceError("invalid_transition", "a fork point must be a step boundary", event)
+  if (event.data.inherited?.taint.some((entry) => entry.at > lineage.throughSeq))
+    throw new ReduceError("invalid_range", "what a fork carries of its inherited history lies at or before its fork point", event)
   return {
     lastSeq: event.seq,
     updatedAt: event.time,
