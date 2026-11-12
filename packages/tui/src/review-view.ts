@@ -31,10 +31,17 @@ export interface ReviewRequest extends ReviewTarget {
   readonly delivery: () => string
 }
 
-/** What came of a review: a sentence for the conversation, and the message to send when the user sent it. */
+/**
+ * What came of a review: a sentence for the conversation, and the message to
+ * send when the user sent it. The comments of a review that is being sent
+ * stay kept until `sent` is called, which is when the engine took the
+ * message; `kept` says where they are, for the line about a send that failed.
+ */
 export interface ReviewOutcome {
   readonly say: { readonly text: string; readonly tone: "dim" | "warn" | "error" } | null
   readonly message: string | null
+  readonly sent?: () => void
+  readonly kept?: string
 }
 
 /**
@@ -127,17 +134,24 @@ export class ReviewView extends Renderable {
     const others = [...this.kept.values()].filter((other) => other !== review && other.count > 0)
     if (others.length > 0) screen.notice = { text: `comments are kept on ${others.map((other) => other.what).join(", ")} too: select that turn's ending row (Alt-Up), then /review`, tone: "dim" }
     const how = await this.show(screen)
+    const written = review.count === 0 ? "its overall note is" : review.count === 1 ? "its comment is" : `its ${review.count} comments are`
+    // Once a later turn has ended, the view itself says where the kept comments are (the notice above).
+    const again = request.latest ? "/review opens it again" : "/review with this turn's ending row selected (Alt-Up) opens it again"
     if (how === "send") {
-      this.kept.delete(key)
-      return { say: null, message: reviewMessage(review) }
+      // The comments go only once the message has: a send that fails leaves the review as it was written.
+      return {
+        say: null,
+        message: reviewMessage(review),
+        sent: () => {
+          if (this.kept.get(key) === review) this.kept.delete(key)
+        },
+        kept: `the review of ${what} is not lost: ${written} kept until this session is closed · ${again}`,
+      }
     }
     if (review.count === 0 && review.note === "") {
       this.kept.delete(key)
       return { say: null, message: null }
     }
-    const written = review.count === 0 ? "its overall note is" : review.count === 1 ? "its comment is" : `its ${review.count} comments are`
-    // Once a later turn has ended, the view itself says where the kept comments are (the notice above).
-    const again = request.latest ? "/review opens it again" : "/review with this turn's ending row selected (Alt-Up) opens it again"
     return { say: { text: `the review of ${what} was closed without sending: ${written} kept until this session is closed · ${again}`, tone: "dim" }, message: null }
   }
 

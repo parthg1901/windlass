@@ -537,25 +537,31 @@ export class App {
   }
 
   private send(text: string, delivery: Delivery): void {
+    void this.deliver(text, delivery).then((problem) => {
+      if (problem !== null) this.say(problem.text, problem.tone)
+    })
+  }
+
+  /** Sends a message. Resolves with `null` once the engine has taken it, or with why it was not sent. */
+  private async deliver(text: string, delivery: Delivery): Promise<{ readonly text: string; readonly tone: "warn" | "error" } | null> {
     const session = this.session
     if (session === null || this.connection !== "connected")
-      return this.say(
-        this.connection === "starting"
-          ? "the engine is still starting; try again in a moment"
-          : this.connection === "not signed in"
-            ? `not sent: not signed in; run ${brand.binary} login in another terminal, then /reconnect`
-            : "not sent: no session is open; /reconnect first, or /quit",
-        "warn",
-      )
+      return {
+        text:
+          this.connection === "starting"
+            ? "not sent: the engine is still starting; try again in a moment"
+            : this.connection === "not signed in"
+              ? `not sent: not signed in; run ${brand.binary} login in another terminal, then /reconnect`
+              : "not sent: no session is open; /reconnect first, or /quit",
+        tone: "warn",
+      }
     this.conversation.toBottom()
-    void this.beforeMessage(session).then(() =>
-      session.send(text, delivery).then(
-        (id) => {
-          if (id === null) this.say("not sent: the session is not taking input right now", "warn")
-        },
-        (error: unknown) => this.say(`not sent: ${error instanceof Error ? error.message : String(error)}`, "error"),
-      ),
-    )
+    await this.beforeMessage(session)
+    try {
+      return (await session.send(text, delivery)) === null ? { text: "not sent: the session is not taking input right now", tone: "warn" } : null
+    } catch (error) {
+      return { text: `not sent: ${error instanceof Error ? error.message : String(error)}`, tone: "error" }
+    }
   }
 
   /**
@@ -1720,7 +1726,11 @@ export class App {
     if (this.dock !== null) this.dock.state.focused = false
     this.layout()
     if (came.say !== null) this.say(came.say.text, came.say.tone)
-    if (came.message !== null) this.send(came.message, this.transcript.activity.executing ? this.mode : "steer")
+    if (came.message === null) return
+    // The review's comments are let go of only once the engine has the message; until then they are kept, and a send that failed says so.
+    const problem = await this.deliver(came.message, this.transcript.activity.executing ? this.mode : "steer")
+    if (problem === null) return came.sent?.()
+    this.say(`${problem.text} · ${came.kept ?? "the review is kept"}`, problem.tone)
   }
 
   private toggle(row: Row): void {

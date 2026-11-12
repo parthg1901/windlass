@@ -511,6 +511,45 @@ describe("/review in the app", () => {
   })
 })
 
+describe("a review that could not be sent, and a question under the view", () => {
+  test("the comments are let go of only once the message was taken: a send that fails keeps them, and the line says so", async () => {
+    const { backend, session, app } = await opened()
+    const write = async (text: string) => {
+      await command("/review")
+      if (!(await mounted!.frame()).includes(`${COMMENT_MARK} 1 comment`)) {
+        keys().pressKey("c")
+        await mounted!.settle()
+        await keys().typeText(text)
+        keys().pressEnter()
+      }
+      keys().pressKey("s")
+      await mounted!.settle()
+      keys().pressEnter()
+      await mounted!.settle()
+    }
+    const taken = session.send.bind(session)
+    // The engine went away at that moment.
+    session.send = async () => {
+      throw new Error("the engine is gone")
+    }
+    await write("Why a subtraction?")
+    expect(app.review.open).toBe(false)
+    expect(backend.sent).toEqual([])
+    expect(app.conversation.text().replace(/\s+/g, " ")).toContain("✗ not sent: the engine is gone · the review of turn 1 is not lost: its comment is kept until this session is closed · /review opens it again")
+    // Not taken, without an error.
+    session.send = async () => null
+    await write("")
+    expect(app.conversation.text().replace(/\s+/g, " ")).toContain("! not sent: the session is not taking input right now · the review of turn 1 is not lost: its comment is kept")
+    // Taken: the same comment is sent, and the review starts empty the next time.
+    session.send = taken
+    await write("")
+    expect(backend.sent).toHaveLength(1)
+    expect(backend.sent[0]!.text).toContain("Why a subtraction?")
+    await command("/review")
+    expect(await mounted!.frame()).toContain("Review of turn 1 · no comments yet")
+  })
+})
+
 describe("the turn /review is about", () => {
   test("the selected ending row's turn, the turn a selected row belongs to, or the latest that ended", () => {
     const row = (kind: string, more: object = {}) => ({ kind, ...more }) as never
