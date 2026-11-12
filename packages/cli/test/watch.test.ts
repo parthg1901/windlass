@@ -79,7 +79,7 @@ describe("as a user types it", () => {
   test("/watch lists the running command, sets a watch that fires and wakes the agent, and says the engine's sentence when it refuses", async () => {
     const cwd = workspace()
     const provider = new FakeProvider([[script.toolCall("call_1", "shell", { command: COMMAND, background: true })], [script.text("Started the server.")], [script.text("It is up now.")]])
-    const run = await interactive(["--cwd", cwd, "--approval", "full"], engineFor(provider, cwd), async (type, waitFor, written) => {
+    const run = await interactive(["--cwd", cwd, "--approval", "full"], engineFor(provider, cwd), async (type, waitFor, written, rows) => {
       type("/watch\r")
       await waitFor("No background command is running, so there is no output to watch.")
       type("start the server in the background\r")
@@ -100,6 +100,13 @@ describe("as a user types it", () => {
       // The line comes: said as the watch's message, and the agent, which was idle, answers it.
       await waitFor(`◉ watch ${id}.w1: background ${id} printed a matching line (1 of 1) · the agent is told · sent by the watch,`)
       await waitFor("It is up now.")
+      await waitFor(/It is up now\.[\s\S]*✓ done/)
+      // The turn the watch started ended under the prompt: a blank line above the prompt, as after a turn the user typed.
+      for (let tries = 0; tries < 100 && !(rows().findLast((row) => row.trim() !== "") ?? "").startsWith("›"); tries += 1) await Bun.sleep(10)
+      const shown = rows()
+      const prompt = shown.findLastIndex((row) => row.startsWith("›"))
+      expect(shown[prompt - 1]).toBe("")
+      expect(shown[prompt - 2]).toContain("background command still running")
       // A watch that is over cannot be removed, and that is said.
       type(`/watch remove ${id}.w1\r`)
       await waitFor(`there is no watch ${id}.w1 that could still fire`)
@@ -108,6 +115,7 @@ describe("as a user types it", () => {
     // The matching line is under the watch's line; the model was told in a message of the harness's, not the user's.
     expect(run.screen).toContain("sent by the watch, not typed by you Server listening on http://localhost:3000")
     expect(run.screen).not.toContain("background_watch")
+    // The turn the watch started ended under the prompt: a blank line above the prompt again, as after a typed turn.
     expect(provider.requests.length).toBe(3)
     expect(JSON.stringify(provider.requests[2])).toContain("printed a line that matches the watch the user set on its output")
   })

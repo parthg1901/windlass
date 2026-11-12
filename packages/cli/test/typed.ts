@@ -69,7 +69,11 @@ export function typedSessions(prefix: string) {
       stderr: () => {},
     })
 
-  async function interactive(argv: readonly string[], engine: () => ReturnType<typeof createAcpEngine>, drive: (type: (keys: string) => void, waitFor: (needle: string | RegExp, ms?: number) => Promise<void>, written: () => string) => Promise<void>) {
+  async function interactive(
+    argv: readonly string[],
+    engine: () => ReturnType<typeof createAcpEngine>,
+    drive: (type: (keys: string) => void, waitFor: (needle: string | RegExp, ms?: number) => Promise<void>, written: () => string, rows: () => string[]) => Promise<void>,
+  ) {
     const vt = new VirtualTerminal(120)
     let seen = ""
     let typer: ((data: string) => void) | null = null
@@ -96,7 +100,8 @@ export function typedSessions(prefix: string) {
     })
     await waitFor("› ")
     // `written`: everything the CLI wrote so far, for a test that types an ID it was shown.
-    await drive((keys) => typer!(keys), waitFor, () => seen)
+    // `rows`: the terminal as it shows now, the input at its foot.
+    await drive((keys) => typer!(keys), waitFor, () => seen, () => vt.text.split("\n"))
     const result = await running
     return { ...result, seen, screen: vt.text.replace(/\n\s+/g, " ") }
   }

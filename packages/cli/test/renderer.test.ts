@@ -205,6 +205,21 @@ describe("tool calls", () => {
   })
 })
 
+describe("questions at the prompt", () => {
+  test("each stands apart: one blank line above it, also after the line that answered the one before, never two", () => {
+    let out = ""
+    const renderer = new PrettyRenderer({ write: (text) => (out += text), color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false })
+    renderer.notice("new session ses_1")
+    renderer.beforePrompt()
+    renderer.separate()
+    renderer.printLines([{ text: "? first question", tone: "plain" }])
+    renderer.notice("not allowed: the first")
+    renderer.separate()
+    renderer.printLines([{ text: "? second question", tone: "plain" }])
+    expect(out).toBe("new session ses_1\n\n? first question\nnot allowed: the first\n\n? second question\n")
+  })
+})
+
 describe("width", () => {
   test("no line is wider than the terminal except a path, and model text is wrapped between its words", () => {
     const long = "a-very-long-directory-name/".repeat(6)

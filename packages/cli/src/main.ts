@@ -216,7 +216,7 @@ export async function run(io: Io): Promise<number> {
   if (questions !== null) session.setApprover?.(approverAt({ ask: (question) => questions.urgent(question) }, session))
   // What the CLI says about MCP servers and wake-ups unasked. Not in `--json`: that stream is the engine's events only.
   let watching: FeatureWatch | null = null
-  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print, settle) => questions.patient(question, print, settle), working: () => watching?.working === true, keep: (note) => watching?.keep(note), secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) }
+  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print, settle) => questions.patient(question, () => (sink instanceof PrettyRenderer ? sink.separate() : undefined, print()), settle), working: () => watching?.working === true, keep: (note) => watching?.keep(note), secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) }
   const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY), draw: (item) => sink.event(item) })
   watching = watch
   watch?.start()
@@ -251,6 +251,9 @@ export async function run(io: Io): Promise<number> {
   const turns = new TurnWatcher(session, sink, watch ?? notices, (item) => {
     // What became of an approval's answer is on the screen: a question that stepped aside for it may come back.
     if (item.type === "approval.answered" || turnOutcomeOf(item) !== null) questions?.confirmed()
+    // A turn nobody typed for (a wake-up, a watch, a background command's end) ended under the prompt: the prompt
+    // gets its blank line above it again, as after a turn the user started.
+    if (turnOutcomeOf(item) !== null && !control.running && screen !== null && sink instanceof PrettyRenderer) sink.beforePrompt()
   })
   const turn = async (entry: Entry): Promise<TurnOutcome | "closed" | "not_sent"> => {
     control.running = true

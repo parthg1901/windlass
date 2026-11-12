@@ -137,6 +137,8 @@ const SYMBOL = {
 
 export class PrettyRenderer implements Sink {
   private atLineStart = true
+  /** The output ends with a blank line (`beforePrompt`, `separate`, `gap`): another one would be one too many. */
+  private blank = false
   /**
    * Streamed model text not written yet, and the column the text has reached: a word is written once it is whole
    * (the next space or line break, or the end of the text), on the next row when it does not fit on this one.
@@ -337,8 +339,18 @@ export class PrettyRenderer implements Sink {
   /** Call before an interactive prompt is drawn: finishes the line and leaves one blank line. Returns what to write. */
   beforePrompt(): void {
     this.endLine()
-    if (this.last !== null) this.raw("\n")
+    if (this.last !== null && !this.blank) this.raw("\n")
+    this.blank = this.last !== null
     this.last = "prompt"
+  }
+
+  /** Before something that stands on its own (a question at the prompt): one blank line above it, never two. */
+  separate(): void {
+    this.endLine()
+    if (this.last === null) return
+    if (!this.blank) this.raw("\n")
+    this.blank = true
+    this.last = "info"
   }
 
   // ---------------------------------------------------------------- events
@@ -1468,7 +1480,7 @@ export class PrettyRenderer implements Sink {
   private gap(kind: Block): void {
     const previous = this.last
     this.last = kind
-    if (previous === null || previous === kind) return
+    if (previous === null || previous === kind || this.blank) return
     this.raw("\n")
   }
 
@@ -1499,6 +1511,7 @@ export class PrettyRenderer implements Sink {
     if (text === "") return
     this.clearStatus()
     this.options.write(text)
+    this.blank = false
     for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) this.lines += 1
     this.atLineStart = text.endsWith("\n")
   }
