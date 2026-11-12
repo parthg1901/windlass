@@ -17,7 +17,8 @@
  * are left alone because code is full of them); environment values shorter
  * than `MIN_SECRET_LENGTH`; secrets split across lines, encoded (base64, URL
  * encoding, hex) or quoted with escapes; and `Basic`/`Bearer` values without a
- * digit. Over-redaction (false positives): real-looking example keys in tests
+ * digit; a token glued to the next one with no separator (`…KWsk-ant-…`), which
+ * the word-boundary anchors that keep false positives down can miss. Over-redaction (false positives): real-looking example keys in tests
  * and docs (`AKIA…EXAMPLE`), identifiers that happen to start with `sk-` and
  * run 20 characters, JWTs that are not secret, and every occurrence of an
  * environment value anywhere, including a non-secret one such as a region
