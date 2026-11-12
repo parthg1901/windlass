@@ -16,6 +16,13 @@
  *   the subagent's conversation is tainted;
  * - a wake-up's firing that carries a webhook's body or the output of a check
  *   that ran with the network or without the sandbox, from its admission on.
+ * - the text of a hook that reached the model (a refusal's reason, a note, a
+ *   stop message) when the hook ran with the network by the user's grant
+ *   (`sandbox: false` in the user's own file), or when it is a project's hook
+ *   in a repository the user marked untrusted (`hooks/trust.ts`, `hookTaints`);
+ * - the diagnostics note of a language server a project's configuration
+ *   chose, in such a repository. Any other note is not one: it is the edited
+ *   file's own code and the messages of a program the user configured.
  *
  * An MCP bridge call says in its result whether what it returned is content
  * the harness does not control (`untrusted`, from the server's configuration
@@ -76,16 +83,20 @@ export type HistoryEntry =
   | { readonly kind: "subagent_result"; readonly at: number; readonly session: string }
   /** Input admitted from outside the harness: a wake-up's firing with a webhook's body or a networked check's output. */
   | { readonly kind: "untrusted_input"; readonly at: number; readonly wakeId: string; readonly carries: "webhook_body" | "check_output" }
+  /** A hook's own text reached the model, and the hook's record says it is content the harness does not control. */
+  | { readonly kind: "hook_output"; readonly at: number; readonly hook: string; readonly taint: "hook-network" | "hook-untrusted-project" }
+  /** The diagnostics note of a language server this project's configuration chose, in a repository marked untrusted. */
+  | { readonly kind: "diagnostics_note"; readonly at: number; readonly server: string }
   /** The user said the conversation is trustworthy again. */
   | { readonly kind: "taint_cleared"; readonly at: number }
   /** Recorded for completeness; changes nothing. */
   | { readonly kind: "compaction"; readonly at: number }
 
-export type TaintSourceKind = "network-tool" | "mcp-tool" | "outside-file" | "untrusted-file" | "network-command" | "subagent" | "wake-up"
+export type TaintSourceKind = "network-tool" | "mcp-tool" | "outside-file" | "untrusted-file" | "network-command" | "subagent" | "wake-up" | "hook-network" | "hook-untrusted-project" | "lsp-untrusted-project"
 
 export interface TaintSource {
   readonly at: number
-  /** The tool whose result it was; for a wake-up's firing, the wake-up's ID. */
+  /** The tool whose result it was; for a wake-up's firing, the wake-up's ID; for a hook, its name; for a diagnostics note, the language server's name. */
   readonly tool: string
   readonly kind: TaintSourceKind
   /** The path, for file sources; the child session, for a subagent; what the firing carried (`webhook_body`, `check_output`), for a wake-up. */
@@ -113,7 +124,11 @@ export function deriveTaint(history: readonly HistoryEntry[], options: { readonl
         ? [{ at: entry.at, tool: "subagent", kind: "subagent", path: entry.session }]
         : entry.kind === "untrusted_input"
           ? [{ at: entry.at, tool: entry.wakeId, kind: "wake-up", path: entry.carries }]
-          : sourcesOf(entry, globs)
+          : entry.kind === "hook_output"
+            ? [{ at: entry.at, tool: entry.hook, kind: entry.taint, path: null }]
+            : entry.kind === "diagnostics_note"
+              ? [{ at: entry.at, tool: entry.server, kind: "lsp-untrusted-project", path: null }]
+              : sourcesOf(entry, globs)
     if (found.length === 0) return state
     return { tainted: true, since: state.since ?? entry.at, sources: [...state.sources, ...found] }
   }, CLEAN)
@@ -148,6 +163,12 @@ export function describeTaint(taint: TaintState): string {
             ? `subagent ${first.path}, whose own conversation holds untrusted content,`
           : first.kind === "wake-up"
             ? `the wake-up ${first.tool} (${first.path === "webhook_body" ? "the body of a webhook request" : "the output of a check that could use the network"})`
+          : first.kind === "hook-network"
+            ? `the hook "${first.tool}", which runs outside the sandbox with the network,`
+          : first.kind === "hook-untrusted-project"
+            ? `the hook "${first.tool}" of this project's configuration, which is marked untrusted,`
+          : first.kind === "lsp-untrusted-project"
+            ? `the language server "${first.tool}" of this project's configuration, which is marked untrusted,`
           : `${first.path} (${first.kind === "outside-file" ? "outside the workspace" : "marked untrusted"})`
   const more = taint.sources.length > 1 ? ` and ${taint.sources.length - 1} more` : ""
   return `Content from ${what}${more} is in this conversation and may contain instructions aimed at the model.`

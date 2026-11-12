@@ -58,7 +58,7 @@ export const storedQuestion = object({ title: string, subject: string, details: 
 export const storedTaintSource = object({
   at: integer(0),
   tool: nonEmptyString,
-  kind: oneOf(["network-tool", "mcp-tool", "outside-file", "untrusted-file", "network-command", "subagent", "wake-up"]),
+  kind: oneOf(["network-tool", "mcp-tool", "outside-file", "untrusted-file", "network-command", "subagent", "wake-up", "hook-network", "hook-untrusted-project", "lsp-untrusted-project"]),
   path: nullable(string),
 }) satisfies Validator<TaintSource>
 
@@ -98,6 +98,8 @@ export const storedHistoryEntry = variant("kind", {
   }),
   subagent_result: object({ kind: literal("subagent_result"), at: integer(0), session: nonEmptyString }),
   untrusted_input: object({ kind: literal("untrusted_input"), at: integer(0), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) }),
+  hook_output: object({ kind: literal("hook_output"), at: integer(0), hook: nonEmptyString, taint: oneOf(["hook-network", "hook-untrusted-project"]) }),
+  diagnostics_note: object({ kind: literal("diagnostics_note"), at: integer(0), server: nonEmptyString }),
   taint_cleared: object({ kind: literal("taint_cleared"), at: integer(0) }),
   compaction: object({ kind: literal("compaction"), at: integer(0) }),
 }) satisfies Validator<HistoryEntry>
@@ -128,7 +130,8 @@ export function inheritableTaint(entries: readonly HistoryEntry[]): HistoryEntry
 export type TaintEvent =
   | { readonly type: "tool.called"; readonly data: { readonly messageId: string; readonly callId: string; readonly name: string } }
   | { readonly type: "tool.started"; readonly data: { readonly messageId: string; readonly callId: string; readonly effect: Infer<typeof toolEffect>; readonly run?: CallRun } }
-  | { readonly type: "tool.settled"; readonly seq: number; readonly data: { readonly messageId: string; readonly callId: string; readonly display?: unknown } }
+  | { readonly type: "tool.settled"; readonly seq: number; readonly data: { readonly messageId: string; readonly callId: string; readonly display?: unknown; readonly diagnostics?: { readonly untrusted?: true; readonly noteAdded: boolean; readonly servers: readonly { readonly name: string; readonly origin: "user" | "project"; readonly new: number }[] } } }
+  | { readonly type: "hook.ran"; readonly seq: number; readonly data: { readonly name: string; readonly taint: "hook-network" | "hook-untrusted-project" | null } }
   | { readonly type: "inbox.enqueued"; readonly seq: number; readonly data: { readonly untrusted?: { readonly wakeId: string; readonly carries: "webhook_body" | "check_output" } } }
   | { readonly type: "taint.cleared"; readonly seq: number }
   | { readonly type: "spawn.started"; readonly data: { readonly spawnId: string; readonly work: { readonly kind: string; readonly sessionId?: string } } }
@@ -175,6 +178,10 @@ export class TaintHistory {
         // A running subagent's words, shown while its own conversation holds untrusted content: a source like its answer.
         const relayed = relayedSubagent(event.data.display)
         if (relayed !== null) this.entries.push({ kind: "subagent_result", at: event.seq, session: relayed })
+        // The note of a language server the project chose, in a repository marked untrusted: recorded as that, with the result.
+        const noted = event.data.diagnostics
+        if (noted?.untrusted === true && noted.noteAdded)
+          for (const server of noted.servers) if (server.origin === "project" && server.new > 0) this.entries.push({ kind: "diagnostics_note", at: event.seq, server: server.name })
         this.entries.push({
           kind: "tool_result",
           at: event.seq,
@@ -190,6 +197,10 @@ export class TaintHistory {
         })
         return
       }
+      case "hook.ran":
+        // A hook's text that reached the model, when its record says what it is: nothing is read out of the text.
+        if (event.data.taint !== null) this.entries.push({ kind: "hook_output", at: event.seq, hook: event.data.name, taint: event.data.taint })
+        return
       case "inbox.enqueued":
         if (event.data.untrusted !== undefined) this.entries.push({ kind: "untrusted_input", at: event.seq, wakeId: event.data.untrusted.wakeId, carries: event.data.untrusted.carries })
         return

@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 6 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 7 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -128,7 +128,7 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 
 ## The events
 
-55 event types, in 14 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
+56 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
 
 | Group | Events |
 | --- | --- |
@@ -140,6 +140,7 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 | model output | [`text.ended`](#textended), [`reasoning.ended`](#reasoningended) |
 | tools | [`tool.called`](#toolcalled), [`tool.started`](#toolstarted) |
 | approval | [`approval.requested`](#approvalrequested), [`approval.answered`](#approvalanswered), [`approval.denied`](#approvaldenied), [`taint.noticed`](#taintnoticed), [`taint.cleared`](#taintcleared), [`tool.settled`](#toolsettled) |
+| hooks | [`hook.ran`](#hookran) |
 | spawned work: subagents and background commands | [`spawn.started`](#spawnstarted), [`spawn.ended`](#spawnended) |
 | replay | [`replay.call`](#replaycall), [`replay.diverged`](#replaydiverged), [`replay.ended`](#replayended) |
 | compaction | [`compaction.started`](#compactionstarted), [`compaction.repair_requested`](#compactionrepair_requested), [`compaction.ended`](#compactionended), [`compaction.failed`](#compactionfailed) |
@@ -294,11 +295,13 @@ A waiting item became a message in history, at a step boundary (cancel rule 8). 
 
 Version 1.
 
-The turn in progress has its answer and the verification gate let it end, but a queued message waits, so the execution carries on with that message instead of ending: the next event is its `inbox.delivered`. `verification` is what `execution.succeeded` would have said, so a turn says what "done" rests on whether or not something was queued behind it. A queued message waits for this; a steer never does.
+The turn in progress has its answer and the verification gate let it end, but a queued message waits, so the execution carries on with that message instead of ending: the next event is its `inbox.delivered`. `verification` is what `execution.succeeded` would have said, so a turn says what "done" rests on whether or not something was queued behind it. A queued message waits for this; a steer never does. `hooks` is set when stop hooks still objected and the turn ended at their bound, as on `execution.succeeded`.
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `verification` | [verificationOutcome](#verificationoutcome) | yes |
+| `hooks` | object | may be absent |
+| `hooks.unsatisfied` | list of string, not empty | yes |
 
 ### `synthetic.appended`
 
@@ -338,12 +341,14 @@ A new process took up a claimed execution again. When the claim was still `runni
 
 Version 1.
 
-The session ran until it had nothing left to do: the inbox is empty and the model has answered everything it was given. Releases the claim. `verification` is what the gate found at that point, so "done" always says what it rests on: passing checks, no checks, or failing checks that were left unresolved and why.
+The session ran until it had nothing left to do: the inbox is empty and the model has answered everything it was given. Releases the claim. `verification` is what the gate found at that point, so "done" always says what it rests on: passing checks, no checks, or failing checks that were left unresolved and why. `hooks` is set when stop hooks still objected after the model had been sent back as often as a turn allows: the turn ended with them unsatisfied, which is its own kind of ending.
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `executionId` | string, not empty | yes |
 | `verification` | [verificationOutcome](#verificationoutcome) | yes |
+| `hooks` | object | may be absent |
+| `hooks.unsatisfied` | list of string, not empty | yes |
 
 ### `execution.failed`
 
@@ -575,7 +580,7 @@ No fields: `data` is `{}`.
 
 Version 1.
 
-The call's one terminal result. `output` is the text for the model, capped once when produced and replayed byte for byte, including the text that explains a `not_started` or `effect_unknown` outcome.
+The call's one terminal result. `output` is the text for the model, capped once when produced and replayed byte for byte, including the text that explains a `not_started` or `effect_unknown` outcome. What hooks and language servers added after the tool ran (a hook's note, the diagnostics of an edit) is part of `output`, added before it was capped and frozen with it; `diagnostics` records what the language servers said, as fields, for an edit a configured server serves.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -586,6 +591,36 @@ The call's one terminal result. `output` is the text for the model, capped once 
 | `truncation` | [truncation](#truncation), or `null` | yes |
 | `attachments` | list of [blobRef](#blobref) | yes |
 | `display` | any JSON (`null` included) | yes |
+| `diagnostics` | [diagnosticsRecord](#diagnosticsrecord) | may be absent |
+
+## Hooks
+
+### `hook.ran`
+
+Version 1.
+
+A hook applied (`hooks/`): a command from a configuration file, run before a tool call, after it, or when the turn was about to end. Written in the same append as what it decided: before the `tool.settled` of its call (the refusal, or the result with its notes), with the message that sends the model back, or with the turn's ending. One per hook that applied, in the order they ran; a project's hook the user has not approved is recorded as skipped. While an interrupt is wound down, the records of the hooks that had finished are still written.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `point` | one of `"beforeTool"`, `"afterTool"`, `"stop"` | yes |
+| `messageId` | string, not empty, or `null` | yes |
+| `callId` | string, not empty, or `null` | yes |
+| `hookId` | string, not empty | yes |
+| `name` | string, not empty | yes |
+| `origin` | one of `"user"`, `"project"` | yes |
+| `fingerprint` | string, not empty | yes |
+| `run` | object, one of the shapes below by `kind` | yes |
+| `run.sandbox` | when `kind: "ran"`: [sandboxRun](#sandboxrun), or `null` | yes |
+| `run.reason` | when `kind: "skipped"`: `"not_approved"` | yes |
+| `answer` | one of `"yes"`, `"no"`, `"failed"`, `"interrupted"`, `"skipped"` | yes |
+| `failure` | one of `"timed_out"`, `"error_exit"`, `"killed"`, `"could_not_start"`, `"garbage"`, `"cannot_run"`, or `null` | yes |
+| `detail` | string, or `null` | yes |
+| `exitCode` | integer, or `null` | yes |
+| `durationMs` | integer ≥ 0, or `null` | yes |
+| `toModel` | string, or `null` | yes |
+| `forUser` | string | yes |
+| `taint` | one of `"hook-network"`, `"hook-untrusted-project"`, or `null` | yes |
 
 ## Spawned work: subagents and background commands
 
@@ -973,6 +1008,33 @@ One of these, told apart by `type`:
 | `blob` | [blobRef](#blobref) | yes |
 
 Declared in `packages/core/src/content.ts`.
+
+### `diagnosticsRecord`
+
+What the language servers said about an edit (`lsp/`), recorded with the result the note is frozen in.
+- `noteAdded`: a note follows the tool's own output (the edit made something worse).
+- `listed`, `omitted`: the new diagnostics the note shows, and the ones it left out.
+- `waitedMs`: how long the result waited, at most the configured bound. Display data.
+- `servers`: one per server that serves the file: whose configuration it is from, the fingerprint of its definition, how it came out (`timeout`: it gave nothing within the bound), and the counts of the comparison.
+- `untrusted`: the note holds the messages of a server this project's configuration chose, in a repository the user marked untrusted: the result is a taint source.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `noteAdded` | boolean | yes |
+| `listed` | integer ≥ 0 | yes |
+| `omitted` | integer ≥ 0 | yes |
+| `waitedMs` | integer ≥ 0 | yes |
+| `servers` | list of objects | yes |
+| `servers[].name` | string, not empty | yes |
+| `servers[].origin` | one of `"user"`, `"project"` | yes |
+| `servers[].fingerprint` | string, not empty | yes |
+| `servers[].outcome` | one of `"compared"`, `"unchanged"`, `"timeout"`, `"not_running"`, `"crashed"`, `"not_approved"`, `"interrupted"` | yes |
+| `servers[].new` | integer ≥ 0 | yes |
+| `servers[].preExisting` | integer ≥ 0 | yes |
+| `servers[].fixed` | integer ≥ 0 | yes |
+| `untrusted` | `true` | may be absent |
+
+Declared in `packages/core/src/event/durable.ts`.
 
 ### `grant`
 
@@ -1412,6 +1474,23 @@ One of these, told apart by `kind`:
 | `wakeId` | string, not empty | yes |
 | `carries` | one of `"webhook_body"`, `"check_output"` | yes |
 
+`kind: "hook_output"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"hook_output"` | yes |
+| `at` | integer ≥ 0 | yes |
+| `hook` | string, not empty | yes |
+| `taint` | one of `"hook-network"`, `"hook-untrusted-project"` | yes |
+
+`kind: "diagnostics_note"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"diagnostics_note"` | yes |
+| `at` | integer ≥ 0 | yes |
+| `server` | string, not empty | yes |
+
 `kind: "taint_cleared"`
 
 | Field | Type | Required |
@@ -1537,7 +1616,7 @@ Declared in `packages/core/src/approval/record.ts`.
 | --- | --- | --- |
 | `at` | integer ≥ 0 | yes |
 | `tool` | string, not empty | yes |
-| `kind` | one of `"network-tool"`, `"mcp-tool"`, `"outside-file"`, `"untrusted-file"`, `"network-command"`, `"subagent"`, `"wake-up"` | yes |
+| `kind` | one of `"network-tool"`, `"mcp-tool"`, `"outside-file"`, `"untrusted-file"`, `"network-command"`, `"subagent"`, `"wake-up"`, `"hook-network"`, `"hook-untrusted-project"`, `"lsp-untrusted-project"` | yes |
 | `path` | string, or `null` | yes |
 
 Declared in `packages/core/src/approval/record.ts`.

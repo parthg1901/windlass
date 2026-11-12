@@ -26,7 +26,7 @@
 import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
 import { approvalMode } from "../approval/policy.ts"
-import { callRun, choiceId, storedEscalation, storedHistoryEntry, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
+import { callRun, choiceId, sandboxRun, storedEscalation, storedHistoryEntry, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
 import { blobRef, content } from "../content.ts"
 import { callId, executionId, messageId, sessionId, type SessionId } from "../id.ts"
 import { interruptReason } from "../interrupt.ts"
@@ -283,6 +283,85 @@ export const verificationOutcome = variant("status", {
 export type VerificationOutcome = Infer<typeof verificationOutcome>
 
 /**
+ * What stop hooks left behind when a turn ended although they still objected: the names of the hooks that were
+ * not satisfied (`hooks/`). The turn had been sent back as often as it may be (`maxStopRounds`), so it ended
+ * anyway, and a client shows that as its own kind of ending, beside what the gate found.
+ */
+export const hookEnding = object({ unsatisfied: array(nonEmptyString) })
+export type HookEnding = Infer<typeof hookEnding>
+
+/**
+ * One hook that applied at one of its three points (`hooks/`, `HookRecord`), as fields: never parsed back out
+ * of the text the model was shown.
+ * - `point`, and for `beforeTool` and `afterTool` the call (`messageId`, `callId`); both `null` for `stop`.
+ * - `hookId`, `name`, `origin` (whose configuration file it is from) and `fingerprint` (what an approval of a
+ *   project's hook is remembered by).
+ * - `run`: it ran (`sandbox`: `null` unsandboxed, else with which access), was skipped because the user has not
+ *   approved it, or should have run and could not.
+ * - `answer`: `yes` (no objection), `no` (it refused the call, added a note, or sent the model back), `failed`
+ *   (with `failure` and `detail`), `interrupted`, or `skipped`. `exitCode` and `durationMs` are what was
+ *   observed; the duration is display data.
+ * - `toModel`: the hook's own text that reached the model, which is also inside the frozen result or message.
+ * - `forUser`: what it printed for the user (its stderr, and its stdout when that was not shown to the model),
+ *   redacted and bounded.
+ * - `taint`: set when that text is content the harness does not control (`hookTaints`): the session counts as
+ *   tainted from this event on.
+ */
+export const hookRecord = object({
+  point: oneOf(["beforeTool", "afterTool", "stop"]),
+  messageId: nullable(messageId),
+  callId: nullable(callId),
+  hookId: nonEmptyString,
+  name: nonEmptyString,
+  origin: oneOf(["user", "project"]),
+  fingerprint: nonEmptyString,
+  run: variant("kind", {
+    ran: object({ kind: literal("ran"), sandbox: nullable(sandboxRun) }),
+    skipped: object({ kind: literal("skipped"), reason: literal("not_approved") }),
+    cannot_run: object({ kind: literal("cannot_run") }),
+  }),
+  answer: oneOf(["yes", "no", "failed", "interrupted", "skipped"]),
+  failure: nullable(oneOf(["timed_out", "error_exit", "killed", "could_not_start", "garbage", "cannot_run"])),
+  detail: nullable(string),
+  exitCode: nullable(integer()),
+  durationMs: nullable(integer(0)),
+  toModel: nullable(string),
+  forUser: string,
+  taint: nullable(oneOf(["hook-network", "hook-untrusted-project"])),
+})
+export type HookRecordData = Infer<typeof hookRecord>
+
+/**
+ * What the language servers said about an edit (`lsp/`), recorded with the result the note is frozen in.
+ * - `noteAdded`: a note follows the tool's own output (the edit made something worse).
+ * - `listed`, `omitted`: the new diagnostics the note shows, and the ones it left out.
+ * - `waitedMs`: how long the result waited, at most the configured bound. Display data.
+ * - `servers`: one per server that serves the file: whose configuration it is from, the fingerprint of its
+ *   definition, how it came out (`timeout`: it gave nothing within the bound), and the counts of the comparison.
+ * - `untrusted`: the note holds the messages of a server this project's configuration chose, in a repository
+ *   the user marked untrusted: the result is a taint source.
+ */
+export const diagnosticsRecord = object({
+  noteAdded: boolean,
+  listed: integer(0),
+  omitted: integer(0),
+  waitedMs: integer(0),
+  servers: array(
+    object({
+      name: nonEmptyString,
+      origin: oneOf(["user", "project"]),
+      fingerprint: nonEmptyString,
+      outcome: oneOf(["compared", "unchanged", "timeout", "not_running", "crashed", "not_approved", "interrupted"]),
+      new: integer(0),
+      preExisting: integer(0),
+      fixed: integer(0),
+    }),
+  ),
+  untrusted: optional(literal(true)),
+})
+export type DiagnosticsRecord = Infer<typeof diagnosticsRecord>
+
+/**
  * The `origin` of the messages the step loop appends with `synthetic.appended`.
  * Any other non-empty string is a valid origin too (a background command, a
  * wake-up); these are the ones the loop and the reducer agree on.
@@ -313,6 +392,12 @@ export const HARNESS_ORIGIN = {
    * round), it is the one harness message that may be left unanswered.
    */
   checkReport: "check_report",
+  /**
+   * Stop hooks did not let the turn end: what they said, with the round and the most a turn allows. The model
+   * is sent back with it, like with a check report, and it is always answered: when the bound is reached the
+   * turn ends without another one, and its ending names the hooks that were not satisfied.
+   */
+  stopHook: "stop_hook",
   /** A background command of the session ended: how, and the end of its output. Delivered through the inbox. */
   backgroundCommand: "background_command",
   /** A subagent that ran in the background ended: its final answer, or how it failed. Delivered through the inbox. */
@@ -456,8 +541,9 @@ export const durableEvents = {
    * `verification` is what `execution.succeeded` would have said, so a turn
    * says what "done" rests on whether or not something was queued behind it.
    * A queued message waits for this; a steer never does.
+   * `hooks` is set when stop hooks still objected and the turn ended at their bound, as on `execution.succeeded`.
    */
-  "turn.ended": define(1, object({ verification: verificationOutcome })),
+  "turn.ended": define(1, object({ verification: verificationOutcome, hooks: optional(hookEnding) })),
   /**
    * The harness itself added a message to history at a step boundary, without
    * going through the inbox: the marker that the previous response was
@@ -487,9 +573,11 @@ export const durableEvents = {
    * the model has answered everything it was given. Releases the claim.
    * `verification` is what the gate found at that point, so "done" always
    * says what it rests on: passing checks, no checks, or failing checks that
-   * were left unresolved and why.
+   * were left unresolved and why. `hooks` is set when stop hooks still
+   * objected after the model had been sent back as often as a turn allows:
+   * the turn ended with them unsatisfied, which is its own kind of ending.
    */
-  "execution.succeeded": define(1, object({ executionId, verification: verificationOutcome })),
+  "execution.succeeded": define(1, object({ executionId, verification: verificationOutcome, hooks: optional(hookEnding) })),
   /**
    * The execution gave up (a non-retryable error, attempts exhausted).
    * Releases the claim. `cause` is `approval` when it was ended because a call
@@ -667,7 +755,11 @@ export const durableEvents = {
   /**
    * The call's one terminal result. `output` is the text for the model, capped
    * once when produced and replayed byte for byte, including the text that
-   * explains a `not_started` or `effect_unknown` outcome.
+   * explains a `not_started` or `effect_unknown` outcome. What hooks and
+   * language servers added after the tool ran (a hook's note, the
+   * diagnostics of an edit) is part of `output`, added before it was capped
+   * and frozen with it; `diagnostics` records what the language servers
+   * said, as fields, for an edit a configured server serves.
    */
   "tool.settled": define(
     1,
@@ -679,8 +771,21 @@ export const durableEvents = {
       truncation: nullable(truncation),
       attachments: array(blobRef),
       display: nullable(json),
+      diagnostics: optional(diagnosticsRecord),
     }),
   ),
+
+  // ---- hooks ----
+
+  /**
+   * A hook applied (`hooks/`): a command from a configuration file, run before a tool call, after it, or when
+   * the turn was about to end. Written in the same append as what it decided: before the `tool.settled` of its
+   * call (the refusal, or the result with its notes), with the message that sends the model back, or with the
+   * turn's ending. One per hook that applied, in the order they ran; a project's hook the user has not approved
+   * is recorded as skipped. While an interrupt is wound down, the records of the hooks that had finished are
+   * still written.
+   */
+  "hook.ran": define(1, hookRecord),
 
   // ---- spawned work: subagents and background commands ----
 

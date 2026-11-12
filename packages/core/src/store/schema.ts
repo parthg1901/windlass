@@ -39,8 +39,12 @@
  * 6: the request ledger says which provider served a call (`provider`) and
  *    what the provider wrote to its cache (`cache_write_tokens` and the
  *    12-hour part of it); `Usage`, and so `step.ended`, carry the same counts.
+ * 7: hooks and language-server diagnostics: `hook.ran` is new, `tool.settled`
+ *    may carry `diagnostics`, a turn's ending may name stop hooks that were
+ *    not satisfied, and the taint history a fork carries may hold a hook's
+ *    output or a language server's note.
  */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 /**
  * Run on every connection, before anything else.

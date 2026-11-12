@@ -38,6 +38,9 @@
  * - A session is archived once and unarchived once: each event changes something.
  * - The agent a session runs as changes before its first baseline, or right
  *   after the instruction message that tells the model, and never otherwise.
+ * - A hook's record names the call it applied to, which has no result yet,
+ *   or, for a stop hook, no call, at a boundary; an ending names the stop
+ *   hooks that were not satisfied only when there is one.
  *
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
@@ -183,6 +186,8 @@ const SCOPE = {
   "settings.changed": "session",
   "text.ended": "wind_down",
   "tool.settled": "wind_down",
+  // The record of a hook that had finished is written with what settles its call, also while an interrupt is wound down.
+  "hook.ran": "wind_down",
   "step.failed": "wind_down",
   "compaction.failed": "wind_down",
   "synthetic.appended": "wind_down",
@@ -307,6 +312,12 @@ function apply(state: Projection, event: AppliedEvent): Projection {
     return (
       latest === undefined || (latest.kind === "assistant" && latest.status === "completed" && latest.finish !== "tool_calls")
     )
+  }
+  /** An ending that names stop hooks names at least one, each once. */
+  const unsatisfied = (hooks: { readonly unsatisfied: readonly string[] } | undefined) => {
+    if (hooks === undefined) return
+    if (hooks.unsatisfied.length === 0) fail("invalid_transition", "an ending names the stop hooks that were not satisfied only when there is one")
+    if (new Set(hooks.unsatisfied).size !== hooks.unsatisfied.length) fail("invalid_transition", "an ending names each stop hook that was not satisfied once")
   }
   const unused = (id: MessageId) => {
     if (state.messages.some((message) => message.id === id) || state.inbox.some((item) => item.messageId === id))
@@ -527,6 +538,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (spokenSince(current.startedSeq).length === 0) fail("invalid_transition", "there is no turn to end under this execution")
       const outcome = event.data.verification
       verifiedBy(outcome)
+      unsatisfied(event.data.hooks)
       if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
         fail("invalid_transition", "the model has not answered everything it was given in this turn")
       return session({
@@ -575,6 +587,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         fail("invalid_transition", `inbox item ${waiting.messageId} is waiting: deliver it instead of going idle`)
       const outcome = event.data.verification
       verifiedBy(outcome)
+      unsatisfied(event.data.hooks)
       if (!wouldGoIdle(current.startedSeq, outcome.status === "unresolved"))
         fail("invalid_transition", "the model has not answered everything it was given under this execution")
       // With nothing to check, what is there now is what later checks are selected against. A turn that changed
@@ -813,6 +826,27 @@ function apply(state: Projection, event: AppliedEvent): Projection {
           },
         }
       })
+    case "hook.ran": {
+      claimed()
+      const record = event.data
+      if ((record.answer === "skipped") !== (record.run.kind === "skipped")) fail("invalid_transition", "a hook is recorded as skipped exactly when it did not run because the user has not approved it")
+      if (record.toModel !== null && record.answer !== "no") fail("invalid_transition", "only a hook that answered no has text that reached the model")
+      if (record.point === "stop") {
+        if (record.messageId !== null || record.callId !== null) fail("invalid_transition", "a stop hook applies to the end of a turn, not to a tool call")
+        atBoundary()
+        return state
+      }
+      if (record.messageId === null || record.callId === null) return fail("invalid_transition", `a ${record.point} hook applies to a tool call, which its record names`)
+      const open = state.session.open
+      if (open === null || open.kind !== "step" || open.messageId !== record.messageId) fail("invalid_transition", `step ${record.messageId} is not the open step`)
+      const message = state.messages.findLast((candidate) => candidate.id === record.messageId)
+      const part = message?.kind === "assistant" ? message.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === record.callId) : undefined
+      if (part === undefined || part.type !== "tool_call") return fail("not_found", `tool call ${record.callId} does not exist in message ${record.messageId}`)
+      if (part.state.status === "settled") fail("invalid_transition", `tool call ${part.callId} is settled: a hook's record comes before the result of its call`)
+      if (record.point === "afterTool" && part.state.status !== "running") fail("invalid_transition", `an after hook applies to a call that ran, and tool call ${part.callId} never started`)
+      // Nothing of it is state: the texts it gave the model are in the call's result, and taint is folded from the event.
+      return state
+    }
 
     case "compaction.started": {
       claimed()

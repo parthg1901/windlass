@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { CLEAN, type HistoryEntry, deriveTaint, describeTaint } from "../../src/approval/index.ts"
+import { TaintHistory, inheritableTaint } from "../../src/approval/record.ts"
 import { fact } from "./fixtures.ts"
 
 type Result = Extract<HistoryEntry, { kind: "tool_result" }>
@@ -66,5 +67,50 @@ describe("deriveTaint", () => {
   test("describes the first source", () => {
     const taint = deriveTaint([result(2, { paths: [fact("/tmp/notes.md", "outside")] }), result(3, { tool: "web_fetch", effect: "network" })], none)
     expect(describeTaint(taint)).toBe("Content from /tmp/notes.md (outside the workspace) and 1 more is in this conversation and may contain instructions aimed at the model.")
+  })
+})
+
+describe("hooks and language servers", () => {
+  const hookRan = (seq: number, name: string, taint: "hook-network" | "hook-untrusted-project" | null) => ({ type: "hook.ran", seq, data: { name, taint } })
+
+  test("a hook's text is a source exactly when its record says so, from the record's position on", () => {
+    const history = new TaintHistory()
+    history.add(hookRan(4, "format", null))
+    expect(deriveTaint(history.entries, none)).toEqual(CLEAN)
+    history.add(hookRan(9, "lint", "hook-network"))
+    history.add(hookRan(12, "guard", "hook-untrusted-project"))
+    const taint = deriveTaint(history.entries, none)
+    expect(taint).toEqual({
+      tainted: true,
+      since: 9,
+      sources: [
+        { at: 9, tool: "lint", kind: "hook-network", path: null },
+        { at: 12, tool: "guard", kind: "hook-untrusted-project", path: null },
+      ],
+    })
+    expect(describeTaint(taint)).toBe('Content from the hook "lint", which runs outside the sandbox with the network, and 1 more is in this conversation and may contain instructions aimed at the model.')
+    // A fork carries the entries: they are a source under every policy.
+    expect(inheritableTaint(history.entries)).toEqual(history.entries)
+  })
+
+  test("a diagnostics note is a source only for a project's server in a repository marked untrusted", () => {
+    const edit = (seq: number, diagnostics: unknown) => {
+      const history = new TaintHistory()
+      history.add({ type: "tool.called", data: { messageId: "m1", callId: "c1", name: "edit" } })
+      history.add({ type: "tool.started", data: { messageId: "m1", callId: "c1", effect: "write" } })
+      history.add({ type: "tool.settled", seq, data: { messageId: "m1", callId: "c1", display: null, ...(diagnostics === undefined ? {} : { diagnostics }) } })
+      return deriveTaint(history.entries, none)
+    }
+    const servers = [
+      { name: "python", origin: "project", new: 2 },
+      { name: "ruff", origin: "user", new: 1 },
+      { name: "slow", origin: "project", new: 0 },
+    ]
+    expect(edit(5, undefined)).toEqual(CLEAN)
+    expect(edit(5, { noteAdded: true, servers })).toEqual(CLEAN)
+    expect(edit(5, { noteAdded: false, untrusted: true, servers })).toEqual(CLEAN)
+    const taint = edit(5, { noteAdded: true, untrusted: true, servers })
+    expect(taint.sources).toEqual([{ at: 5, tool: "python", kind: "lsp-untrusted-project", path: null }])
+    expect(describeTaint(taint)).toContain('the language server "python" of this project\'s configuration, which is marked untrusted,')
   })
 })
