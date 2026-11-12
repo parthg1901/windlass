@@ -322,3 +322,44 @@ describe("robustness", () => {
     expect(frame).toContain("✗ unresolved · failing checks: test")
   })
 })
+
+describe("the model picker", () => {
+  test("picks a model, then its effort, and switches through the session's config", async () => {
+    const changes: [string, string][] = []
+    const backend = new ScriptBackend()
+    Object.assign(backend, {
+      listModels: async () => ({
+        defaultModel: "gpt-6-luna",
+        models: [
+          { id: "gpt-6-luna", name: "Luna", efforts: ["low", "medium", "high"], defaultEffort: "medium", contextWindow: 272_000, isDefault: true },
+          { id: "gpt-6.1-sol", name: "Sol", efforts: ["low", "high"], defaultEffort: "high", contextWindow: 400_000, isDefault: false },
+        ],
+      }),
+    })
+    const open = backend.open.bind(backend)
+    backend.open = async (...args) => Object.assign(await open(...args), { setConfig: async (id: string, value: string) => void changes.push([id, value]) })
+    mounted = await mount({ width: 100, height: 30, backend })
+    backend.session!.emit(event("session.created", { cwd: "/work", title: null, lineage: null, settings: { model: "gpt-6-luna", reasoningEffort: "low" } }))
+    await mounted.settle()
+    await keys(mounted).typeText("/model")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    let frame = await mounted.frame()
+    expect(frame).toContain("gpt-6-luna (current)")
+    expect(frame).toContain("400k context")
+    // Typing filters the list.
+    await keys(mounted).typeText("sol")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    frame = await mounted.frame()
+    expect(frame).toContain("Reasoning effort for gpt-6.1-sol")
+    keys(mounted).pressArrow("down")
+    keys(mounted).pressArrow("down")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    expect(changes).toEqual([
+      ["model", "gpt-6.1-sol"],
+      ["effort", "high"],
+    ])
+  })
+})

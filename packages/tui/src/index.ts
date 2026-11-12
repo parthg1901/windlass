@@ -67,6 +67,13 @@ export async function runTui(options: TuiOptions): Promise<number> {
     } catch {}
   }
   process.once("exit", restore)
+  // OpenTUI asks for `closed` to be awaited after `destroy()` before the process exits: a `process.exit` straight after
+  // `destroy()` hangs (seen under tmux: the terminal was put back and the process never ended).
+  const exitAfterRestore = async (code: number) => {
+    restore()
+    await Promise.race([renderer.closed.catch(() => {}), Bun.sleep(500)])
+    process.exit(code)
+  }
   const demo = backend instanceof DemoBackend ? backend : null
   const app = new App(renderer, {
     backend,
@@ -77,19 +84,26 @@ export async function runTui(options: TuiOptions): Promise<number> {
     debug: options.env[DEBUG_ENV] === "1",
     home: homedir(),
     exitNow: (code) => {
-      restore()
       void backend.stop()
-      process.exit(code)
+      void exitAfterRestore(code)
     },
     ...(demo === null ? {} : { suggest: () => (demo.current !== null && demo.current.remaining > 0 ? demo.current.nextPrompt : null) }),
   })
+  let crashed = false
   const crash = (error: unknown) => {
-    restore()
-    process.stderr.write(`${brand.binary}: the TUI crashed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`)
-    const id = app.sessionId
-    if (id !== null) process.stderr.write(`${brand.binary}: the session is safe; open it again with: ${brand.binary} tui --session ${id}\n`)
-    void backend.stop()
-    process.exit(1)
+    if (crashed) return
+    crashed = true
+    void (async () => {
+      // The message is written once the terminal is back on the main screen; written before, it would vanish with the
+      // alternate screen, which `destroy()` leaves asynchronously.
+      restore()
+      await Promise.race([renderer.closed.catch(() => {}), Bun.sleep(1000)])
+      process.stderr.write(`${brand.binary}: the TUI crashed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`)
+      const id = app.sessionId
+      if (id !== null) process.stderr.write(`${brand.binary}: the session is safe; open it again with: ${brand.binary} tui --session ${id}\n`)
+      await Promise.race([backend.stop(), Bun.sleep(1000)])
+      process.exit(1)
+    })()
   }
   process.on("uncaughtException", crash)
   process.on("unhandledRejection", crash)
@@ -114,3 +128,4 @@ export async function runTui(options: TuiOptions): Promise<number> {
   if (id !== null && demo === null) process.stdout.write(`${brand.binary}: session ${id} · resume with: ${brand.binary} tui --session ${id}\n`)
   return code
 }
+
