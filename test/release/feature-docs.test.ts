@@ -545,9 +545,15 @@ describe("quoted program messages", () => {
       pieces: ["inside a step", ": a session is forked at a step boundary (the nearest one before it is seq "],
     },
     { page: "docs/forks.md", quote: "`the history inherited from session <id> cannot be read: <file> is missing`", pieces: ["the history inherited from session ", " cannot be read: ", " is missing"] },
-    { page: "docs/memory.md", quote: "? Allow memory_save: writing files?", pieces: ["Allow ", "writing files"] },
-    { page: "docs/memory.md", quote: "The tool did not name a path that could be checked.", pieces: ["The tool did not name a path that could be checked."] },
-    { page: "docs/memory.md", quote: "[a]llow once · [N]o ›", pieces: ["[a]llow once"] },
+    { page: "docs/memory.md", quote: `? Allow memory_save: changing ${brand.name}'s own records?`, pieces: ["Allow ", "changing ", "'s own records"] },
+    {
+      page: "docs/memory.md",
+      quote: `It changes only what ${brand.name} keeps for itself (wake-ups, notes): no file of the workspace, and nothing is sent anywhere.`,
+      pieces: ["It changes only what ", " keeps for itself (wake-ups, notes): no file of the workspace, and nothing is sent anywhere."],
+    },
+    { page: "docs/memory.md", quote: "[a]llow once · this [s]ession · this [p]roject · [N]o ›", pieces: ["[a]llow once", "this [s]ession", "this [p]roject"] },
+    { page: "docs/memory.md", quote: "Memory changed during this session:", pieces: ["Memory changed during this session:"] },
+    { page: "docs/memory.md", quote: "Notes recalled from memory:", pieces: ["Notes recalled from memory:"] },
     { page: "docs/memory.md", quote: "Saved m_4f821c9f (user preference). It will be shown in later sessions in every project.", pieces: ["Saved ", ". It will be shown in ", "later sessions in every project"] },
     { page: "docs/memory.md", quote: "About the user, in every project:", pieces: ["About the user, in every project:"] },
     { page: "docs/memory.md", quote: "preference, written by the user, 2026-11-12:", pieces: ["written by the user"] },
@@ -582,6 +588,30 @@ describe("what the pages say is not there yet", () => {
       expect(line, `/${name}`).toContain(name)
     }
     expect(clients().some((file) => readFileSync(file, "utf8").includes("approveMcpServer"))).toBe(true)
+  })
+
+  test("a save and a retraction run unasked outside the ask mode (docs/memory.md, Using it)", () => {
+    const memory = text["docs/memory.md"]
+    expect(memory).not.toContain("Every save asks")
+    expect(memory).not.toContain("writing files")
+    expect(memory).toContain("In the default mode (`auto`) and in `full`\na save runs without a question, in a one-shot run too")
+    const decided = (mode: "ask" | "auto" | "full", tool: string) =>
+      decide({
+        policy: { mode, unattended: "deny", taint: "enforce" },
+        call: { tool, effect: "write", origin: "builtin", paths: [], command: null, escalation: null, changes: "records" },
+        sandbox: { available: true },
+        taint: CLEAN,
+        grants: [],
+        present: false,
+        now: 0,
+        workspace: "/w",
+        home: "/home/me",
+      }).kind
+    for (const tool of ["memory_save", "memory_retract"]) expect([decided("auto", tool), decided("full", tool), decided("ask", tool)]).toEqual(["run", "run", "deny"])
+    // Both tools are marked as changing only the program's records.
+    expect(readFileSync(join(ROOT, "packages/core/src/memory/tools.ts"), "utf8").split('changes: "records",').length - 1).toBe(2)
+    // /memory forget <id> is /forget <id>.
+    expect(SOURCE).toContain("[confirm|reject|renew|forget <id>]")
   })
 
   test("nothing puts a pending memory note to the user unasked yet (docs/memory.md, Not yet)", () => {

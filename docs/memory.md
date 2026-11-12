@@ -35,23 +35,32 @@ Subagents are never given memory.
 
 ## Using it
 
-Say the thing you want kept; the model decides whether it is worth a note. Interactively, in the default mode, a save
-asks first:
+Say the thing you want kept; the model decides whether it is worth a note. In the default mode (`auto`) and in `full`
+a save runs without a question, in a one-shot run too: a note is one of the program's own records, not a file of
+your workspace, and saving one sends nothing anywhere ([safety.md](safety.md)).
 
 ```text
 ▸ memory_save The user prefers short answers.
-? Allow memory_save: writing files?
-    memory_save
-  The tool did not name a path that could be checked.
-[a]llow once · [N]o ›
+  ✓ Saved m_4f821c9f (user preference). It will be shown in later sessions in every project. ...
 ```
 
-Then `Saved m_4f821c9f (user preference). It will be shown in later sessions in every project. ...`. In a one-shot run
-nobody can answer, so the save is refused unless you run with `--approval full`.
+Retracting a note (`memory_retract`) is decided the same way. Only the `ask` mode, where every change asks, asks
+about either:
 
-A later session shows `· instructions updated (memory): Notes recalled from memory: ...` at its first step. The model
-is given the notes under a line that says they are recalled notes, not instructions, and that what you say now and
-what is in the repository take precedence:
+```text
+▸ memory_save The user prefers short answers.
+? Allow memory_save: changing Windlass's own records?
+    memory_save
+  It changes only what Windlass keeps for itself (wake-ups, notes): no file of the workspace, and nothing is sent anywhere.
+[a]llow once · this [s]ession · this [p]roject · [N]o ›
+```
+
+and in a one-shot run with `--approval ask` nobody can answer, so the save is refused.
+
+A later session shows `· instructions updated (memory): Notes recalled from memory: ...` at its first step (the
+session that saved the note shows the same line at its next step, or `Memory changed during this session: ...`
+when it already had notes). The model is given the notes under a line that says they are recalled notes, not
+instructions, and that what you say now and what is in the repository take precedence:
 
 ```text
 About the user, in every project:
@@ -115,7 +124,7 @@ In `windlass` and `windlass tui`, for a session that has memory:
 | `/memory confirm <id>`, `/memory reject <id>` | decide on a pending note: confirmed, later sessions are given it; rejected, none is |
 | `/memory renew <id>` | the note is still true: it is confirmed today, which restarts its lapse period |
 | `/remember <text>` | save a note as you, for this project; `/remember --me <text>` saves one about you, for every project. It is "written by the user" |
-| `/forget <id>` | retract a note: no later session is given it; the file is kept with `status: retracted` |
+| `/forget <id>` (or `/memory forget <id>`) | retract a note: no later session is given it; the file is kept with `status: retracted` |
 
 When memory is off, `/memory` says so and how to turn it on; a session started while it was off has none, so it also
 says to start a new session. An editor does the same with `_windlass/memory` and `_windlass/memory_change`
@@ -124,5 +133,3 @@ says to start a new session. An editor does the same with `_windlass/memory` and
 ## Not yet
 
 - **Pending notes are not put to you unasked.** `/memory` lists them; nothing asks at the prompt when one is saved.
-- **Every save asks** in the default mode, with a question that names no path ("writing files"), and is refused in
-  one-shot runs.
