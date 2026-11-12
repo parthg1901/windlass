@@ -26,7 +26,7 @@ import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFi
 import { CHANGED_DURING_COMMAND, hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult, WakeCreateParams } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
-import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
+import { PANEL_WIDTH, middle, panelLines, panelWidth, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { ReviewView, reviewTarget } from "./review-view.ts"
@@ -1920,6 +1920,7 @@ export class App {
   layout(): void {
     const visible = this.panelVisible()
     this.panel.visible = visible
+    this.panel.width = panelWidth(this.renderer.width)
     const label = this.modeText()
     this.shownMode = label
     this.modeLabel.content = label

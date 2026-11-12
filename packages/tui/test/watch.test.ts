@@ -7,7 +7,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { event, text } from "@windlass/core"
 import { flat, m } from "./builders.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, said } from "./helpers.ts"
 
 let mounted: Mounted | null = null
 afterEach(async () => {
@@ -53,7 +53,8 @@ test("/watch lists the commands with their watches, sets one with its options, r
   await run("/watch bg_1 --ignore-case --times 3 listening on port")
   expect(set).toEqual([{ command: "bg_1", watch: { pattern: "listening on port", regex: false, ignoreCase: true, limit: 3 } }])
   // The engine's sentence, as it gave it.
-  expect(await run("/watch bg_9 ready")).toContain("No background command bg_9 is running, so its output cannot be watched: a watch is set while the command runs. Running: bg_1.")
+  await run("/watch bg_9 ready")
+  expect(said(await mounted!.frame())).toContain("No background command bg_9 is running, so its output cannot be watched: a watch is set while the command runs. Running: bg_1.")
   expect(await run("/watch bg_1")).toContain("/watch bg_1 needs the text to look for.")
   await run("/watch remove bg_1.w1")
   expect(await run("/watch remove bg_1.w7")).toContain("there is no watch bg_1.w7 that could still fire")
@@ -70,7 +71,7 @@ test("a watch that is set, fires and ends is a row of its own each; its message 
   )
   await mounted!.settle()
   const frame = flat(await mounted!.frame())
-  expect(frame).toContain('◉ watching background bg_1 for text "listening on" · the agent is told when it prints a matching line (up to 2 times) · bg_1.w1')
+  expect(said(await mounted!.frame())).toContain('◉ watching background bg_1 for text "listening on" · the agent is told when it prints a matching line (up to 2 times) · bg_1.w1')
   expect(frame).toContain("◉ watch bg_1.w1: background bg_1 printed a matching line (1 of 2) · the agent is told · sent by the watch, not typed by you")
   expect(frame).toContain("Server listening on http://localhost:3000")
   expect(frame).toContain("◉ watch bg_1.w1 ended with its command (background bg_1)")

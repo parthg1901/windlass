@@ -17,6 +17,15 @@ import { Theme } from "../src/theme.ts"
 
 export const CLOCK_START = Date.UTC(2026, 10, 12, 9, 0, 0)
 
+/** The conversation's text on one line: each row up to the panel's `│`, the rows joined, runs of space as one. */
+export function said(frame: string): string {
+  return frame
+    .split("\n")
+    .map((line) => line.replace(/│.*$/, ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+}
+
 export interface Mounted {
   readonly app: App
   readonly backend: Backend

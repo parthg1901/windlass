@@ -11,7 +11,7 @@ import type { McpServerInfo } from "@windlass/acp/extensions"
 import { type CallId, type MessageId, event } from "@windlass/core"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import { mcpResultStart } from "../src/rows.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, said } from "./helpers.ts"
 
 let mounted: Mounted | null = null
 afterEach(async () => {
@@ -68,7 +68,7 @@ describe("MCP servers", () => {
     await mounted!.settle()
     expect(approved).toEqual(["theirs:0123456789abcdef"])
     const after = flat(await mounted!.frame())
-    expect(after).toContain('approved: "theirs" starts now; the agent has its tools from your next')
+    expect(said(await mounted!.frame())).toContain('approved: "theirs" starts now; the agent has its tools from your next')
     expect(after).not.toContain("[a] Start it for this project")
   })
 
@@ -184,7 +184,7 @@ describe("forks", () => {
     mounted!.setup.mockInput.pressEnter()
     await mounted!.settle()
     expect(forked).toBe(0)
-    expect(flat(await mounted!.frame())).toContain("/fork copies this conversation into a new session, and there is none")
+    expect(said(await mounted!.frame())).toContain("/fork copies this conversation into a new session, and there is none")
   })
 
   test("a fork's panel counts its own model calls and names the inherited ones apart", async () => {

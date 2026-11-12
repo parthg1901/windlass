@@ -58,7 +58,17 @@ export interface PanelInput {
   readonly subagents?: readonly { readonly title: string; readonly background: boolean; readonly asking: boolean; readonly kind?: "subagent" | "command" }[]
 }
 
-export const PANEL_WIDTH = 36
+export const PANEL_WIDTH = 38
+/** The widest the panel grows on a wide terminal. */
+export const PANEL_MAX_WIDTH = 52
+
+/** The panel's width on a terminal `columns` wide: 38, and a quarter of a wide terminal, up to 52. */
+export function panelWidth(columns: number): number {
+  return Math.max(PANEL_WIDTH, Math.min(PANEL_MAX_WIDTH, Math.floor(columns / 4)))
+}
+
+/** The width of a field's name in the session section, `approval` and a space. */
+const LABEL = 9
 /** The most tasks the panel lists: the rest is a count, with the one in progress always among those shown. */
 const PANEL_TASKS = 8
 
@@ -66,25 +76,25 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   const inner = columns - 2
   const lines: Span[][] = []
   const heading = (text: string, extra: Span[] = []) => lines.push([span(text, undefined, { bold: true }), ...extra])
-  const field = (name: string, value: string, role?: Span["role"]) => lines.push([span(name.padEnd(7), "dim"), span(truncate(value, inner - 7), role)])
+  const field = (name: string, value: string, role?: Span["role"]) => lines.push([span(name.padEnd(LABEL), "dim"), span(truncate(value, inner - LABEL), role)])
 
   heading("Session")
   const session = input.session
-  field("id", session.id === null ? "—" : middle(session.id, inner - 7))
-  field("dir", session.cwd === null ? "—" : middle(tilde(session.cwd, input.home), inner - 7))
+  field("id", session.id === null ? "—" : middle(session.id, inner - LABEL))
+  field("dir", session.cwd === null ? "—" : middle(tilde(session.cwd, input.home), inner - LABEL))
   field("model", session.model ?? "—")
   field("effort", session.effort ?? "default")
   if ((session.agent ?? null) !== null) field("agent", session.agent!, "accent")
   field("state", stateText(input))
   // Every subagent at work, one line each: what it was asked, and whether it waits for you or works in the background.
   for (const [index, agent] of (input.subagents ?? []).entries())
-    field(index === 0 || agent.kind !== input.subagents![index - 1]!.kind ? (agent.kind === "command" ? "bg" : "agents") : "", `${agent.asking ? "? " : agent.background ? "◌ " : "⋯ "}${shorten(agent.title, inner - 9)}`, agent.asking ? "warn" : undefined)
+    field(index === 0 || agent.kind !== input.subagents![index - 1]!.kind ? (agent.kind === "command" ? "bg" : "agents") : "", `${agent.asking ? "? " : agent.background ? "◌ " : "⋯ "}${shorten(agent.title, inner - LABEL - 2)}`, agent.asking ? "warn" : undefined)
   // Cut at a word where it can, without a stray full stop before the ellipsis.
-  if (session.title !== null && session.title !== "") field("title", shorten(session.title, inner - 7))
-  if ((session.forkedFrom ?? null) !== null) field("fork", `of ${middle(session.forkedFrom!, inner - 10)}`, "dim")
+  if (session.title !== null && session.title !== "") field("title", shorten(session.title, inner - LABEL))
+  if ((session.forkedFrom ?? null) !== null) field("fork", `of ${middle(session.forkedFrom!, inner - LABEL - 3)}`, "dim")
   const approval = input.approval ?? null
   if (approval !== null)
-    lines.push([span("approval ", "dim"), span(approval.mode ?? "?", undefined, { bold: true }), span(approval.sandbox ? " · sandbox ⊡" : " · no sandbox", approval.sandbox ? "dim" : "warn")])
+    lines.push([span("approval".padEnd(LABEL), "dim"), span(approval.mode ?? "?", undefined, { bold: true }), span(approval.sandbox ? " · sandbox ⊡" : " · no sandbox", approval.sandbox ? "dim" : "warn")])
   if (session.taint !== null) field("trust", "untrusted · /clear-taint", "warn")
   lines.push([])
 

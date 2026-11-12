@@ -374,7 +374,7 @@ describe("approvals and safety, against windlass acp", () => {
     let frame = await term.waitFor("Read it.", { timeoutMs: 20_000 })
     expect(conversation(frame)).toContain("untrusted content is in the conversation")
     expect(conversation(frame)).toContain("/clear-taint when you trust what is there")
-    expect(frame).toContain("trust  untrusted · /clear-taint")
+    expect(frame).toContain("trust    untrusted · /clear-taint")
     await term.waitFor(READY)
     term.type("/clear-taint")
     term.keys("Enter")
@@ -382,7 +382,7 @@ describe("approvals and safety, against windlass acp", () => {
     expect(frame).toContain("Clearing says you trust it")
     term.type("y")
     frame = await term.waitFor("the conversation is trusted again")
-    expect(frame).not.toContain("trust  untrusted")
+    expect(frame).not.toContain("trust    untrusted")
   }, 60_000)
 
   test("/fork: a new session with the conversation so far, said so; a message in it is answered there", async () => {

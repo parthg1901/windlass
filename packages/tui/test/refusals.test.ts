@@ -6,7 +6,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { type EventData, type SessionId, event } from "@windlass/core"
 import { REVIEWER, c, call, flat, m, settle, started } from "./builders.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, said } from "./helpers.ts"
 
 let mounted: Mounted | null = null
 afterEach(async () => {
@@ -62,10 +62,8 @@ test("a follow-up to a subagent that the session's agent did not let through is 
   await mounted!.settle()
   const frame = flat(await mounted!.frame())
   expect(frame).toContain("⊘ subagent Also fix the typo · refused by the reviewer agent")
-  // The engine's sentence, whole, under the row (the panel stands beside it, so it is read in parts).
-  expect(frame).toContain(`The follow-up was not sent: subagent ${child} was started before this session ran as the agent "reviewer",`)
-  expect(frame).toContain("so it is not under that agent's restrictions.")
-  expect(frame).toContain("Start a new subagent for the work")
+  // The engine's sentence, whole, under the row.
+  expect(said(await mounted!.frame())).toContain(sentence)
   expect(frame).toContain("✗ subagent And the tests")
   expect(frame.match(/✗/g)).toHaveLength(1)
 })

@@ -1,23 +1,23 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`the approval dock shows the tool, the command, why, how it runs, and each choice with what it remembers (100x30) 1`] = `
-"  › Summarise the release notes at example.com.                 │ Session
-                                                                │ id     ses_script
-  ✗ shell curl -s https://example.com/notes ⊡ · exit 6 · 100ms  │ dir    /repo
-      curl: (6) Could not resolve host: example.com             │ model  gpt-test
-      [sandbox] This command ran in the sandbox (no network, a… │ effort medium
-  ? shell curl -s https://example.… · waiting for your approval │ state  working · 1s · 2 steps
-                                                                │ title  Summarise the release…
-                                                                │
-                                                                │ Tokens         session      last
-                                                                │ input            1,000     1,000
-                                                                │  cached            800       800
-                                                                │  cache share       80%       80%
-                                                                │ output              50        50
-                                                                │  reasoning          10        10
-                                                                │ calls                1
-                                                                │ context     1.1k (window unknown)
-                                                                │
+"  › Summarise the release notes at example.com.               │ Session
+                                                              │ id       ses_script
+  ✗ shell curl -s https://example.com/not… ⊡ · exit 6 · 100ms │ dir      /repo
+      curl: (6) Could not resolve host: example.com           │ model    gpt-test
+      [sandbox] This command ran in the sandbox (no network,… │ effort   medium
+  ? shell curl -s https://exampl… · waiting for your approval │ state    working · 1s · 2 steps
+                                                              │ title    Summarise the release…
+                                                              │
+                                                              │ Tokens          session       last
+                                                              │ input             1,000      1,000
+                                                              │  cached             800        800
+                                                              │  cache share        80%        80%
+                                                              │ output               50         50
+                                                              │  reasoning           10         10
+                                                              │ calls                 1
+                                                              │ context     1.1k (window unknown)
+                                                              │
 ─ ? Allow network access for this command? ─────────────────────────────────────────────────────────
   shell  curl -s https://example.com/notes
   why: network access for this command

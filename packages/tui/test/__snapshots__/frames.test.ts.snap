@@ -24,86 +24,86 @@ Enter send · / commands · Ctrl-O expand · Ctrl-P panel"
 `;
 
 exports[`the showcase turn 100x30 1`] = `
-"  › The add test is failing. Find out why and fix it.           │ Session
-                                                                │ id     ses_demo
-  ∴ thought · Locating the test                                 │ dir    /repo
-                                                                │ model  gpt-test
-  I'll find the code and run the failing test.                  │ effort medium
-                                                                │ state  idle
-  ✓ grep add\\( in src · 4 matches in 3 files · 220ms            │ title  The add test is failing…
-  ✗ shell bun test src/add.test.ts · exit 1 · 3.5s              │
-        Received: -1                                            │ Tokens         session      last
-       0 pass                                                   │ input           44,746     9,410
-       1 fail                                                   │  cached         35,072     9,216
-  ✓ read src/add.ts · 3 lines · 180ms                           │  cache share       78%       98%
-                                                                │ output             396        52
-  \`add\` subtracts instead of adding. Fixing it.                 │  reasoning          64         0
-                                                                │ calls                5
-  ✓ edit src/add.ts · +1 -1 · 180ms                             │ context     9.5k of 272k (3%)
-  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s              │
-                                                                │ Cache per call  █ cached ░ new
-  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now returns │ 1 ░░░░░░░░░░░░░░░     8.2k   0%
-  \`a + b\`.                                                      │ 2 ███████████████░    8.9k  92%
-                                                                │ 3 ████████████████    9.0k  97%
-  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).           │ 4 ████████████████░   9.2k  97%
-                                                                │ 5 █████████████████   9.4k  98%
-  ○ done · no checks configured · 5 steps · 11s · turn 1        │
-    edited 1 file: src/add.ts (from its tool calls) · Ctrl-O    │ demo: find-and-fix-a-failing-test
-      for diffs                                                 │
-    tokens · 44,746 in · 78% cached · 396 out                   │
+"  › The add test is failing. Find out why and fix it.         │ Session
+                                                              │ id       ses_demo
+  ∴ thought · Locating the test                               │ dir      /repo
+                                                              │ model    gpt-test
+  I'll find the code and run the failing test.                │ effort   medium
+                                                              │ state    idle
+  ✓ grep add\\( in src · 4 matches in 3 files · 220ms          │ title    The add test is failing…
+  ✗ shell bun test src/add.test.ts · exit 1 · 3.5s            │
+        Received: -1                                          │ Tokens          session       last
+       0 pass                                                 │ input            44,746      9,410
+       1 fail                                                 │  cached          35,072      9,216
+  ✓ read src/add.ts · 3 lines · 180ms                         │  cache share        78%        98%
+                                                              │ output              396         52
+  \`add\` subtracts instead of adding. Fixing it.               │  reasoning           64          0
+                                                              │ calls                 5
+  ✓ edit src/add.ts · +1 -1 · 180ms                           │ context     9.5k of 272k (3%)
+  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s            │
+                                                              │ Cache per call  █ cached ░ new
+  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now       │ 1 ░░░░░░░░░░░░░░░░░     8.2k   0%
+  returns \`a + b\`.                                            │ 2 █████████████████░    8.9k  92%
+                                                              │ 3 ██████████████████    9.0k  97%
+  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).         │ 4 ██████████████████░   9.2k  97%
+                                                              │ 5 ███████████████████   9.4k  98%
+  ○ done · no checks configured · 5 steps · 11s · turn 1      │
+    edited 1 file: src/add.ts (from its tool calls) · Ctrl-O  │ demo: find-and-fix-a-failing-test
+      for diffs                                               │
+    tokens · 44,746 in · 78% cached · 396 out                 │
 ● ready
 ›
 Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
 `;
 
 exports[`the showcase turn 200x50 1`] = `
-"  › The add test is failing. Find out why and fix it.                                                                                                               │ Session
-                                                                                                                                                                    │ id     ses_demo
-  ∴ thought · Locating the test                                                                                                                                     │ dir    /repo
-                                                                                                                                                                    │ model  gpt-test
-  I'll find the code and run the failing test.                                                                                                                      │ effort medium
-                                                                                                                                                                    │ state  idle
-  ✓ grep add\\( in src · 4 matches in 3 files · 220ms                                                                                                                │ title  The add test is failing…
-  ✗ shell bun test src/add.test.ts · exit 1 · 3.5s                                                                                                                  │
-        Received: -1                                                                                                                                                │ Tokens         session      last
-       0 pass                                                                                                                                                       │ input           44,746     9,410
-       1 fail                                                                                                                                                       │  cached         35,072     9,216
-  ✓ read src/add.ts · 3 lines · 180ms                                                                                                                               │  cache share       78%       98%
-                                                                                                                                                                    │ output             396        52
-  \`add\` subtracts instead of adding. Fixing it.                                                                                                                     │  reasoning          64         0
-                                                                                                                                                                    │ calls                5
-  ✓ edit src/add.ts · +1 -1 · 180ms                                                                                                                                 │ context     9.5k of 272k (3%)
-  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s                                                                                                                  │
-                                                                                                                                                                    │ Cache per call  █ cached ░ new
-  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now returns \`a + b\`.                                                                                            │ 1 ░░░░░░░░░░░░░░░     8.2k   0%
-                                                                                                                                                                    │ 2 ███████████████░    8.9k  92%
-  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).                                                                                                               │ 3 ████████████████    9.0k  97%
-                                                                                                                                                                    │ 4 ████████████████░   9.2k  97%
-  ○ done · no checks configured · 5 steps · 11s · turn 1                                                                                                            │ 5 █████████████████   9.4k  98%
-    edited 1 file: src/add.ts (from its tool calls) · Ctrl-O for diffs                                                                                              │
-    tokens · 44,746 in · 35,072 cached (78%) · 396 out (64 reasoning)                                                                                               │ demo: find-and-fix-a-failing-test
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
-                                                                                                                                                                    │
+"  › The add test is failing. Find out why and fix it.                                                                                                 │ Session
+                                                                                                                                                      │ id       ses_demo
+  ∴ thought · Locating the test                                                                                                                       │ dir      /repo
+                                                                                                                                                      │ model    gpt-test
+  I'll find the code and run the failing test.                                                                                                        │ effort   medium
+                                                                                                                                                      │ state    idle
+  ✓ grep add\\( in src · 4 matches in 3 files · 220ms                                                                                                  │ title    The add test is failing. Find out…
+  ✗ shell bun test src/add.test.ts · exit 1 · 3.5s                                                                                                    │
+        Received: -1                                                                                                                                  │ Tokens                session             last
+       0 pass                                                                                                                                         │ input                  44,746            9,410
+       1 fail                                                                                                                                         │  cached                35,072            9,216
+  ✓ read src/add.ts · 3 lines · 180ms                                                                                                                 │  cache share              78%              98%
+                                                                                                                                                      │ output                    396               52
+  \`add\` subtracts instead of adding. Fixing it.                                                                                                       │  reasoning                 64                0
+                                                                                                                                                      │ calls                       5
+  ✓ edit src/add.ts · +1 -1 · 180ms                                                                                                                   │ context     9.5k of 272k (3%)
+  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s                                                                                                    │
+                                                                                                                                                      │ Cache per call  █ cached ░ new
+  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now returns \`a + b\`.                                                                              │ 1 ░░░░░░░░░░░░░░░░░░░░░░░░░░░       8.2k   0%
+                                                                                                                                                      │ 2 ███████████████████████████░░     8.9k  92%
+  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).                                                                                                 │ 3 █████████████████████████████░    9.0k  97%
+                                                                                                                                                      │ 4 ██████████████████████████████    9.2k  97%
+  ○ done · no checks configured · 5 steps · 11s · turn 1                                                                                              │ 5 ██████████████████████████████░   9.4k  98%
+    edited 1 file: src/add.ts (from its tool calls) · Ctrl-O for diffs                                                                                │
+    tokens · 44,746 in · 35,072 cached (78%) · 396 out (64 reasoning)                                                                                 │ demo: find-and-fix-a-failing-test
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
+                                                                                                                                                      │
 ● ready
 ›
 Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"

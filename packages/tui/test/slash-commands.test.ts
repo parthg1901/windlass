@@ -9,7 +9,7 @@ import { event } from "@windlass/core"
 import type { CommandsResult } from "@windlass/acp/extensions"
 import { COMMANDS, complete, fileCommands, findFileCommand, parseCommand } from "../src/commands.ts"
 import { flat, m, started, step, succeeded } from "./builders.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, said } from "./helpers.ts"
 
 const LISTING: CommandsResult = {
   available: true,
@@ -127,7 +127,7 @@ describe("in the app", () => {
     await enter("/frontend:test --watch")
     expect(sent).toEqual([{ name: "frontend:test", args: "--watch", delivery: "steer" }])
     await enter("/relase-notes 1.4")
-    expect(flat(await mounted!.frame())).toContain("/relase-notes is not a command, so nothing was sent; did you mean /release-notes? (/help lists them). To send a message that starts with a slash, begin it with two: //relase-notes")
+    expect(said(await mounted!.frame())).toContain("/relase-notes is not a command, so nothing was sent; did you mean /release-notes? (/help lists them). To send a message that starts with a slash, begin it with two: //relase-notes")
     await enter("/hlep")
     expect(flat(await mounted!.frame())).toContain("/hlep is not a command, so nothing was sent; did you mean /help?")
     await enter("/broken")

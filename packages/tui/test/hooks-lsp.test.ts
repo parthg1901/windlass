@@ -12,7 +12,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult } from "@windlass/acp/extensions"
 import { type CallId, type MessageId, brand, event } from "@windlass/core"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, said } from "./helpers.ts"
 
 let mounted: Mounted | null = null
 afterEach(async () => {
@@ -411,6 +411,6 @@ describe("before a message is sent", () => {
     await mounted.settle()
     const after = flat(await mounted.frame())
     expect(after).toContain('approved: "issues" starts now. The turn in progress began without it, so the agent may already have said it has no such tools')
-    expect(after).toContain("ask again in your next message")
+    expect(said(await mounted.frame())).toContain("ask again in your next message")
   })
 })

@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { brand } from "@windlass/core"
-import { panelLines } from "../src/panel.ts"
+import { panelLines, panelWidth } from "../src/panel.ts"
 import { Theme } from "../src/theme.ts"
 import type { CallUsage } from "../src/transcript.ts"
 import { type Mounted, mount, playAll } from "./helpers.ts"
@@ -109,12 +109,12 @@ describe("the usage panel", () => {
       connection: "connected",
       home: "/home/me",
     },
-    34,
+    36,
     40,
   ).map((line) => line.map((part) => part.text).join(""))
 
   test("session totals, the last call, the cache share and the context", () => {
-    expect(lines).toContain("dir    ~/project")
+    expect(lines).toContain("dir      ~/project")
     expect(lines.find((line) => line.startsWith("input"))).toMatch(/input\s+56,000\s+20,000/)
     expect(lines.find((line) => line.startsWith(" cached"))).toMatch(/22,000\s+0$/)
     expect(lines.find((line) => line.startsWith(" cache share"))).toMatch(/39%\s+0%$/)
@@ -179,13 +179,13 @@ test("the panel's heading over the bars says how many calls it shows when not al
       connection: "connected",
       home: "/home/me",
     },
-    34,
+    36,
     30,
   ).map((line) => line.map((part) => part.text).join(""))
   const bars = lines.filter((line) => /^\d+ /.test(line))
   expect(bars.length).toBeLessThan(40)
   expect(lines).toContain(`Cache, last ${bars.length}  █ cached ░ new`)
-  expect(lines.every((line) => Bun.stringWidth(line) <= 34)).toBe(true)
+  expect(lines.every((line) => Bun.stringWidth(line) <= 36)).toBe(true)
   expect(lines.join("\n")).not.toContain("…")
 })
 
@@ -197,4 +197,32 @@ test("NO_COLOR keeps attributes and drops every colour", () => {
     expect(colored.paint({ text: "x", role }).fg.intent).toBe("indexed")
   }
   expect(plain.paint({ text: "x", role: "user" }).attributes).toBe(colored.paint({ text: "x", role: "user" }).attributes)
+})
+
+test("the panel grows on a wide terminal, and every name in the session section takes the same column", () => {
+  expect(panelWidth(80)).toBe(38)
+  expect(panelWidth(120)).toBe(38)
+  expect(panelWidth(200)).toBe(50)
+  expect(panelWidth(400)).toBe(52)
+  const lines = panelLines(
+    {
+      session: { id: "ses_0009e333e7112f4f87ac497e", cwd: "/home/me/project", title: "Explain the failing login test", model: "gpt-6-luna", effort: "low", taint: { at: 1 } as never },
+      calls: [],
+      activity: { executing: false, turnStartedAt: null, steps: 0, summaryCalls: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null },
+      now: 0,
+      contextWindow: 272_000,
+      connection: "connected",
+      home: "/home/me",
+      approval: { mode: "auto", sandbox: true },
+    },
+    48,
+    30,
+  ).map((line) => line.map((part) => part.text).join(""))
+  // At 200 columns a real session ID, the title and the trust line are whole.
+  expect(lines).toContain("id       ses_0009e333e7112f4f87ac497e")
+  expect(lines).toContain("title    Explain the failing login test")
+  expect(lines).toContain("approval auto · sandbox ⊡")
+  expect(lines).toContain("trust    untrusted · /clear-taint")
+  const starts = lines.slice(1, 9).filter((line) => line !== "").map((line) => line.search(/(?<=^\S+\s+)\S/))
+  expect(new Set(starts)).toEqual(new Set([9]))
 })
