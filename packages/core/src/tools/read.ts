@@ -3,7 +3,7 @@ import { basename, dirname } from "node:path"
 import { OUTPUT_LIMITS } from "../tool/cap.ts"
 import type { Tool, ToolContext, ToolResult } from "../tool/tool.ts"
 import { byCodeUnits, cutLine, shownPath, errorCode, failure, looksBinary, toolPath, success, statPath } from "./common.ts"
-import { type ImageInfo, SNIFF_BYTES, describeBinary, sniffImage } from "./sniff.ts"
+import { type ImageInfo, SNIFF_BYTES, describeBinary, isAnimated, sniffImage } from "./sniff.ts"
 
 export interface ReadInput {
   readonly path: string
@@ -24,7 +24,7 @@ export function readTool(): Tool<ReadInput> {
   return {
     name: "read",
     description:
-      "Read a text file. Each line is prefixed with its line number and a tab. Returns up to 2000 lines from `offset` (fewer when lines are long; the end of the output says how to continue). Lines longer than 2000 characters are cut.",
+      "Read a text file, or look at an image. For a text file, each line is prefixed with its line number and a tab. Returns up to 2000 lines from `offset` (fewer when lines are long; the end of the output says how to continue). Lines longer than 2000 characters are cut. A PNG, JPEG, GIF or WebP image (not animated, at most 5 MB) is attached for you to see; `offset` and `limit` do not apply to it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -75,6 +75,9 @@ async function readImage(file: Bun.BunFile, shown: string, image: ImageInfo, siz
       `Cannot show ${shown}: it is a ${image.name} image${pixels} of ${size} bytes, over the limit of ${MAX_IMAGE_BYTES} bytes (${MAX_IMAGE_BYTES / 1024 / 1024} MB) for an image. Make a smaller copy (scaled down or more compressed) and read that.`,
     )
   const bytes = new Uint8Array(await file.arrayBuffer())
+  // The provider takes still images only, and an animated one would fail every later request of the session.
+  if (isAnimated(bytes, image))
+    return failure(`Cannot show ${shown}: it is an animated ${image.name} image${pixels}, and only still images can be shown. Save one frame of it as a PNG and read that.`)
   let blob
   try {
     blob = context.putBlob(bytes, image.mediaType)

@@ -118,3 +118,50 @@ describe("read: images", () => {
     }
   })
 })
+
+describe("read: animated images", () => {
+  /** One frame of a GIF: a graphic control extension, an image descriptor, and one data sub-block. */
+  const frame = bytes([0x21, 0xf9, 0x04, 0, 10, 0, 0, 0], [0x2c], le16(0), le16(0), le16(2), le16(2), [0], [2], [2, 0x4c, 0x01], [0])
+  /** The header with a two-colour global table, which the walk must skip. */
+  const head = bytes("GIF89a", le16(2), le16(2), [0x80, 0, 0], [0, 0, 0, 255, 255, 255])
+  const loop = bytes([0x21, 0xff, 11], "NETSCAPE2.0", [3, 1, 0, 0], [0])
+  const STILL = bytes([...head], [...frame], ";")
+  const ANIMATED = bytes([...head], [...loop], [...frame], [...frame], ";")
+  const WEBP_ANIMATED = bytes("RIFF", [30, 0, 0, 0], "WEBP", "VP8X", [10, 0, 0, 0], [0x02, 0, 0, 0], le24(64 - 1), le24(64 - 1), [0, 0])
+
+  test("a GIF with one image is attached, whatever extensions it carries", async () => {
+    const { ws, blobs, read } = imageWorkspace()
+    await ws.write("still.gif", STILL)
+    expect(await read("still.gif")).toMatchObject({ kind: "completed", settlement: { outcome: "success", output: `still.gif: GIF image (image/gif), 2x2 pixels, ${STILL.length} bytes, attached.` } })
+    expect(blobs.size).toBe(1)
+  })
+
+  test("an animated GIF is refused with what to do, and nothing is attached", async () => {
+    const { ws, blobs, read } = imageWorkspace()
+    await ws.write("spinner.gif", ANIMATED)
+    expect(await read("spinner.gif")).toMatchObject({
+      kind: "completed",
+      settlement: { outcome: "error", output: "Cannot show spinner.gif: it is an animated GIF image, 2x2 pixels, and only still images can be shown. Save one frame of it as a PNG and read that.", attachments: [] },
+    })
+    expect(blobs.size).toBe(0)
+  })
+
+  test("an animated WebP is refused the same way", async () => {
+    const { ws, blobs, read } = imageWorkspace()
+    await ws.write("spinner.webp", WEBP_ANIMATED)
+    expect(await read("spinner.webp")).toMatchObject({ kind: "completed", settlement: { outcome: "error", output: expect.stringContaining("it is an animated WebP image, 64x64 pixels") } })
+    expect(blobs.size).toBe(0)
+  })
+
+  test("a GIF that ends in the middle of a block counts as still: the provider says what it is", async () => {
+    const { ws, read } = imageWorkspace()
+    await ws.write("cut.gif", ANIMATED.subarray(0, head.length + loop.length + 12))
+    expect(await read("cut.gif")).toMatchObject({ kind: "completed", settlement: { outcome: "success" } })
+  })
+
+  test("the description says that read shows images", () => {
+    const tool = createStandardTools({ spillDir: tempDir() }).find((candidate) => candidate.name === "read")!
+    expect(tool.description).toContain("PNG, JPEG, GIF or WebP image (not animated, at most 5 MB)")
+    expect(MAX_IMAGE_BYTES).toBe(5 * 1024 * 1024)
+  })
+})

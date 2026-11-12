@@ -40,6 +40,43 @@ export function sniffImage(bytes: Uint8Array): ImageInfo | null {
   return null
 }
 
+/**
+ * Whether the whole file `bytes` is an animated GIF or an animated WebP. The
+ * provider accepts still images only, and rejects the whole request for an
+ * animated one, so `read` refuses it instead of attaching it.
+ *
+ * A GIF is animated when it holds more than one image: the blocks are walked
+ * (each is skipped by its stated length, nothing is decoded) until the second
+ * image descriptor or the trailer. A WebP says so in its `VP8X` header (the
+ * animation flag). A file that ends early or does not parse counts as still:
+ * what it is, is then the provider's to say.
+ */
+export function isAnimated(bytes: Uint8Array, image: Pick<ImageInfo, "mediaType">): boolean {
+  if (image.mediaType === "image/webp") return ascii(bytes, 12, "VP8X") && bytes.length > 20 && (bytes[20]! & 0x02) !== 0
+  if (image.mediaType !== "image/gif" || bytes.length < 13) return false
+  const table = (flags: number) => ((flags & 0x80) !== 0 ? 3 * (1 << ((flags & 0x07) + 1)) : 0)
+  /** Skips data sub-blocks (a length byte, then that many bytes; a zero length ends them). */
+  const skipBlocks = (from: number) => {
+    let at = from
+    while (at < bytes.length && bytes[at] !== 0) at += bytes[at]! + 1
+    return at + 1
+  }
+  let at = 13 + table(bytes[10]!)
+  let images = 0
+  while (at < bytes.length) {
+    const kind = bytes[at]!
+    if (kind === 0x2c) {
+      images += 1
+      if (images > 1) return true
+      if (at + 10 > bytes.length) return false
+      // The descriptor, its local colour table, the LZW code size, then the image data.
+      at = skipBlocks(at + 10 + table(bytes[at + 9]!) + 1)
+    } else if (kind === 0x21) at = skipBlocks(at + 2)
+    else return false
+  }
+  return false
+}
+
 function webpSize(bytes: Uint8Array): [number | null, number | null] {
   if (ascii(bytes, 12, "VP8 ") && bytes.length >= 30 && starts(bytes.subarray(23), 0x9d, 0x01, 0x2a)) return [u16le(bytes, 26) & 0x3fff, u16le(bytes, 28) & 0x3fff]
   if (ascii(bytes, 12, "VP8L") && bytes.length >= 25 && bytes[20] === 0x2f) {
