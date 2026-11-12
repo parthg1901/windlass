@@ -207,12 +207,16 @@ When a tool call needs your approval (interactive mode):
   /clear-taint            after a web page, an MCP result or a file from outside the
                           working directory entered the conversation, anything that can
                           send data out asks again; this says you trust what is there
+  /approval [ask|auto|full]  says the approval mode, or switches it from the next tool call
+  Commands that ran in the sandbox are marked ⊡ (with +network or +write <dir> when they
+  were given more); one that ran without it says "no sandbox".
 
 At the prompt, while the agent is idle:
   /undo                   go back to before your last message: the files and the
                           conversation. Shows what will change first, and asks before
                           it overwrites a file edited since by you or another session
   /redo                   bring back what the last /undo took away
+  /diff                   the files the last turn changed, with their diffs
 
 Sessions are stored one file each, so several ${b} processes (and an editor) can
 work at once, each in its own session. A session another process is working in

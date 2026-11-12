@@ -9,6 +9,7 @@
  */
 import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
+import type { DiffFile } from "@light-harness/acp/extensions"
 import { callArgument, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatDuration, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
 
@@ -53,6 +54,8 @@ interface Call {
   startedAt: number | null
   /** The line count right after this call's start line; equal at settle time means nothing came in between. */
   after: number
+  /** How a command ran (`tool.started`'s `run.sandbox`): in the sandbox with what extra access, `null` without it; absent when not recorded. */
+  sandbox?: { readonly network: boolean; readonly writableRoots: readonly string[] } | null
 }
 
 interface Turn {
@@ -138,6 +141,23 @@ export class PrettyRenderer implements Sink {
 
   notice(text: string, tone: "info" | "warn" | "error" = "info"): void {
     this.line("info", [seg(text, tone === "error" ? "red" : tone === "warn" ? "yellow" : "dim")])
+    this.drawStatus()
+  }
+
+  /** `/diff`: each file with its status and line counts, then its patch with added and removed lines coloured. */
+  diff(files: readonly DiffFile[]): void {
+    for (const file of files) {
+      const status = file.status === "modified" ? "" : ` · ${file.status.replace(/_/g, " ")}`
+      this.line("info", [seg(file.path, "bold"), seg(`${status}${file.binary || file.patch === null ? "" : ` · +${file.added} -${file.removed}`}`, "dim")])
+      if (file.binary) this.line("info", [seg("  binary file: no diff shown", "dim")])
+      else if (file.omitted) this.line("info", [seg("  not shown: the turn's diff is too large", "dim")])
+      for (const text of (file.patch ?? "").split("\n")) {
+        if (text === "" || /^(diff --git |index |new file mode |deleted file mode )/.test(text)) continue
+        const tone = text.startsWith("+++") || text.startsWith("---") ? "dim" : text.startsWith("+") ? "green" : text.startsWith("-") ? "red" : text.startsWith("@@") ? "cyan" : "dim"
+        for (const line of wrap(sanitize(text), this.width - 2)) this.line("info", [seg(`  ${line}`, tone)])
+      }
+      if (file.truncated) this.line("info", [seg("  … cut: the change is larger than the per-file limit", "dim")])
+    }
     this.drawStatus()
   }
 
@@ -252,6 +272,7 @@ export class PrettyRenderer implements Sink {
         const call = this.calls.get(id)
         if (call !== undefined) call.startedAt = event.time
         else this.calls.set(id, { name: "tool", arg: event.data.callId, startedAt: event.time, after: -1 })
+        if (event.data.run !== undefined) this.calls.get(id)!.sandbox = event.data.run.sandbox
         this.running.add(id)
         return
       }
@@ -601,7 +622,7 @@ export class PrettyRenderer implements Sink {
     const room = this.width - displayWidth(`  ✓ ${call.name} · ${described.text}${suffix([duration])}`)
     const outcome = !adjacent && room < 16 && described.short !== undefined ? { ...described, text: described.short } : described
     const head: Segment[] = [seg("  "), seg(`${outcome.symbol} `, outcome.tone)]
-    const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), seg(suffix([duration]), "dim")]
+    const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), ...sandboxMark(call), seg(suffix([duration]), "dim")]
     if (adjacent) this.line("info", [...head, ...trimLeadingDot(tail, outcome.text)])
     else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · ", "dim"), ...tail])
     for (const detail of detailLines(call.name, data)) this.line("info", [seg(`    ${detail}`, "dim")])
@@ -1076,4 +1097,17 @@ function quote(text: string): string {
 /** Model text is printed as is, except escape sequences and other control characters a terminal would act on. */
 function sanitize(text: string): string {
   return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+}
+
+/**
+ * How a command ran, kept small: ` ⊡` in the sandbox, with the extra access
+ * spelled out (` ⊡ +network`, ` ⊡ +write /opt/cache`); ` · no sandbox` for a
+ * command that ran without it. Nothing when the run was not recorded.
+ */
+function sandboxMark(call: Call): Segment[] {
+  const sandbox = call.sandbox
+  if (sandbox === undefined) return []
+  if (sandbox === null) return call.name === "shell" ? [seg(" · no sandbox", "yellow")] : []
+  const extra = [sandbox.network ? "+network" : null, ...sandbox.writableRoots.map((root) => `+write ${root}`)].filter((part) => part !== null)
+  return [seg(` ⊡${extra.length === 0 ? "" : ` ${extra.join(" ")}`}`, extra.length === 0 ? "dim" : "yellow")]
 }

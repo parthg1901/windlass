@@ -24,6 +24,7 @@ import {
   brand,
   createHarness,
 } from "@light-harness/core"
+import { titleFromEvents } from "@light-harness/acp/extensions"
 import { askLocally } from "./commands.ts"
 import { type Approver, type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type Session, type SessionSummary } from "./engine.ts"
 
@@ -79,6 +80,11 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
           approver = next
         },
         clearTaint: async () => session.clearTaint(),
+        approvalMode: async (mode) => {
+          if (mode !== undefined) session.setApproval({ mode: mode as "ask" | "auto" | "full" })
+          const state = session.approval()
+          return { mode: state?.policy.mode ?? null, tainted: state?.taint.tainted ?? false, taint: session.projection().session.approval?.taint?.text ?? null }
+        },
         close: () => harness.close(),
       }
     },
@@ -88,7 +94,8 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
         return await unavailable(async () =>
           harness.engine.listSessions({ cwd }).map((summary) => ({
             id: summary.session.id,
-            title: summary.session.title,
+            // As the protocol path lists it: the session's own title, or one derived from its first message.
+            title: summary.session.title ?? titleFromEvents(harness.engine.readEvents(summary.session.id, { limit: 60 })),
             cwd: summary.session.cwd,
             updatedAt: summary.updatedAt,
             model: summary.session.settings.model,

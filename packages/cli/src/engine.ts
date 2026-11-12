@@ -32,6 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
+import type { DiffResult } from "@light-harness/acp/extensions"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
@@ -177,6 +178,10 @@ export interface Session {
   setApprover?(approver: Approver | null): void
   /** `/clear-taint`: the user says the conversation is trustworthy again. Resolves with whether it was tainted. */
   clearTaint?(): Promise<boolean>
+  /** `/approval [mode]`: the session's approval mode (`ask`, `auto`, `full`), after switching to `mode` when given, and whether it is tainted. */
+  approvalMode?(mode?: string): Promise<{ readonly mode: string | null; readonly tainted: boolean; readonly taint: string | null }>
+  /** `/diff`: the files the latest turn changed, with bounded per-file patches. */
+  diff?(): Promise<DiffResult>
   /** Stops anything still running (as a shutdown) and ends `events`. */
   close(): Promise<void>
   /**

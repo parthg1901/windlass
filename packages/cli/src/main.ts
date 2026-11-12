@@ -319,7 +319,9 @@ async function interactiveLoop(context: Interactive): Promise<number> {
           if (control.running) return context.leave(0)
           return waiting?.(null)
         }
-        if (trimmed === "/clear-taint") return void clearTaint(session, renderer)
+        if (trimmed === "/clear-taint") return void clearTaint(session, renderer, screen)
+        if (/^\/(approval|mode)(\s|$)/.test(trimmed)) return void approvalMode(session, renderer, trimmed.replace(/^\/\w+\s*/, ""))
+        if (trimmed === "/diff") return void showDiff(session, renderer)
         if (control.running) return trimmed === "" ? undefined : steer(action.text)
         return waiting?.(action.text)
       }
@@ -378,13 +380,47 @@ export function approverAt(screen: Pick<Screen, "ask">, session: Pick<Session, "
   }
 }
 
-/** `/clear-taint`: tells the engine the conversation is trustworthy again; the event that follows is what is shown. */
-async function clearTaint(session: Session, renderer: PrettyRenderer): Promise<void> {
+/**
+ * `/clear-taint`: after a confirmation that says what clearing means, tells
+ * the engine the conversation is trustworthy again; the event that follows is
+ * what is shown.
+ */
+async function clearTaint(session: Session, renderer: PrettyRenderer, screen: Pick<Screen, "ask">): Promise<void> {
   if (session.clearTaint === undefined) return renderer.notice("/clear-taint is not available with this engine", "warn")
+  renderer.notice("Clearing says you trust the untrusted content in this conversation: network access for a command and commands outside the sandbox then follow your mode and earlier approvals again. The content stays, and the model may still act on it.")
+  const answer = await screen.ask("clear it? [y/N] › ")
+  if (answer === null || !/^y(es)?$/i.test(answer.trim())) return renderer.notice("the conversation stays untrusted")
   try {
     if (!(await session.clearTaint())) renderer.notice("there is nothing to clear: no untrusted content is in this conversation")
   } catch (error) {
     renderer.notice(`/clear-taint failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+  }
+}
+
+/** `/approval [ask|auto|full]`: says the session's approval mode, or switches it from the next tool call. */
+async function approvalMode(session: Session, renderer: PrettyRenderer, mode: string): Promise<void> {
+  if (session.approvalMode === undefined) return renderer.notice("/approval is not available with this engine", "warn")
+  const asked = mode.trim().toLowerCase()
+  if (asked !== "" && !["ask", "auto", "full"].includes(asked)) return renderer.notice("/approval takes ask, auto or full", "warn")
+  try {
+    const state = await session.approvalMode(asked === "" ? undefined : asked)
+    const kept = asked !== "" && state.mode !== asked ? ` (the project's settings keep it at ${state.mode})` : ""
+    renderer.notice(`approval mode: ${state.mode ?? "off"}${asked === "" ? "" : " from the next tool call"}${kept}${state.tainted ? " · untrusted content is in the conversation (/clear-taint)" : ""}${asked === "" ? " · /approval ask|auto|full switches" : ""}`)
+  } catch (error) {
+    renderer.notice(`/approval failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+  }
+}
+
+/** `/diff`: the files the latest turn changed, each with its patch (bounded), binary files flagged. */
+async function showDiff(session: Session, renderer: PrettyRenderer): Promise<void> {
+  if (session.diff === undefined) return renderer.notice("/diff is not available with this engine", "warn")
+  try {
+    const result = await session.diff()
+    if (!result.available) return renderer.notice(`no diff: ${result.message}`)
+    if (result.files.length === 0) return renderer.notice("the latest turn changed no file")
+    renderer.diff(result.files)
+  } catch (error) {
+    renderer.notice(`/diff failed: ${error instanceof Error ? error.message : String(error)}`, "error")
   }
 }
 
