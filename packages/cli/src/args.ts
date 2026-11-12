@@ -30,6 +30,8 @@ export type Parsed =
   | { readonly kind: "list"; readonly what: "sessions" | "models"; readonly options: Options }
   /** `acp`: serve the Agent Client Protocol on stdin and stdout. */
   | { readonly kind: "acp" }
+  /** `tui [options]`: the full-screen terminal interface (packages/tui). */
+  | { readonly kind: "tui"; readonly options: Options }
   | { readonly kind: "error"; readonly message: string }
 
 const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
@@ -39,6 +41,13 @@ const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c":
 
 export function parseArgs(argv: readonly string[]): Parsed {
   if (argv[0] === "acp") return argv.length === 1 ? { kind: "acp" } : error("acp takes no arguments; the client sends everything else")
+  if (argv[0] === "tui") {
+    const rest = parseArgs(argv.slice(1))
+    if (rest.kind !== "run") return rest.kind === "list" ? error("tui does not list; run the listing without tui") : rest
+    if (rest.options.prompt !== null) return error("tui takes no prompt; type it in the TUI")
+    if (rest.options.output !== "pretty" || rest.options.interactive) return error("tui cannot be combined with --json, --quiet or --interactive")
+    return { kind: "tui", options: rest.options }
+  }
   const values: Partial<Record<ValueFlag, string>> = {}
   const flags = new Set<string>()
   const words: string[] = []
@@ -125,6 +134,8 @@ Usage:
   echo "<prompt>" | ${b} [options]  read the prompt from stdin
   ${b} [options]                 interactive: a prompt line, then the agent's work
   ${b} acp                       serve the Agent Client Protocol on stdio (for editors)
+  ${b} tui [options]             the full-screen terminal interface (preview; ${b.toUpperCase()}_TUI=1 makes
+                                 it what \`${b}\` with no prompt starts)
 
 Options:
   --session <id>         resume a session by ID, or by the start of one if it is unique

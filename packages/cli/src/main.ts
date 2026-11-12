@@ -91,6 +91,7 @@ export async function run(io: Io): Promise<number> {
     }
     case "list":
     case "run":
+    case "tui":
       break
   }
   const options = parsed.options
@@ -107,6 +108,9 @@ export async function run(io: Io): Promise<number> {
     const engine = await engineFor(io, options, demo)
     return engine === null ? EXIT.usage : listing(io, engine, parsed.what, options, cwd)
   }
+  // The TUI is opt-in until it becomes the default: `lh tui`, or `LH_TUI=1` for an interactive `lh` with no prompt.
+  const tuiByDefault = parsed.kind === "run" && options.prompt === null && !options.interactive && options.output === "pretty" && io.stdin.isTTY && io.stdout.isTTY && io.env[`${brand.binary.toUpperCase()}_TUI`] === "1"
+  if (parsed.kind === "tui" || tuiByDefault) return tui(io, options, demo, cwd)
 
   const prompt = options.prompt ?? (io.stdin.isTTY || demo !== null ? null : (await io.stdin.readAll()).trim())
   if (prompt === "") return usage(io, "the prompt on stdin is empty")
@@ -201,6 +205,20 @@ export async function run(io: Io): Promise<number> {
     const lost = session.lost?.() ?? null
     if (lost !== null) io.stderr.write(`${brand.binary}: ${lost}\n`)
   }
+}
+
+/** Hands the run to the full-screen TUI, loaded only here. */
+async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: string): Promise<number> {
+  const { runTui } = await import("@light-harness/tui")
+  return runTui({
+    cwd,
+    target: options.session !== null ? { kind: "resume", id: options.session } : options.continue ? { kind: "continue" } : { kind: "new" },
+    settings: { model: options.model, effort: options.effort, maxSteps: options.maxSteps },
+    env: io.env,
+    version: await version(),
+    serverCommand: [process.execPath, new URL("./main.ts", import.meta.url).pathname, "acp"],
+    demo: demo === null ? null : { scenario: demo.scenario, name: demo.name, speed: options.demoSpeed, graceMs: options.demoGraceMs },
+  })
 }
 
 /** The engine for this run, or `null` after saying why there is none. */

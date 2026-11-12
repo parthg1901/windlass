@@ -1,0 +1,904 @@
+/**
+ * The TUI's view model: a session's event stream folded into rows (what the
+ * conversation shows), the activity of the turn in progress (what the status
+ * line says), the inbox items not delivered yet, the session's settings, and
+ * the usage of every model call (what the side panel shows).
+ *
+ * Pure and synchronous: `apply` takes one event at a time, in arrival order,
+ * live or replayed, and never touches a terminal. The wording follows the
+ * line-based CLI's renderer, so both clients say the same things.
+ */
+import type { EventData, Json, ProviderError, StepError, Usage, VerificationOutcome } from "@light-harness/core"
+import { type EngineEvent, callArgument, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { plural, sanitize, thousands } from "./layout.ts"
+import { type Role, type Span, span } from "./theme.ts"
+
+export type ToolPhase = "writing" | "called" | "running" | "settled"
+
+interface RowBase {
+  readonly id: number
+  /** Bumped on every change, so a laid-out row is reused until it changes. */
+  version: number
+  /** From a `session/load` replay rather than live. */
+  readonly replay: boolean
+}
+
+export interface UserRow extends RowBase {
+  readonly kind: "user"
+  readonly text: string
+  /** How a message sent while the agent worked reached it; `null` for the prompt that started a turn. */
+  readonly delivered: "steer" | "queue" | null
+}
+
+export interface TextRow extends RowBase {
+  readonly kind: "text"
+  readonly messageId: string
+  text: string
+  streaming: boolean
+  /** Picks up a response a provider error cut short. */
+  readonly continuation: boolean
+}
+
+export interface ReasoningRow extends RowBase {
+  readonly kind: "reasoning"
+  readonly messageId: string
+  text: string
+  streaming: boolean
+  expanded: boolean
+}
+
+export interface ToolRow extends RowBase {
+  readonly kind: "tool"
+  readonly key: string
+  readonly messageId: string
+  name: string
+  input: string
+  arg: string
+  phase: ToolPhase
+  outcome: "success" | "error" | "not_started" | "effect_unknown" | null
+  output: string
+  display: Json | null
+  truncation: EventData<"tool.settled">["truncation"]
+  progress: string | null
+  /** Event times, for the duration on the row. */
+  startedAt: number | null
+  settledAt: number | null
+  /** Local clock when it started running, for the live duration. */
+  runningSince: number | null
+  /** 0 collapsed, 1 expanded, 2 expanded without the output cap. */
+  expand: 0 | 1 | 2
+}
+
+export interface NoticeRow extends RowBase {
+  readonly kind: "notice"
+  symbol: string
+  tone: Role
+  text: Span[]
+  detail: Span[][]
+  /** A notice that is part of the agent's work (a retry, a check) rather than about the session. */
+  readonly group: "work" | "session"
+}
+
+export interface OutcomeRow extends RowBase {
+  readonly kind: "outcome"
+  readonly outcome: "succeeded" | "unresolved" | "failed" | "interrupted" | "shutdown"
+  readonly verification: VerificationOutcome | null
+  readonly steps: number
+  readonly durationMs: number | null
+  readonly usage: Usage | null
+  readonly message: string | null
+  readonly errorKind: string | null
+  readonly requestId: string | null
+  /** `null`: the server did not say (a replayed turn, or no snapshot could tell). */
+  readonly changedFiles: readonly string[] | null
+  /** The diffs of the edits this turn made, per path, as the tools reported them. */
+  readonly diffs: ReadonlyMap<string, readonly string[]>
+  /** Paths written whole (no diff from the tool). */
+  readonly written: ReadonlySet<string>
+  /** Messages still waiting after an interrupt. */
+  readonly waiting: number
+  expanded: boolean
+}
+
+export interface DebugRow extends RowBase {
+  readonly kind: "debug"
+  readonly text: string
+}
+
+export type Row = UserRow | TextRow | ReasoningRow | ToolRow | NoticeRow | OutcomeRow | DebugRow
+
+/** A message admitted while the agent works and not delivered yet. */
+export interface PendingItem {
+  readonly messageId: string
+  readonly text: string
+  delivery: "steer" | "queue"
+}
+
+/** One model call and the tokens it reported. */
+export interface CallUsage {
+  readonly n: number
+  readonly messageId: string
+  readonly model: string | null
+  readonly kind: "step" | "compaction"
+  readonly usage: Usage
+  /** Diagnostics the server reported about this call (a broken prompt-cache prefix). */
+  readonly diagnostics: readonly string[]
+  readonly ended: "ok" | "failed" | "refused"
+}
+
+/** What the agent is doing right now. Times are the local clock, for live durations. */
+export interface Activity {
+  executing: boolean
+  turnStartedAt: number | null
+  steps: number
+  call: { readonly messageId: string; readonly since: number; readonly model: string; readonly attempt: number } | null
+  checking: { readonly names: readonly string[]; readonly since: number; progress: string | null } | null
+  compacting: { readonly since: number; repairing: boolean } | null
+  retry: { readonly until: number; readonly attempt: number } | null
+  stopping: boolean
+}
+
+export interface SessionInfo {
+  id: string | null
+  cwd: string | null
+  title: string | null
+  model: string | null
+  effort: string | null
+}
+
+interface Turn {
+  readonly start: number
+  steps: number
+  usage: Usage | null
+  lastError: string | null
+  requestId: string | null
+  changedFiles: readonly string[] | null
+  readonly diffs: Map<string, string[]>
+  readonly written: Set<string>
+}
+
+const SYMBOL = {
+  ok: "✓",
+  fail: "✗",
+  unknown: "⚠",
+  retry: "↻",
+  inbox: "↳",
+  stop: "■",
+  settings: "⇄",
+  refused: "⊘",
+  compact: "⇣",
+  note: "·",
+  undo: "↶",
+  redo: "↷",
+  check: "⋯",
+} as const
+
+/** Known event types this model does not show; anything else is new to this client (a debug row). */
+const SILENT = new Set(["tool.input.delta", "snapshot.taken", "revert.started", "revert.undo_started", "session.archived", "session.unarchived", "inbox.delivery_changed"])
+
+export class Transcript {
+  readonly rows: Row[] = []
+  readonly pending: PendingItem[] = []
+  readonly calls: CallUsage[] = []
+  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null }
+  readonly activity: Activity = blankActivity()
+  /** Bumped on every change. */
+  version = 0
+  /** Types of events this client did not recognise, with how often they came. */
+  readonly unknown = new Map<string, number>()
+
+  private nextId = 1
+  private readonly openText = new Map<string, TextRow>()
+  private readonly openReasoning = new Map<string, ReasoningRow>()
+  private readonly tools = new Map<string, ToolRow>()
+  private readonly checks = new Map<number, { row: NoticeRow; startedAt: number }>()
+  private readonly compactions = new Map<string, { row: NoticeRow; tokensBefore: number; model: string | null }>()
+  private readonly inboxText = new Map<string, { text: string; delivery: "steer" | "queue"; midTurn: boolean }>()
+  private readonly resumes = new Map<string, number>()
+  private readonly stepModels = new Map<string, string>()
+  private readonly callDiagnostics = new Map<string, string[]>()
+  /** Diagnostics reported between calls: they are about the request of the call that starts next. */
+  private diagnosticsForNext: string[] = []
+  private turn: Turn | null = null
+  private cutOff: "crash" | "shutdown" | null = null
+  private continuing = false
+  private sentBack = 0
+  private stopAsked = false
+  private instructionFiles = ""
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /** The user asked to stop: the stop line says how to leave without waiting. */
+  markStopAsked(): void {
+    this.stopAsked = true
+  }
+
+  /** A line from the TUI itself (a command's answer, an error), in the conversation. */
+  note(text: string | Span[], tone: Role = "dim", symbol: string = SYMBOL.note, detail: Span[][] = []): NoticeRow {
+    const row = this.add<NoticeRow>({ kind: "notice", symbol, tone, text: typeof text === "string" ? [span(text, tone === "dim" ? "dim" : undefined)] : text, detail, group: "session" }, false)
+    return row
+  }
+
+  /** Forgets everything: another session is about to be shown. */
+  reset(): void {
+    this.rows.length = 0
+    this.pending.length = 0
+    this.calls.length = 0
+    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null })
+    Object.assign(this.activity, blankActivity())
+    for (const map of [this.openText, this.openReasoning, this.tools, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
+    this.diagnosticsForNext = []
+    this.turn = null
+    this.cutOff = null
+    this.continuing = false
+    this.sentBack = 0
+    this.stopAsked = false
+    this.instructionFiles = ""
+    this.version += 1
+  }
+
+  /** The expandable row the user acts on with no other selection: the latest one. */
+  latestExpandable(): Row | null {
+    return this.rows.findLast((row) => expandable(row)) ?? null
+  }
+
+  apply(event: EngineEvent, replay = false): void {
+    this.version += 1
+    this.handle(event, replay)
+  }
+
+  private handle(event: EngineEvent, replay: boolean): void {
+    switch (event.type) {
+      case "text.delta":
+        return this.textDelta(event.messageId, event.text, replay)
+      case "reasoning.delta":
+        return this.reasoningDelta(event.messageId, event.text, replay)
+      case "tool.input.delta":
+        return this.inputDelta(event.messageId, event.callId, event.name, event.input, replay)
+      case "tool.progress": {
+        const row = this.tools.get(key(event.messageId, event.callId))
+        if (row !== undefined) this.touch(row, () => (row.progress = sanitize(event.text)))
+        return
+      }
+      case "checks.progress": {
+        const checking = this.activity.checking
+        if (checking !== null) checking.progress = sanitize(event.text)
+        return
+      }
+      case "workspace.changes":
+        if (this.turn !== null) this.turn.changedFiles = event.files
+        return
+      case "diagnostic": {
+        const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind.replace(/_/g, " ")
+        this.notice(SYMBOL.unknown, "warn", [span(`${what}: `, "warn"), span(sanitize(event.message))], [], replay, "work")
+        const call = this.activity.call
+        if (event.kind !== "prefix_violation" && call !== null) this.callDiagnostics.set(call.messageId, [...(this.callDiagnostics.get(call.messageId) ?? []), event.kind])
+        else this.diagnosticsForNext.push(event.kind)
+        return
+      }
+      case "session.created":
+        this.session.id = event.sessionId
+        this.session.cwd = event.data.cwd
+        this.session.title = event.data.title
+        this.session.model = event.data.settings.model
+        this.session.effort = event.data.settings.reasoningEffort
+        return
+      case "session.renamed":
+        this.session.title = event.data.title
+        return
+      case "settings.changed": {
+        const previous = { model: this.session.model, effort: this.session.effort }
+        this.session.model = event.data.model
+        this.session.effort = event.data.reasoningEffort
+        const changes: string[] = []
+        if (previous.model !== event.data.model) changes.push(previous.model === null ? `model ${event.data.model}` : `model ${previous.model} → ${event.data.model}`)
+        if (previous.effort !== event.data.reasoningEffort) changes.push(`effort ${previous.effort ?? "default"} → ${event.data.reasoningEffort ?? "default"}`)
+        if (changes.length > 0) this.notice(SYMBOL.settings, "accent", [span(changes.join(" · ")), span(" · from the next step", "dim")], [], replay, "session")
+        return
+      }
+      case "text.ended":
+        return this.textEnded(event.data.messageId, event.data.text, replay)
+      case "reasoning.ended":
+        return this.reasoningEnded(event.data.messageId, event.data.text, replay)
+      case "tool.called":
+        return this.toolCalled(event.data, replay)
+      case "tool.started": {
+        const row = this.tools.get(key(event.data.messageId, event.data.callId)) ?? this.toolRow(event.data.messageId, event.data.callId, "tool", "", replay)
+        this.touch(row, () => {
+          row.phase = "running"
+          row.startedAt = event.time
+          row.runningSince = this.now()
+        })
+        return
+      }
+      case "tool.settled": {
+        const data = event.data
+        const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
+        this.touch(row, () => {
+          row.phase = "settled"
+          row.outcome = data.outcome
+          row.output = sanitize(data.output)
+          row.display = data.display
+          row.truncation = data.truncation
+          row.settledAt = event.time
+          row.progress = null
+        })
+        this.recordChange(row)
+        return
+      }
+      case "step.started":
+        this.activity.call = { messageId: event.data.messageId, since: this.now(), model: event.data.model, attempt: event.data.attempt }
+        this.activity.retry = null
+        this.activity.steps += 1
+        this.stepModels.set(event.data.messageId, event.data.model)
+        if (this.diagnosticsForNext.length > 0) {
+          this.callDiagnostics.set(event.data.messageId, [...(this.callDiagnostics.get(event.data.messageId) ?? []), ...this.diagnosticsForNext])
+          this.diagnosticsForNext = []
+        }
+        if (this.turn !== null) this.turn.steps += 1
+        if (this.sentBack > 0) {
+          this.notice(SYMBOL.retry, "warn", [span("the agent is shown the failing checks and carries on"), span(this.sentBack > 1 ? ` · round ${this.sentBack}` : "", "dim")], [], replay, "work")
+          this.sentBack = -this.sentBack
+        }
+        return
+      case "step.ended":
+        return this.closeStep(event.data.messageId, event.data.usage, "ok")
+      case "step.failed":
+        this.closeStep(event.data.messageId, event.data.usage, "failed")
+        return this.stepFailed(event.data.error, replay)
+      case "step.refused":
+        this.closeStep(event.data.messageId, event.data.usage, "refused")
+        this.setError("content_policy")
+        this.notice(SYMBOL.refused, "error", [span("refused by the provider: ", "error"), span(sanitize(event.data.message))], [[span("this exchange is left out of what the model sees next", "dim")]], replay, "work")
+        return
+      case "retry.scheduled": {
+        const error = event.data.error
+        this.setError(error.kind, error.requestId)
+        this.activity.retry = { until: this.now() + event.data.delayMs, attempt: event.data.attempt }
+        this.activity.call = null
+        this.notice(SYMBOL.retry, "warn", [span(`retrying in ${seconds(event.data.delayMs)} (attempt ${event.data.attempt})`, "warn"), span(` · ${errorLabel(error)}: ${sanitize(error.message)}`, "dim")], [], replay, "work")
+        return
+      }
+      case "compaction.started": {
+        this.activity.compacting = { since: this.now(), repairing: false }
+        const row = this.notice(SYMBOL.compact, "accent", [span("compacting the conversation…"), span(event.data.trigger === "manual" ? " · asked for" : event.data.trigger === "overflow" ? " · the request was too large" : "", "dim")], [], replay, "work")
+        this.compactions.set(event.data.messageId, { row, tokensBefore: event.data.tokensBefore, model: this.session.model })
+        return
+      }
+      case "compaction.repair_requested":
+        if (this.activity.compacting !== null) this.activity.compacting.repairing = true
+        return
+      case "compaction.ended": {
+        this.activity.compacting = null
+        const open = this.compactions.get(event.data.messageId)
+        this.compactions.delete(event.data.messageId)
+        if (event.data.usage !== null) this.record(event.data.messageId, event.data.usage, "compaction", "ok", open?.model ?? this.session.model)
+        this.addUsage(event.data.usage)
+        const before = open?.tokensBefore ?? 0
+        const sizes = before > 0 && event.data.tokensAfter > 0 ? ` · about ${thousands(before)} → ${thousands(event.data.tokensAfter)} tokens` : ""
+        const fallback = event.data.source === "fallback"
+        const text = [span(fallback ? "compacted the conversation without a summary" : "compacted the conversation", fallback ? "warn" : undefined), span(sizes, "dim")]
+        const detail = fallback
+          ? [[span(`Why: ${event.data.detail ?? "the model produced no usable summary"}.`, "warn")], [span("The model continues from a list of the files, commands and errors so far and your own messages, and can search the full conversation.", "dim")]]
+          : [[span("Earlier messages are now a checkpoint; the model can still search them.", "dim")], ...(event.data.detail === null ? [] : [[span(`Note: ${event.data.detail}.`, "dim")]])]
+        if (open === undefined) this.notice(SYMBOL.compact, fallback ? "warn" : "accent", text, detail, replay, "work")
+        else this.touch(open.row, () => Object.assign(open.row, { tone: fallback ? "warn" : "accent", text, detail }))
+        return
+      }
+      case "compaction.failed": {
+        this.activity.compacting = null
+        const open = this.compactions.get(event.data.messageId)
+        this.compactions.delete(event.data.messageId)
+        this.setError(errorClass(event.data.error), event.data.error.kind === "provider" ? event.data.error.error.requestId : null)
+        const text = [span(`compaction failed: ${stepErrorText(event.data.error)}`, "error")]
+        if (open === undefined) this.notice(SYMBOL.fail, "error", text, [], replay, "work")
+        else this.touch(open.row, () => Object.assign(open.row, { symbol: SYMBOL.fail, tone: "error", text }))
+        return
+      }
+      case "synthetic.appended":
+        return this.synthetic(event.data.origin, replay)
+      case "instruction.appended": {
+        const source = sourceLabel(event.data.source)
+        if (event.data.fingerprint === null) this.notice(SYMBOL.note, "dim", [span(`instructions removed: ${source}`, "dim")], [], replay, "work")
+        else this.notice(SYMBOL.note, "dim", [span(`instructions updated (${source}): `, "dim"), span(oneLine(event.data.text), "dim")], [], replay, "work")
+        return
+      }
+      case "baseline.set": {
+        const list = event.data.sources.filter((entry) => entry.source.startsWith("agents:")).map((entry) => sourceLabel(entry.source)).join(", ")
+        if (list === this.instructionFiles) return
+        this.instructionFiles = list
+        if (list !== "") this.notice(SYMBOL.note, "dim", [span(`instructions from ${list}`, "dim")], [], replay, "session")
+        return
+      }
+      case "execution.interrupt_requested": {
+        this.activity.stopping = true
+        this.activity.retry = null
+        const hint = this.stopAsked && !replay ? " · press Ctrl-C again to exit now" : ""
+        this.notice(SYMBOL.stop, "warn", [span(event.data.reason === "user" ? "stopping…" : "shutting down…", "warn"), span(hint, "dim")], [], replay, "work")
+        return
+      }
+      case "inbox.enqueued":
+        return this.enqueued(event.data, replay)
+      case "inbox.delivered": {
+        const item = this.inboxText.get(event.data.messageId)
+        this.inboxText.delete(event.data.messageId)
+        const at = this.pending.findIndex((entry) => entry.messageId === event.data.messageId)
+        const pending = at === -1 ? null : this.pending.splice(at, 1)[0]!
+        if (item === undefined || !item.midTurn) return
+        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery }, replay)
+        return
+      }
+      case "inbox.cancelled": {
+        const item = this.inboxText.get(event.data.messageId)
+        this.inboxText.delete(event.data.messageId)
+        const at = this.pending.findIndex((entry) => entry.messageId === event.data.messageId)
+        if (at !== -1) this.pending.splice(at, 1)
+        this.notice(SYMBOL.inbox, "dim", [span("withdrawn: ", "dim"), span(`"${oneLine(item?.text ?? event.data.messageId)}"`, "dim", { strike: true })], [], replay, "session")
+        return
+      }
+      case "turn.ended": {
+        const verification = event.data.verification
+        const next = span(" · on to the queued message", "dim")
+        if (verification.status === "passed") this.notice(SYMBOL.ok, "ok", [span("checks passed", "ok"), next], [], replay, "work")
+        else if (verification.status === "unresolved")
+          this.notice(SYMBOL.fail, "error", [span("failing checks left unresolved", "error", { bold: true }), span(`: ${verification.failing.join(", ")}`, "error"), next], [[span(unresolvedReason(verification), "warn")]], replay, "work")
+        else this.notice(SYMBOL.ok, "dim", [span(verification.status === "not_needed" ? "nothing to check" : "no checks configured", "dim"), next], [], replay, "work")
+        return
+      }
+      case "execution.started":
+        this.beginTurn(event.time)
+        this.cutOff = null
+        return
+      case "execution.resumed": {
+        const count = (this.resumes.get(event.data.executionId) ?? 0) + 1
+        this.resumes.set(event.data.executionId, count)
+        if (this.turn === null) this.beginTurn(event.time)
+        const why = this.cutOff === "crash" ? "after the previous process stopped unexpectedly" : this.cutOff === "shutdown" ? "after a shutdown" : "an unfinished turn"
+        this.cutOff = null
+        this.notice(SYMBOL.retry, "accent", [span(`resuming ${why}`), span(count > 1 ? ` (resume ${count})` : "", "dim")], [], replay, "work")
+        return
+      }
+      case "execution.succeeded": {
+        const turn = this.endTurn()
+        const unresolved = event.data.verification.status === "unresolved"
+        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification }, replay)
+        return
+      }
+      case "execution.failed": {
+        const turn = this.endTurn()
+        this.outcome("failed", turn, event.time, { message: sanitize(event.data.message) }, replay)
+        return
+      }
+      case "execution.interrupted": {
+        const turn = this.endTurn()
+        if (event.data.reason === "shutdown") this.cutOff = "shutdown"
+        this.outcome(event.data.reason === "shutdown" ? "shutdown" : "interrupted", turn, event.time, {}, replay)
+        return
+      }
+      case "snapshot.unavailable":
+        this.notice(SYMBOL.note, "dim", [span("files cannot be restored by /undo in this session:", "dim")], [[span(sanitize(event.data.message), "dim")]], replay, "session")
+        return
+      case "snapshot.coverage": {
+        const { skipped, nestedRepositories } = event.data
+        if (skipped.length > 0) this.notice(SYMBOL.note, "dim", [span(`${plural(skipped.length, "file")} cannot be undone (too large or unreadable): `, "dim"), span(fileList(skipped.map((file) => file.path), 4), "dim")], [], replay, "session")
+        if (nestedRepositories.length > 0)
+          this.notice(SYMBOL.note, "dim", [span(`not tracked for undo (${plural(nestedRepositories.length, "nested repository", "nested repositories")}): `, "dim"), span(fileList(nestedRepositories, 4), "dim")], [], replay, "session")
+        return
+      }
+      case "checks.started": {
+        this.activity.checking = { names: event.data.checks, since: this.now(), progress: null }
+        const row = this.notice(SYMBOL.check, "dim", [span(`running ${event.data.checks.length === 1 ? "check" : "checks"}: ${event.data.checks.join(", ")}`, "dim")], [], replay, "work")
+        this.checks.set(event.data.run, { row, startedAt: event.time })
+        return
+      }
+      case "checks.finished": {
+        this.activity.checking = null
+        const open = this.checks.get(event.data.run)
+        this.checks.delete(event.data.run)
+        const row = open?.row
+        const startedAt = open?.startedAt
+        const checks = event.data.evidence.checks
+        const failed = checks.some((check) => check.status !== "passed")
+        const took = startedAt === undefined ? "" : ` · ${seconds(event.time - startedAt)}`
+        const text = [span(`checks: ${checksSummary(checks)}`, failed ? "error" : "ok"), span(took, "dim")]
+        const detail = checkLines(checks).flatMap((line) => [
+          [span(`${SYMBOL.fail} `, "error"), span(line.name, undefined, { bold: true }), span(` · ${line.status}`, "error"), span(` · ${line.command}`, "dim")],
+          ...(line.output === null ? [] : [[span(`  output: ${line.output}`, "dim")]]),
+        ])
+        if (row === undefined) this.notice(failed ? SYMBOL.fail : SYMBOL.ok, failed ? "error" : "ok", text, detail, replay, "work")
+        else this.touch(row, () => Object.assign(row, { symbol: failed ? SYMBOL.fail : SYMBOL.ok, tone: failed ? "error" : "ok", text, detail }))
+        return
+      }
+      case "checks.failed": {
+        this.activity.checking = null
+        const row = this.checks.get(event.data.run)?.row
+        this.checks.delete(event.data.run)
+        const error = event.data.error
+        if (error.kind === "crashed") this.cutOff = "crash"
+        const [symbol, tone, text]: [string, Role, string] =
+          error.kind === "interrupted"
+            ? [SYMBOL.stop, "warn", "the checks were stopped before they finished"]
+            : error.kind === "crashed"
+              ? [SYMBOL.unknown, "warn", "the checks were cut short when the previous process stopped"]
+              : [SYMBOL.fail, "error", `the checks could not be run: ${stepErrorText(error)}`]
+        if (row === undefined) this.notice(symbol, tone, [span(text, tone)], [], replay, "work")
+        else this.touch(row, () => Object.assign(row, { symbol, tone, text: [span(text, tone)] }))
+        return
+      }
+      case "history.reverted":
+      case "history.restored": {
+        const undone = event.type === "history.reverted"
+        const record = event.data.restore
+        const what = record === null ? (undone ? " · the conversation was rewound; no file was restored" : " · the conversation is as it was; no file was restored") : ` · ${plural(record.changed, "file")} restored${undone ? " · /redo brings it back" : ""}`
+        const kept = record?.kept ?? []
+        const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
+        const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
+        const detail = [
+          ...(byHand.length > 0 ? [[span(`kept as you edited them: ${fileList(byHand, 6)}`, "dim")]] : []),
+          ...(other.length > 0 || (record?.keptOmitted ?? 0) > 0 ? [[span(`left alone (ignored or never recorded): ${fileList(other, 6)}${(record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : ""}`, "dim")]] : []),
+        ]
+        this.notice(undone ? SYMBOL.undo : SYMBOL.redo, "accent", [span(undone ? "went back" : "brought back"), span(what, "dim")], detail, replay, "session")
+        return
+      }
+      case "revert.failed":
+        this.notice(SYMBOL.fail, "error", [span(`the workspace could not be restored: ${sanitize(event.data.message)}`, "error")], [[span("nothing changed in the conversation", "dim")]], replay, "session")
+        return
+      default: {
+        const type = (event as { type: string }).type
+        if (SILENT.has(type)) return
+        this.unknown.set(type, (this.unknown.get(type) ?? 0) + 1)
+        this.add<DebugRow>({ kind: "debug", text: `${type} ${oneLine(JSON.stringify((event as { data?: unknown }).data ?? event)).slice(0, 300)}` }, replay)
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- streams
+
+  private textDelta(messageId: string, text: string, replay: boolean): void {
+    const clean = sanitize(text)
+    if (clean === "") return
+    let row = this.openText.get(messageId)
+    if (row === undefined) {
+      if (clean.trim() === "") return
+      row = this.add<TextRow>({ kind: "text", messageId, text: "", streaming: true, continuation: this.continuing }, replay)
+      this.continuing = false
+      this.openText.set(messageId, row)
+    }
+    const target = row
+    this.touch(target, () => (target.text = (target.text + clean).replace(/^\s+/, "")))
+  }
+
+  private textEnded(messageId: string, text: string, replay: boolean): void {
+    const final = sanitize(text).replace(/^\s+/, "").replace(/\s+$/, "")
+    const row = this.openText.get(messageId)
+    this.openText.delete(messageId)
+    if (row === undefined) {
+      if (final === "") return
+      this.add<TextRow>({ kind: "text", messageId, text: final, streaming: false, continuation: this.continuing }, replay)
+      this.continuing = false
+      return
+    }
+    this.touch(row, () => {
+      row.text = final
+      row.streaming = false
+    })
+  }
+
+  private reasoningDelta(messageId: string, text: string, replay: boolean): void {
+    let row = this.openReasoning.get(messageId)
+    if (row === undefined) {
+      row = this.add<ReasoningRow>({ kind: "reasoning", messageId, text: "", streaming: true, expanded: false }, replay)
+      this.openReasoning.set(messageId, row)
+    }
+    const target = row
+    this.touch(target, () => (target.text += sanitize(text)))
+  }
+
+  private reasoningEnded(messageId: string, text: string, replay: boolean): void {
+    const row = this.openReasoning.get(messageId)
+    this.openReasoning.delete(messageId)
+    const clean = sanitize(text).trim()
+    if (row === undefined) {
+      if (clean === "") return
+      this.add<ReasoningRow>({ kind: "reasoning", messageId, text: clean, streaming: false, expanded: false }, replay)
+      return
+    }
+    this.touch(row, () => {
+      row.text = clean === "" ? row.text : clean
+      row.streaming = false
+    })
+  }
+
+  private inputDelta(messageId: string, callId: string, name: string, input: string, replay: boolean): void {
+    const id = key(messageId, callId)
+    const row = this.tools.get(id) ?? this.toolRow(messageId, callId, name, "", replay)
+    this.touch(row, () => {
+      row.name = name
+      row.input += input
+    })
+  }
+
+  private toolCalled(data: EventData<"tool.called">, replay: boolean): void {
+    const id = key(data.messageId, data.callId)
+    const row = this.tools.get(id) ?? this.toolRow(data.messageId, data.callId, data.name, data.input, replay)
+    this.touch(row, () => {
+      row.name = data.name
+      row.input = data.input
+      row.arg = oneLine(callArgument(data.name, data.input))
+      if (row.phase === "writing") row.phase = "called"
+    })
+  }
+
+  private toolRow(messageId: string, callId: string, name: string, input: string, replay: boolean): ToolRow {
+    const row = this.add<ToolRow>(
+      {
+        kind: "tool",
+        key: key(messageId, callId),
+        messageId,
+        name,
+        input,
+        arg: input === "" ? "" : oneLine(callArgument(name, input)),
+        phase: "writing",
+        outcome: null,
+        output: "",
+        display: null,
+        truncation: null,
+        progress: null,
+        startedAt: null,
+        settledAt: null,
+        runningSince: null,
+        expand: 0,
+      },
+      replay,
+    )
+    this.tools.set(row.key, row)
+    return row
+  }
+
+  /** What a settled call changed, for the turn's per-file diffs. */
+  private recordChange(row: ToolRow): void {
+    const turn = this.turn
+    if (turn === null || row.outcome !== "success") return
+    const display = asObject(row.display)
+    const path = typeof display?.path === "string" ? display.path : pathArgument(row.input)
+    if (path === null) return
+    if (row.name === "edit" && typeof display?.diff === "string") turn.diffs.set(path, [...(turn.diffs.get(path) ?? []), display.diff])
+    else if (row.name === "write") turn.written.add(path)
+  }
+
+  // ---------------------------------------------------------------- inbox
+
+  private enqueued(data: EventData<"inbox.enqueued">, replay: boolean): void {
+    const text = data.content.map((part) => (part.type === "text" ? part.text : "[image]")).join("")
+    const midTurn = this.activity.executing
+    this.inboxText.set(data.messageId, { text, delivery: data.delivery, midTurn })
+    if (data.origin !== null) {
+      this.notice(SYMBOL.inbox, "dim", [span(`${data.origin}: `, "dim"), span(`"${oneLine(text)}"`)], [], replay, "work")
+      return
+    }
+    if (!midTurn) {
+      this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null }, replay)
+      return
+    }
+    this.pending.push({ messageId: data.messageId, text: sanitize(text), delivery: data.delivery })
+  }
+
+  // ---------------------------------------------------------------- turns
+
+  private beginTurn(time: number): void {
+    this.turn = { start: time, steps: 0, usage: null, lastError: null, requestId: null, changedFiles: null, diffs: new Map(), written: new Set() }
+    Object.assign(this.activity, blankActivity(), { executing: true, turnStartedAt: this.now() })
+  }
+
+  private endTurn(): Turn | null {
+    const turn = this.turn
+    this.turn = null
+    Object.assign(this.activity, blankActivity())
+    this.continuing = false
+    this.sentBack = 0
+    this.stopAsked = false
+    // Anything still open belongs to the turn that ended.
+    for (const row of this.openText.values()) this.touch(row, () => (row.streaming = false))
+    for (const row of this.openReasoning.values()) this.touch(row, () => (row.streaming = false))
+    this.openText.clear()
+    this.openReasoning.clear()
+    return turn
+  }
+
+  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string }, replay: boolean): void {
+    const waiting = outcome === "interrupted" ? this.pending.length : 0
+    this.add<OutcomeRow>(
+      {
+        kind: "outcome",
+        outcome,
+        verification: extra.verification ?? null,
+        steps: turn?.steps ?? 0,
+        durationMs: turn === null ? null : time - turn.start,
+        usage: turn?.usage ?? null,
+        message: extra.message ?? null,
+        errorKind: turn?.lastError ?? null,
+        requestId: turn?.requestId ?? null,
+        changedFiles: turn?.changedFiles ?? null,
+        diffs: turn?.diffs ?? new Map(),
+        written: turn?.written ?? new Set(),
+        waiting,
+        expanded: false,
+      },
+      replay,
+    )
+  }
+
+  private closeStep(messageId: string, usage: Usage | null, ended: CallUsage["ended"]): void {
+    if (this.activity.call?.messageId === messageId) this.activity.call = null
+    const text = this.openText.get(messageId)
+    if (text !== undefined) {
+      this.touch(text, () => (text.streaming = false))
+      this.openText.delete(messageId)
+    }
+    const reasoning = this.openReasoning.get(messageId)
+    if (reasoning !== undefined) {
+      this.touch(reasoning, () => (reasoning.streaming = false))
+      this.openReasoning.delete(messageId)
+    }
+    if (usage !== null) this.record(messageId, usage, "step", ended, this.stepModels.get(messageId) ?? this.session.model)
+    this.addUsage(usage)
+  }
+
+  private record(messageId: string, usage: Usage, kind: CallUsage["kind"], ended: CallUsage["ended"], model: string | null): void {
+    const diagnostics = this.callDiagnostics.get(messageId) ?? []
+    this.callDiagnostics.delete(messageId)
+    this.calls.push({ n: this.calls.length + 1, messageId, model, kind, usage, diagnostics, ended })
+  }
+
+  private addUsage(usage: Usage | null): void {
+    if (usage === null || this.turn === null) return
+    const sum = this.turn.usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }
+    this.turn.usage = {
+      inputTokens: sum.inputTokens + usage.inputTokens,
+      cachedInputTokens: sum.cachedInputTokens + usage.cachedInputTokens,
+      outputTokens: sum.outputTokens + usage.outputTokens,
+      reasoningTokens: sum.reasoningTokens + usage.reasoningTokens,
+    }
+  }
+
+  private stepFailed(error: StepError, replay: boolean): void {
+    switch (error.kind) {
+      case "provider":
+        return this.setError(error.error.kind, error.error.requestId)
+      case "interrupted":
+        return
+      case "crashed":
+        this.cutOff = "crash"
+        return this.setError("crashed")
+      case "internal":
+        this.setError("internal")
+        this.notice(SYMBOL.fail, "error", [span(`internal error: ${sanitize(error.message)}`, "error")], [], replay, "work")
+    }
+  }
+
+  private setError(kind: string, requestId: string | null = null): void {
+    if (this.turn === null) return
+    this.turn.lastError = kind
+    this.turn.requestId = requestId
+  }
+
+  private synthetic(origin: string, replay: boolean): void {
+    switch (origin) {
+      case "interrupt":
+        return
+      case "check_report":
+        this.sentBack = Math.abs(this.sentBack) + 1
+        return
+      case "continuation":
+        this.continuing = true
+        return void this.notice(SYMBOL.retry, "warn", [span("asking the model to continue where it was cut off", "dim")], [], replay, "work")
+      case "output_limit":
+        return void this.notice(SYMBOL.unknown, "warn", [span("output limit reached"), span(" · asking the model to continue", "dim")], [], replay, "work")
+      case "empty_response":
+        return void this.notice(SYMBOL.unknown, "warn", [span("empty response"), span(" · nudging the model once", "dim")], [], replay, "work")
+      case "step_limit":
+        return void this.notice(SYMBOL.unknown, "warn", [span("step limit reached"), span(" · one last answer, without tools", "dim")], [], replay, "work")
+      default:
+        return void this.notice(SYMBOL.note, "dim", [span(`note to the model (${origin})`, "dim")], [], replay, "work")
+    }
+  }
+
+  // ---------------------------------------------------------------- rows
+
+  private notice(symbol: string, tone: Role, text: Span[], detail: Span[][], replay: boolean, group: NoticeRow["group"]): NoticeRow {
+    return this.add<NoticeRow>({ kind: "notice", symbol, tone, text, detail, group }, replay)
+  }
+
+  private add<R extends Row>(fields: Omit<R, "id" | "version" | "replay">, replay: boolean): R {
+    const row = { ...fields, id: this.nextId++, version: 0, replay } as R
+    this.rows.push(row)
+    this.version += 1
+    return row
+  }
+
+  private touch<R extends Row>(row: R, change: () => void): void {
+    change()
+    row.version += 1
+    this.version += 1
+  }
+
+  /** Re-lays-out a row after a change made outside `apply` (expanding it). */
+  changed(row: Row): void {
+    row.version += 1
+    this.version += 1
+  }
+}
+
+export function expandable(row: Row): boolean {
+  return row.kind === "tool" || row.kind === "reasoning" || row.kind === "outcome" || (row.kind === "notice" && row.detail.length > 2)
+}
+
+function blankActivity(): Activity {
+  return { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false }
+}
+
+function key(messageId: string, callId: string): string {
+  return `${messageId}/${callId}`
+}
+
+export function oneLine(text: string): string {
+  return sanitize(text).replace(/\s*\n\s*/g, " ⏎ ")
+}
+
+function seconds(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms / 1000)}s`
+}
+
+export function asObject(value: Json | null | undefined): Record<string, Json> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, Json>) : null
+}
+
+function pathArgument(input: string): string | null {
+  try {
+    const value: unknown = JSON.parse(input)
+    return typeof value === "object" && value !== null && typeof (value as { path?: unknown }).path === "string" ? (value as { path: string }).path : null
+  } catch {
+    return null
+  }
+}
+
+function sourceLabel(source: string): string {
+  return source.startsWith("agents:") ? source.slice("agents:".length) : source
+}
+
+export function errorLabel(error: ProviderError): string {
+  if (error.kind === "transport" && error.reason === "stalled") return "the connection stalled"
+  if (error.kind === "transport" && error.reason === "timeout") return "the model call took too long"
+  const labels: Record<ProviderError["kind"], string> = {
+    rate_limit: "rate limited",
+    provider_internal: "server error",
+    transport: "network error",
+    incomplete_stream: "the stream ended early",
+    auth: "not signed in",
+    usage_limit: "usage limit reached",
+    content_policy: "refused",
+    invalid_request: "invalid request",
+    context_overflow: "context too long",
+  }
+  const label = labels[error.kind] ?? error.kind
+  return error.status === null ? label : `${label} (${error.status})`
+}
+
+function errorClass(error: StepError): string {
+  return error.kind === "provider" ? error.error.kind : error.kind
+}
+
+function stepErrorText(error: StepError): string {
+  switch (error.kind) {
+    case "provider":
+      return `${errorLabel(error.error)}: ${error.error.message}`
+    case "interrupted":
+      return `interrupted (${error.reason})`
+    case "crashed":
+      return "the process stopped unexpectedly"
+    case "internal":
+      return error.message
+  }
+}

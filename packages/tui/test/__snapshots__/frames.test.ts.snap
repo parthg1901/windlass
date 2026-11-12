@@ -1,0 +1,110 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the showcase turn 60x20 1`] = `
+"       1 fail
+  ✓ read src/add.ts · 3 lines · 180ms
+
+  \`add\` subtracts instead of adding. Fixing it.
+
+  ✓ edit src/add.ts · +1 -1 · 180ms
+  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s
+
+  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now
+  returns \`a + b\`.
+
+  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).
+
+  ○ done · no checks configured · 5 steps · 11s
+    edited 1 file: src/add.ts (from its tool calls) ·
+      Ctrl-O for diffs
+    tokens · 44,746 in · 78% cached · 396 out
+● ready
+›
+Enter send · / commands · Ctrl-P panel"
+`;
+
+exports[`the showcase turn 100x30 1`] = `
+"  › The add test is failing. Find out why and fix it.           │ Session
+                                                                │ id     ses_demo
+  ∴ thought · Locating the test                                 │ dir    /repo
+                                                                │ model  gpt-test
+  I'll find the code and run the failing test.                  │ effort medium
+                                                                │ state  idle
+  ✓ grep add\\( in src · 4 matches in 3 files · 220ms            │
+  ✗ shell bun test src/add.test.ts · exit 1 · 3.5s              │ Tokens         session      last
+        Received: -1                                            │ input           44,746     9,410
+       0 pass                                                   │  cached         35,072     9,216
+       1 fail                                                   │  cache share       78%       98%
+  ✓ read src/add.ts · 3 lines · 180ms                           │ output             396        52
+                                                                │  reasoning          64         0
+  \`add\` subtracts instead of adding. Fixing it.                 │ calls                5
+                                                                │ context     9.5k (window unknown)
+  ✓ edit src/add.ts · +1 -1 · 180ms                             │
+  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s              │ Cache per call  █ cached ░ new
+                                                                │ 1 ░░░░░░░░░░░░░░░     8.2k   0%
+  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now returns │ 2 ███████████████░    8.9k  92%
+  \`a + b\`.                                                      │ 3 ████████████████    9.0k  97%
+                                                                │ 4 ████████████████░   9.2k  97%
+  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).           │ 5 █████████████████   9.4k  98%
+                                                                │
+  ○ done · no checks configured · 5 steps · 11s                 │ demo: find-and-fix-a-failing-test
+    edited 1 file: src/add.ts (from its tool calls) · Ctrl-O    │
+      for diffs                                                 │
+    tokens · 44,746 in · 78% cached · 396 out                   │
+● ready
+›
+Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
+`;
+
+exports[`the showcase turn 200x50 1`] = `
+"  › The add test is failing. Find out why and fix it.                                                                                                               │ Session
+                                                                                                                                                                    │ id     ses_demo
+  ∴ thought · Locating the test                                                                                                                                     │ dir    /repo
+                                                                                                                                                                    │ model  gpt-test
+  I'll find the code and run the failing test.                                                                                                                      │ effort medium
+                                                                                                                                                                    │ state  idle
+  ✓ grep add\\( in src · 4 matches in 3 files · 220ms                                                                                                                │
+  ✗ shell bun test src/add.test.ts · exit 1 · 3.5s                                                                                                                  │ Tokens         session      last
+        Received: -1                                                                                                                                                │ input           44,746     9,410
+       0 pass                                                                                                                                                       │  cached         35,072     9,216
+       1 fail                                                                                                                                                       │  cache share       78%       98%
+  ✓ read src/add.ts · 3 lines · 180ms                                                                                                                               │ output             396        52
+                                                                                                                                                                    │  reasoning          64         0
+  \`add\` subtracts instead of adding. Fixing it.                                                                                                                     │ calls                5
+                                                                                                                                                                    │ context     9.5k (window unknown)
+  ✓ edit src/add.ts · +1 -1 · 180ms                                                                                                                                 │
+  ✓ shell bun test src/add.test.ts · exit 0 · 2.1s                                                                                                                  │ Cache per call  █ cached ░ new
+                                                                                                                                                                    │ 1 ░░░░░░░░░░░░░░░     8.2k   0%
+  Fixed. \`add\` in \`src/add.ts\` returned \`a - b\`; it now returns \`a + b\`.                                                                                            │ 2 ███████████████░    8.9k  92%
+                                                                                                                                                                    │ 3 ████████████████    9.0k  97%
+  \`bun test src/add.test.ts\` passes (1 pass, 0 fail).                                                                                                               │ 4 ████████████████░   9.2k  97%
+                                                                                                                                                                    │ 5 █████████████████   9.4k  98%
+  ○ done · no checks configured · 5 steps · 11s                                                                                                                     │
+    edited 1 file: src/add.ts (from its tool calls) · Ctrl-O for diffs                                                                                              │ demo: find-and-fix-a-failing-test
+    tokens · 44,746 in · 35,072 cached (78%) · 396 out (64 reasoning)                                                                                               │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+                                                                                                                                                                    │
+● ready
+›
+Enter send · Alt-Enter new line · / commands · Ctrl-O expand · Ctrl-P panel · Ctrl-D quit"
+`;
