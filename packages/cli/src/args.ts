@@ -1,6 +1,7 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
 import { brand } from "@light-harness/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
+import { nearest } from "./text.ts"
 import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"
 
 export interface Options {
@@ -52,6 +53,8 @@ const APPROVAL_MODES = ["ask", "auto", "full"] as const
 const UNATTENDED_ACTIONS = ["deny", "stop"] as const
 type ValueFlag = (typeof VALUE_FLAGS)[number]
 
+const BOOLEAN_FLAGS = ["--help", "--version", "--continue", "--json", "--quiet", "--show-reasoning", "--interactive", "--list-sessions", "--models"] as const
+
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
 
 export function parseArgs(argv: readonly string[]): Parsed {
@@ -93,8 +96,10 @@ export function parseArgs(argv: readonly string[]): Parsed {
       continue
     }
     if (inline !== null) return error(`${name} does not take a value`)
-    if (!["--help", "--version", "--continue", "--json", "--quiet", "--show-reasoning", "--interactive", "--list-sessions", "--models"].includes(name))
-      return error(`unknown option ${rawName}`)
+    if (!(BOOLEAN_FLAGS as readonly string[]).includes(name)) {
+      const close = rawName.startsWith("--") ? nearest(rawName, [...BOOLEAN_FLAGS, ...VALUE_FLAGS]) : null
+      return error(`unknown option ${rawName}${close === null ? "" : `; did you mean ${close}?`}`)
+    }
     flags.add(name)
   }
 
@@ -252,13 +257,13 @@ cannot be opened until that process lets go of it.
 Exit codes:
   0    done
   1    failed
-  2    usage error
-  4    stopped: a tool call needed your approval and nobody was there to give it
-       (--unattended stop)
+  2    usage error: an unknown option, a wrong value, an unknown model or session ID
   3    done, but the project's checks still fail and were left unresolved (the model
        reported that it cannot fix them, ran out of rounds, or checks only report).
        With --json the last event is execution.succeeded, and its
        data.verification.status is "unresolved" (with the reason and the failing checks)
+  4    stopped: a tool call needed your approval and nobody was there to give it
+       (--unattended stop)
   130  interrupted (Ctrl-C)
   141  output closed (a pipe reader left)
   143  terminated (SIGTERM)

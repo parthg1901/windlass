@@ -179,7 +179,7 @@ the new prefix. `lh --demo list` has scripted compactions under "Compaction".
 |---|---|
 | 0 | done |
 | 1 | failed |
-| 2 | usage error |
+| 2 | usage error: an unknown option (the nearest one is suggested), a wrong value, an unknown model or an ambiguous session ID |
 | 3 | done, but the project's checks still fail and were left unresolved |
 | 4 | stopped: a tool call needed your approval and nobody was there to give it (`--unattended stop`) |
 | 130 | interrupted (Ctrl-C) |

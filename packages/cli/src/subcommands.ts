@@ -11,9 +11,9 @@
 import { parseArgs as parseFlags } from "node:util"
 import type { ForkResult, ReplayParams, ReplayResult } from "@light-harness/acp/extensions"
 import { brand } from "@light-harness/core"
-import { type Engine, type EngineEvent, EngineUnavailable } from "./engine.ts"
+import { type Engine, type EngineEvent, EngineUnavailable, exitCodeOfRefusal } from "./engine.ts"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
-import { flatten, plural, truncate } from "./text.ts"
+import { flatten, nearest, plural, truncate } from "./text.ts"
 import { callArgument } from "./tools.ts"
 
 export interface ForkOptions {
@@ -137,7 +137,13 @@ export function parseSubcommand(argv: readonly string[]): SubcommandParsed {
       return (error instanceof Error ? error.message : String(error)).replace(/\. To specify a positional argument.*$/s, "")
     }
   })()
-  if (typeof parsed === "string") return { kind: "error", message: `${command}: ${parsed}` }
+  if (typeof parsed === "string") {
+    // A mistyped option is named with the one that was probably meant.
+    const unknown = /^Unknown option '(--[^']+)'$/.exec(parsed)?.[1]
+    const known = Object.keys(command === "fork" ? { ...COMMON, copy: 0, "copy-to": 0, title: 0 } : { ...COMMON, "system-prompt": 0, "tool-description": 0, policy: 0, strict: 0, workspace: 0, quiet: 0 }).map((name) => `--${name}`)
+    const close = unknown === undefined ? null : nearest(unknown, known)
+    return { kind: "error", message: unknown === undefined ? `${command}: ${parsed}` : `${command}: unknown option ${unknown}${close === null ? "" : `; did you mean ${close}?`}` }
+  }
   const values = parsed.values as Record<string, string | boolean | string[] | undefined>
   if (values.help === true) return { kind: "help", text: command === "fork" ? forkUsage() : replayUsage() }
   if (parsed.positionals.length > 1) return { kind: "error", message: `${command} takes one session, not ${parsed.positionals.length} (${parsed.positionals.join(" ")})` }
@@ -193,7 +199,7 @@ export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOpt
     forked = await engine.fork({ cwd, session: options.session, throughSeq: options.throughSeq, copy: options.copy, model: options.model, effort: options.effort, title: options.title })
   } catch (error) {
     if (!(error instanceof EngineUnavailable)) throw error
-    return fail(io, error.message)
+    return fail(io, error.message, exitCodeOfRefusal(error))
   }
   if (options.json) {
     io.stdout.write(`${JSON.stringify(forked)}\n`)
@@ -253,7 +259,7 @@ export async function runReplay(io: SubcommandIo, engine: Engine, options: Repla
     )
   } catch (error) {
     if (!(error instanceof EngineUnavailable)) throw error
-    return fail(io, error.message)
+    return fail(io, error.message, exitCodeOfRefusal(error))
   } finally {
     off()
   }
@@ -346,7 +352,7 @@ export class ReplayProgressLines {
   }
 }
 
-function fail(io: SubcommandIo, message: string): number {
+function fail(io: SubcommandIo, message: string, code = 1): number {
   io.stderr.write(`${brand.binary}: ${message}\n`)
-  return 1
+  return code
 }

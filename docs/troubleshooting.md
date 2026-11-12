@@ -6,10 +6,12 @@ produced by the built program unless it is marked otherwise; `<...>` stands for 
 ## Not signed in
 
 ```
-lh: Not signed in. Run the sign-in first. (sign in with ChatGPT: `lh login`, then try again)
+lh: not signed in; run `lh login` to sign in with ChatGPT, then try again
 ```
 
-Exit code 1. Sign in, then check:
+Exit code 1. `lh --models` says the same (`not signed in, so the models cannot be listed (they come from your ChatGPT
+plan); ...`), since the list comes from your plan. What calls no model works signed out: `lh --list-sessions`,
+`lh fork`, and `lh --demo`. Sign in, then check:
 
 ```sh
 lh login
@@ -25,7 +27,7 @@ The access token lasts an hour and is refreshed by itself; the refresh token las
 refresh. When the refresh is refused (the sign-in was revoked, or not used for 30 days), a run fails at the start:
 
 ```
-lh: Token request failed (400 invalid_grant): <OpenAI's description> (sign in with ChatGPT: `lh login`, then try again)
+lh: token request failed (400 invalid_grant): <OpenAI's description>; run `lh login` to sign in with ChatGPT, then try again
 ```
 
 *Reproduced against the test suite's fake authorization server; OpenAI's own description text was not seen.* Run

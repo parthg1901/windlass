@@ -825,10 +825,13 @@ class ConnectionState {
     return { events }
   }
 
-  /** `_<ns>/resolve`: the command line's `--session <id or start of one>` and `--continue`. Signed out is refused first, as there. */
+  /**
+   * `_<ns>/resolve`: the command line's `--session <id or start of one>` and
+   * `--continue`. A lookup in the store, so it needs no sign-in: what follows
+   * it decides that (opening a session to work in it does, a fork does not).
+   */
   async resolve(cwd: string, session: string | undefined) {
     if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
-    await this.requireSignIn()
     const engine = this.harness.engine
     const id =
       session !== undefined

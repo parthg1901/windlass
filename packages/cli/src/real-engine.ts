@@ -26,14 +26,12 @@ import {
 } from "@light-harness/core"
 import { titleFromEvents } from "@light-harness/acp/extensions"
 import { askLocally } from "./commands.ts"
-import { type Approver, type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type Session, type SessionSummary } from "./engine.ts"
+import { type Approver, type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, type Session, type SessionSummary, signInSentence } from "./engine.ts"
 
 export { DEFAULT_EFFORT, DEFAULT_MODEL } from "@light-harness/core"
 
 /** For tests and scripts. The CLI passes nothing. */
 export type RealEngineOptions = HarnessOptions
-
-const SIGN_IN = SIGN_IN_ADVICE
 
 export function createRealEngine(options: RealEngineOptions = {}): Engine {
   const harness = createHarness(options)
@@ -42,7 +40,7 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
     open: async (request): Promise<Session> => {
       if (harness.closed) throw new EngineUnavailable("the engine is closed")
       const signIn = await harness.signIn()
-      if (!signIn.signedIn) throw new EngineUnavailable(`${signIn.message} (${SIGN_IN})`)
+      if (!signIn.signedIn) throw new EngineUnavailable(signInSentence(signIn.message), "auth")
       const session = await unavailable(() => sessionFor(harness, request))
       // The user's own choices for this run, and whether anyone is at the terminal to answer.
       session.setAttended(request.attended ?? false)
@@ -117,7 +115,9 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
         }))
       } catch (error) {
         if (error instanceof ModelListError)
-          throw new EngineUnavailable(`could not list the models: ${error.error.kind === "auth" ? `${error.message} (${SIGN_IN})` : error.message}`)
+          throw error.error.kind === "auth"
+            ? new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)"), "auth")
+            : new EngineUnavailable(`could not list the models: ${error.message}`)
         throw error
       }
     },
@@ -149,7 +149,8 @@ async function unavailable<T>(work: () => Promise<T>): Promise<T> {
     return await work()
   } catch (error) {
     // Each of these messages is written for the user: which session, who holds it and what to do, or which models exist.
-    if (error instanceof EngineError && error.code !== "closed") throw new EngineUnavailable(error.message)
+    if (error instanceof EngineError && error.code !== "closed")
+      throw new EngineUnavailable(error.message, error.code === "unknown_model" || error.code === "ambiguous_session" || error.code === "invalid_request" ? "usage" : null)
     if (error instanceof StoreError && error.code === "schema_mismatch")
       throw new EngineUnavailable(`that session was written by another version of ${brand.name} and cannot be opened by this one (${error.message})`)
     throw error

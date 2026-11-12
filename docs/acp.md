@@ -26,6 +26,7 @@ For Zed, for example, that object goes under `agent_servers."light-harness"` in 
 Before the first session, sign in with your ChatGPT plan on the same machine (`bun scripts/login.ts start` in the
 checkout, then finish the sign-in it prints). When you are not signed in, creating or loading a session fails with
 ACP's auth-required error (`-32000`) and a message that says this; the client's "authenticate" button only re-checks.
+Listing sessions, reading a session's log, resolving a session ID and forking need no sign-in.
 
 Sessions are stored one file each, and a process holds only the sessions it is working in. While `lh acp` runs, an
 `lh` in another terminal works in its own sessions, and so does a second editor. A session is open in one place at a
@@ -411,7 +412,8 @@ updatedAt, lastSeq, inbox: { messageId, delivery }[], canUndo, canRedo }` for a 
 session another process is working in.
 
 **`_light-harness/resolve`** (request) `{ cwd, session? }` → `{ sessionId, cwd }`: the session an ID or a unique
-start of one names, or, without `session`, the latest in `cwd`. Refused when signed out, as session creation is.
+start of one names, or, without `session`, the latest in `cwd`. A lookup in the store: it works signed out, and so
+does everything that only reads or copies sessions (`session/list`, `_light-harness/events`, `_light-harness/fork`).
 
 **`_light-harness/diagnostic`** (notification) `{ sessionId, kind, message }`: something the engine noticed that is
 not part of the log (`prefix_violation`, `internal_error`, `tool_crashed`, `listener_failed`).

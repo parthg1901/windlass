@@ -45,11 +45,11 @@ import {
   type OpenRequest,
   type ReplayCommand,
   type ReplayProgress,
-  SIGN_IN_ADVICE,
   type SendOptions,
   type Session,
   type SessionRevertOptions,
   type SessionSummary,
+  signInSentence,
 } from "./engine.ts"
 
 export interface AcpEngineOptions {
@@ -119,7 +119,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
     listModels: () =>
       listing(async (connected) => {
         const listed = await connected.listModels().catch((error: unknown) => {
-          if (error instanceof ClientError && error.reason === "auth_required") throw new EngineUnavailable(`could not list the models: ${error.message} (${SIGN_IN_ADVICE})`)
+          if (error instanceof ClientError && error.reason === "auth_required") throw new EngineUnavailable(signInSentence(error.message, "the models cannot be listed (they come from your ChatGPT plan)"), "auth")
           throw unavailable(error)
         })
         return listed.models.map((model): ModelInfo => ({ id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: model.id === listed.defaultModel }))
@@ -304,10 +304,14 @@ class AcpSession implements Session {
   }
 }
 
+/** Refusals that say the command line asked for something wrong: an exit with the usage code. */
+const USAGE_REASONS = new Set(["unknown_model", "ambiguous_session", "invalid_request"])
+
 /** The error the CLI prints for something the server refused, or for the server being gone. */
 function unavailable(error: unknown): EngineUnavailable {
   if (error instanceof EngineUnavailable) return error
-  if (error instanceof ClientError && error.reason === "auth_required") return new EngineUnavailable(`${error.message} (${SIGN_IN_ADVICE})`)
+  if (error instanceof ClientError && error.reason === "auth_required") return new EngineUnavailable(signInSentence(error.message), "auth")
+  if (error instanceof ClientError && error.reason !== null && USAGE_REASONS.has(error.reason)) return new EngineUnavailable(error.message, "usage")
   return new EngineUnavailable(error instanceof Error ? error.message : String(error))
 }
 

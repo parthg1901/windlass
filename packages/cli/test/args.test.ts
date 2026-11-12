@@ -55,6 +55,11 @@ describe("parseArgs", () => {
   test("usage errors", () => {
     expect(errorOf(["--frobnicate"])).toBe("unknown option --frobnicate")
     expect(errorOf(["-x"])).toBe("unknown option -x")
+    // A typo is named with the option that was probably meant; a word that is nothing like one is not.
+    expect(errorOf(["--modle", "x"])).toBe("unknown option --modle; did you mean --model?")
+    expect(errorOf(["--contineu"])).toBe("unknown option --contineu; did you mean --continue?")
+    expect(errorOf(["--jsno"])).toBe("unknown option --jsno; did you mean --json?")
+    expect(parseArgs(["fork", "--thruogh", "3"])).toEqual({ kind: "error", message: "fork: unknown option --thruogh; did you mean --through?" })
     expect(errorOf(["--model"])).toBe("--model needs a value")
     expect(errorOf(["--model", "--json"])).toBe("--model needs a value")
     expect(errorOf(["--model="])).toBe("--model needs a non-empty value")

@@ -69,7 +69,22 @@ export interface ApprovalRequest {
 export type Approver = (request: ApprovalRequest) => Promise<{ readonly choice: ChoiceId; readonly note?: string } | null>
 
 /** What the CLI suggests when the saved sign-in is missing or rejected. */
-export const SIGN_IN_ADVICE = `sign in with ChatGPT: \`${brand.binary} login\`, then try again`
+export const SIGN_IN_ADVICE = `run \`${brand.binary} login\` to sign in with ChatGPT, then try again`
+
+/**
+ * A sign-in problem as one sentence with the way forward: `not signed in; run
+ * \`lh login\` ...`. `message` is the engine's own wording (which may repeat
+ * the advice, or carry the provider's prefix); `what` says what could not be
+ * done, for a command that is not a session (`--models`).
+ */
+export function signInSentence(message: string, what: string | null = null): string {
+  const reason = message
+    .replace(/^no usable access token:\s*/i, "")
+    .replace(/\s*(Run the sign-in first|To sign in, .*)\.?\s*$/i, "")
+    .replace(/[.\s]+$/, "")
+  const said = reason === "" ? "not signed in" : reason.charAt(0).toLowerCase() + reason.slice(1)
+  return `${said}${what === null ? "" : `, so ${what}`}; ${SIGN_IN_ADVICE}`
+}
 
 /** Which session to work in. */
 export type SessionTarget =
@@ -279,10 +294,23 @@ export function turnOutcomeOf(event: EngineEvent): TurnOutcome | null {
   }
 }
 
-/** Raised by `open` when the engine cannot work in this environment (no sign-in, no store). */
+/**
+ * Raised by `open` (and the one-off commands) when the engine cannot do what
+ * was asked in this environment (no sign-in, no store, a session in use).
+ * `usage`: what was asked for is wrong (an unknown model, an ambiguous
+ * session ID), which exits with the usage code.
+ */
 export class EngineUnavailable extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly kind: "usage" | "auth" | null = null,
+  ) {
     super(message)
     this.name = "EngineUnavailable"
   }
+}
+
+/** The exit code for a refusal: 2 when the arguments were wrong, 1 otherwise. */
+export function exitCodeOfRefusal(error: EngineUnavailable): number {
+  return error.kind === "usage" ? 2 : 1
 }

@@ -30,6 +30,7 @@ import {
   type TurnOutcome,
   endedForApproval,
   exitCodeOf,
+  exitCodeOfRefusal,
   turnOutcomeOf,
 } from "./engine.ts"
 import { type FakeSession } from "./fake-engine.ts"
@@ -184,7 +185,7 @@ export async function run(io: Io): Promise<number> {
   } catch (error) {
     if (!(error instanceof EngineUnavailable)) throw error
     io.stderr.write(`${brand.binary}: ${error.message}\n`)
-    return 1
+    return exitCodeOfRefusal(error)
   }
 
   // `/undo` and `/redo` act on this session, when its engine can revert.
@@ -534,13 +535,20 @@ class TurnWatcher {
 
 async function listing(io: Io, engine: Engine, what: "sessions" | "models", options: Options, cwd: string): Promise<number> {
   const flag = what === "sessions" ? "--list-sessions" : "--models"
-  const table =
-    what === "sessions"
-      ? (await engine.listSessions?.({ cwd }))?.map((row) => ({ row, cells: [row.id, localTime(row.updatedAt), row.model, row.title ?? "(untitled)"] }))
-      : (await engine.listModels?.())?.map((row) => ({
-          row,
-          cells: [`${row.isDefault ? "*" : " "} ${row.id}`, row.efforts.length === 0 ? "" : `effort: ${row.efforts.join(", ")}`, row.description ?? ""],
-        }))
+  let table
+  try {
+    table =
+      what === "sessions"
+        ? (await engine.listSessions?.({ cwd }))?.map((row) => ({ row, cells: [row.id, localTime(row.updatedAt), row.model, row.title ?? "(untitled)"] }))
+        : (await engine.listModels?.())?.map((row) => ({
+            row,
+            cells: [`${row.isDefault ? "*" : " "} ${row.id}`, row.efforts.length === 0 ? "" : `effort: ${row.efforts.join(", ")}`, row.description ?? ""],
+          }))
+  } catch (error) {
+    if (!(error instanceof EngineUnavailable)) throw error
+    io.stderr.write(`${brand.binary}: ${error.message}\n`)
+    return exitCodeOfRefusal(error)
+  }
   if (table === undefined) {
     io.stderr.write(`${brand.binary}: ${flag} is not supported by this engine\n`)
     return 1

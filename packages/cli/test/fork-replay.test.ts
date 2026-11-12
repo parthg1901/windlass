@@ -12,7 +12,9 @@ import { join } from "node:path"
 import { SCRIPT_ENV } from "@light-harness/acp"
 import { brand } from "@light-harness/core"
 import { parseArgs } from "../src/args.ts"
-import { CLI } from "./helpers.ts"
+import { FakeProvider } from "@light-harness/core/testing"
+import { createAcpEngine } from "../src/acp-engine.ts"
+import { CLI, runCli } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -32,13 +34,14 @@ function place(name: string) {
   return { workspace, xdg: join(root, name, "xdg") }
 }
 
-async function cli(at: ReturnType<typeof place>, responses: unknown[][], args: readonly string[]) {
+/** `responses: null`: no scripted model, so the server reads the sign-in of the throwaway data directory, which has none. */
+async function cli(at: ReturnType<typeof place>, responses: unknown[][] | null, args: readonly string[]) {
   const proc = Bun.spawn(["bun", CLI, ...args], {
     cwd: at.workspace,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
-    env: { ...process.env, XDG_DATA_HOME: at.xdg, [SCRIPT_ENV]: script(responses), NO_COLOR: "1" },
+    env: { ...process.env, XDG_DATA_HOME: at.xdg, [SCRIPT_ENV]: responses === null ? "" : script(responses), NO_COLOR: "1" },
   })
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
   return { out, err, code }
@@ -104,6 +107,24 @@ describe("as a process", () => {
     expect(missing.err).toContain("ses_nothing")
   })
 
+  test("signed out: forking and listing work, as they call no model; --models and a prompt say how to sign in", async () => {
+    const at = place("signed-out")
+    expect((await cli(at, [[write("bee\n")], [say("Wrote b.txt.")]], ["write b"])).code).toBe(0)
+    const forked = await cli(at, null, ["fork"])
+    expect([forked.code, forked.err]).toEqual([0, ""])
+    expect(forked.out).toStartWith("Forked ses_")
+    const listed = await cli(at, null, ["--list-sessions"])
+    expect([listed.code, listed.out.trim().split("\n").length]).toEqual([0, 2])
+    // Without a sign-in the models cannot be listed: one sentence and the way to sign in, never a stack trace.
+    for (const args of [["--models"], ["--models", "--json"]]) {
+      const models = await cli(at, null, args)
+      expect(models).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in, so the models cannot be listed (they come from your ChatGPT plan); run \`${brand.binary} login\` to sign in with ChatGPT, then try again\n` })
+    }
+    const prompt = await cli(at, null, ["-c", "and now?"])
+    expect(prompt).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in; run \`${brand.binary} login\` to sign in with ChatGPT, then try again\n` })
+  })
+
+
   test("replay: progress on stderr, the report on stdout; a changed call is where it diverged; exit 0 when it ran", async () => {
     const at = place("replay")
     expect((await cli(at, [[write("bee\n")], [say("Wrote b.txt.")]], ["write b"])).code).toBe(0)
@@ -128,5 +149,17 @@ describe("as a process", () => {
     expect(usage.code).toBe(2)
     expect(usage.err).toContain("--system-prompt")
     expect(usage.err).toContain("no such file")
+  })
+})
+
+describe("usage errors the engine finds", () => {
+  test("an unknown model exits 2, as a mistyped option does, and names the models there are", async () => {
+    const at = place("unknown-model")
+    const engine = () => createAcpEngine({ transport: "memory", harness: { dataDir: join(at.xdg, brand.directory), provider: new FakeProvider([]), log: () => {}, engine: { listModels: async () => ["test-model"] } } })
+    const run = await runCli(["--cwd", at.workspace, "-m", "no-such-model", "hello"], { engine })
+    expect(run.code).toBe(2)
+    expect(run.err).toStartWith(`${brand.binary}: `)
+    expect(run.err).toContain("no-such-model")
+    expect(run.err).toContain("test-model")
   })
 })
