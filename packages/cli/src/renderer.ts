@@ -11,6 +11,7 @@ import { type AgentRecord, type EventData, type ProviderError, type SessionSetti
 import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
+import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
@@ -60,6 +61,9 @@ export const STOPPED_FOR_APPROVAL = `To go on, run it interactively (\`${brand.b
 
 /** The rows of a subagent's answer shown under its call; the agent reads all of it. */
 const SUBAGENT_ANSWER_ROWS = 3
+
+/** The rows of what a hook said (its reason, its note, what it printed) shown under a call or an ending; the agent reads all of it. */
+const HOOK_TEXT_ROWS = 4
 
 /** A prompt echoed in more rows than this is shown as its first `PROMPT_HEAD` rows and a count. */
 const PROMPT_ROWS = 12
@@ -178,6 +182,10 @@ export class PrettyRenderer implements Sink {
   private agent: AgentRecord | null = null
   /** Calls the agent's restrictions refused, with why in the user's words: said on the call's own line when it settles. */
   private readonly agentRefusals = new Map<string, string>()
+  /** The hooks that applied to a call that has not settled yet (`hook.ran` comes before its result), by call. */
+  private readonly hookRuns = new Map<string, HookRecord[]>()
+  /** The stop hooks that objected when the turn last tried to end: said when the agent is sent back, or on the ending. */
+  private stopRuns: HookRecord[] = []
   /** The turns a `history.restored` brings back, read before the tracker forgets that they were undone. */
   private redone: readonly TurnInfo[] = []
   private lastSeq = 0
@@ -357,9 +365,28 @@ export class PrettyRenderer implements Sink {
         this.lineWithArg("info", [seg(`${SYMBOL.note} changed ${plural(event.files.length, "file")}: `, "dim")], fileList(event.files, 6), [])
         return
       case "diagnostic": {
-        // Something is wrong with the harness itself. It is said in full: this is what a bug report quotes.
-        const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind.replace(/_/g, " ")
+        // What the engine says about a language server (still starting, crashed, waiting for approval) is for the
+        // user to read once and nothing is wrong: a note, not a warning.
+        if (event.kind === "lsp") {
+          wrapWhole(`language server: ${flatten(event.message)}`, this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.note} ` : "  ", "dim"), seg(line, "dim")]))
+          return
+        }
+        // Something is wrong with the harness itself, or with a hook. It is said in full: this is what a bug report quotes.
+        const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind === "hooks" ? "hook" : event.kind.replace(/_/g, " ")
         return this.headed(what, [flatten(event.message)])
+      }
+      case "hook.ran": {
+        const data = event.data
+        if (data.messageId !== null && data.callId !== null) {
+          const id = key(data.messageId, data.callId)
+          this.hookRuns.set(id, [...(this.hookRuns.get(id) ?? []), data])
+          return
+        }
+        // A stop hook: an objection is said with what became of it (the agent sent back, or the turn's ending).
+        if (data.answer === "no") this.stopRuns.push(data)
+        const printed = hookPrinted(data)
+        if (printed !== null) for (const line of wrap(`the stop hook "${data.name}" printed: ${flatten(printed)}`, this.width - 2)) this.line("info", [seg(`${SYMBOL.note} ${line}`, "dim")])
+        return
       }
       case "notice": {
         const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "project setting not followed" : event.kind === "no_closing_answer" ? "no closing answer" : "checks not run"
@@ -556,6 +583,11 @@ export class PrettyRenderer implements Sink {
         // execution, when that is worth a line: checks that passed, or failing ones that were left as they are.
         const verification = event.data.verification
         const next = seg(" · on to the queued message", "dim")
+        if (event.data.hooks !== undefined) {
+          this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg(unsatisfiedText(event.data.hooks.unsatisfied), "yellow"), next])
+          for (const line of this.objections()) this.line("info", line)
+        }
+        this.stopRuns = []
         if (verification.status === "passed") this.line("info", [seg(`${SYMBOL.ok} `, "green"), seg("checks passed", "green"), next])
         if (verification.status === "unresolved") {
           this.line("info", [seg(`${SYMBOL.fail} `, "red"), seg("failing checks left unresolved", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), next])
@@ -596,7 +628,7 @@ export class PrettyRenderer implements Sink {
         // A compaction the user asked for while idle runs under an execution of its own: no turn ended here.
         if (compactionOnly(turn)) return
         const parts = [turn === null ? null : requestsOf(turn), turn === null ? null : formatDuration(event.time - turn.start)]
-        return this.succeeded(event.data.verification, parts, turn)
+        return this.succeeded(event.data.verification, parts, turn, event.data.hooks?.unsatisfied ?? null)
       }
       case "execution.failed": {
         const turn = this.endTurn()
@@ -822,6 +854,20 @@ export class PrettyRenderer implements Sink {
         this.lineWithArg("info", [seg(`  ${TASK_MARK[task.status]} `, task.status === "done" ? "green" : task.status === "in_progress" ? "cyan" : "dim")], flatten(task.text), [])
       return
     }
+    const hooks = this.hookRuns.get(id) ?? []
+    this.hookRuns.delete(id)
+    // A before hook kept the call from running: the hook's name and its reason, instead of the text the model got.
+    const refused = data.outcome === "error" ? hookRefusal(hooks, call.startedAt !== null, data.output) : null
+    if (refused !== null) {
+      if (adjacent) wrap(refused.head, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.refused} ` : "    ", "yellow"), seg(line, "yellow")]))
+      else {
+        this.lineWithArg("info", [seg(`  ${SYMBOL.refused} `, "yellow"), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [])
+        for (const line of wrap(refused.head, this.width - 4)) this.line("info", [seg(`    ${line}`, "yellow")])
+      }
+      if (refused.reason !== null) for (const line of excerpt(refused.reason, this.width - 4, HOOK_TEXT_ROWS)) this.line("info", [seg(`    ${line}`)])
+      this.hookLines(hooks, false)
+      return
+    }
     // Refused by the agent the session runs as: the agent's rule, in the user's words, instead of the text the model got.
     const refusal = this.agentRefusals.get(id)
     if (refusal !== undefined) {
@@ -847,17 +893,31 @@ export class PrettyRenderer implements Sink {
     const room = this.width - displayWidth(`  ✓ ${call.name} · ${described.text}${suffix([duration])}`)
     const outcome = !adjacent && room < 16 && described.short !== undefined ? { ...described, text: described.short } : described
     const head: Segment[] = [seg("  "), seg(`${outcome.symbol} `, outcome.tone)]
-    const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), ...sandboxMark(call), seg(suffix([duration]), "dim")]
+    // What the language servers said about an edit: how many new diagnostics its note lists, and from which server.
+    const diagnosed = diagnosticsSummary(data.diagnostics)
+    const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), ...(diagnosed === null ? [] : [seg(`${outcome.text === "" ? "" : " · "}${diagnosed}`, "yellow")]), ...sandboxMark(call), seg(suffix([duration]), "dim")]
     if (adjacent) this.line("info", [...head, ...trimLeadingDot(tail, outcome.text)])
     else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · ", "dim"), ...tail])
     // A command started in the background: its line above says where its output is, as this machine names the file.
     const background = call.name === "shell" && typeof (data.display as { background?: unknown } | null)?.background === "string"
     if (!background) for (const detail of detailLines(call.name, data)) this.line("info", [seg(`    ${detail}`, "dim")])
+    this.hookLines(hooks, call.startedAt !== null)
     if (data.truncation !== null) {
       const spill = data.truncation.spillPath
       if (spill === null) this.line("info", [seg(`    output capped · ${plural(data.truncation.originalLines, "line")} in full`, "dim")])
       else this.pathLines(`    output capped · ${plural(data.truncation.originalLines, "line")} in full:`, spill)
     }
+  }
+
+  /** Under a call's row: a note a hook added to its result, a hook that could not answer, what a hook printed for the user. */
+  private hookLines(hooks: readonly HookRecord[], started: boolean): void {
+    // A hook that could not answer was said by the engine in full, just above (`diagnostic`).
+    for (const said of hookCallLines(hooks, started, false)) for (const line of excerpt(said.text, this.width - 4, HOOK_TEXT_ROWS)) this.line("info", [seg(`    ${line}`, said.tone === "warn" ? "yellow" : "dim")])
+  }
+
+  /** What the stop hooks that still object said, under the line that says what became of it. */
+  private objections(): Segment[][] {
+    return stopHookSentBack(this.stopRuns).reasons.flatMap((reason) => excerpt(reason, this.width - 2, HOOK_TEXT_ROWS).map((line) => [seg(`  ${line}`)]))
   }
 
   private stepFailed(error: StepError): void {
@@ -890,8 +950,15 @@ export class PrettyRenderer implements Sink {
   }
 
   /** The three ways a turn ends as done: on passing checks, without any, or with checks that still fail. */
-  private succeeded(verification: VerificationOutcome, parts: readonly (string | null)[], turn: Turn | null): void {
-    const done = (basis: string) => this.summary([seg(`${SYMBOL.ok} `, "green"), seg("done", ["green", "bold"]), seg(` · ${basis}`, basis === "checks passed" ? "green" : "dim"), seg(suffix(parts), "dim")], turn)
+  private succeeded(verification: VerificationOutcome, parts: readonly (string | null)[], turn: Turn | null, unsatisfied: readonly string[] | null = null): void {
+    // Stop hooks still objected after the agent was sent back as often as a turn allows: its own kind of ending,
+    // with what the hooks last said. (The engine's own sentence about it came just before, as a warning.)
+    const objected = unsatisfied === null ? [] : this.objections()
+    this.stopRuns = []
+    const done = (basis: string, more: readonly (readonly Segment[])[] = []) =>
+      unsatisfied === null
+        ? this.summary([seg(`${SYMBOL.ok} `, "green"), seg("done", ["green", "bold"]), seg(` · ${basis}`, basis === "checks passed" ? "green" : "dim"), seg(suffix(parts), "dim")], turn, more)
+        : this.summary([seg(`${SYMBOL.unknown} `, "yellow"), seg(unsatisfiedText(unsatisfied), ["yellow", "bold"]), seg(` · ${basis}`, "dim"), seg(suffix(parts), "dim")], turn, [...objected, ...more])
     switch (verification.status) {
       case "passed":
         return done("checks passed")
@@ -899,7 +966,7 @@ export class PrettyRenderer implements Sink {
         if (verification.unverified !== true) return done("nothing to check")
         // Files the checks cover changed outside this turn: not checked now, and the user is told when they will be.
         const hint = wrap(UNVERIFIED_HINT, this.width - 2).map((line) => [seg(`  ${line}`, "yellow")])
-        return this.summary([seg(`${SYMBOL.ok} `, "green"), seg("done", ["green", "bold"]), seg(" · nothing to check", "dim"), seg(suffix(parts), "dim")], turn, hint)
+        return done("nothing to check", hint)
       }
       case "not_configured":
         return done("no checks configured")
@@ -909,7 +976,8 @@ export class PrettyRenderer implements Sink {
         const head = [seg(`${SYMBOL.fail} `, "red"), seg("stopped with failing checks", ["red", "bold"]), seg(`: ${verification.failing.join(", ")}`, "red"), seg(suffix(parts), "dim")]
         // The reason is never cut: it is why "done" is not what this turn ended as.
         const why = wrap(unresolvedReason(verification), this.width - 2).map((line) => [seg(`  ${line}`, "yellow")])
-        return this.summary(head, turn, why)
+        const also = unsatisfied === null ? [] : [[seg(`  ${SYMBOL.unknown} it also ${unsatisfiedText(unsatisfied)}`, "yellow")], ...objected]
+        return this.summary(head, turn, [...why, ...also])
       }
     }
   }
@@ -922,6 +990,14 @@ export class PrettyRenderer implements Sink {
         // Counted here and said when the agent's next step starts (see `step.started`).
         this.sentBack = Math.abs(this.sentBack) + 1
         return
+      case "stop_hook": {
+        // A stop hook objected and the agent is sent back with what it said.
+        const sent = stopHookSentBack(this.stopRuns)
+        this.lineWrapped([seg(`${SYMBOL.retry} `, "yellow"), seg(this.stopRuns.length === 0 ? "a stop hook did not let the turn end" : sent.head), seg(" · the agent is sent back with what it said", "dim")])
+        for (const line of this.objections()) this.line("info", line)
+        this.stopRuns = []
+        return
+      }
       case "continuation":
         this.continuing = true
         this.line("info", [seg(`${SYMBOL.retry} `, "yellow"), seg("asking the model to continue where it was cut off", "dim")])
@@ -1084,6 +1160,7 @@ export class PrettyRenderer implements Sink {
     this.progress.clear()
     this.checking = null
     this.sentBack = 0
+    this.hookRuns.clear()
     return turn
   }
 

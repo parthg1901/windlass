@@ -17,11 +17,11 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { brand } from "@windlass/core"
+import { type CallId, type MessageId, brand, event } from "@windlass/core"
 import { FakeProvider, script } from "@windlass/core/testing"
 import { loadConfig, loadConfigSync } from "../../core/src/config/load.ts"
 import { createAcpEngine } from "../src/acp-engine.ts"
-import { runCli } from "./helpers.ts"
+import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
 
 setDefaultTimeout(60_000)
@@ -156,6 +156,82 @@ describe("a project's hook", () => {
   })
 })
 
+describe("what a hook did", () => {
+  test("a refused call, a note, a hook that cannot answer and a turn that ends with a stop hook unsatisfied, with the user's own hooks", async () => {
+    const cwd = workspace(undefined, {
+      hooks: {
+        beforeTool: [{ name: "no-secrets", tools: ["write"], paths: ["secret.txt"], command: "echo 'Secrets are not written here.'; exit 2" }],
+        afterTool: [
+          { name: "reminder", tools: ["write"], paths: ["a.txt"], command: "echo 'Run the formatter before you finish.'; exit 2" },
+          { name: "broken", tools: ["write"], paths: ["a.txt"], command: "echo 'no formatter installed' >&2; exit 7" },
+        ],
+        stop: [{ name: "never-done", command: "echo 'SCRATCH.md still exists.'; exit 2" }],
+        maxStopRounds: 1,
+      },
+    })
+    const provider = new FakeProvider([
+      [script.toolCall("call_1", "write", { path: "secret.txt", content: "x\n" })],
+      [script.toolCall("call_2", "write", { path: "a.txt", content: "one\n" })],
+      [script.text("Done.")],
+      [script.text("Still done.")],
+    ])
+    const run = await runCli(["--cwd", cwd, "write both files"], { engine: engineFor(provider, join(root, `data-did-${count}`)), env: { NO_COLOR: "1" } })
+    const out = run.out + run.err
+    const flat = out.replace(/\s+/g, " ")
+    expect(flat).toContain('⊘ not run: the hook "no-secrets" refused it Secrets are not written here.')
+    expect(flat).toContain('note from the hook "reminder", added to the result: Run the formatter before you finish.')
+    // A hook that could not answer is said once, in the engine's words, with what that means.
+    expect(flat.match(/could not answer/g)).toHaveLength(1)
+    expect(flat).toMatch(/⚠ hook: The hook "broken" \(after a tool call\) could not answer: [^.]*7[^.]*\. Nothing was added to the result\./)
+    expect(flat).toContain('the hook "broken" printed: no formatter installed')
+    expect(flat).toContain('↻ the stop hook "never-done" did not let the turn end · the agent is sent back with what it said SCRATCH.md still exists.')
+    expect(flat).toContain('⚠ ended with the stop hook "never-done" unsatisfied · no checks configured')
+    // What the hook said is said where the agent was sent back, and nothing is made up for the ending.
+    expect(flat).not.toContain("it gave no reason")
+    // Nothing of it is called a note to the model or an internal problem.
+    expect(flat).not.toContain("note to the model")
+    expect(run.code).toBe(0)
+  })
+
+  const m = (id: string) => id as MessageId
+  const c = (id: string) => id as CallId
+  const record = (more: Record<string, unknown>) =>
+    event("hook.ran", { point: "beforeTool", messageId: m("m1"), callId: c("c1"), hookId: "user.beforeTool[0]", name: "guard", origin: "user", fingerprint: "f".repeat(64), run: { kind: "ran", sandbox: null }, answer: "yes", failure: null, detail: null, exitCode: 0, durationMs: 5, toModel: null, forUser: "", taint: null, ...more } as never)
+  const settled = (more: Record<string, unknown>) => event("tool.settled", { messageId: m("m1"), callId: c("c1"), outcome: "success", output: "Edited src/app.ts (1 change).", truncation: null, attachments: [], display: null, ...more } as never)
+  const called = (name: string, input: unknown) => event("tool.called", { messageId: m("m1"), callId: c("c1"), name, input: JSON.stringify(input), providerData: null })
+
+  test("a before hook that timed out refuses the call, and the row says which hook and why", () => {
+    const out = render(
+      stored([
+        called("shell", { command: "git push" }),
+        record({ answer: "failed", failure: "timed_out", detail: "timed out after 10 s", exitCode: null }),
+        settled({ outcome: "error", output: 'This call was not run: the hook "guard" is failing (timed out after 10 s).' }),
+      ]),
+    )
+    expect(out.replace(/\s+/g, " ")).toContain('⊘ not run: the hook "guard" could not answer (timed out after 10 s), and a call it must allow is refused')
+  })
+
+  test("an edit whose result got diagnostics says how many and from which server; one that got none says nothing on its row", () => {
+    const diagnostics = (outcome: string, added: number) => ({ noteAdded: added > 0, listed: added, omitted: 0, waitedMs: 120, servers: [{ name: "typescript", origin: "user", fingerprint: "a".repeat(16), outcome, new: added, preExisting: 3, fixed: 0 }] })
+    const withNote = render(stored([called("edit", { path: "src/app.ts", old: "a", new: "b" }), event("tool.started", { messageId: m("m1"), callId: c("c1") } as never), settled({ diagnostics: diagnostics("compared", 2) })]))
+    expect(withNote).toContain("2 new diagnostics from typescript")
+    const without = render(stored([called("edit", { path: "src/app.ts", old: "a", new: "b" }), event("tool.started", { messageId: m("m1"), callId: c("c1") } as never), settled({ diagnostics: diagnostics("timeout", 0) })]))
+    expect(without).not.toContain("diagnostic")
+    expect(without).toContain("✓")
+  })
+
+  test("what the engine says about a language server is a note, not a warning; about a hook it is a warning headed as one", () => {
+    const starting = `The language server "typescript" was still starting when an edit needed its diagnostics; the edit got none. Later edits get them once it is ready.`
+    const out = render([
+      { type: "diagnostic", sessionId: "ses_test", kind: "lsp", message: starting } as never,
+      { type: "diagnostic", sessionId: "ses_test", kind: "hooks", message: 'The hook "fmt" (after a tool call) could not answer: timed out after 10 s. Nothing was added to the result.' } as never,
+    ])
+    expect(out.replace(/\s+/g, " ")).toContain(`· language server: ${starting}`)
+    expect(out).not.toContain("⚠ lsp")
+    expect(out).toContain('⚠ hook: The hook "fmt"')
+  })
+})
+
 describe("language servers", () => {
   const server = (flags: readonly string[] = []) => ({ command: process.execPath, args: [LSP_SERVER, ...flags], languages: { plaintext: ["**/*.txt"] } })
 
@@ -181,6 +257,8 @@ describe("language servers", () => {
     expect(run.seen).toContain("An edit's result waits at most 5000 ms for diagnostics")
     expect(run.seen).toContain("serves **/*.txt")
     expect(run.seen).toContain(`defined in this project's file, ${projectFile(cwd)}`)
+    // Not headed as a problem: a note.
+    expect(run.seen).toContain("· language server: This project's configuration names the language server")
   })
 
   test("a hook and a language server that wait at once are asked about one after the other, and each answer goes to its own question", async () => {

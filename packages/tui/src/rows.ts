@@ -10,7 +10,7 @@
  * capped; a second expansion shows it in full up to `FULL_OUTPUT_LINES`.
  */
 import { SUBAGENT_NOTE } from "@windlass/core"
-import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diffStat, errorSummary, fileList, formatBytes, formatDuration, requestsText, successSummary, tasksOf, tasksProgress, unresolvedReason, usageText } from "./cli.ts"
+import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diagnosticsSummary, diffStat, hookCallLines, hookRefusal, unsatisfiedText, errorSummary, fileList, formatBytes, formatDuration, requestsText, successSummary, tasksOf, tasksProgress, unresolvedReason, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
@@ -149,11 +149,18 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
       lines.push(...wrapLine([span(`${INDENT}it needs ${approval.needs.join(", ")}${approval.stop ? "; the run ends here" : ""}`, "warn")], columns, [span(INDENT)]))
     // The agent's rule is on the row itself; the text the model was given says the same to the model.
     else if (approval?.state === "denied" && approval.refusal != null) return lines
+    // A hook kept the call from running: its reason, in a few whole lines, instead of the text the model was given.
+    else if (hookRefused(row) !== null) {
+      const reason = hookRefused(row)!.reason
+      if (reason !== null) lines.push(...clip(wrapLine([span(`${INDENT}${reason}`)], columns, [span(INDENT)]), HOOK_TEXT_ROWS))
+    }
     else if (row.phase === "settled" && row.outcome === "error") for (const detail of detailLines(row.name, settledData(row)).slice(-3)) lines.push([span(`${INDENT}${truncate(detail, columns - INDENT.length)}`, "dim")])
+    lines.push(...hookLines(row, columns))
     return lines
   }
   lines.push(...argumentLines(row, columns))
   lines.push(...runLines(row, columns))
+  lines.push(...hookLines(row, columns))
   lines.push(...outputLines(row, columns))
   return lines
 }
@@ -269,7 +276,9 @@ function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[]
     case "settled": {
       const outcome = describeOutcome(row)
       const took = row.startedAt === null || row.settledAt === null ? "" : ` · ${formatDuration(row.settledAt - row.startedAt)}`
-      const tail = [...sandboxMark(row), span(outcome.text === "" ? "" : ` · ${outcome.text}`, outcome.role === "ok" ? undefined : outcome.role), ...approvalMark(row), span(took, "dim")]
+      // What the language servers said about an edit: how many new diagnostics its note lists, and from which server.
+      const diagnosed = diagnosticsSummary(row.diagnostics ?? undefined)
+      const tail = [...sandboxMark(row), span(outcome.text === "" ? "" : ` · ${outcome.text}`, outcome.role === "ok" ? undefined : outcome.role), ...(diagnosed === null ? [] : [span(` · ${diagnosed}`, "warn")]), ...approvalMark(row), span(took, "dim")]
       return fit([span(`${outcome.symbol} `, outcome.role), name, span(row.arg === "" ? "" : " ")], tail)
     }
   }
@@ -305,6 +314,9 @@ function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: stri
   if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: "not allowed by you" }
   if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: `not run: ${approval.refusal}` }
   if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }
+  // A before hook kept the call from running: the hook's name, instead of the text the model was given.
+  const refused = hookRefused(row)
+  if (refused !== null) return { symbol: "⊘", role: "warn", text: refused.head }
   switch (row.outcome) {
     case "success":
       return { symbol: "✓", role: "ok", text: successSummary(row.name, data) }
@@ -317,6 +329,26 @@ function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: stri
     case null:
       return { symbol: "?", role: "dim", text: "" }
   }
+}
+
+/** The rows of what a hook said (its reason, its note, what it printed) under a call; expanding the call shows its whole result. */
+const HOOK_TEXT_ROWS = 4
+
+/** At most `rows` lines; the last one says that there is more. */
+function clip(lines: Span[][], rows: number): Span[][] {
+  if (lines.length <= rows) return lines
+  return [...lines.slice(0, rows - 1), [...lines[rows - 1]!, span(" …", "dim")]]
+}
+
+/** The refusal of a call a before hook kept from running, or `null`. */
+function hookRefused(row: ToolRow) {
+  return row.phase === "settled" && row.outcome === "error" ? hookRefusal(row.hooks, row.startedAt !== null, row.output) : null
+}
+
+/** Under a settled call: a note a hook added to its result, a hook that could not answer, what a hook printed for the user. */
+function hookLines(row: ToolRow, columns: number): Span[][] {
+  if (row.phase !== "settled") return []
+  return hookCallLines(row.hooks, row.startedAt !== null, row.hookFailures).flatMap((said) => clip(wrapLine([span(`${INDENT}${said.text}`, said.tone)], columns, [span(INDENT)]), HOOK_TEXT_ROWS))
 }
 
 function settledData(row: ToolRow) {
@@ -411,7 +443,12 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
   switch (row.outcome) {
     case "succeeded": {
       const status = row.verification?.status
-      if (status === "passed") wrapped([span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok"), span(after, "dim")])
+      // Stop hooks still objected after the agent was sent back as often as a turn allows: its own kind of ending.
+      if (row.unsatisfied !== null) {
+        const basis = status === "passed" ? "checks passed" : status === "not_needed" ? "nothing to check" : status === "left_to_parent" ? LEFT_TO_PARENT : "no checks configured"
+        wrapped([span("⚠ ", "warn"), span(unsatisfiedText(row.unsatisfied), "warn", { bold: true }), span(` · ${basis}`, "dim"), span(after, "dim")])
+        if (row.verification?.status === "not_needed" && row.verification.unverified === true) wrapped([span(`  ${UNVERIFIED_HINT}`, "warn")], "    ")
+      } else if (status === "passed") wrapped([span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok"), span(after, "dim")])
       else if (row.verification?.status === "not_needed" && row.verification.unverified === true) {
         // Files the checks cover changed outside this turn: not checked now, and when they will be.
         wrapped([span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim"), span(after, "dim")])
@@ -426,6 +463,7 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
       const failing = verification?.status === "unresolved" ? verification.failing.join(", ") : ""
       wrapped([span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · failing checks: ${failing}`, "error"), span(after, "dim")])
       if (verification?.status === "unresolved") wrapped([span(`  ${unresolvedReason(verification)}`, "warn")], "    ")
+      if (row.unsatisfied !== null) wrapped([span(`  ⚠ it also ${unsatisfiedText(row.unsatisfied)}`, "warn")], "    ")
       break
     }
     case "failed":

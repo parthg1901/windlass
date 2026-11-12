@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult } from "@windlass/acp/extensions"
-import { brand } from "@windlass/core"
+import { type CallId, type MessageId, brand, event } from "@windlass/core"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
 
@@ -20,6 +20,8 @@ afterEach(async () => {
   mounted = null
 })
 
+const m = (id: string) => id as MessageId
+const c = (id: string) => id as CallId
 const flat = (frame: string) => frame.replace(/\s+/g, " ")
 const PROJECT_FILE = `/work/.${brand.directory}/config.json`
 const USER_FILE = `/home/u/.config/${brand.directory}/config.json`
@@ -179,5 +181,68 @@ describe("a project's language server", () => {
     // The other name for the same listing.
     await command("/diagnostics")
     expect(flat(await mounted!.frame()).match(/Language servers \(2\):/g)).toHaveLength(2)
+  })
+})
+
+describe("what a hook did, and what the language servers said", () => {
+  const ran = (more: Record<string, unknown>) =>
+    event("hook.ran", { point: "beforeTool", messageId: m("m1"), callId: c("c1"), hookId: "user.beforeTool[0]", name: "no-push", origin: "user", fingerprint: "f".repeat(64), run: { kind: "ran", sandbox: null }, answer: "yes", failure: null, detail: null, exitCode: 0, durationMs: 5, toModel: null, forUser: "", taint: null, ...more } as never)
+  const called = (call: string, name: string, input: unknown) => event("tool.called", { messageId: m("m1"), callId: c(call), name, input: JSON.stringify(input), providerData: null })
+  const settled = (call: string, more: Record<string, unknown>) => event("tool.settled", { messageId: m("m1"), callId: c(call), outcome: "success", output: "ok", truncation: null, attachments: [], display: null, ...more } as never)
+
+  test("a refused call names the hook and its reason; a note and what a hook printed sit under the call; diagnostics are counted on the row", async () => {
+    const { session } = await open()
+    session.emit(
+      event("execution.started", { executionId: "exe_1" } as never),
+      called("c1", "shell", { command: "git push origin main" }),
+      ran({ answer: "no", exitCode: 2, toModel: "Pushing is not allowed here. Commit locally and tell the user." }),
+      settled("c1", { outcome: "error", output: 'This call was not run: the hook "no-push" refused it.\nPushing is not allowed here. Commit locally and tell the user.' }),
+      called("c2", "edit", { path: "src/app.ts", old: "a", new: "b" }),
+      event("tool.started", { messageId: m("m1"), callId: c("c2") } as never),
+      ran({ point: "afterTool", callId: c("c2"), name: "prettier", answer: "no", exitCode: 2, toModel: "prettier could not format this file; run it to see why.", forUser: "src/app.ts: SyntaxError (3:1)" }),
+      settled("c2", {
+        output: "Edited src/app.ts (1 change).",
+        diagnostics: { noteAdded: true, listed: 2, omitted: 0, waitedMs: 300, servers: [{ name: "typescript", origin: "user", fingerprint: "a".repeat(16), outcome: "compared", new: 2, preExisting: 3, fixed: 0 }] },
+      }),
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain('⊘ shell git push origin main · not run: the hook "no-push" refused it')
+    expect(frame).toContain("Pushing is not allowed here. Commit locally and tell the user.")
+    expect(frame).not.toContain("This call was not run")
+    expect(frame).toContain("2 new diagnostics from typescript")
+    expect(frame).toContain('note from the hook "prettier", added to the result: prettier could not format this file; run it to see why.')
+    expect(frame).toContain('the hook "prettier" printed: src/app.ts: SyntaxError (3:1)')
+  })
+
+  test("a stop hook that sends the agent back says what it said; a turn that ends with it unsatisfied is its own ending", async () => {
+    const { session } = await open()
+    const stop = (more: Record<string, unknown>) => ran({ point: "stop", messageId: null, callId: null, name: "no-scratch", answer: "no", exitCode: 2, ...more })
+    session.emit(
+      event("execution.started", { executionId: "exe_1" } as never),
+      stop({ toModel: "SCRATCH.md still exists. Delete it before you finish." }),
+      event("synthetic.appended", { messageId: m("m2"), origin: "stop_hook", text: "[Stop hook 1 of at most 1] The turn cannot end yet." } as never),
+      stop({}),
+      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"] } } as never),
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain('↻ the stop hook "no-scratch" did not let the turn end · the agent is sent back with what it said')
+    expect(frame).toContain("SCRATCH.md still exists. Delete it before you finish.")
+    expect(frame).toContain('⚠ ended with the stop hook "no-scratch" unsatisfied · no checks configured')
+    expect(frame).not.toContain("note to the model")
+    expect(frame).not.toContain("hook.ran")
+  })
+
+  test("the engine's word about a language server is a note, about a hook a warning; neither is an event the client does not know", async () => {
+    const { session } = await open()
+    session.emit(
+      { type: "diagnostic", sessionId: session.id, kind: "lsp", message: 'The language server "typescript" was still starting when an edit needed its diagnostics; the edit got none. Later edits get them once it is ready.' } as never,
+      { type: "diagnostic", sessionId: session.id, kind: "hooks", message: 'The hook "fmt" (after a tool call) could not answer: timed out after 10 s. Nothing was added to the result.' } as never,
+    )
+    await mounted!.settle()
+    const frame = flat(await mounted!.frame())
+    expect(frame).toContain('· language server: The language server "typescript" was still starting')
+    expect(frame).toContain('⚠ hook: The hook "fmt" (after a tool call) could not answer')
   })
 })

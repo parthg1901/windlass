@@ -11,6 +11,7 @@
 import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type AgentRecord, type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
+import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack, unsatisfiedText } from "./cli.ts"
 import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefusal, agentSwitchText, callArgument, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
@@ -89,6 +90,16 @@ export interface ToolRow extends RowBase {
   approval: ToolApproval | null
   /** A `subagent` call's subagent, once it started: its activity, from the events its parent forwards. */
   subagent: SubagentView | null
+  /** The hooks that applied to the call (`hook.ran`): one may have refused it, added a note to its result, or failed. */
+  hooks: HookRecord[]
+  /**
+   * Whether the row says which of its hooks could not answer. Live, the
+   * engine says each one in full as it happens; a stored session has only
+   * the record, so there the row says it.
+   */
+  hookFailures: boolean
+  /** What the language servers said about an edit (`tool.settled.diagnostics`); `null` when none serves the file. */
+  diagnostics: DiagnosticsRecord | null
 }
 
 /** A subagent as its parent's tool row shows it. */
@@ -157,6 +168,8 @@ export interface OutcomeRow extends RowBase {
   expanded: boolean
   /** The turn this ended, numbered as the user counts turns (what `/fork <turn>` takes). */
   readonly turn: number | null
+  /** The stop hooks that still objected when the turn ended anyway (`hooks.unsatisfied`); `null` when none did. */
+  readonly unsatisfied: readonly string[] | null
 }
 
 export interface DebugRow extends RowBase {
@@ -285,6 +298,8 @@ export class Transcript {
   private cutOff: "crash" | "shutdown" | null = null
   private continuing = false
   private sentBack = 0
+  /** The stop hooks that objected when the turn last tried to end: said when the agent is sent back. */
+  private stopRuns: HookRecord[] = []
   private stopAsked = false
   /** The stop line that tells how to exit at once; the hint goes once the turn has ended. */
   private stopRow: NoticeRow | null = null
@@ -432,10 +447,16 @@ export class Transcript {
         if (this.turn !== null) this.turn.changedFiles = event.files
         return
       case "diagnostic": {
-        const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind.replace(/_/g, " ")
+        // What the engine says about a language server (still starting, crashed, waiting for approval) is for the
+        // user to read once and nothing is wrong: a note, not a warning.
+        if (event.kind === "lsp") {
+          this.notice(SYMBOL.note, "dim", [span("language server: ", "dim"), span(sanitize(event.message), "dim")], [], replay, "work")
+          return
+        }
+        const what = event.kind === "prefix_violation" ? "prompt cache" : event.kind === "hooks" ? "hook" : event.kind.replace(/_/g, " ")
         this.notice(SYMBOL.unknown, "warn", [span(`${what}: `, "warn"), span(sanitize(event.message))], [], replay, "work")
-        // A definition that could not be used is about the files, not about a model call: no call is marked for it.
-        if (event.kind === "agents") return
+        // A definition that could not be used is about the files, not about a model call, and so is a hook: no call is marked for it.
+        if (event.kind === "agents" || event.kind === "hooks") return
         const call = this.activity.call
         if (event.kind !== "prefix_violation" && call !== null) this.callDiagnostics.set(call.messageId, [...(this.callDiagnostics.get(call.messageId) ?? []), event.kind])
         else this.diagnosticsForNext.push(event.kind)
@@ -544,10 +565,29 @@ export class Transcript {
         })
         return
       }
+      case "hook.ran": {
+        const data = { ...event.data, toModel: event.data.toModel === null ? null : sanitize(event.data.toModel), forUser: sanitize(event.data.forUser), detail: event.data.detail === null ? null : sanitize(event.data.detail) }
+        if (data.messageId !== null && data.callId !== null) {
+          const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
+          this.touch(row, () => {
+            row.hooks = [...row.hooks, data]
+            row.hookFailures = replay
+          })
+          return
+        }
+        // A stop hook: an objection is said with what became of it (the agent sent back, or the turn's ending).
+        if (data.answer === "no") this.stopRuns.push(data)
+        const printed = hookPrinted(data)
+        if (printed !== null) this.notice(SYMBOL.note, "dim", [span(`the stop hook "${data.name}" printed: ${printed}`, "dim")], [], replay, "work")
+        // Live, the engine says a hook that could not answer in full; a stored session has only the record.
+        if (data.answer === "failed" && replay) this.notice(SYMBOL.unknown, "warn", [span(`the stop hook "${data.name}" could not answer (${data.detail ?? data.failure?.replace(/_/g, " ") ?? "it failed"})`, "warn"), span(" · the turn ended as it would have without it", "dim")], [], replay, "work")
+        return
+      }
       case "tool.settled": {
         const data = event.data
         const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
         this.touch(row, () => {
+          row.diagnostics = data.diagnostics ?? null
           row.phase = "settled"
           row.outcome = data.outcome
           row.output = sanitize(data.output)
@@ -741,6 +781,8 @@ export class Transcript {
       case "turn.ended": {
         const verification = event.data.verification
         const next = span(" · on to the queued message", "dim")
+        if (event.data.hooks !== undefined) this.notice(SYMBOL.unknown, "warn", [span(unsatisfiedText(event.data.hooks.unsatisfied), "warn"), next], [], replay, "work")
+        this.stopRuns = []
         if (verification.status === "passed") this.notice(SYMBOL.ok, "ok", [span("checks passed", "ok"), next], [], replay, "work")
         else if (verification.status === "unresolved")
           this.notice(SYMBOL.fail, "error", [span("failing checks left unresolved", "error", { bold: true }), span(`: ${verification.failing.join(", ")}`, "error"), next], [[span(unresolvedReason(verification), "warn")]], replay, "work")
@@ -766,7 +808,7 @@ export class Transcript {
         // A compaction the user asked for while idle runs under an execution of its own: no turn ended here.
         if (compactionOnly(turn)) return
         const unresolved = event.data.verification.status === "unresolved"
-        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification, executionId: event.data.executionId }, replay)
+        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification, executionId: event.data.executionId, unsatisfied: event.data.hooks?.unsatisfied ?? null }, replay)
         return
       }
       case "execution.failed": {
@@ -977,6 +1019,9 @@ export class Transcript {
         sandbox: undefined,
         approval: null,
         subagent: null,
+        hooks: [],
+        hookFailures: false,
+        diagnostics: null,
       },
       replay,
     )
@@ -1045,8 +1090,9 @@ export class Transcript {
     return turn
   }
 
-  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string }, replay: boolean): void {
+  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string; unsatisfied?: readonly string[] | null }, replay: boolean): void {
     const waiting = outcome === "interrupted" ? this.pending.length : 0
+    this.stopRuns = []
     this.add<OutcomeRow>(
       {
         kind: "outcome",
@@ -1067,6 +1113,7 @@ export class Transcript {
         waiting,
         expanded: false,
         turn: this.turns.turns.findLast((candidate) => candidate.endSeq === this.lastSeq)?.number ?? null,
+        unsatisfied: extra.unsatisfied ?? null,
       },
       replay,
     )
@@ -1140,6 +1187,13 @@ export class Transcript {
       case "check_report":
         this.sentBack = Math.abs(this.sentBack) + 1
         return
+      case "stop_hook": {
+        // A stop hook objected and the agent is sent back with what it said.
+        const sent = stopHookSentBack(this.stopRuns)
+        this.notice(SYMBOL.retry, "warn", [span(this.stopRuns.length === 0 ? "a stop hook did not let the turn end" : sent.head), span(" · the agent is sent back with what it said", "dim")], sent.reasons.map((reason) => [span(reason)]), replay, "work")
+        this.stopRuns = []
+        return
+      }
       case "continuation":
         this.continuing = true
         return void this.notice(SYMBOL.retry, "warn", [span("asking the model to continue where it was cut off", "dim")], [], replay, "work")
