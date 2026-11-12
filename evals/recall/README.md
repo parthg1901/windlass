@@ -100,6 +100,11 @@ bun evals/recall/track.ts                              # the scripted oracle mod
   dropped by more than the margin, 2 when there is nothing to compare (fewer than two rows, or rows of another model,
   effort or session), 0 otherwise. Tokens per question are printed next to the score but never fail the check.
 
+The first row (2026-11-12, commit `f76c5e1`, `gpt-6-luna` at `low`, `--strategies engine` to stay inside a 30-request
+budget): `engine` 12 of 12, 5,935 input tokens per question, 16 live requests (one summary call of 35 s, 14 question
+calls with one question using two history-tool calls, one judge call). Two of the twelve questions read nothing from
+the prompt cache although every other fork read 5,760 of about 5,930 tokens from it.
+
 **Why the margin is two questions.** A run is 12 questions on one generated session, so one question is 8 points, and
 a single run is noisy: the engine scored 10 and 12 of 12 on two runs of the same session a small prompt change apart (below, "The
 product"). Treating each question as an independent pass at about 90%, one run's score has a standard deviation of
