@@ -252,13 +252,16 @@ with the reason (`resolveStartAgent`), rather than starting a session without th
 
 ### ACP server
 
-ACP v1 has *session modes*; agents map onto them without an extension:
-- `session/new` and `session/load` return `modes: { currentModeId, availableModes }`, one mode per agent
-  (`id` = name, `name` = name, `description`), plus `{ id: "none" }`. A shadowed or broken definition is not a mode;
-  the listing extension below shows them.
-- `session/new` takes the starting agent in `_meta[<META_NAMESPACE>].agent` (absent: the configured default).
-- `session/set_mode` is the switch (4); the server sends `current_mode_update` when the `agent.switched` event is
-  durable, not when the request arrives, and on `session/load` from the projection.
+The server already exposes model, effort and approval as select config options (`docs/acp.md`; approval holds
+the `mode` category), so the agent is a fourth one rather than an ACP session mode:
+- a select option `agent`, values `none` plus one per agent (`value` = name, `name` = name, `description`), with the
+  current one from `projection.session.agent`, on `session/new`, `session/load` and `session/resume`. A shadowed or
+  broken definition is not a value; the listing extension below shows them.
+- `session/new` takes the starting agent in `_meta[<META_NAMESPACE>].agent` (absent: the configured default; a
+  failed `resolveStartAgent` is `-32602` with its message).
+- `session/set_config_option` with `agent` is the switch (4); the server sends `config_option_update` when the
+  `agent.switched` event is durable, not when the request arrives (with the model and effort options too when the
+  switch changed them).
 - An extension request `<prefix>/agents` → `{ agents: [{ name, description, path, scope, model, effort,
   restrictions, tag }], problems }` for a client's `/agents` listing (problems include shadowed entries).
 - The `agent.switched` event is forwarded with the other events to a client that opted in to events.
