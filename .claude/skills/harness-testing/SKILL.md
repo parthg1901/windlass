@@ -150,7 +150,7 @@ Reading a result:
 
 ## After the engine fixes (2026-11-12)
 
-- The store's schema version is 8 (it changes with most engine passes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
+- The store's schema version is 9 (it changes with most engine passes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
 - A one-prompt run can search and call a tool of an untrusted MCP server with `--approval full`; only the call's result taints the session, the search does not.
 - `wake_cancel`, `memory_save` and `memory_retract` run unattended in `auto` and `full`; `ask` still asks.
 - A compaction's ending carries `calls`, the summary calls it took: count them with `bun evals/dogfood/events.ts <id> --type compaction.ended`. Model requests of a turn are its steps plus those calls.
@@ -193,3 +193,9 @@ Reading a result:
 - `calls.ts` shows `(untitled)` for sessions that `--list-sessions` titles from the first prompt: match its rows on the session ID.
 - Notes saved with memory on land in the real data directory even with a throwaway `XDG_CONFIG_HOME`: `/forget <id>` each one before the pass ends.
 - The third pass spent 172 requests on tasks 22 to 33, a seeded fix with one gate round (23) included.
+
+## Stopping one call, watching a background command (2026-11-12)
+
+- `session.cancelCall` stops one running tool call and the turn goes on: a command settles as an error with its output and "[Stopped by the user. …]"; a read or a write finishes normally; a call that has not started cannot be cancelled. No client command calls it yet.
+- `session.watchOutput` sets a watch on a running background command: a matching line arrives as a `background_watch` message. Only the user's client can ask, not the model. A watch never survives a restart (it is recorded as lost), and output printed before the watch was set is searched only in its last 64 KiB.
+
