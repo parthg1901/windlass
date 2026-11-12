@@ -8,6 +8,7 @@ evals/
   grader.ts          helpers for graders (pass/fail, run a command, compare with the original workspace)
   run-check.ts       copy a workspace, run setup, optionally apply the reference solution, grade
   graders.test.ts    every untouched workspace fails its grader; every reference solution passes
+  alternatives.test.ts  other correct solutions each grader must accept, and wrong ones it must reject
   run-agent.ts       run the agent on tasks, grade, and report metrics from its event stream
   run-agent.test.ts  the runner, driven by testing/stand-in-agent.ts
   classify.ts        export a run's session as a trace and have prefixlens explain its cache misses
@@ -37,27 +38,29 @@ bun evals/run-agent.ts --all --cli "bun evals/testing/stand-in-agent.ts"   # the
 ```
 
 For each run it copies the workspace to a fresh temporary directory and runs setup (`prepareWorkspace`), starts the
-CLI as `<cli> --json --cwd <dir> [--model] [--effort] -- <prompt>`, sends SIGINT (Ctrl-C) at the task's
-`timeoutSeconds` and SIGKILL if the agent has not stopped `--grace` seconds (default 15) later, saves the JSONL
-stream, and runs the grader. Steps are counted and a run over `maxSteps` is flagged rather than stopped (the runner
-does not pass `--max-steps`).
+CLI as `<cli> --json --cwd <dir> --max-steps <maxSteps> [--model] [--effort] -- <prompt>`, sends SIGINT (Ctrl-C) at
+the task's `timeoutSeconds` and SIGKILL if the agent has not stopped `--grace` seconds (default 15) later, saves the
+JSONL stream, and runs the grader. With `--max-steps` the CLI makes one last call without tools when a turn reaches
+the task's limit instead of going on; steps are still counted from the stream, and a run over `maxSteps` is flagged.
 
 A task with `prompts` (a list) instead of `prompt` is one session over several turns: after a turn's process exits,
-the next prompt is sent with `--session <id>` (the ID from the first turn's events) and without `--model`/`--effort`,
-which the session keeps (passing them again would record a settings change and break the prompt cache). The time
-limit covers the whole run; a turn that times out, crashes or exits non-zero ends the run, and the grader runs after
-the last turn that was sent. All turns go into one event stream.
+the next prompt is sent with `--session <id>` (the ID from the first turn's events) and `--max-steps`, without
+`--model`/`--effort`, which the session keeps (passing them again would record a settings change and break the prompt
+cache). The time limit covers the whole run; a turn that times out, crashes or exits non-zero (exit 3 included) ends
+the run, and the grader runs after the last turn that was sent. All turns go into one event stream.
 
-After each run the runner exports the session from the CLI's session database (`$XDG_DATA_HOME/light-harness/
-sessions.db`, or `--db`) with `scripts/export-trace.ts` and runs `prefixlens report --json` on the trace
+After each run the runner exports the session from the CLI's data directory (`$XDG_DATA_HOME/light-harness/`, or
+`~/.local/share/light-harness/`, where each session is its own database file, `sessions/<id>.db`; or `--db`) with
+`scripts/export-trace.ts` and runs `prefixlens report --json` on the trace
 (`classify.ts`; prefixlens is the sibling checkout `../prefixlens` or `PREFIXLENS_DIR`, run by path). Each call that
 lost cached tokens is sorted into provider-side (prefix intact, the provider missed: common on quick follow-ups),
 expired, intentional (a break the harness declared, within what the declaration allows) or avoidable (anything
 else, with prefixlens's cause: a harness bug). A record exported usage-only means the request rebuilt from the log is
-not what was sent, also a harness bug. Without prefixlens or a database the step is skipped and says why.
+not what was sent, also a harness bug. Without prefixlens, a session ID or the data directory the step is skipped and
+says why.
 
-The real CLI holds a single-writer lock on the session database, so keep `--concurrency 1` with it: a second run
-started while the first holds the lock fails at once.
+Because every session has its own file, several agent processes can run at once, so `--concurrency` above 1 works
+with the real CLI; the export reads a copy of the session's file and never holds it.
 
 | option | meaning |
 | --- | --- |
@@ -69,7 +72,7 @@ started while the first holds the lock fails at once.
 | `--out <dir>` | where results go (default `evals/results/<timestamp>/`, git-ignored) |
 | `--cli "<command>"` | the command that starts the agent; relative script paths are resolved from here |
 | `--timeout <s>`, `--grace <s>` | override every task's time limit; time between SIGINT and SIGKILL |
-| `--db <path>` | the session database to export traces from (default: the CLI's, under the agent's `XDG_DATA_HOME`) |
+| `--db <path>` | where to export traces from: a harness data directory, or a single database file (default: the CLI's data directory, under the agent's `XDG_DATA_HOME`) |
 | `--no-classify` | skip the trace export and cache classification |
 
 The exit code is 0 only when every run passed.
@@ -85,9 +88,13 @@ passed 1/2 (50%)  median wall 0.6s  tokens 2.7k (in 2.6k, out 120)  cached 44%  
 ```
 
 - `result`: `passed`, `failed` (the agent finished, the grader said no), `timeout` (stopped with Ctrl-C at the limit),
-  `killed` (ignored Ctrl-C), `crashed` (exited without an `execution.*` end event), `error` (setup failed).
+  `killed` (ignored Ctrl-C), `crashed` (exited without an `execution.*` end event, or a multi-turn run that ended
+  before its last prompt), `error` (setup failed). A run the grader passes is `passed` whatever else happened.
   Failing runs are listed under the table with the grader's one-line reason.
-- `exit`: the CLI's exit code (0 done, 1 failed, 130 interrupted), or the signal that killed it.
+- `exit`: the CLI's exit code of the last turn (0 done, 1 failed, 2 usage error, 3 done but the project's checks were
+  left unresolved, 130 interrupted), or the signal that killed it. Exit 3 still ends in `execution.succeeded`: the row
+  shows `end` as `succeeded`, the grader decides `passed` or `failed`, and `verification` in `results.json` is
+  `unresolved`. In a multi-turn task it stops the run before the next prompt, so a failing run is `crashed`.
 - `end`: the last `execution.*` event; for a failure, the class of the last step error (`failed:provider:auth`).
 - `steps`: logical model calls against the task's `maxSteps`; a retry is not a step. `retry` counts `retry.scheduled`.
 - `in`, `cached`, `out`: input tokens (cached included), the cached share of input, output tokens.
@@ -192,8 +199,10 @@ repeats of all 15 tasks before relying on the gate's statistics.
   report-only and only avoidable misses fail.
 - Classification needs the sibling prefixlens checkout and the CLI's session database on the machine that ran the
   suite. Without them the cache rules are unchecked, never silently passed.
-- `add-feature` failed in the seed run because of a grader bug since fixed; `retry-after-error` fails on model caution
-  (gpt-6-luna at low effort will not remove a stale lock without confirmation).
+- `add-feature` failed in the seed run because of a grader bug since fixed (it required `NaN` to throw). In the seed
+  run `retry-after-error` failed on model caution (gpt-6-luna at low effort would not remove a stale lock without
+  confirmation); its prompt now says the last run crashed and not to check back, so stopping to ask is a failure the
+  prompt itself rules out. The seed baseline predates both changes.
 
 ## Workspace conventions
 
@@ -210,8 +219,37 @@ repeats of all 15 tasks before relying on the gate's statistics.
    `prompts`, a list; later prompts may refer to earlier turns, as a user's follow-up would.
 3. The grader judges the outcome, not the method. It must fail on the untouched workspace and on a plausible wrong
    answer (hard-coding, editing the tests instead of the code, touching files it should not), and must never need
-   the network. Prefer hidden inputs the agent has not seen over checking the exact diff.
-4. Write the reference solution and run `bun test evals`.
+   the network. Prefer hidden inputs the agent has not seen over checking the exact diff. See the rules below.
+4. Write the reference solution, add at least one other correct solution and one plausible wrong one to
+   `alternatives.test.ts`, and run `bun test evals`.
+
+## Writing a fair grader
+
+A grader that fails correct work makes the pass rate meaningless and makes the gate flap. Before a task goes in, read
+its prompt as a careful engineer would, list the reasonable ways to satisfy it, and check the grader takes them all.
+
+- Grade only what the prompt asks. A requirement the prompt does not state (`NaN` must throw when it said "below 0 or
+  above 100") is a grader bug. Where the prompt leaves a choice open (rounding, what a second call does, where tests
+  go, file and helper names), grade inputs on which every reasonable choice agrees.
+- Require a file to be byte-identical only when the prompt says to leave it alone ("don't edit orders.json", "don't
+  change the tests", "don't change any code"). Otherwise check what the file must still do. For tests the agent may
+  add to but not weaken, run the original test files against the code (`requireOriginalTestsPass`) instead of
+  freezing the file.
+- Compare meaning, not text: parse JSON and YAML, pick out the lines that matter from output (an extra notice line is
+  not a wrong summary), read numbers out of an answer with or without a unit, skip comments when scanning code.
+- Judge behaviour, not structure: import the module and call it rather than matching `export function name`; accept
+  an arrow function, a helper, a type in another file.
+- Do not depend on the reference solution's incidental choices. Write a second correct solution that differs from it
+  where the prompt allows, and check it passes.
+- Be strict where the task's purpose is: a rule in a nested AGENTS.md, a frozen API, not editing the tests. Those must
+  still fail when broken, and `alternatives.test.ts` holds a case that breaks them.
+- Make sure nothing done, a hard-coded answer and the most likely wrong reading all fail.
+- No dependence on time, the machine, ordering of directory listings or the network; generated inputs come from a
+  fixed seed.
+- If the prompt is ambiguous and both readings are defensible, accept both. Change the prompt instead, in the user's
+  own voice and without saying how to do the job, only when the task exists to test one reading.
+- Every fix gets a case in `alternatives.test.ts`: the correct solution the old grader rejected, and for a tightened
+  grader the wrong one it now rejects.
 
 ## The rule
 
