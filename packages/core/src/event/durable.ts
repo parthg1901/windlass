@@ -409,6 +409,11 @@ export const WATCH_LIMITS = {
   patternChars: 500,
   /** How much of a matching line the model is shown, in characters. */
   lineChars: 2000,
+  /**
+   * How long matching a watch's regular expression against one line may take, in milliseconds. A match that
+   * takes longer is given up on and its watch is ended (`too_slow`): the engine never waits longer for one.
+   */
+  matchMs: 50,
 } as const
 
 export const HARNESS_ORIGIN = {
@@ -964,11 +969,13 @@ export const durableEvents = {
    * A watch that could still fire ended without using up its limit: the
    * user removed it (`removed`), its command ended (`command_ended`; in the
    * same append, right before the command's `spawn.ended`), or the harness
-   * restarted and the command was lost with it (`lost`; likewise). A watch
-   * is therefore never silently gone: it fires its last time, or this says
-   * why it will not.
+   * restarted and the command was lost with it (`lost`; likewise), or
+   * matching its regular expression against one line of the output took
+   * longer than `WATCH_LIMITS.matchMs` (`too_slow`: the match was given up
+   * on, the command goes on, and the user is told). A watch is therefore
+   * never silently gone: it fires its last time, or this says why it will not.
    */
-  "watch.ended": define(1, object({ watchId: nonEmptyString, spawnId: nonEmptyString, reason: oneOf(["removed", "command_ended", "lost"]) })),
+  "watch.ended": define(1, object({ watchId: nonEmptyString, spawnId: nonEmptyString, reason: oneOf(["removed", "command_ended", "lost", "too_slow"]) })),
 
   // ---- replay ----
 

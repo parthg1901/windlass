@@ -558,6 +558,46 @@ export const watchLost: Scenario = {
   ],
 }
 
+/** The watch of the fourth scenario: a regular expression that backtracks on a line that almost matches. */
+export const SLOW_WATCH = { pattern: "(a+)+$", regex: true, limit: 5 } as const
+/** Thirty characters the runtime's matcher needs about a second for with that expression. */
+export const SLOW_LINE = `${"a".repeat(29)}!`
+
+export const watchTooSlow: Scenario = {
+  title: "A watch whose regular expression is too slow on a line is ended",
+  description:
+    "The pattern of a watch is the user's and the line is whatever the command prints, and a regular expression can backtrack: `(a+)+$` against thirty characters that almost match takes the runtime's matcher about a second, during which nothing else in the process would run. The engine therefore gives a match a budget (`WATCH_LIMITS.matchMs`, 50 ms) and makes it on a helper thread. A match that has not answered by then is given up on, and its watch is ended with the reason on record (`watch.ended too_slow`): the expression is not tried on another line. The user is told in a notice that names the budget; the model is told nothing, as it was never told of the watch. The command goes on and ends like any other, with no watch left to end with it.",
+  provider: "step 1 calls shell with background; step 2 answers; the user sets a watch; the server prints a line the expression backtracks on; the server exits; step 3 answers",
+  spawn: {},
+  phases: [
+    {
+      label: "the server runs in the background and the user sets a watch with a regular expression",
+      events: [...serverStarted("Start the dev server."), watchStarted("bg_1.w1", "bg_1", SLOW_WATCH)],
+      expect: { execution: null, inbox: [] },
+    },
+    {
+      label: "the server prints a line the expression backtracks on: the match is given up on and the watch is ended",
+      events: [watchEnded("bg_1.w1", "bg_1", "too_slow")],
+      expect: { execution: null, inbox: [], ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }] },
+      rejects: [{ event: watchEnded("bg_1.w1", "bg_1", "removed"), code: "invalid_transition", why: "a watch that was ended is over: there is nothing left to remove" }],
+    },
+    {
+      label: "the server exits later, like any background command: no watch is left to end with it",
+      events: [
+        spawnEnded("bg_1", "completed", serverExited.split("\n")[0]!, { exitCode: 0 }),
+        enqueue("s1", serverExited, "steer", "background_command"),
+        executionStarted("exe_2"),
+        deliver("s1"),
+        stepStarted("a3"),
+        say("a3", "The server has stopped."),
+        stepEnded("a3"),
+        executionSucceeded("exe_2"),
+      ],
+      expect: { execution: null, inbox: [] },
+    },
+  ],
+}
+
 /**
  * A fork's log spans two sessions' files: it begins with its parent's
  * events. A scenario of it therefore cannot be stored as one session under
@@ -565,5 +605,5 @@ export const watchLost: Scenario = {
  */
 export const forkScenarios = [forkContinues]
 
-export const lineageScenarios = [replayIdentical, replayStops, replayExecutes, subagentReturns, subagentLog, subagentInBackground, backgroundCommandWakes, backgroundCommandLost, watchWakes, watchFiresMidTurn, watchLost]
+export const lineageScenarios = [replayIdentical, replayStops, replayExecutes, subagentReturns, subagentLog, subagentInBackground, backgroundCommandWakes, backgroundCommandLost, watchWakes, watchFiresMidTurn, watchLost, watchTooSlow]
 

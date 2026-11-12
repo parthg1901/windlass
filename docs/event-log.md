@@ -729,13 +729,13 @@ A watch fired: the command printed a matching line. `firing` counts from 1 and n
 
 Version 1.
 
-A watch that could still fire ended without using up its limit: the user removed it (`removed`), its command ended (`command_ended`; in the same append, right before the command's `spawn.ended`), or the harness restarted and the command was lost with it (`lost`; likewise). A watch is therefore never silently gone: it fires its last time, or this says why it will not.
+A watch that could still fire ended without using up its limit: the user removed it (`removed`), its command ended (`command_ended`; in the same append, right before the command's `spawn.ended`), or the harness restarted and the command was lost with it (`lost`; likewise), or matching its regular expression against one line of the output took longer than `WATCH_LIMITS.matchMs` (`too_slow`: the match was given up on, the command goes on, and the user is told). A watch is therefore never silently gone: it fires its last time, or this says why it will not.
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `watchId` | string, not empty | yes |
 | `spawnId` | string, not empty | yes |
-| `reason` | one of `"removed"`, `"command_ended"`, `"lost"` | yes |
+| `reason` | one of `"removed"`, `"command_ended"`, `"lost"`, `"too_slow"` | yes |
 
 ## Replay
 

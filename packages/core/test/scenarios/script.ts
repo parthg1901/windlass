@@ -276,7 +276,7 @@ export const watchStarted = (watchId: string, spawnId: string, watch: WatchSetti
 /** A watch fired: the message `id`, admitted right before, tells the model, and quotes `line`. */
 export const watchFired = (watchId: string, spawnId: string, firing: number, line: string, id: string) => event("watch.fired", { watchId, spawnId, firing, line, messageId: m(id) })
 /** A watch that could still fire ended: the user removed it, its command ended, or the command was lost to a restart. */
-export const watchEnded = (watchId: string, spawnId: string, reason: "removed" | "command_ended" | "lost") => event("watch.ended", { watchId, spawnId, reason })
+export const watchEnded = (watchId: string, spawnId: string, reason: "removed" | "command_ended" | "lost" | "too_slow") => event("watch.ended", { watchId, spawnId, reason })
 /** What a replay made of one call: matched against the recorded step and call, or how it left the recording. */
 export const replayCall = (id: string, callId: string, result: "matched" | "normalised" | "dropped" | "diverged" | "off_tape", more: { readonly executed?: boolean; readonly recorded?: readonly [number, number]; readonly divergence?: string } = {}) =>
   event("replay.call", {

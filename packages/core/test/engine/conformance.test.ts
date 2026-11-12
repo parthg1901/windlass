@@ -52,7 +52,7 @@ import {
 import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { CHILD_WORDS, INTERRUPTED_LINT, STOPPED_TESTS } from "../scenarios/call-stop.ts"
-import { ERROR_WATCH, UP_WATCH } from "../scenarios/lineage.ts"
+import { ERROR_WATCH, SLOW_LINE, SLOW_WATCH, UP_WATCH } from "../scenarios/lineage.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, HAND_EDITED, SECOND_FIX } from "../scenarios/verification.ts"
 import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
@@ -1473,6 +1473,26 @@ Object.assign(PLAYS, {
     await h.settled()
   },
 
+  "A watch whose regular expression is too slow on a line is ended": async (h, say) => {
+    const server = scriptedCommand("bun run dev")
+    h.provider.enqueue([call("call_1", "shell", { command: "bun run dev", background: true }), U], answer("The server is starting."), answer("The server has stopped."))
+    h.tools.on("shell", server.start)
+    h.create().send(say[0]!)
+    await h.settled()
+    h.session.watchOutput("bg_1", SLOW_WATCH)
+    const started = performance.now()
+    server.print(SLOW_LINE)
+    // The engine waited for the budget, not for the second the match would take; the watch follows nothing any more.
+    expect(performance.now() - started).toBeLessThan(500)
+    expect(server.followers()).toBe(0)
+    expect(h.session.working).toBe(false)
+    expect(h.diagnostics.splice(0).map((diagnostic) => diagnostic.kind)).toEqual(["watch"])
+    const later = h.seenEvents.length
+    server.exit(0, "Server listening on http://localhost:3000\n")
+    await h.seen((item) => item.type === "execution.succeeded", later)
+    await h.settled()
+  },
+
   // ---------------------------------------------------------------- skills, MCP servers and wake-ups
 
   "The skill index follows the files: first given, then replaced, then withdrawn": async (h, say) => {
@@ -1869,7 +1889,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(113)
+    expect(scenarios).toHaveLength(114)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

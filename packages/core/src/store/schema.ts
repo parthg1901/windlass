@@ -52,7 +52,9 @@
  *    `watch.ended` are new, a tool call may carry the request to stop it
  *    (`cancel`), and a running background command the watches set on it.
  * 10: the record of a restore (`history.reverted`, `history.restored`) says
- *    how many files it wrote and how many it removed (`written`, `removed`).
+ *    how many files it wrote and how many it removed (`written`, `removed`),
+ *    and a watch may end because its regular expression was too slow on a
+ *    line (`watch.ended` with the reason `too_slow`).
  */
 export const SCHEMA_VERSION = 10
 

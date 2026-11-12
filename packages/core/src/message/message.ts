@@ -127,7 +127,7 @@ export const outputWatch = object({
   ignoreCase: boolean,
   limit: integer(1),
   fired: integer(0),
-  ended: nullable(oneOf(["removed", "command_ended", "lost"])),
+  ended: nullable(oneOf(["removed", "command_ended", "lost", "too_slow"])),
 })
 export type OutputWatch = Infer<typeof outputWatch>
 

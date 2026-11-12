@@ -34,6 +34,7 @@ import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { AnyTool, Tool, ToolContext, ToolResult } from "../tool/tool.ts"
 
 export type { BackgroundCommand, BackgroundHost } from "../tool/tool.ts"
+import { boundedTest } from "./bounded-match.ts"
 import type { MergeOutcome } from "./worktree.ts"
 
 export const SUBAGENT_TOOL = "subagent"
@@ -241,28 +242,55 @@ export function describeWatch(watch: WatchPattern): string {
   return `text ${JSON.stringify(watch.pattern)}${watch.ignoreCase ? ", ignoring case" : ""}`
 }
 
+/** What the user is told when a watch is ended because its regular expression took too long on a line. */
+export function watchTooSlow(watchId: string, spawnId: string, watch: WatchPattern): string {
+  return `The watch ${watchId} on background command ${spawnId} (${describeWatch(watch)}) was ended: matching its regular expression against one line of the output took longer than ${WATCH_LIMITS.matchMs} ms, and was given up on. The command goes on. Set a watch with a simpler pattern: repetition inside repetition, such as (a+)+, is what makes one slow.`
+}
+
 /** The sentence about watches that could still fire when their command ended or was lost. */
 export function watchesEnded(watches: readonly WatchPattern[]): string {
   const named = watches.map(describeWatch).join("; ")
   return watches.length === 1 ? `The watch the user set on its output (${named}) had not fired and ended with it.` : `The watches the user set on its output (${named}) had not fired as often as they could and ended with it.`
 }
 
+export interface WatchMatcher {
+  /** Whether the line matches. A regular expression that was given up on matches nothing, then and from then on. */
+  readonly matches: (line: string) => boolean
+  /**
+   * Whether a match took longer than `WATCH_LIMITS.matchMs` and was given
+   * up on. Nothing more is tried with the expression: its watch is ended.
+   */
+  readonly gaveUp: () => boolean
+}
+
 /**
  * Whether a line matches a watch, or why the pattern cannot be used. Text
  * is looked for as it is; a regular expression is the user's own, compiled
- * once, and is tried on a line of bounded length.
+ * once, and is tried on a line of bounded length, for a bounded time
+ * (`boundedTest`): the expression is the user's and the line is whatever
+ * the command prints, and one that backtracks (`(a+)+$`) would otherwise
+ * hold the whole process for about a second per line.
  */
-export function watchMatcher(watch: WatchPattern): { readonly matches: (line: string) => boolean } | { readonly problem: string } {
+export function watchMatcher(watch: WatchPattern): WatchMatcher | { readonly problem: string } {
   if (watch.pattern === "") return { problem: "The pattern is empty." }
   if (watch.pattern.length > WATCH_LIMITS.patternChars) return { problem: `The pattern is longer than ${WATCH_LIMITS.patternChars} characters.` }
   if (/[\r\n]/.test(watch.pattern)) return { problem: "The pattern has a line break in it, and a watch looks at one line at a time." }
   if (!watch.regex) {
     const wanted = watch.ignoreCase ? watch.pattern.toLowerCase() : watch.pattern
-    return { matches: (line) => (watch.ignoreCase ? line.toLowerCase() : line).includes(wanted) }
+    return { matches: (line) => (watch.ignoreCase ? line.toLowerCase() : line).includes(wanted), gaveUp: () => false }
   }
   try {
     const expression = new RegExp(watch.pattern, watch.ignoreCase ? "i" : "")
-    return { matches: (line) => expression.test(line) }
+    let slow = false
+    return {
+      matches: (line) => {
+        if (slow) return false
+        const answer = boundedTest(expression, line, WATCH_LIMITS.matchMs)
+        slow = answer === "over_budget"
+        return answer === "matched"
+      },
+      gaveUp: () => slow,
+    }
   } catch (error) {
     return { problem: `The pattern is not a regular expression: ${error instanceof Error ? error.message : String(error)}` }
   }

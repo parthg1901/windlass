@@ -852,7 +852,18 @@ watches that can still fire). `session.unwatchOutput(watchId)` removes one.
 - *Its end.* A watch is over when it has fired `limit` times. One that could still fire is ended on record
   (`watch.ended`): `removed` by the user; `command_ended` when its command ends, in the same append and right
   before `spawn.ended`, and the message about the command's end says that the watch had not fired; `lost` when
-  the harness restarted (see Recovery). The reducer rejects a command's end while a watch on it could still fire.
+  the harness restarted (see Recovery); `too_slow` when its regular expression took too long on a line (below).
+  The reducer rejects a command's end while a watch on it could still fire.
+- *The time of a match.* The pattern is the user's and the line is whatever the command prints, and the
+  runtime's matcher backtracks: `(a+)+$` on thirty characters that almost match takes about a second, in which
+  nothing else in the process would run. A regular expression is therefore matched on a helper thread
+  (`engine/bounded-match.ts`: one per process, started on first use, never keeping the process alive), and the
+  engine waits for the answer no longer than `WATCH_LIMITS.matchMs`, 50 ms. A match that has not answered by
+  then is given up on (the helper is ended and the next match starts another), the line counts as no match, and
+  the watch is ended: `watch.ended` with `too_slow`, and a `diagnostic` of kind `watch` that tells the user
+  which watch, the budget, and what makes a pattern slow. The command and its other watches go on. Text
+  patterns are looked for as they are and need none of this. Where the helper cannot be started, the match is
+  made in the engine's thread and timed, so a slow one ends its watch after the fact.
 - *Refusals.* `watchOutput` throws `EngineError` `invalid_request`, with a sentence for the user, and writes
   nothing: no such command runs (it ended, or is unknown), the ID names a subagent, the pattern is empty, has
   a line break, is longer than `WATCH_LIMITS.patternChars` or is not a regular expression, the limit is out of

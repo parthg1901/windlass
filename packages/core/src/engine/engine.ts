@@ -187,6 +187,7 @@ import {
   taskMessage,
   taskTitle,
   watchMatcher,
+  watchTooSlow,
   watchedLine,
 } from "./spawn.ts"
 import { type MergeOutcome, createWorktree, mergeWorktree, removeWorktree, salvageWorktree, worktreeBranch } from "./worktree.ts"
@@ -314,9 +315,10 @@ export interface Diagnostic {
    * approval, a note file that is invalid, an agent definition that was skipped or names a tool that does not exist,
    * a hook that was skipped, failed or was left unsatisfied, a language server that gave an edit no diagnostics and
    * why, a telemetry section that turns export on and cannot be used. `history` is for the user too: a fork's
-   * inherited events cannot be read because the file they are in is gone, so only its own part is shown.
+   * inherited events cannot be read because the file they are in is gone, so only its own part is shown. So is
+   * `watch`: a watch on a command's output that was ended because its regular expression was too slow on a line.
    */
-  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry" | "history"
+  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry" | "history" | "watch"
   readonly sessionId: SessionId | null
   readonly message: string
   readonly cause?: unknown
@@ -3910,7 +3912,20 @@ class LiveSession implements EngineSession {
     unfollow = follow((line) => {
       // A command that is being stopped reports its end, not what it printed on the way down.
       if (state.over || live.stopping !== null || live.result !== null || this.closing !== null) return
-      if (!matcher.matches(line)) return
+      const matched = matcher.matches(line)
+      if (matcher.gaveUp()) {
+        // The expression took too long on this line and the match was given up on. It is not tried on another:
+        // the watch is ended, on record with why, and the user is told. The command goes on.
+        end()
+        try {
+          this.write([event("watch.ended", { watchId, spawnId: live.spawnId, reason: "too_slow" })])
+        } catch (error) {
+          this.core.report({ kind: "internal_error", sessionId: this.id, message: `the end of watch ${watchId} could not be recorded: ${describe(error)}`, cause: error })
+        }
+        this.say("watch", watchTooSlow(watchId, live.spawnId, watch))
+        return
+      }
+      if (!matched) return
       state.fired += 1
       if (state.fired >= limit) end()
       try {
@@ -5156,7 +5171,7 @@ class LiveSession implements EngineSession {
   }
 
   /** Says something about a feature to the user, once per process. */
-  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry" | "history", message: string): void {
+  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry" | "history" | "watch", message: string): void {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
