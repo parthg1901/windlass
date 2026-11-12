@@ -154,6 +154,29 @@ describe("/skills, /wakeups, /memory and what wake-ups deliver", () => {
   })
 })
 
+describe("a new session", () => {
+  test("/new says the session before is kept and how to go back to it, once it had a turn", async () => {
+    const { session } = await open(130, 30)
+    session.emit(
+      event("session.created", { cwd: "/work", title: "Fix the login test", lineage: null, settings: { model: "gpt-6-luna", reasoningEffort: null } }),
+      event("inbox.enqueued", { messageId: m("u1"), origin: null, delivery: "steer", content: [{ type: "text", text: "Fix the login test." }] } as never),
+      event("execution.started", { executionId: "exe_1" } as never),
+      event("inbox.delivered", { messageId: m("u1") } as never),
+      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } } as never),
+    )
+    await mounted!.settle()
+    await mounted!.setup.mockInput.typeText("/new")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    expect(said(await mounted!.frame())).toContain('· new session · the one before, "Fix the login test", is kept: /sessions goes back to it')
+    // From a session without a turn there is nothing to go back to: the welcome stays.
+    await mounted!.setup.mockInput.typeText("/new")
+    mounted!.setup.mockInput.pressEnter()
+    await mounted!.settle()
+    expect(said(await mounted!.frame())).toContain("Type a message and press Enter.")
+  })
+})
+
 describe("forks", () => {
   test("/sessions tells a fork from its parent: a mark, enough of the ID, what it was forked from, and where it works", async () => {
     const { backend } = await open(130, 30)

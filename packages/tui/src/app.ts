@@ -871,8 +871,12 @@ export class App {
           return await this.revert(spec.name === "undo")
         case "sessions":
           return await this.pickSession()
-        case "new":
-          return await this.switchTo({ kind: "new" })
+        case "new": {
+          // The session left behind is kept; said once, so that a /new typed by mistake is not a lost conversation.
+          const before = this.session === null || this.transcript.turns.turns.length === 0 ? null : { id: this.session.id, title: this.transcript.session.title }
+          const banner = before === null ? undefined : () => this.transcript.note([span("new session", "accent"), span(` · the one before, ${before.title === null || before.title === "" ? before.id : `"${shorten(before.title, 40)}"`}, is kept: /sessions goes back to it`, "dim")], "accent", "·")
+          return await this.switchTo({ kind: "new" }, banner)
+        }
         case "model":
           return await this.pickModel()
         case "compact":
