@@ -42,7 +42,7 @@ export interface SubagentInput {
 export interface SpawnSettings {
   /** How deep subagents may nest: 1 (the default) lets a session a person started spawn, and its children not. */
   readonly maxDepth: number
-  /** Where subagents' git worktrees are made. Default `<dataDir>/worktrees`. */
+  /** Where subagents' git worktrees are made. Default `<workDir>/worktrees`, beside the data directory (which the sandbox hides). */
   readonly worktreeDir: string
 }
 
@@ -96,6 +96,15 @@ export function spawnTools(hostOf: (sessionId: SessionId) => SpawnHost | null): 
   }
   return { subagent: subagent as unknown as AnyTool, management: [output as unknown as AnyTool, stop as unknown as AnyTool] }
 }
+
+/** The frozen texts of spawned work that the loop itself writes. */
+export const SPAWN_TEXT = {
+  startedSubagent: (child: SessionId) =>
+    `Started subagent ${child} in the background. Its answer arrives as a message when it finishes. Meanwhile \`background_output\` shows what it is doing, \`background_stop\` stops it, and \`subagent\` with \`session\` sends it a follow-up.`,
+  commandLostDetail: "The harness restarted while it ran, and it was stopped with it.",
+  commandLost: (id: string, command: string | null, logPath: string | null) =>
+    `Background command ${id} is gone: the harness restarted while it ran, and it was stopped with it.\nCommand: ${command}${logPath === null ? "" : `\nWhat it had printed is in ${logPath}.`}`,
+} as const
 
 /** What a subagent is told besides its task: who reads its answer. */
 export const SUBAGENT_NOTE =

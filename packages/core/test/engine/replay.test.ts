@@ -19,6 +19,7 @@ import { responsesFromTape } from "../../src/replay/fake.ts"
 import { renderReport } from "../../src/replay/report.ts"
 import { STOPPED_OUTPUT } from "../../src/replay/replay.ts"
 import { tapeFromEvents } from "../../src/replay/tape.ts"
+import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SETTINGS, type Started, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
@@ -244,6 +245,45 @@ describe("a replay that leaves the recording", () => {
     ])
     expect(existsSync(join(copy, "c.txt"))).toBe(false)
     expect(of(log, "tool.settled").at(-2)!.data.output).toContain("Keep it short.")
+  })
+})
+
+describe("a replay that runs tools, with the approval layer on", () => {
+  const sandboxed = createCommandSandbox().state.available
+
+  test.skipIf(!sandboxed)("runs them in its copy inside the real sandbox with the network off, and asks nobody for more", async () => {
+    const recording = await record()
+    await recording.harness.close()
+    // The same data directory, now with the approval layer and this machine's sandbox, as a user's harness has them.
+    const guarded = start(recording.data, [], { engine: { approval: { secrets: [], grantsDir: join(recording.root, "grants") } } })
+    guarded.provider.enqueue(
+      ...responsesFromTape(recording.tape, { 1: [call("shell", { command: "cat a.txt > seen.txt && pwd" })], 2: null, 3: null, 4: null, 5: null }, [
+        [call("shell", { command: "curl -s https://example.com", sandbox: { network: true } })],
+        [call("write", { path: "/etc/replay-was-here", content: "no\n" })],
+        say("Done in the copy."),
+      ]),
+    )
+    const run = await guarded.harness.engine.replaySession(recording.session.id, { policy: "execute" })
+    const outcome = await run.done
+    await run.session.settled()
+    const log = run.session.readEvents()
+    const copy = outcome.workspace!
+    // The copy is made where commands can reach it: beside the data directory, which the sandbox hides.
+    expect(copy).toBe(join(`${recording.data}-work`, "replays", run.session.id))
+    const [ran, network, outside] = of(log, "tool.settled").slice(1)
+    expect(ran!.data).toMatchObject({ outcome: "success", output: `${recording.directory}\n` })
+    expect(readFileSync(join(copy, "seen.txt"), "utf8")).toBe("one\n")
+    expect(existsSync(join(recording.directory, "seen.txt"))).toBe(false)
+    expect(of(log, "tool.started")[1]!.data.run).toMatchObject({ mode: "auto", sandbox: { network: false, writableRoots: [] } })
+    // More than the sandbox gives needs a person, and a replay has none: refused, not asked, and the replay goes on.
+    expect(network!.data.outcome).toBe("error")
+    expect(outside!.data.outcome).toBe("error")
+    expect(of(log, "approval.denied").map((item) => item.data.reason)).toEqual(["unattended", "unattended"])
+    expect(of(log, "approval.requested")).toEqual([])
+    expect(existsSync("/etc/replay-was-here")).toBe(false)
+    expect(outcome.report.comparison.finalAnswer.replayed).toBe("Done in the copy.")
+    expect(types(log).slice(-2)).toEqual(["execution.succeeded", "replay.ended"])
+    rmSync(copy, { recursive: true, force: true })
   })
 })
 

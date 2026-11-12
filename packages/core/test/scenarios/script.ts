@@ -70,7 +70,17 @@ export interface Scenario {
    * as it is and the log holds nothing about approval.
    */
   readonly approval?: ApprovalSetting
+  /**
+   * Subagents and background work, for the scenarios about them. Without it
+   * the engine offers none of their tools.
+   */
+  readonly spawn?: SpawnSetting
   readonly phases: readonly Phase[]
+}
+
+export interface SpawnSetting {
+  /** How deep subagents may nest. Default 1. */
+  readonly maxDepth?: number
 }
 
 export interface ApprovalSetting {
@@ -178,6 +188,65 @@ export const measured = (inputTokens: number) => ({ inputTokens, cachedInputToke
 
 export const created = () =>
   event("session.created", { cwd: "/repo", title: null, lineage: null, settings: { model: MODEL, reasoningEffort: "medium" } })
+/** A session other than the scenario's own: the recording a replay replays, a subagent. Only its name matters. */
+export const OTHER = "ses_other" as SessionId
+/**
+ * The scenario's session is a fork: this is the first event of its own, after
+ * the parent's events 1..`throughSeq`, which a scenario writes before it. (A
+ * scenario is one log, so the parent's events carry the scenario's session ID.)
+ */
+export const forked = (throughSeq: number) =>
+  event("session.created", { cwd: "/repo", title: null, lineage: { kind: "fork", parentSessionId: SESSION, throughSeq }, settings: { model: MODEL, reasoningEffort: "medium" } })
+/** The scenario's session is a replay of the recording `OTHER` through `throughSeq`. With a policy that runs tools it works in a copy. */
+export const replayCreated = (policy: "stop" | "execute-read-only" | "execute", throughSeq: number, changed: { readonly instructions: boolean; readonly tools: readonly string[]; readonly settings: boolean } = { instructions: true, tools: [], settings: false }) =>
+  event("session.created", {
+    cwd: policy === "stop" ? "/repo" : REPLAY_COPY,
+    title: `Replay of ${OTHER}`,
+    lineage: { kind: "replay", sourceSessionId: OTHER, throughSeq, policy, strict: false, changed: { ...changed, tools: [...changed.tools] } },
+    settings: { model: MODEL, reasoningEffort: "medium" },
+  })
+/** The directory a replay carries on in after it left its recording (a stand-in for a path under the data directory). */
+export const REPLAY_COPY = "/data/replays/copy"
+/** The scenario's session is a subagent of `OTHER`, started by its spawned work `spawnId`. */
+export const spawnedBy = (title: string, spawnId = "bg_1", depth = 1) =>
+  event("session.created", { cwd: "/repo", title, lineage: { kind: "spawn", parentSessionId: OTHER, spawnId, depth, worktree: null }, settings: { model: MODEL, reasoningEffort: "medium" } })
+/** A tool call of the open step started a subagent (the child session `OTHER`) or a background command. */
+export const spawnStarted = (spawnId: string, id: string, callId: string, work: "subagent" | { readonly command: string; readonly logPath: string | null }, background = false) =>
+  event("spawn.started", {
+    spawnId,
+    messageId: m(id),
+    callId: c(callId),
+    background,
+    work: work === "subagent" ? { kind: "subagent", sessionId: OTHER, worktree: null } : { kind: "command", command: work.command, logPath: work.logPath },
+  })
+export const spawnEnded = (spawnId: string, outcome: "completed" | "failed" | "stopped" | "lost", detail: string, more: { readonly exitCode?: number | null; readonly steps?: number } = {}) =>
+  event("spawn.ended", {
+    spawnId,
+    outcome,
+    detail,
+    exitCode: more.exitCode ?? null,
+    // A subagent's cost: the scenarios' usage per step.
+    usage:
+      more.steps === undefined
+        ? null
+        : { inputTokens: usage.inputTokens * more.steps, cachedInputTokens: usage.cachedInputTokens * more.steps, outputTokens: usage.outputTokens * more.steps, reasoningTokens: usage.reasoningTokens * more.steps },
+    tainted: false,
+    merge: null,
+  })
+/** What a replay made of one call: matched against the recorded step and call, or how it left the recording. */
+export const replayCall = (id: string, callId: string, result: "matched" | "normalised" | "dropped" | "diverged" | "off_tape", more: { readonly executed?: boolean; readonly recorded?: readonly [number, number]; readonly divergence?: string } = {}) =>
+  event("replay.call", {
+    messageId: m(id),
+    callId: c(callId),
+    result,
+    executed: more.executed ?? false,
+    recorded: more.recorded === undefined ? null : { step: more.recorded[0], call: more.recorded[1] },
+    divergence: more.divergence ?? null,
+  })
+export const replayDiverged = (divergence: string, snapshot: string | null = null) => event("replay.diverged", { workspace: REPLAY_COPY, snapshot, divergence })
+/** The replay is over. The report itself is a stand-in here: the loop records the whole divergence report. */
+export const replayEnded = (outcome: "identical" | "diverged" | "unsupported" | "incomplete", reason: string) => event("replay.ended", { outcome, reason, report: {} })
+
 /** The user picks another model or reasoning effort. Takes effect at the next step. */
 export const settingsChanged = (model: string, reasoningEffort: string | null = "medium") =>
   event("settings.changed", { model, reasoningEffort })
@@ -637,8 +706,26 @@ export function describeEvent(item: NewEvent): string {
   const d = item.data as Record<string, unknown>
   const quote = (value: unknown) => JSON.stringify(String(value).length > 60 ? `${String(value).slice(0, 57)}...` : value)
   switch (item.type) {
-    case "session.created":
-      return "session.created"
+    case "session.created": {
+      const lineage = item.data.lineage
+      if (lineage === null) return "session.created"
+      if (lineage.kind === "fork") return `session.created fork of ${lineage.parentSessionId} through seq ${lineage.throughSeq}`
+      if (lineage.kind === "spawn") return `session.created subagent of ${lineage.parentSessionId} (${lineage.spawnId}, depth ${lineage.depth}) ${quote(item.data.title)}`
+      const changed = [...(lineage.changed.instructions ? ["the system prompt"] : []), ...lineage.changed.tools.map((tool) => `the description of ${tool}`), ...(lineage.changed.settings ? ["the model settings"] : [])]
+      return `session.created replay of ${lineage.sourceSessionId} through seq ${lineage.throughSeq}, policy ${lineage.policy}, changed: ${changed.join(", ") || "nothing"}`
+    }
+    case "spawn.started": {
+      const work = item.data.work
+      return `spawn.started ${d.spawnId} by ${d.messageId}/${d.callId} ${work.kind === "subagent" ? `subagent ${work.sessionId}` : `command ${quote(work.command)}`}${d.background ? " background" : ""}`
+    }
+    case "spawn.ended":
+      return `spawn.ended ${d.spawnId} ${d.outcome}${d.exitCode === null ? "" : ` exit=${d.exitCode}`}${item.data.usage === null ? "" : ` usage=${item.data.usage.inputTokens}in/${item.data.usage.outputTokens}out`}`
+    case "replay.call":
+      return `replay.call ${d.messageId}/${d.callId} ${d.result}${item.data.recorded === null ? "" : ` recorded step ${item.data.recorded.step + 1} call ${item.data.recorded.call + 1}`}${d.divergence === null ? "" : ` (${d.divergence})`}${d.executed ? " executed" : ""}`
+    case "replay.diverged":
+      return `replay.diverged ${d.divergence} -> ${d.workspace}${d.snapshot === null ? " (no snapshot: the copy is empty)" : ` from ${d.snapshot}`}`
+    case "replay.ended":
+      return `replay.ended ${d.outcome} ${quote(d.reason)}`
     case "baseline.set":
       return "baseline.set"
     case "inbox.enqueued":

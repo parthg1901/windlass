@@ -95,18 +95,18 @@ describe("the replay suite", () => {
         {
           task: "task-a",
           runs: 1,
-          change: { replays: 1, onTape: 0, left: 1, other: 0, where: ["step 2 write (arguments differ)"] },
+          change: { replays: 1, onTape: 0, left: 1, other: 0, where: ["step 2 write (arguments differ)"], novel: 0 },
           noise: { replays: 2, onTape: 1, left: 1, other: 0, where: ["step 2 write (arguments differ)"] },
           graded: { diverged: 1, passed: 1, recordedPassed: 1 },
         },
-        { task: "task-b", runs: 1, change: { replays: 1, onTape: 1, left: 0, other: 0, where: [] }, noise: { replays: 2, onTape: 2, left: 0, other: 0, where: [] }, graded: null },
+        { task: "task-b", runs: 1, change: { replays: 1, onTape: 1, left: 0, other: 0, where: [], novel: 0 }, noise: { replays: 2, onTape: 2, left: 0, other: 0, where: [] }, graded: null },
       ])
-      expect(report.totals).toMatchObject({ runs: 2, skipped: 1, change: { replays: 2, onTape: 1, left: 1, other: 0 }, noise: { replays: 4, onTape: 3, left: 1, other: 0 }, requests: 14 })
+      expect(report.totals).toMatchObject({ runs: 2, skipped: 1, change: { replays: 2, onTape: 1, left: 1, other: 0, novel: 0 }, noise: { replays: 4, onTape: 3, left: 1, other: 0 }, requests: 14 })
       const table = formatSuite(report)
       expect(table).toContain("change: the system prompt   policy: execute")
-      expect(table).toMatch(/task-a\s+1\s+0\/1\s+1\/1\s+step 2 write \(arguments differ\)\s+1\/2\s+step 2 write \(arguments differ\)\s+1\/1\s+1\/1/)
-      expect(table).toMatch(/task-b\s+1\s+1\/1\s+0\/1\s+-\s+0\/2\s+-\s+-\s+-/)
-      expect(table).toContain("The change left the recording in 1 of 2 replays (50%); with nothing changed, 1 of 4 did (25%). The change is above the noise floor")
+      expect(table).toMatch(/task-a\s+1\s+0\/1\s+1\/1\s+0\/1\s+step 2 write \(arguments differ\)\s+1\/2\s+step 2 write \(arguments differ\)\s+1\/1\s+1\/1/)
+      expect(table).toMatch(/task-b\s+1\s+1\/1\s+0\/1\s+0\/0\s+-\s+0\/2\s+-\s+-\s+-/)
+      expect(table).toContain("The change left the recording in 1 of 2 replays (50%); with nothing changed, 1 of 4 did (25%). By count the change is above the noise floor. And every place the change left a recording is a place where no change left it too")
       expect(table).toContain("(1 without a session, skipped)")
     } finally {
       await harness.close()
@@ -117,7 +117,7 @@ describe("the replay suite", () => {
     expect(describeChange({})).toBe("nothing (every replay measures the noise floor)")
     expect(describeChange({ systemPrompt: "x", toolDescriptions: { shell: "y" }, model: "m", effort: null, strict: true })).toBe("the system prompt, the description of shell, model m, effort default, strict matching")
     const empty = { replays: 0, onTape: 0, left: 0, other: 0 }
-    const table = formatSuite({ results: "r", policy: "stop", change: "the system prompt", rows: [], tasks: [], totals: { runs: 0, skipped: 0, change: empty, noise: empty, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 } })
+    const table = formatSuite({ results: "r", policy: "stop", change: "the system prompt", rows: [], tasks: [], totals: { runs: 0, skipped: 0, change: { ...empty, novel: 0 }, noise: empty, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 } })
     expect(table).toContain("The noise floor was not measured (--noise 0), so nothing can be read into the change yet.")
   })
 })

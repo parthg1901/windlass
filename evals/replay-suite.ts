@@ -69,7 +69,13 @@ export interface ReplayRow {
 export interface TaskSummary {
   readonly task: string
   readonly runs: number
-  readonly change: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly where: readonly string[] }
+  /**
+   * `novel`: how many of the replays that left the recording left it at a
+   * place (step, tool, kind) where no unchanged replay of this task did. A
+   * model that explores differently every time leaves most recordings
+   * anyway; where it leaves them is what a change shows in.
+   */
+  readonly change: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly where: readonly string[]; readonly novel: number }
   readonly noise: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly where: readonly string[] }
   /** With grading: of the diverged replays, how many passed the task's grader; and how many of the recorded runs had. */
   readonly graded: { readonly diverged: number; readonly passed: number; readonly recordedPassed: number } | null
@@ -84,7 +90,7 @@ export interface SuiteReport {
   readonly totals: {
     readonly runs: number
     readonly skipped: number
-    readonly change: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number }
+    readonly change: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number; readonly novel: number }
     readonly noise: { readonly replays: number; readonly onTape: number; readonly left: number; readonly other: number }
     readonly requests: number
     readonly inputTokens: number
@@ -207,10 +213,11 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
     const change = mine.filter((row) => row.kind === "change")
     const floor = mine.filter((row) => row.kind === "noise")
     const graded = change.filter((row) => row.graded !== null)
+    const usual = new Set(floor.flatMap((row) => (row.left === null ? [] : [place(row.left)])))
     return {
       task,
       runs: replayable.filter((run) => run.task === task).length,
-      change: { ...tally(change), where: places(change) },
+      change: { ...tally(change), where: places(change), novel: change.filter((row) => row.left !== null && !usual.has(place(row.left))).length },
       noise: { ...tally(floor), where: places(floor) },
       graded: graded.length === 0 ? null : { diverged: graded.length, passed: graded.filter((row) => row.graded!.pass).length, recordedPassed: graded.filter((row) => row.recordedPass).length },
     }
@@ -225,7 +232,7 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
     totals: {
       runs: replayable.length,
       skipped: options.runs.length - replayable.length,
-      change: tally(rows.filter((row) => row.kind === "change")),
+      change: { ...tally(rows.filter((row) => row.kind === "change")), novel: tasks.reduce((total, task) => total + task.change.novel, 0) },
       noise: tally(rows.filter((row) => row.kind === "noise")),
       requests: sum((row) => row.requests),
       inputTokens: sum((row) => row.inputTokens),
@@ -239,16 +246,17 @@ const share = (part: number, whole: number) => (whole === 0 ? "-" : `${Math.roun
 
 /** The table: per task, the change's replays next to the noise floor. */
 export function formatSuite(report: SuiteReport): string {
-  const head = ["task", "runs", "on tape", "left", "where the change left it", "noise: left", "where no change left it", ...(report.tasks.some((task) => task.graded !== null) ? ["diverged: pass", "recorded: pass"] : [])]
+  const head = ["task", "runs", "on tape", "left", "new place", "where the change left it", "noise: left", "where no change left it", ...(report.tasks.some((task) => task.graded !== null) ? ["diverged: pass", "recorded: pass"] : [])]
   const body = report.tasks.map((task) => [
     task.task,
     String(task.runs),
     `${task.change.onTape}/${task.change.replays}`,
     `${task.change.left}/${task.change.replays}${task.change.other > 0 ? ` (+${task.change.other} n/a)` : ""}`,
+    task.noise.replays === 0 ? "-" : `${task.change.novel}/${task.change.left}`,
     task.change.where.join("; ") || "-",
     task.noise.replays === 0 ? "not measured" : `${task.noise.left}/${task.noise.replays}${task.noise.other > 0 ? ` (+${task.noise.other} n/a)` : ""}`,
     task.noise.where.join("; ") || "-",
-    ...(head.length > 7 ? [task.graded === null ? "-" : `${task.graded.passed}/${task.graded.diverged}`, task.graded === null ? "-" : `${task.graded.recordedPassed}/${task.graded.diverged}`] : []),
+    ...(head.length > 8 ? [task.graded === null ? "-" : `${task.graded.passed}/${task.graded.diverged}`, task.graded === null ? "-" : `${task.graded.recordedPassed}/${task.graded.diverged}`] : []),
   ])
   const widths = head.map((title, column) => Math.max(title.length, ...body.map((row) => row[column]!.length)))
   const line = (cells: readonly string[]) => cells.map((cell, column) => cell.padEnd(widths[column]!)).join("  ").trimEnd()
@@ -261,10 +269,14 @@ export function formatSuite(report: SuiteReport): string {
       : report.change.startsWith("nothing")
         ? `Unchanged, a replay left the recording in ${noise.left + change.left} of ${noise.replays + change.replays} replays (${share(noise.left + change.left, noise.replays + change.replays)}). That is the noise floor of these recordings on this model.`
         : `The change left the recording in ${change.left} of ${change.replays} replays (${share(change.left, change.replays)}); with nothing changed, ${noise.left} of ${noise.replays} did (${share(noise.left, noise.replays)}). ${
-            rate > floor
-              ? "The change is above the noise floor: look at where it leaves, and whether no change ever leaves there."
-              : "That is within the noise floor: these replays do not show that the change alters behaviour."
-          }`
+            rate > floor ? "By count the change is above the noise floor." : "By count that is within the noise floor: how often a replay leaves its recording says nothing here."
+          } ${
+            change.left === 0
+              ? ""
+              : change.novel === 0
+                ? "And every place the change left a recording is a place where no change left it too: these replays do not show that the change alters behaviour."
+                : `But ${change.novel} of the ${change.left} left it at a place where no unchanged replay of the same task did (${[...new Set(report.tasks.flatMap((task) => (task.change.novel > 0 ? task.change.where : [])))].slice(0, 4).join("; ")}): that is where the change shows, and the more unchanged replays there are to compare with, the more that means.`
+          }`.trimEnd()
   return [
     `replay suite: ${report.results}`,
     `change: ${report.change}   policy: ${report.policy}`,

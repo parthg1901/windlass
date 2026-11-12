@@ -116,7 +116,8 @@ describe("forking a session", () => {
     expect(then.projection().session.cwd).toBe(directory)
     const copy = await engine.forkSession(parent.id, { throughSeq: afterFirst, workspace: {} })
     const copied = copy.projection().session.cwd
-    expect(copied).toBe(join(data, "workspaces", copy.id))
+    // Beside the data directory, never inside it: the sandbox hides the data directory from commands.
+    expect(copied).toBe(join(`${data}-work`, "workspaces", copy.id))
     expect(readFileSync(join(copied, "notes.md"), "utf8")).toBe("first\n")
     expect(existsSync(join(copied, "by-hand.txt"))).toBe(false)
 

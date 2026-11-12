@@ -239,7 +239,7 @@ export class PrettyRenderer implements Sink {
         const counted = known?.kind === "subagent" && known.steps + known.tools > 0 ? `${plural(known.steps, "step")}, ${plural(known.tools, "tool call")}` : null
         const tokens = event.data.usage === null ? null : `${compactTokens(event.data.usage.inputTokens + event.data.usage.outputTokens)} tokens`
         const took = known === undefined ? null : formatDuration(event.time - known.startedAt)
-        this.line("info", [seg(`  ${symbol} `, tone), seg(label, "bold"), seg(` ${word}`, failed || outcome === "failed" ? "red" : undefined), seg(suffix([counted, tokens, took]), "dim")])
+        this.line("info", [seg(`  ${symbol} `, tone), seg(label, "bold"), seg(` ${word}`, failed ? "red" : undefined), seg(suffix([counted, tokens, took]), "dim")])
         // Why, when it did not simply finish; and what became of its worktree.
         if (outcome !== "completed" && known?.kind !== "command") for (const line of wrap(flatten(event.data.detail), this.width - 4)) this.line("info", [seg(`    ${line}`, "dim")])
         if (merge !== null) {

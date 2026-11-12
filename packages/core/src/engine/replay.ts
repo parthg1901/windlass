@@ -45,7 +45,7 @@ export interface ReplayRequest {
   readonly strict?: boolean
   /** Per-tool normalisers, instead of `DEFAULT_NORMALISERS`. Ignored in strict mode. */
   readonly normalisers?: Readonly<Record<string, Normaliser>>
-  /** Where the copy of the workspace is made, for the policies that run tools. Default `<dataDir>/replays/<replay session>`. */
+  /** Where the copy of the workspace is made, for the policies that run tools. Default `<workDir>/replays/<replay session>`. */
   readonly workspace?: string
   /** Give up after this many model calls while on the tape. Default: the recording's steps plus 10. */
   readonly maxSteps?: number

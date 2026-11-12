@@ -138,6 +138,7 @@ import { recover } from "./recovery.ts"
 import { DEFAULT_NORMALISERS, REPLAY_TEXT, type ReplayOutcome, type ReplayRequest, type ReplayRun, changedBaseline, snapshotAtDivergence } from "./replay.ts"
 import {
   type ChildResult,
+  SPAWN_TEXT,
   SUBAGENT_TOOL,
   type SpawnSettings,
   type SubagentInput,
@@ -309,6 +310,15 @@ export interface EngineOptions {
   readonly dataDir: string
   /** Where capped tool output goes. Defaults to `<dataDir>/spill`. */
   readonly spillDir?: string
+  /**
+   * Where the directories sessions work in are made when the harness makes
+   * them: a fork's copy of a workspace (`workspaces/`), a subagent's git
+   * worktree (`worktrees/`), a replay's copy (`replays/`). Defaults to
+   * `<dataDir>-work`, beside the data directory and never inside it: the
+   * sandbox hides the data directory from commands, and commands must run
+   * in these.
+   */
+  readonly workDir?: string
   /** Defaults to the system clock. */
   readonly clock?: Clock
   /** Defaults to random IDs (`newId`). */
@@ -414,7 +424,7 @@ export interface ForkOptions {
    * works there: the workspace as it stands when the fork point is the
    * parent's latest state and the parent is idle, otherwise the snapshot
    * that was current at the fork point. Default directory:
-   * `<dataDir>/workspaces/<fork id>`.
+   * `<workDir>/workspaces/<fork id>`.
    */
   readonly workspace?: "shared" | { readonly copyTo?: string }
 }
@@ -719,6 +729,7 @@ interface Core {
   readonly report: (diagnostic: Diagnostic) => void
   readonly sessions: Map<SessionId, LiveSession>
   readonly dataDir: string
+  readonly workDir: string
   /** Subagents and background work; `null` when the build offers none. */
   readonly spawn: SpawnSettings | null
   /** The `subagent` tool, and the tools that read and stop background work. In the runtime always. */
@@ -732,6 +743,7 @@ export function createEngine(options: EngineOptions): Engine {
   const clock = options.clock ?? systemClock
   const log = options.log ?? ((line: string) => console.error(line))
   const spillDir = options.spillDir ?? join(options.dataDir, "spill")
+  const workDir = options.workDir ?? `${options.dataDir.replace(/\/+$/, "")}-work`
   // A build that brings its own tool of that name keeps it.
   const acknowledge = options.tools.find((tool) => tool.name === ACKNOWLEDGE_TOOL_NAME) ?? (acknowledgeTool() as unknown as AnyTool)
   const stores = "append" in options.store ? sharedSessionStores(options.store) : options.store
@@ -786,7 +798,8 @@ export function createEngine(options: EngineOptions): Engine {
     },
     sessions: new Map(),
     dataDir: options.dataDir,
-    spawn: options.spawn == null ? null : { maxDepth: options.spawn.maxDepth ?? 1, worktreeDir: options.spawn.worktreeDir ?? join(options.dataDir, "worktrees") },
+    workDir,
+    spawn: options.spawn == null ? null : { maxDepth: options.spawn.maxDepth ?? 1, worktreeDir: options.spawn.worktreeDir ?? join(workDir, "worktrees") },
     spawning: {
       subagent: runnable.find((tool) => tool.name === SUBAGENT_TOOL)!,
       management: spawning.management.map((tool) => runnable.find((other) => other.name === tool.name)!),
@@ -2499,11 +2512,7 @@ class LiveSession implements EngineSession {
         if (stopped === null) this.wake()
       }),
     )
-    return toolResult(
-      "success",
-      `Started subagent ${child.id} in the background. Its answer arrives as a message when it finishes. Meanwhile ${"`background_output`"} shows what it is doing, ${"`background_stop`"} stops it, and ${"`subagent`"} with \`session\` sends it a follow-up.`,
-      display,
-    )
+    return toolResult("success", SPAWN_TEXT.startedSubagent(child.id), display)
   }
 
   /** What becomes of a subagent's worktree when its work ends: merged into this workspace when it finished, kept on its branch otherwise. */
@@ -2570,11 +2579,8 @@ class LiveSession implements EngineSession {
       if (entry.kind === "command") {
         this.spawnEnded(
           entry.spawnId,
-          { outcome: "lost", detail: "The harness restarted while it ran, and it was stopped with it.", exitCode: null, usage: null, tainted: false, merge: null },
-          {
-            origin: HARNESS_ORIGIN.spawnLost,
-            text: `Background command ${entry.spawnId} is gone: the harness restarted while it ran, and it was stopped with it.\nCommand: ${entry.command}${entry.logPath === null ? "" : `\nWhat it had printed is in ${entry.logPath}.`}`,
-          },
+          { outcome: "lost", detail: SPAWN_TEXT.commandLostDetail, exitCode: null, usage: null, tainted: false, merge: null },
+          { origin: HARNESS_ORIGIN.spawnLost, text: SPAWN_TEXT.commandLost(entry.spawnId, entry.command, entry.logPath) },
         )
         continue
       }
@@ -3980,7 +3986,7 @@ async function forkSession(core: Core, sourceId: SessionId, options: ForkOptions
   let cwd = point.session.cwd
   let copied: { readonly snapshot: string | null; readonly from: string } | undefined
   if (options.workspace !== undefined && options.workspace !== "shared") {
-    const into = resolve(options.workspace.copyTo ?? join(core.dataDir, "workspaces", id))
+    const into = resolve(options.workspace.copyTo ?? join(core.workDir, "workspaces", id))
     // The workspace as it stands when the fork point is the parent's latest state and nothing works in it; otherwise as it was recorded then.
     const atEnd = point.lastSeq === events.at(-1)!.seq && point.session.execution === null
     let snapshot = point.session.workspace.snapshot?.id ?? null
@@ -4031,7 +4037,7 @@ async function replaySession(core: Core, sourceId: SessionId, request: ReplayReq
     }
   })()
   const id = core.ids.session()
-  const copy = policy === "stop" ? null : resolve(request.workspace ?? join(core.dataDir, "replays", id))
+  const copy = policy === "stop" ? null : resolve(request.workspace ?? join(core.workDir, "replays", id))
   if (copy !== null) mkdirSync(copy, { recursive: true })
   const store = storeErrors(() => core.stores.create(id))
   const session = new LiveSession(core, id, store)

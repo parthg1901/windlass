@@ -401,6 +401,7 @@ export class Harness {
       provider: this.provider,
       tools: this.tools.list(this.toolNames),
       dataDir: this.directory,
+      workDir: join(this.directory, "work"),
       clock: this.clock,
       random: this.options.random ?? (() => 0),
       // The manual clock's sleeps take no time, so a wall-clock limit would end every model call at once.
@@ -632,8 +633,56 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  * - a compaction's sizes: `tokensBefore` and `tokensAfter` (the loop records
  *   its own estimates of the request before and after). The cut, the mode,
  *   the prompt, the repair and the checkpoint text are compared.
+ * - other sessions (a fork's parent, a replay's recording, a subagent): each
+ *   is named by the order of first appearance wherever its ID occurs, also
+ *   inside a title or a tool result.
+ * - a replay: the directory of its copy (a path under the data directory),
+ *   and the report stored with `replay.ended` (the loop stores the whole
+ *   divergence report). The outcome and the reason are compared.
  */
 export function comparable(events: readonly NewEvent[]): Plain[] {
+  return others(events.map((item) => plain(item, events)).map(copies))
+}
+
+/** Names the other sessions a log mentions by order of first appearance. */
+function others(events: Plain[]): Plain[] {
+  const found: string[] = []
+  const note = (id: unknown) => {
+    if (typeof id === "string" && !found.includes(id)) found.push(id)
+  }
+  for (const item of events) {
+    const lineage = (item.data as { lineage?: { parentSessionId?: string; sourceSessionId?: string } | null }).lineage
+    note(lineage?.parentSessionId)
+    note(lineage?.sourceSessionId)
+    note((item.data as { work?: { sessionId?: string } }).work?.sessionId)
+  }
+  if (found.length === 0) return events
+  return events.map((item) => ({ type: item.type, data: JSON.parse(found.reduce((json, id, index) => json.split(id).join(`S${index + 1}`), JSON.stringify(item.data))) as Record<string, unknown> }))
+}
+
+/** A replay's copy of the workspace and its stored report, as stand-ins. */
+function copies(item: Plain): Plain {
+  const lineage = (item.data as { lineage?: { kind?: string; policy?: string } | null }).lineage
+  if (item.type === "session.created" && lineage?.kind === "replay" && lineage.policy !== "stop") return { type: item.type, data: { ...item.data, cwd: "<copy>" } }
+  if (item.type === "replay.diverged") return { type: item.type, data: { ...item.data, workspace: "<copy>" } }
+  if (item.type === "replay.ended") return { type: item.type, data: { ...item.data, report: null } }
+  return item
+}
+
+function plain(item: NewEvent, events: readonly NewEvent[]): Plain {
+  return labelled(events)[events.indexOf(item)]!
+}
+
+const labelledCache = new WeakMap<readonly NewEvent[], Plain[]>()
+function labelled(events: readonly NewEvent[]): Plain[] {
+  const known = labelledCache.get(events)
+  if (known !== undefined) return known
+  const made = label(events)
+  labelledCache.set(events, made)
+  return made
+}
+
+function label(events: readonly NewEvent[]): Plain[] {
   const labels = new Map<string, string>()
   const counts = { m: 0, e: 0, w: 0 }
   const label = (kind: "m" | "e" | "w", id: string) => {
