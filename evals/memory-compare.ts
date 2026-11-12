@@ -2,12 +2,13 @@
  * The A/B comparison that decides whether memory stays: the same tasks run with memory delivered and without,
  * compared on pass rate and cost, from results directories in the format `evals/run-agent.ts` writes.
  *
- *   bun packages/core/src/memory/compare.ts --with <results-dir> [...] --without <results-dir> [...] [--json]
+ *   bun evals/memory-compare.ts --with <results-dir> [...] --without <results-dir> [...] [--json]
  *
  * Exit codes: 0 memory shows a gain at no more than the allowed cost; 1 it does not (no gain, a loss, or a gain
  * that costs too much); 3 not enough data or not comparable, which is not a pass; 2 usage error.
  *
- * It reuses the gate's statistics and thresholds (`evals/gate.ts`, `evals/baseline.ts`) rather than new ones:
+ * It lives with the evaluations, not in `packages/core`: it reads their results and reuses the gate's statistics
+ * and thresholds (`gate.ts`, `baseline.ts`) rather than new ones, and core imports nothing from here:
  * - a task is compared only with at least `RULES.minRepeats` runs on each side;
  * - the verdict needs at least `RULES.overallMinTasks` such tasks; below that it is "not enough data";
  * - pass rate: the one-sided Fisher exact test on the pooled pass counts, in each direction, at `RULES.alpha`;
@@ -19,8 +20,8 @@
  * ones memory could help with. A task that passes every run without memory cannot show a gain at any sample size;
  * `minPassesForGain` says what the "with" side would have needed.
  */
-import { type Results, type TaskStats, byTask, configurationOf, loadResults, median, statsOf } from "../../../../evals/baseline.ts"
-import { RULES, fisherLower } from "../../../../evals/gate.ts"
+import { type Results, type TaskStats, byTask, configurationOf, loadResults, median, statsOf } from "./baseline.ts"
+import { RULES, fisherLower } from "./gate.ts"
 
 export type Verdict = "gain" | "gain-at-cost" | "no-gain" | "worse" | "not-enough-data" | "not-comparable"
 
@@ -155,7 +156,7 @@ function tokens(count: number) {
   return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(Math.round(count))
 }
 
-const USAGE = "usage: bun packages/core/src/memory/compare.ts --with <results-dir> [...] --without <results-dir> [...] [--json]"
+const USAGE = "usage: bun evals/memory-compare.ts --with <results-dir> [...] --without <results-dir> [...] [--json]"
 
 if (import.meta.main) {
   const sides: Record<"with" | "without", string[]> = { with: [], without: [] }

@@ -16,6 +16,8 @@ evals/
   baseline.json      the committed baseline the gate compares against
   gate.ts            the regression gate: new results against the baseline
   gate.test.ts       the gate and the baseline generator, on crafted results
+  memory-compare.ts  the A/B comparison that decides whether memory stays: the same tasks with and without it
+  memory-compare.test.ts  the comparison, on crafted results
   tasks/<id>/
     task.json        { id, title, prompt | prompts, tags, timeoutSeconds, maxSteps, setup? }
     workspace/       the project the agent starts in

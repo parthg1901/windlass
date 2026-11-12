@@ -18,7 +18,6 @@ tool's description, and no per-turn review prompts it.
 | `deliver.ts` | the block at session start and the updates during it (pure) |
 | `screen.ts`, `tools.ts` | what a note must not be; `memory_save`, `memory_retract`, `memory_search` |
 | `usage.ts`, `score.ts` | usage records, per-note and overall statistics |
-| `compare.ts` | the A/B comparison on `evals/` results (imports `evals/gate.ts` and `evals/baseline.ts` by path) |
 | `config.ts` | the `memory` configuration section |
 
 ## Files a person can edit
@@ -84,7 +83,7 @@ observational. Whether memory stays is decided by the A/B comparison: run the sa
 delivered, and without, then
 
 ```
-bun packages/core/src/memory/compare.ts --with evals/results/<a> --without evals/results/<b>
+bun evals/memory-compare.ts --with evals/results/<a> --without evals/results/<b>
 ```
 
 It uses the gate's rules: 3 runs per task on each side, at least 3 tasks, one model and effort; pooled one-sided

@@ -9,7 +9,7 @@
  *
  * This is observational. Sessions that receive notes differ from sessions that do not (older projects, returning
  * users), so the "with notes" and "without" rates here are not evidence that notes help. They point a person at
- * notes to review. Whether memory stays is decided by the A/B comparison (`compare.ts`).
+ * notes to review. Whether memory stays is decided by the A/B comparison (`evals/memory-compare.ts`).
  */
 import type { MemoryEntry } from "./entry.ts"
 import { type EntryState, statesOf } from "./hygiene.ts"
