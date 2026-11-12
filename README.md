@@ -77,6 +77,9 @@ windlass
   reads it after its current step (`↳ delivered to the agent: ...`). `/queue <message>` holds it until the turn ends.
 - **Undo:** `/undo` at the prompt takes the files and the conversation back to before your last message, and shows
   what will change first. `/redo` brings it back. `/diff` shows what the last turn changed.
+- **Work as an agent:** `windlass --agent reviewer` starts the session as an agent you defined (its own instructions, and
+  what it may do); `/agent` lists them and switches. `/rename <title>` names the session, and `/compact` makes room
+  in a long one.
 - **Stop:** Ctrl-C stops the agent; Ctrl-D leaves.
 - **Continue later:** `windlass -c` resumes the most recent session in this directory; `windlass fork --turn 2` starts a new
   session with the conversation up to the end of its second turn.
@@ -97,12 +100,14 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 | `/diff` | the last turn's changes | the selected step's or turn's, in a reader |
 | `/approval [ask\|auto\|full]` | yes | yes, with a picker |
 | `/clear-taint` | yes | yes |
+| `/agent [name\|none]` | the agents and the one in force; a name switches | yes, with a picker |
+| `/rename <title>` | yes | yes |
+| `/compact` | yes | yes |
 | `/queue <message>` | yes | yes (or Ctrl-T) |
 | `/exit`, `/quit` | yes | yes |
 | `/fork [<turn>] [copy]` | `windlass fork` instead | yes |
 | `/sessions`, `/new`, `/model` | `--list-sessions`, `-c`, `--session`, `-m` instead | yes |
 | `/reconnect`, `/panel`, `/debug` | | yes |
-| `/compact`, `/rename` | | listed; they wait for an engine operation |
 
 ## Where next
 

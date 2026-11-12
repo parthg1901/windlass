@@ -46,8 +46,49 @@ windlass -m gpt-6-luna --effort low "rename the helper to parseLine"
 
 `windlass --models` lists the models your plan offers and the efforts each accepts; the one marked `*` is the default.
 `-m` (`--model`) and `--effort` choose for a new session. A session keeps the model it was started with when you
-resume it, unless you name another. `--max-steps <n>` limits the model calls in one turn; at the limit the model is
-asked for a final answer without tools.
+resume it, unless you name another. An effort the model does not take is refused in one sentence that names the
+ones it accepts (`model gpt-6-luna does not offer the reasoning effort "extreme"; it accepts: low, medium, high`),
+exit code 2. `--max-steps <n>` limits the model calls in one turn; at the limit the model is asked for a final
+answer without tools.
+
+## Agents
+
+An agent is a way of working you define once: its own instructions, restrictions on what it may do, and
+optionally its model. A definition is a Markdown file, `<name>.md`, in `.claude/agents` (or `.agents/agents`, or
+`.windlass/agents`) of the project, or in the `agents` directory of your configuration directory; its front
+matter has a `name`, a `description`, and what it may do (`effects: read` for a read-only agent, `tools`,
+`disallowed-tools`, `approval`, `model`, `effort`). `examples/agents/` has three.
+
+```sh
+windlass --agent reviewer "review the last commit"
+```
+
+- `--agent <name>` starts the session as that agent; with `--session` or `-c` it switches the session to it.
+  `--agent none` is no agent. Without the option a new session runs as the `agents.default` of your own
+  configuration, if you set one.
+- `/agent` at the prompt lists the agents defined here, marks the one in force, and says which definitions could not
+  be used and why. `/agent <name>` switches (from the next step, also in the middle of a turn); `/agent none`
+  switches it off. In the full-screen interface `/agent` is a picker.
+- The session line names the agent (`new session ses_… · agent reviewer`), the full-screen panel has an `agent`
+  field, and a switch is a line in the conversation (`⇄ agent reviewer → docs (restricted)`), also in a session
+  opened again.
+- A call the agent may not make is not run, and says whose rule it was: `○ not run: the reviewer agent may not
+  change files`. An agent can only take away: it never lets a call run that your approval mode would ask about.
+
+## The task list
+
+For work with several steps the model keeps a task list, and each update is shown as the list itself:
+
+```
+≡ tasks · 1 of 3 done
+  ✓ Read the code
+  ▸ Fix the bug
+  ○ Run the tests
+```
+
+`✓` is done, `▸` in progress, `○` pending. The full-screen interface keeps the current list in the panel; a session
+you resume shows the list as it stands (`Its task list (1 of 3 done):`). A turn you `/undo` takes its list back
+with it.
 
 Defaults can be set in the configuration file (`model`, `effort`; see below).
 
@@ -158,6 +199,10 @@ the checks whose `when` patterns match run before the turn ends, in the sandbox.
 
 - `✓ done · checks passed`: they ran and passed. Exit code 0.
 - `✓ done · no checks configured` or `✓ done · nothing to check` (nothing changed that a check covers). Exit code 0.
+  When files the checks cover did change outside the turn (you edited by hand, a turn was undone, an earlier turn
+  ended with its checks failing), a line under it says so: they were not checked now, and are at the end of the
+  next turn that changes a file.
+- `✓ done · its checks are left to its parent's turn`: a subagent's turn. Its work is checked with its parent's.
 - `✗ stopped with failing checks: <names>`: they still fail, and the agent reported that it cannot fix them, ran
   out of rounds (`verify.maxRounds`), or `verify.mode` is `report`. Exit code 3; with `--json` the turn's last event is
   `execution.succeeded` with `data.verification.status` `"unresolved"`.
@@ -182,6 +227,8 @@ At the interactive prompt, while the agent is idle:
   and asks before it overwrites a file that you or another session edited since.
 - `/redo` brings back what the last `/undo` took away.
 - `/diff` shows the files the last turn changed, with their diffs.
+- `/rename <title>` gives the session a title, which `--list-sessions`, the session picker and the line that
+  resumes it show. Without one a session is named by the first line of your first prompt.
 
 `/undo` says which turn it took back (`↶ undone: turn 2 "add a test" · out of the conversation`), and `/redo` which
 it put back. In the full-screen interface an undone turn is one dim line where it was (`↶ undone turn 2: "add a
@@ -202,6 +249,12 @@ A long session is compacted automatically: when the next request would fill most
 earlier part of the conversation is replaced by a checkpoint (a summary written by the model, plus your own
 messages and the files, commands and errors so far), and a short recent part is kept word for word. You see
 `⇣ compacted the conversation · about <before> → <after> tokens`.
+
+`/compact` does it now, when you want room before a long task. It says what happened: the same line with the sizes,
+or that there was nothing worth compacting (a short conversation, or one that is already a checkpoint and what
+followed it), or why it failed. While the agent works it is made after the current step and the turn carries on;
+while it is idle nothing else runs, and no turn is counted for it. A turn's ending counts the summary requests of
+its compactions with its steps (`3 steps + 1 summary call`), since each is a model request.
 
 Nothing is lost: the session's log keeps every message, and the agent has two tools to get exact details back,
 `history_search` (words or a quoted phrase, across the whole session) and `history_read` (messages by position).

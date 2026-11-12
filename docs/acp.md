@@ -48,16 +48,16 @@ every command the agent started is stopped, and the session resumes later where 
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
 | `authenticate` | Checks the saved sign-in; succeeds if it is usable, otherwise answers auth-required with how to sign in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
-| `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), and `archived: true` opens an archived session too. |
-| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first message (below). |
+| `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |
+| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["windlass"] = { model, effort, archived?, forkedFrom?, forkedThroughSeq? }` (a fork names the session it was forked from and the last event it inherited). With `_meta["windlass"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first prompt (below). The listing is made once: `nextCursor` names it, and the pages after the first are served from it. |
 | `session/prompt` | Text, `resource_link` (named as `[file: /path]` or `[link: uri]` so the model can open it) and embedded text `resource` (the text in a fenced block under the same header). The response is the stop reason of the turn, with how it ended under `_meta["windlass"]` (below). `_meta["windlass/maxSteps"]` sets the step limit of the turn the prompt starts. |
 | A prompt while the agent works | Steers it: the message reaches the model at the next step boundary (after the running tool calls), in the same turn. Every prompt the turn took in is answered when it ends, with the same stop reason. |
 | `session/cancel` | Prompts not yet delivered are withdrawn and answered `cancelled` at once; the running turn is interrupted (commands are stopped) and its prompt is answered `cancelled` after its last update. A prompt sent right after a cancel starts the next turn. |
 | `session/close` | Cancels, then frees the session in the agent. With `_meta["windlass"] = { shutdown: true }` it stops running work as a shutdown instead (the session stays resumable, as when the process exits), and every update and event of that is sent before the answer. |
 | `session/delete` | A soft delete: the session is archived and disappears from `session/list` and `session/load`; its log is kept. |
-| `session/set_config_option` | Three select options: `model` (category `model`, the models the account offers), `effort` (category `thought_level`: `default` or the model's efforts) and `approval` (category `mode`: `ask`, `auto`, `full`). A model or effort change applies from the next step boundary, also in the middle of a turn, and is reported with `config_option_update`; an approval change applies from the next tool call. |
+| `session/set_config_option` | Four select options: `model` (category `model`, the models the account offers), `effort` (category `thought_level`: `default` or the model's efforts), `approval` (category `mode`: `ask`, `auto`, `full`) and, where agents are defined, `agent` (category `_agent`: `none` or an agent's name). A model or effort change applies from the next step boundary, also in the middle of a turn, and is reported with `config_option_update`; an approval change applies from the next tool call. An effort the model does not take is refused with `-32602`, `reason: "unknown_effort"` and one sentence that names the ones it accepts. |
 
 Stop reasons: `end_turn`; `max_turn_requests` when the turn reached its step limit; `max_tokens` when the last
 response hit the output limit; `refusal` when the provider refused; `cancelled`. A turn that fails answers the prompt
@@ -86,15 +86,33 @@ IDs are stable: a user message has the harness message ID, agent text and reason
 How a turn ended goes beyond the stop reason: the verification gate decides whether a turn may end as done (see
 `docs/` on checks). The prompt response's `_meta["windlass"]` and the `_windlass/turn` notification (below)
 carry `outcome` (`succeeded`, `unresolved`: done but the project's checks still fail, `failed`, `interrupted`), the
-gate's `verification` (`passed` with the evidence, `not_needed`, `not_configured`, or `unresolved` with the reason
-and the failing checks), and the files the turn changed. On `session/load` every earlier turn's ending is replayed
+gate's `verification` (`passed` with the evidence; `not_needed`, with `unverified: true` when files the checks cover
+changed outside the turn and are still to be checked; `not_configured`; `left_to_parent` for a subagent, whose checks
+are its parent's turn's; or `unresolved` with the reason and the failing checks), and the files the turn changed. On `session/load` every earlier turn's ending is replayed
 as a `_windlass/turn` notification marked `replay: true`, after that turn's updates (and, for a client that
 takes the harness's events, after that turn's events), with the files it changed worked out from its snapshots.
 
-**Titles.** A session the user did not name gets a title without a model call: the first line of its first
-message, trimmed, runs of spaces collapsed, shortened at a word to 60 characters with `…` (`deriveTitle` in
-`packages/acp/src/extensions.ts`). It is what `session/list`, `session_info_update` (on load and resume, and live
-when the first message arrives) and `_windlass/session` report; nothing is written to the log.
+**Titles.** A session the user did not name gets a title without a model call: the first line of the first thing
+the user said in it, trimmed, runs of spaces collapsed, shortened at a word to 60 characters with `…` (`sessionTitle`
+and `deriveTitle` in `packages/acp/src/extensions.ts`). The engine keeps the beginning of that prompt with the
+session's summary (`firstPrompt`), so a listing reads no log for a title. It is what `session/list`,
+`session_info_update` (on load and resume, and live when the first message arrives) and `_windlass/session`
+report; nothing is written to the log. A title the user gives (`_windlass/rename`) replaces it.
+
+**Agents.** A session can run as an agent: a definition with its own instructions, restrictions on what it may
+call, and optionally a model. `_windlass/agents` lists them; `agent` in `_meta["windlass"]` starts a
+session as one; the `agent` config option switches (`none` switches it off). The switch is made at once while the
+session is idle and at the next step boundary while a turn runs; its record is the `agent.switched` event
+(`{ messageId, from, to }`, `to` being the definition as it was selected), and `config_option_update` follows it.
+A call the agent's restrictions refuse fails like any refused call; for a client that takes the events it is
+`approval.denied` with `reason: "policy"` and `agent: <name>`, which a client words as the agent's rule ("the
+reviewer agent may not change files") rather than as the approval policy. Definitions that could not be used are
+in `_windlass/agents` (`problems`) and arrive as `diagnostic`s of kind `agents`.
+
+**The task list.** The model keeps a task list with the `todo` tool; each call replaces the list. The call's
+`rawOutput.display.todo` is `{ items: { text, status }[], counts }` (`status`: `pending`, `in_progress`, `done`),
+which a client shows as a checklist instead of a tool call. The list as it stands (reverted turns left out) is
+`todos` in `_windlass/session`.
 
 ## Approval
 
@@ -130,7 +148,8 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   `_windlass/taint` `{ tainted: false }`.
 - **Notices.** `_windlass/notice` `{ sessionId, kind, message }` says once what the user should know about how
   tools run here: `sandbox_unavailable` (why, and what would fix it), `approval_ignored` (a project setting that
-  would have loosened the policy), `checks_not_run`.
+  would have loosened the policy), `checks_not_run`; and about how a turn ended, `no_closing_answer` (the model did
+  its work and then returned nothing twice, so the turn ended without a last word from it).
 - **A session that is loaded** replays an asked-and-answered call as the call with its final status and content.
   A client that takes the harness's events gets `approval.requested`, `approval.answered` and `approval.denied`
   with `replay: true`; it shows them as history and puts no question. No question is ever pending in a stored
@@ -164,10 +183,6 @@ A client tells the two apart by `_meta["windlass"]`: `approval` or `plan`.
 - A subagent's history on `session/load`: what a parent forwards is not stored in its log, so a loaded session shows
   its `subagent` calls and their results only. The subagent's own log is `_windlass/events` of its session (the
   TUI reads it when such a row is expanded).
-- Renaming a session: the engine has no operation that appends `session.renamed` (it would be
-  `EngineSession.rename(title)`), so `_windlass/rename` is not offered and titles are derived (below).
-- Compaction on request: the engine compacts only when its policy says so and has no operation to ask for one
-  (`EngineSession.compact()`), so `_windlass/compact` is not offered.
 - ACP v2. The SDK's v2 is an experimental draft whose prompt turn works differently (a prompt is answered once it is
   inserted and completion is a `state_update`), so serving it means a second set of handlers rather than a flag.
 
@@ -183,8 +198,13 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | CLI feature | Protocol |
 | --- | --- |
 | Rendering every event (`--json` prints them as they are) | `_windlass/event` notifications, asked for at `initialize` (below); standard updates switched off |
-| A new session with `--model`, `--effort` | `session/new` with `_meta["windlass"] = { model, effort }` |
-| `--session <id or start of one>`, `--continue` | `_windlass/resolve`, then `session/resume` with `_meta["windlass"] = { model, effort, archived: true }` |
+| A new session with `--model`, `--effort`, `--agent` | `session/new` with `_meta["windlass"] = { model, effort, agent }` |
+| `--session <id or start of one>`, `--continue` | `_windlass/resolve`, then `session/resume` with `_meta["windlass"] = { model, effort, agent, archived: true }` |
+| `/agent`, `/agent <name\|none>`, the agent on the session line | `_windlass/agents`; `session/set_config_option` `agent`; the switch is drawn from `agent.switched`; `agent` in `_windlass/session` |
+| A call an agent refuses, in the agent's words | `approval.denied` with `agent` in the events |
+| The task list as a checklist; the current list of a resumed session | `tool.settled`'s `display.todo` in the events; `todos` in `_windlass/session` |
+| `/rename <title>` | `_windlass/rename` |
+| `/compact` | `_windlass/compact`; a compaction that was made is drawn from its `compaction.*` events, and the execution it ran under is not drawn as a turn |
 | Recovery of a session whose process died | The events `session/resume` appended (the crashed step settled, the claim recovered) arrive as live events before its answer |
 | The prompt, a steer, `/queue` | `_windlass/steer` / `_windlass/queue` (answered once admitted, with the message ID); the turn's end is its `execution.*` event |
 | `--max-steps` | `maxSteps` on `_windlass/steer` and `_windlass/queue` (`_meta["windlass/maxSteps"]` on `session/prompt`) |
@@ -240,12 +260,12 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   same process (`{ kind: "memory", harness }`, for tests), and negotiates the harness's events
   (`events: true, updates: false`). It refuses a server that does not offer them, with a sentence.
 - A connection serves any number of sessions: `newSession`, `resolve`, `openSession` (load or resume),
-  `listSessions`, `listModels`, `storedEvents`, `unarchive`. Listings never stop a server in use; `stop()` does.
+  `listSessions`, `listModels`, `listAgents`, `storedEvents`, `unarchive`. Listings never stop a server in use; `stop()` does.
 - A `ClientSession` has `events` (typed harness events with `replay`) or `items` (the events and the session's
   notifications: turn endings, state, usage, taint, notices, MCP changes, in arrival order), `send` (steer or queue), `cancel`,
   `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `mcp`, `approveMcp`,
-  `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `close`, and the
-  features a server may lack behind `offers(method)` (`rename`, `compact`).
+  `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `agents`, `setAgent`, `rename`,
+  `compact`, `close`. `offers(method)` says whether a server (of another version) has a method.
 - `fork(params)` (`_windlass/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
   (`_windlass/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
   `_windlass/replay_started` names it, so its `events` are the progress and its `cancel()` ends the replay; the
@@ -293,8 +313,9 @@ do not ask get the standard updates exactly as before, and none of this.
   executionId: string,
   outcome: "succeeded" | "unresolved" | "failed" | "interrupted",
   stopReason: string,               // a session/prompt stop reason, or "error"
-  verification?: object,            // execution.succeeded's verification: { status: "passed", evidence } | { status: "not_needed" }
-                                    //   | { status: "not_configured" } | { status: "unresolved", reason, failing, acknowledgement, evidence }
+  verification?: object,            // execution.succeeded's verification: { status: "passed", evidence } | { status: "not_needed", unverified?: true }
+                                    //   | { status: "not_configured" } | { status: "left_to_parent" }
+                                    //   | { status: "unresolved", reason, failing, acknowledgement, evidence }
   message?: string,                 // failed: why
   reason?: "user" | "shutdown",     // interrupted: by whom
   changedFiles: string[] | null,    // also on a replay (from the turn's snapshots); null when no snapshot could tell
@@ -303,7 +324,45 @@ do not ask get the standard updates exactly as before, and none of this.
 }
 ```
 
-The `session/prompt` response carries the same object, without `sessionId`, as `_meta["windlass"]`.
+The `session/prompt` response carries the same object, without `sessionId`, as `_meta["windlass"]`. An
+execution that only compacted the conversation because the user asked (`_windlass/compact` while idle: no
+message, no step) is no turn: no `_windlass/turn` is sent for it, live or replayed, and `TurnTracker`
+(`packages/acp/src/turns.ts`) does not count it. A turn's model requests are its steps plus the `calls` of its
+compactions (`compaction.ended` and `compaction.failed`: the summary requests sent, retries and the repair included).
+
+**`_windlass/agents`** (request): the agents a session can run as, as the definitions are now.
+
+```ts
+// params: a session open on this connection, or a directory
+{ sessionId: string } | { cwd: string }
+// result
+{
+  available: boolean,              // false: this engine offers no agents
+  agents: { name, description, path, scope: "project" | "config" | "user", model: string | null, effort: string | null,
+            restrictions: string,  // what it may not do, in a sentence or two
+            tag: "read only" | "restricted" | null }[],
+  problems: { path, severity: "skipped" | "shadowed" | "warning", reason, name: string | null }[],
+  default: string | null,          // the agent a new session runs as when none is named (the user's agents.default)
+  ignored: string[],               // settings of the project's file about agents that were not followed
+  current: string | null           // with sessionId: the agent the session runs as, or will from its next step
+}
+```
+
+**`_windlass/rename`** (request) `{ sessionId, title }` → `{ title }`: gives the session a title
+(`session.renamed`); the answer is the title as stored (trimmed, line breaks as spaces), sent after
+`session_info_update`. An empty title is `-32602`.
+
+**`_windlass/compact`** (request) `{ sessionId }` → the engine's `CompactResult`: compacts the conversation now,
+as an automatic compaction would (`compaction.started` with `trigger: "manual"`). While a turn runs it is made at
+the next step boundary and the turn carries on; while idle it runs under an execution of its own, which ends as
+soon as the checkpoint is written. Answered when it is done, after its events:
+
+```ts
+{ kind: "compacted", tokensBefore: number, tokensAfter: number,   // the estimates of the next request, before and after
+  source: "model" | "repaired" | "fallback", detail: string | null }
+| { kind: "nothing", message: string }   // nothing worth compacting, and why; nothing was written
+| { kind: "failed", message: string }    // it did not complete (interrupted, the session closed); history is unchanged
+```
 
 **`_windlass/revert`** and **`_windlass/undo_revert`** (requests): go back to before a user message (the
 latest by default), the files and the conversation, and undo that. Only while the session is idle.
@@ -411,7 +470,9 @@ that was admitted and not delivered yet (`inbox.cancelled`); `false` when it was
 listing.
 
 **`_windlass/session`** (request) `{ sessionId }` → `{ sessionId, state, cwd, title, model, effort, archived,
-updatedAt, lastSeq, inbox: { messageId, delivery }[], canUndo, canRedo }` for a session open on this connection.
+updatedAt, lastSeq, inbox: { messageId, delivery }[], canUndo, canRedo, agent, todos }` for a session open on this
+connection. `agent`: the name of the agent it runs as, or `null`; `todos`: the model's task list as it stands
+(`{ text, status }[]`), or `null` when it never set one.
 
 **`_windlass/events`** (request) `{ sessionId, afterSeq?, limit? }` → `{ events }`: the stored log, also of a
 session another process is working in.
@@ -421,7 +482,9 @@ start of one names, or, without `session`, the latest in `cwd`. A lookup in the 
 does everything that only reads or copies sessions (`session/list`, `_windlass/events`, `_windlass/fork`).
 
 **`_windlass/diagnostic`** (notification) `{ sessionId, kind, message }`: something the engine noticed that is
-not part of the log (`prefix_violation`, `internal_error`, `tool_crashed`, `listener_failed`).
+not part of the log (`prefix_violation`, `internal_error`, `tool_crashed`, `listener_failed`), or about what it
+could not use as configured (`skills`, `mcp`, `wake`, `memory`, `agents`: an agent definition that was skipped or
+is hidden by another, an agent that asks for a looser approval mode than the user's).
 
 **`_windlass/approval`** (request) `{ sessionId, mode?, unattended?, attended? }` → `{ sessionId, enabled, mode,
 unattended, attended, sandboxUnavailable: { reason, remedy } | null, tainted, taint, ignored }`: how the session's
@@ -436,7 +499,8 @@ have loosened the user's policy.
 **Errors.** Every error the server answers for a reason a client may act on has
 `data["windlass"] = { reason, message, holderPid? }`, `message` being the harness's own sentence:
 `auth_required` (`-32000`), `session_in_use` (`-32603`, with the holder's process ID), `session_not_found`
-(`-32002`), `ambiguous_session`, `unknown_model` and `invalid_request` (`-32602`), `schema_mismatch` (a session written by another
+(`-32002`), `ambiguous_session`, `unknown_model`, `unknown_effort` (the message names the efforts the model accepts)
+and `invalid_request` (`-32602`), `schema_mismatch` (a session written by another
 version), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `approval_required` (a turn ended
 because a call needed approval and nobody was present), `closed`.
 

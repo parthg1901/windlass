@@ -38,13 +38,23 @@ $T new-session -d -s tui -x 120 -y 40 "bun packages/cli/src/main.ts tui --cwd $T
 - The approval dock opens above the input. It takes the keys only when the input is empty and nothing was typed for 1.2 s, and then ignores its own letters and Enter for 0.4 s; otherwise its last line says `Tab answers the question` and everything typed goes to the input. Focused, its last line starts `↑↓ Enter · a s p n m`. Answer `a` once, `s` session, `p` project (not offered for the network), `n` no, `m` no with a note (type it, Enter). Esc gives the keys back to the input; Ctrl-C stops the turn and answers `cancelled`.
 - While a question waits the status line says `? waiting for your answer · <tool> <argument> · <time>`, and the call's row `? <tool> … · waiting for your approval`.
 - A command's row ends in `⊡` when it ran in the sandbox, `⊡ +network` / `⊡ +write <dir>` with extra access, `· no sandbox` without it. A refused call is `⊘`.
-- `/approval` (picker, or `/approval ask`), `/clear-taint` (asks first), `/diff` (full-screen per-file diffs of the selected step or turn, the latest by default; n and p jump between files, Esc closes), `/rename` (says it waits for an engine operation).
+- `/approval` (picker, or `/approval ask`), `/clear-taint` (asks first), `/diff` (full-screen per-file diffs of the selected step or turn, the latest by default; n and p jump between files, Esc closes).
 
 ```sh
 $T send-keys -t tui -l "write it outside"; $T send-keys -t tui Enter
 until $T capture-pane -p -t tui | grep -q "↑↓ Enter · a s"; do sleep 0.1; done; sleep 0.5   # focused and armed
 $T send-keys -t tui -l "m"; $T send-keys -t tui -l "keep it in the workspace"; $T send-keys -t tui Enter
 ```
+
+## Agents, the task list, /rename and /compact
+
+- Agents are Markdown files in the workspace: `$TMP/work/.claude/agents/<name>.md` with front matter (`name`, `description`, and `effects: read` or `tools: read, write`). `tui --agent reviewer` starts as one: the first row is `⇄ working as the agent reviewer (read only)` with its restrictions under it, and the panel has `agent  reviewer`. Set `XDG_CONFIG_HOME` to a throwaway directory too, or the user's own agents and `agents.default` are read.
+- `/agent` opens a picker (`no agent`, then each agent with `read only · <description>`; the definitions that could not be used are in its detail, full paths wrapped). Type to filter (`docs`), wait about 0.3 s, Enter. The switch is a row drawn from its event, `⇄ agent reviewer → docs (restricted) · from the next step`, and is there again in `tui -c`. `/agent <name>` switches without the picker; `/agent none` switches off.
+- A call the agent may not make: script a `write` under a read-only agent. The row is `⊘ write note.txt · not run: the reviewer agent may not change files`, never "approval policy", and the file is not created.
+- A broken definition is said with the first turn (`⚠ agents: The agent definition at … was not loaded: …`), not when the session opens; `/agent` shows it at once.
+- The task list: script a `todo` call (`{ "type": "tool_call", "callId": "c1", "name": "todo", "input": { "todos": [{ "text": "Read the code", "status": "done" }, …] } }`). The conversation shows `≡ tasks · 1 of 3 done` and one line per task (`✓` done, `▸` in progress, `○` pending); the panel has a `Tasks` section. After `/quit` and `tui -c` both are there again. At most one item may be `in_progress`, or the call fails and is drawn as a failed call.
+- `/rename Login bug` answers `· renamed: Login bug` and the panel's `title` changes; `--list-sessions` and `/sessions` show it.
+- `/compact` with a scripted model and a short conversation answers `· Not compacted: only about N tokens of the conversation could be summarised …` (the engine wants about 2,000 tokens it can take out, counted from the messages' text, not from scripted `usage` items); before the first turn, `There is nothing to compact: the conversation has not started.` A compaction that is made needs a long conversation and a summary response of the required form (`SUMMARY` in `packages/core/test/scenarios/script.ts`); it is covered in-process with `limits.manualCompactionMinTokens: 0` (`packages/cli/test/rename-compact.test.ts`, `packages/acp/test/rename-compact.test.ts`). It is drawn as `⇣ compacted the conversation · about <before> → <after> tokens` and no ending row follows it.
 
 ## Subagents, fork and replay
 
@@ -206,6 +216,10 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **A background `shell` row looks exactly like a finished one**; check the process with `pgrep -P`.
 - **The `■ stopping…` row stays above `■ interrupted`**: wait for the second, not for the first to go.
 - **`/sessions` cuts IDs to `ses_4…`** and forks share a title: match a row on its age or title, not its ID.
+- **A glyph the test renderer draws in one cell can take two in a terminal.** `☰` (the first mark of the task list) left a stray space after it in tmux while every component frame looked right; `Bun.stringWidth("☰")` is 2. Check a new symbol with `Bun.stringWidth` before using it (the list uses `≡` now).
+- **A running pane keeps the code it started with.** After an edit, a frame from a session started before it showed the old rows (a duplicate `instructions updated (agent)` under the switch). Kill the session and start a new one before judging a fix.
+- **A switch of agent used to show twice**: the instruction message that tells the model (`· instructions updated (agent): The user switched you …`, six wrapped lines) and the switch row. The first is not drawn any more. The agents index (`· instructions updated (agent-index): …`) still is, on the first turn of a session whose workspace has agents: five dim lines a first-time user has to read past.
+- **A problem with an agent definition marked the model call that was running** with `⚠` in the panel's bars (`⚠ diagnostic`), as if the request were wrong. Diagnostics of kind `agents` mark no call now; `skills` and `mcp` ones still do.
 
 ## Measured (two-core aarch64, 2026-11-12)
 
