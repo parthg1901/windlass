@@ -1496,6 +1496,9 @@ interface TurnEnding {
 }
 
 const isSteer = (item: { readonly delivery: "steer" | "queue" }) => item.delivery === "steer"
+/** The events that end an execution's work in a process: done, failed, or interrupted (a shutdown keeps the claim, and still ends the run). */
+const isEnding = (item: StoredEvent): item is StoredEvent<"execution.succeeded"> | StoredEvent<"execution.failed"> | StoredEvent<"execution.interrupted"> =>
+  item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted"
 
 /** What the approval layer decided for one call of the step in progress, kept until its result is recorded. */
 interface Decided {
@@ -1574,6 +1577,15 @@ class LiveSession implements EngineSession {
   private readonly listeners = new Set<(event: EngineEvent) => void>()
   private readonly outbox: EngineEvent[] = []
   private publishing = false
+  /**
+   * Set from the moment the run of this process writes its execution's
+   * ending until that run has let go (`drain`): the ending, and whatever is
+   * published after it, reaches readers only then, in order. So a reader
+   * that acts on a turn's ending the moment it sees it (an undo, a
+   * compaction, a switch of agent) finds the session idle, however many
+   * turns of the event loop the loop takes to return.
+   */
+  private holding = false
   private run: Run | null = null
   /** A settings change asked for while a step was open. It is not history yet, only a request. */
   private pendingSettings: SessionSettings | null = null
@@ -2110,7 +2122,12 @@ class LiveSession implements EngineSession {
     const stored = this.store.append(this.id, events, options)
     if (this.taintHistory !== null) for (const item of stored) this.taintHistory.add(item)
     if (this.core.memory !== null) this.recordOutcomes(stored)
-    for (const item of stored) this.publish(item)
+    const run = this.run
+    for (const item of stored) {
+      // The ending of the execution this process is working on: it is durable now, and shown once the session is idle here.
+      if (run !== null && isEnding(item) && item.data.executionId === run.executionId) this.holding = true
+      this.publish(item)
+    }
     // Input arrived: a loop that waits at a boundary for it carries on.
     if (this.arrival !== null && stored.some((item) => item.type === "inbox.enqueued")) this.arrival()
     return stored
@@ -2119,10 +2136,17 @@ class LiveSession implements EngineSession {
   /** Hands an event to every consumer, in the order events were produced even when a listener produces more. */
   private publish(item: EngineEvent): void {
     this.outbox.push(item)
+    this.pump()
+  }
+
+  /** Publishes what waits, unless a listener is being called (it goes on when that returns) or an ending is held back. */
+  private pump(): void {
     if (this.publishing) return
     this.publishing = true
     try {
-      for (let next = this.outbox.shift(); next !== undefined; next = this.outbox.shift()) {
+      while (!this.holding) {
+        const next = this.outbox.shift()
+        if (next === undefined) break
         this.channel.push(next)
         for (const listener of [...this.listeners]) {
           try {
@@ -2276,6 +2300,9 @@ class LiveSession implements EngineSession {
         for (const resolve of unmade) resolve({ kind: "failed", message })
       }
       this.retain()
+      // The session is idle here now: the ending that was held back is shown, before anything new starts.
+      this.holding = false
+      this.pump()
       const again = this.restart && this.closing === null
       this.restart = false
       if (again) {

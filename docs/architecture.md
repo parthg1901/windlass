@@ -469,6 +469,12 @@ is a new version with a decoder for the old one.
 - Opening a session that still holds a claim recovers it (`engine/recovery.ts`), then resumes it.
 - The event stream never slows the loop down: durable events are queued in order, and deltas a reader has not taken
   yet are merged per item.
+- *A session is idle when its reader sees the turn's ending.* `execution.succeeded`, `execution.failed` and
+  `execution.interrupted` are durable the moment they are written, and are delivered to the stream and to
+  listeners once the run that wrote them has let go of the session (with everything published after them, in
+  order). A client that sees the ending and at once asks for something that needs an idle session (`revert`,
+  `undoRevert`, `compact`, `setAgent`, a new prompt) is therefore never refused as busy, however many turns of the
+  event loop the loop takes to return (`test/engine/idle-at-ending.test.ts`).
 - `Engine.close()` is the hook a process calls before it exits: every session is stopped as a shutdown, which leaves
   its execution suspended and resumable, and is let go of. If the process dies without it, a guard process kills
   the process group of every running shell command (`tools/shell.ts`), the operating system drops the session's
