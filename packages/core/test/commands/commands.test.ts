@@ -275,3 +275,16 @@ describe("configuration", () => {
     expect(resolveCommandsConfig({ paths: ["~/c", "/abs"] }, "/home/u")).toEqual({ paths: ["/home/u/c", "/abs"], disabled: [] })
   })
 })
+
+describe("the examples", () => {
+  test("every example command loads without a problem and expands", () => {
+    const { configDir } = layout()
+    const examples = join(import.meta.dir, "../../../../examples/commands")
+    const set = discoverCommands({ cwd: configDir, configDir, extraPaths: [examples] })
+    expect(set.problems).toEqual([])
+    expect(set.commands.map((c) => c.name)).toEqual(["frontend:test", "release-notes", "review"])
+    const notes = lookupCommand(set, "release-notes")
+    if (notes.kind !== "command") throw new Error("not found")
+    expect(expandCommand(notes.command, "1.4 1.3").text).toStartWith("Draft the release notes for version 1.4.\n\nLook at the commits since 1.3 ")
+  })
+})

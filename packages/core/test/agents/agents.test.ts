@@ -506,3 +506,14 @@ describe("configuration", () => {
     expect(resolveAgentsConfig({ default: "None" }).default).toBeNull()
   })
 })
+
+describe("the examples", () => {
+  test("every example definition loads without a problem", () => {
+    const { configDir } = layout()
+    const examples = join(import.meta.dir, "../../../../examples/agents")
+    const set = discoverAgents({ cwd: configDir, configDir, extraPaths: [examples] })
+    expect(set.problems).toEqual([])
+    expect(set.agents.map((a) => `${a.name}:${a.root.scope}`)).toEqual(["docs-writer:config", "release-captain:config", "reviewer:config"])
+    expect(set.agents.find((a) => a.name === "reviewer")!.restrictions).toEqual({ effects: ["read"], tools: null, deniedTools: ["background_stop"], approval: "ask" })
+  })
+})
