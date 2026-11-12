@@ -12,8 +12,7 @@
  * The noise floor. A model is not deterministic: a replay with NO change
  * still leaves the recording sometimes. So every run is also replayed
  * `--noise` times (default 2) with nothing changed, and that rate is printed
- * next to every result. A change is only interesting where it leaves the
- * recording more often, or somewhere else, than no change does.
+ * next to every result.
  *
  * With `--policy execute` a replay that leaves the recording carries on in a
  * copy of the recorded workspace, and that copy is graded with the task's
@@ -21,9 +20,18 @@
  * stayed on the recording made the recorded calls, so its result is the
  * recorded one.
  *
- * It answers "where does this change alter behaviour", cheaply and without
- * side effects. Whether the new behaviour is better is what the eval suite
- * itself measures (`run-agent.ts`, `gate.ts`).
+ * Next to that old count it reports measures that ignore how the model
+ * looked around (`replay/effects.ts`): where a lenient matcher would have
+ * stopped, whether the side effects, the set of files changed and the files'
+ * bytes are the recording's, and the grade. Under `--policy execute` the
+ * unchanged replays run under `execute` too, so both sides are measured the
+ * same way. Measured on the real model, divergence counts are at the floor
+ * (every unchanged replay leaves); files changed and the grade are what
+ * carry a signal (docs/replay.md has the numbers). The verdict says which
+ * differences chance alone could make at the sample size used.
+ *
+ * Whether the new behaviour is better is what the eval suite itself measures
+ * (`run-agent.ts`, `gate.ts`).
  */
 import { createHash } from "node:crypto"
 import { mkdtemp, readFile, readdir, readlink, rm } from "node:fs/promises"

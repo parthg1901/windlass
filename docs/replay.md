@@ -1,14 +1,32 @@
 # Replay
 
-Replay answers one question: **when I change the system prompt, a tool description, the model or the effort, where
-does the model's behaviour change in sessions that really happened?** It runs the real model again on a recorded
-session, against the changed baseline, and answers every tool call that is on the recording from the recording.
-While the model does what it did, nothing runs: no command, no edit, no check, no question. The first call it makes
-differently is the finding.
+Replay runs the real model again on a recorded session, against a changed system prompt, tool description, model
+or effort, and answers every tool call that is on the recording from the recording. While the model does what it
+did, nothing runs. Where it does something else, the `stop` policy ends the replay, and `execute` carries on for
+real in a copy of the recorded workspace, so the result can be compared and graded.
 
-It does not answer whether the new behaviour is better. That is what the eval suite measures (`evals/run-agent.ts`,
-`evals/gate.ts`). Replay is the cheap first look: a replay under the default policy costs a few model calls and has
-no side effects, so it can be run on every recorded session you have.
+**What it can tell you, measured (2026-11-12, `gpt-6-luna`, the numbers and their sample sizes are below):**
+
+- **Whether, and where, a replay leaves its recording tells you nothing on these sessions.** With nothing changed
+  20 of 20 replays left within the first four steps, on a different read, `glob`, `grep`, `ls` or shell look. The
+  same was true at medium effort (2 of 2). Do not read divergence counts.
+- **A matcher that lets reads pass does not fix that under `stop`.** Answering a read from the recording wherever
+  that is sound, 17 of 20 unchanged replays still left: 15 at a read the recording has no answer for, 2 at a
+  different side effect.
+- **Under `execute`, compare what the replay did and what it ended with, not how it looked.** The suite prints,
+  next to the old count: the side effects (writes, edits and commands that may change something, in order), the
+  set of files changed, the files byte for byte, and the grader's verdict. With nothing changed: files changed
+  0 of 20 differed; grader 20 of 20 passed; side effects 14 of 20 differed, but by task, from 1 of 7 (a config
+  edit) to 7 of 7 (a bug fix the model tests before or after editing, and writes two ways) and 6 of 6 (a task
+  whose result is a note in prose).
+- **A change showed only where the floor was low.** "Run the project's tests before editing anything" changed the
+  side effects in 3 of 3 replays of the config task against 1 of 7 unchanged (Fisher p = 0.03, a tiny sample), and
+  changed neither the files nor the grade there or on the bug fix (1 replay).
+
+So: **only `execute` replays, read on side effects, files changed and grade, carry a signal, and only on tasks whose
+floor on that measure is low. Divergence counts are noise.** Replay does not say whether the new behaviour is
+better; that is the eval suite (`evals/run-agent.ts`, `evals/gate.ts`). A comparison under `execute` costs about as
+many model calls as the recording has steps (5.9 per replay here), per replay.
 
 ## Running it
 
@@ -35,7 +53,11 @@ A set of recorded eval runs, as one table:
 ```
 bun evals/run-agent.ts <tasks...> --model <m> --effort <e> --out <dir>     # record
 bun evals/replay-suite.ts <dir> --system-prompt <file> [--policy execute] [--noise N] [--repeat N]
+                          [--noise-policy stop|execute]
 ```
+
+Under `--policy execute` the unchanged replays (`--noise`) run under `execute` too, so both sides are compared like
+with like; `--noise-policy stop` makes them cheap again, at the price of measuring only the old count.
 
 ## The three policies
 
@@ -94,51 +116,87 @@ replay ses_e79e…: DIVERGED  left the recording at step 2, call 1: arguments di
 - **Text is compared only as the final answer**, side by side; a step that says something different and makes the
   same calls is the same step.
 
+Below the report the script prints the comparison that ignores reads (`replay/effects.ts`):
+
+```
+compared on what it did (reads ignored)
+  side effects   differ at act 1: shell "bun test" (act differs) (recorded 2, replayed 2)
+  lenient        would have left at step 2 read "README.md" (a look not on the recording) (4 reads answerable from the recording, 1 not)
+  files          the same as the recording's at its end
+```
+
+- **Side effects** are the calls that may change something: `write` and `edit` (not when they failed: they check
+  everything before they write), and every `shell` command that is not on a short list of readers (`cat`, `ls`,
+  `grep`, `sed -n 'Np'`, `git status`, `find` without `-exec`/`-delete`, and so on, with no redirection into a
+  file, command substitution, heredoc or background job). Test runners, builds and interpreters count, because
+  they can write. They are compared in order, with a step's parallel calls in any order, paths normalised and a
+  command's `timeout` ignored. Compared only when the replay reached an answer of its own (`execute`, or a replay
+  that answered while still on the recording).
+- **Lenient** is where a matcher that let reads off the recording pass would have stopped without a copy: at the
+  first read no recorded call can answer soundly (an identical call, with no recorded side effect between where it
+  was recorded and where the replay is, not run in parallel with one, in the same turn), or at the first side
+  effect that differs.
+- **Files** compares the replay's copy at its end with the recording's last snapshot. The suite also compares the
+  set of files changed, whatever was written in them.
+
 Every replay is a session of its own, typed as a replay in its log (`session.created` with `lineage.kind =
 "replay"`: of which session, through which event, with which policy, and what was changed). Per call it records
 `replay.call` (matched, normalised, dropped, diverged or off the recording, and whether the tool ran for real),
 `replay.diverged` when it starts on a copy, and `replay.ended` with the outcome, the reason and the whole report.
 A replay session takes no prompts, is not reverted and is not forked.
 
-## The noise floor
+## The noise floor, measured
 
-A model is not deterministic. Replay the same recording with **nothing changed** and it will often leave the
-recording anyway, because the model reads another file first or words a command differently. A result means
-something only against that: so the suite replays every run `--noise` times (default 2) with nothing changed, and
-prints that next to every result.
+A model is not deterministic, so every result means something only against replays with **nothing changed**. The
+suite replays every run `--noise` times (default 2) and prints those next to the change, and says in words which
+differences chance alone could make (a two-sided Fisher exact test) and that "within chance" at a few replays does
+not mean "no effect".
 
-Measured on five recorded eval runs (`gpt-6-luna`, low effort, 6 to 9 steps each), ten unchanged replays:
+Measured 2026-11-12 on `gpt-6-luna`, under `execute`, on recordings of three eval tasks (one recording each,
+4 to 5 steps): `fix-failing-test`, `config-edits` and `frozen-api` (it should refuse and leave a note). 195 live
+requests in all, including the recordings.
 
-| task | unchanged replays that left the recording | where |
-| --- | --- | --- |
-| fix-failing-test | 2 of 2 | step 2 read (extra call); step 3 shell (arguments differ) |
-| crashing-script | 2 of 2 | 2x step 2 read (arguments differ) |
-| rename-function | 2 of 2 | step 1 glob (extra call); step 2 glob (different tool) |
-| project-checks | 2 of 2 | step 1 glob (arguments differ); step 1 grep (different tool) |
-| agents-md-rule | 2 of 2 | 2x step 1 ls (arguments differ) |
+| measure (replays that did it, of those measured) | unchanged, low (20: 7, 7, 6) | unchanged, medium (2, config) | changed, low (3 config + 1 fix) |
+| --- | --- | --- | --- |
+| left the recording (the old measure) | 20/20 | 2/2 | 4/4 |
+| a lenient matcher without a copy would have left | 17/20 | 1/2 | 4/4 |
+| other side effects | 14/20 (fix 7/7, config 1/7, frozen 6/6) | 1/2 | 4/4 (config 3/3) |
+| other files changed | 0/20 | 0/2 | 0/4 |
+| other bytes in the files | 12/20 (fix 5/7, config 1/7, frozen 6/6) | 0/2 | 2/4 |
+| passed the grader | 20/20 | 2/2 | 4/4 |
 
-Ten of ten left within the first three steps. At this effort the model explores a little differently every time,
-so **how often a replay leaves its recording says nothing by itself**: the count is at the floor before any change
-is made.
+What the rows say:
 
-What does carry information is **where and how** it leaves. With a rule added to the system prompt ("run the
-project's tests before editing anything"), all five replays left at `step 1 shell (different tool)`: the model ran
-the tests first, which no unchanged replay did. The suite reports this as the *new place* column (how many replays
-left at a step, tool and kind where no unchanged replay of the same task did) and words its verdict from it.
-Under `execute` those five replays ran to their end in copies and were graded: 5 of 5 passed their task's grader
-(the recordings: 4 of 5).
+- **Left the recording.** Every replay left, within its first four steps, in 13 different places: a different
+  first look (`glob` instead of `ls`, an extra `read`, `grep` instead of `glob`), or answering without the last
+  recorded check. At this floor no change can show by count, and the "new place" column (where a change left
+  where no unchanged replay did) is a hint at best: with 13 places in 20 replays, a new place is likely by chance.
+- **Lenient.** Under `stop` a lenient matcher would answer most reads (2 to 5 per replay) from the recording, and
+  still stop at the first read the recording never made in 15 of 20 (2 more left at a different side effect). Reads are not repeated, they are different.
+  It is not built as a live mode (it needs the engine; `packages/core/src/replay/README.md` says what).
+- **Side effects** are as noisy as the task allows. On the bug fix the recording edited and then tested; 5 of 7
+  unchanged replays ran `bun test` before editing, and 2 wrote the fix with another, equivalent formula. A note in
+  prose is never written the same way twice. A config edit is (6 of 7 the same). So the rule tried as the change
+  ("run the tests before editing") is what the bug-fix replays did most of the time anyway, and only the config
+  task, with no tests and a low floor, could show it.
+- **Files changed** is the stable measure: 0 of 20. A change that makes the model touch other files (a new test,
+  a stray file, a refusal that edits anyway) would show there against a floor of zero. The change tried here does
+  not change which files are edited, and did not show (0 of 4), which is the right answer.
+- **Bytes** differ for equivalent work (an env entry in another position, `Math.floor((s % 3600) / 60)` instead of
+  `Math.floor(s / 60) % 60`): not a measure of behaviour.
+- **Effort.** Two replays at medium effort left the recording too. Nothing can be said about whether effort lowers
+  the floor from two.
 
-What to conclude:
+What it would take to trust a replay comparison:
 
-- Trust a replay for **a change that shows early and in kind**: a new first action, a tool that is used or no
-  longer used, a command that is always run differently. Read the place, not the count.
-- Do not read anything into "it diverged" for exploratory sessions, and do not compare divergence rates of two
-  prompts unless both are far from the floor. More unchanged replays make the comparison sharper; two are a
-  minimum, not a measurement.
-- A long recorded session is mostly unreachable under `stop`: the replay leaves in the first steps, and what the
-  change would do in step 30 is not seen. `execute` reaches the end, at the price of real runs in a copy, and
-  what it reaches is one sample of a non-deterministic model: grade it over several replays, or use the evals.
-- Sessions that follow a fixed procedure (a scripted workflow, a recorded demo) have a low floor and are where an
+- `--policy execute`, read on files changed, the grade, and side effects on tasks whose floor on side effects is
+  low. Measure the floor of the same recordings first; it differs per task (1/7 to 7/7 here).
+- Sample size. At 20 unchanged and 20 changed replays, two rates must differ by roughly 25 to 35 points before
+  chance can be ruled out; at 7 and 3, only an all-against-almost-none split shows (as the config case did).
+  That is about 40 replays per question, at the size of these tasks about 240 model calls.
+- A replay of an `execute` comparison is close in cost to running the eval task again from scratch (the model
+  makes every step either way); what replay adds is the same starting history and a side-by-side diff.
+- Sessions that follow a fixed procedure (a scripted workflow, a recorded demo) have a lower floor and are where an
   exact replay is at its best.
 
 ## What a replay cannot do
@@ -162,6 +220,10 @@ What to conclude:
 const run = await engine.replaySession(sessionId, { systemPrompt, toolDescriptions, model, effort, policy, strict })
 const outcome = await run.done      // { report, sessionId, workspace, usage, requests }
 ```
+
+`compareReplay(recordedEvents, replayEvents, report, { normalisers, replayFinal })` (`replay/effects.ts`) is the
+comparison that ignores reads; pass `replayFinal`, a snapshot of the copy taken after the replay (`snapshotOfCopy`
+in `scripts/replay.ts`), because the replay's own log does not snapshot the step in which it left the recording.
 
 `run.session` is the replay session: its events are the replay's progress, and `interrupt()` ends it. The matcher,
 the tape and the report are `packages/core/src/replay/`; the loop that drives them is `replayLoop` in
