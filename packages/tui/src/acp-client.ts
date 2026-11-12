@@ -36,7 +36,8 @@
  */
 import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
-import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, type WakeCreateParams, type WakeCreateResult, handEditSentences } from "@windlass/acp/extensions"
+import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, type WakeCreateParams, type WakeCreateResult } from "@windlass/acp/extensions"
+import { handEditLines } from "./features.ts"
 import { type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
@@ -206,7 +207,7 @@ class AcpSession implements BackendSession {
       const answer = await backend.onQuestion({
         title: ask.title,
         // Who changed them, as far as the engine can tell, with the files.
-        detail: [...handEditSentences(ask.plan.changes, undo ? "since the turn" : "since the /undo"), ""],
+        detail: [...handEditLines(ask.plan.changes, undo ? "since the turn" : "since the /undo"), ""],
         options: [
           { id: "overwrite", label: `Overwrite: ${overwrite}`, kind: "allow" },
           { id: "keep", label: `Keep: ${keep}`, kind: "allow" },

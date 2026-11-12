@@ -151,6 +151,8 @@ export class ScriptSession implements BackendSession {
   configChoices?: BackendSession["configChoices"]
   setConfig?: BackendSession["setConfig"]
   diff?: BackendSession["diff"]
+  revert?: BackendSession["revert"]
+  undoRevert?: BackendSession["undoRevert"]
   rename?: BackendSession["rename"]
   compact?: BackendSession["compact"]
   agents?: BackendSession["agents"]

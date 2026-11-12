@@ -6,7 +6,7 @@
  * the dock can show.
  */
 import type { ApprovalAsk } from "@windlass/acp/client"
-import type { HookInfo, LspServerInfo, McpServerInfo } from "@windlass/acp/extensions"
+import { type HookInfo, type LspServerInfo, type McpServerInfo, type PlannedChange, handEditSentences } from "@windlass/acp/extensions"
 import { shownCommand } from "./cli.ts"
 import { type Line, hookNotNow, hookQuestionParts, lspNotNow, lspQuestionTitle } from "./cli.ts"
 import { splitArguments } from "../../core/src/commands/expand.ts"
@@ -155,4 +155,22 @@ export function unusedArgumentsNote(use: { readonly arguments: string; readonly 
   const quoted = use.unused.map((position) => typed[position - 1]).filter((argument) => argument !== undefined).map((argument) => `"${truncate(sanitize(argument), 40)}"`)
   const which = `${use.unused.length === 1 ? "argument" : "arguments"} ${use.unused.join(", ")}${quoted.length === use.unused.length ? ` (${quoted.join(", ")})` : ""}`
   return use.unused.length === 1 ? `${which} was not used: the command file has no place for it, so it is not in the text that was sent` : `${which} were not used: the command file has no place for them, so they are not in the text that was sent`
+}
+
+/** What is said of a file an undo or a redo asks about because it changed while a command or the checks of this session ran and no tool call named it (`editedBy: unknown`). */
+export const CHANGED_DURING_COMMAND = "changed while a command ran"
+
+/**
+ * The files an undo or a redo asks about before it overwrites them, one
+ * sentence per kind of change: the shared sentences for a change by the user
+ * or another program and for one made while another session worked; and for
+ * a file that changed while this session's own command or checks ran,
+ * without a call naming it, that it changed then, and that it may be the
+ * command's own work or the user's.
+ */
+export function handEditLines(changes: readonly PlannedChange[], since: string): string[] {
+  const during = changes.filter((change) => change.handEdited && (change.editedBy ?? { kind: "unknown" }).kind === "unknown")
+  const known = handEditSentences(changes.filter((change) => !during.includes(change)), since)
+  if (during.length === 0) return known
+  return [...known, `${during.length === 1 ? "1 file" : `${during.length} files`} ${CHANGED_DURING_COMMAND} (or the checks), which may be the command's own work or yours: ${during.map((change) => change.path).join(", ")}`]
 }

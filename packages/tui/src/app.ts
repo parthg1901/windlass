@@ -23,7 +23,7 @@ import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
 import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
-import { hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
+import { CHANGED_DURING_COMMAND, hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult, WakeCreateParams } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
@@ -2009,7 +2009,7 @@ function describePlan(plan: RevertPlan, undo: boolean): Span[][] {
   if (plan.changes.length === 0) return [[span("no file needs to change", "dim")]]
   const describe = (status: string) => changeLabel(status, undo)
   const lines = ["modified", "mode_changed", "type_changed", "added", "deleted"].flatMap((status) => {
-    const paths = plan.changes.filter((change) => change.status === status).map((change) => `${change.path}${change.handEdited ? " (changed outside this session)" : ""}`)
+    const paths = plan.changes.filter((change) => change.status === status).map((change) => `${change.path}${!change.handEdited ? "" : change.editedBy?.kind === "unknown" ? ` (${CHANGED_DURING_COMMAND})` : " (changed outside this session)"}`)
     return paths.length === 0 ? [] : [[span(`${describe(status)}: `, "dim"), span(fileList(paths, 6))]]
   })
   if (plan.kept.length > 0) lines.push([span(`left alone (ignored or never recorded): ${fileList(plan.kept.map((item) => item.path), 6)}`, "dim")])
