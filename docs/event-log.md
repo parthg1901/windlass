@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 7 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 8 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -128,13 +128,13 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 
 ## The events
 
-56 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
+57 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
 
 | Group | Events |
 | --- | --- |
 | session lifecycle | [`session.created`](#sessioncreated), [`settings.changed`](#settingschanged), [`session.renamed`](#sessionrenamed), [`session.archived`](#sessionarchived), [`session.unarchived`](#sessionunarchived) |
 | frozen request prefix | [`baseline.set`](#baselineset), [`instruction.appended`](#instructionappended), [`agent.switched`](#agentswitched) |
-| inbox | [`inbox.enqueued`](#inboxenqueued), [`inbox.delivery_changed`](#inboxdelivery_changed), [`inbox.cancelled`](#inboxcancelled), [`inbox.delivered`](#inboxdelivered), [`turn.ended`](#turnended), [`synthetic.appended`](#syntheticappended) |
+| inbox | [`inbox.enqueued`](#inboxenqueued), [`command.expanded`](#commandexpanded), [`inbox.delivery_changed`](#inboxdelivery_changed), [`inbox.cancelled`](#inboxcancelled), [`inbox.delivered`](#inboxdelivered), [`turn.ended`](#turnended), [`synthetic.appended`](#syntheticappended) |
 | execution | [`execution.started`](#executionstarted), [`execution.resumed`](#executionresumed), [`execution.succeeded`](#executionsucceeded), [`execution.failed`](#executionfailed), [`execution.interrupt_requested`](#executioninterrupt_requested), [`execution.interrupted`](#executioninterrupted) |
 | step: one model call | [`step.started`](#stepstarted), [`step.ended`](#stepended), [`step.failed`](#stepfailed), [`step.refused`](#steprefused), [`retry.scheduled`](#retryscheduled) |
 | model output | [`text.ended`](#textended), [`reasoning.ended`](#reasoningended) |
@@ -259,6 +259,26 @@ Input was admitted and is waiting to be delivered. `messageId` is the ID the mes
 | `delivery` | one of `"steer"`, `"queue"` | yes |
 | `content` | [content](#content) | yes |
 | `untrusted` | [untrustedInput](#untrustedinput) | may be absent |
+
+### `command.expanded`
+
+Version 1.
+
+The message admitted by the event right before this one was produced by a slash command: the user typed `/name arguments`, and the content of that `inbox.enqueued` is the command's template with the arguments put in. Written in the same append as the admission, so a message never waits without it. The model is sent the expanded text and nothing of this; a client shows the line as typed, with the file it came from. `name`, `path` and `scope` are the command, its file and where the file was found; `fingerprint` is the SHA-256 of the file's text as it was read, so the version that was used is known after the file changes; `arguments` is what was typed after the name; `missing` lists the positions (`$2`) the template uses that were not given and became empty text; `unsupported` lists what the file holds that other harnesses run or read at this moment (a command in backticks after `!`, an `@path`), with its line: here it stays in the text as written and is never run.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `messageId` | string, not empty | yes |
+| `name` | string, not empty | yes |
+| `path` | string, not empty | yes |
+| `scope` | one of `"project"`, `"config"`, `"user"` | yes |
+| `fingerprint` | string, not empty | yes |
+| `arguments` | string | yes |
+| `missing` | list of integer ≥ 1 | yes |
+| `unsupported` | list of objects | yes |
+| `unsupported[].kind` | one of `"shell"`, `"include"` | yes |
+| `unsupported[].text` | string, not empty | yes |
+| `unsupported[].line` | integer ≥ 1 | yes |
 
 ### `inbox.delivery_changed`
 
@@ -1646,8 +1666,6 @@ Recorded when the model-facing output is shorter than what the tool produced.
 Declared in `packages/core/src/tool/tool.ts`.
 
 ### `untrustedInput`
-
-Why an admitted input is content the harness does not control: the firing of a wake-up that carries a webhook's body, or the output of a check that ran with the network or without the sandbox. The session counts as having taken in untrusted content from the admission on (`approval/taint.ts`), so the turn the input starts is decided under that from its first call.
 
 | Field | Type | Required |
 | --- | --- | --- |

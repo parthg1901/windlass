@@ -11,6 +11,7 @@ import { grant } from "../approval/grants.ts"
 import { choiceId, storedNeed, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
 import { blobRef, content } from "../content.ts"
 import {
+  commandUse,
   compactionMode,
   delivery,
   finishReason,
@@ -152,7 +153,14 @@ export type ToolCallPart = Extract<AssistantPart, { type: "tool_call" }>
 
 export const message = variant("kind", {
   /** Something the user said, delivered from the inbox. */
-  user: object({ kind: literal("user"), ...base, content, delivery }),
+  user: object({
+    kind: literal("user"),
+    ...base,
+    content,
+    delivery,
+    /** The slash command that produced `content`, when one did (`command.expanded`): what a transcript shows the message as. */
+    command: optional(commandUse),
+  }),
   /**
    * Something the harness said to the model. `delivery` is `null` when it was
    * appended directly rather than delivered from the inbox.
@@ -247,6 +255,8 @@ export const inboxItem = object({
   origin: nullable(nonEmptyString),
   delivery,
   content,
+  /** The slash command that produced `content`, when one did (`command.expanded`). */
+  command: optional(commandUse),
 })
 export type InboxItem = Infer<typeof inboxItem>
 

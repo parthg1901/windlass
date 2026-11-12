@@ -279,7 +279,7 @@ describe("OpenAIResponsesProvider over HTTP", () => {
 
   test("keep-alive comments keep a slow stream alive past the idle timeout", async () => {
     const events = await collect(provider("keep-alive", { idleTimeoutMs: 150 }).stream(request, new AbortController().signal))
-    expect(events).toEqual([{ type: "text.delta", text: "ok" }, { type: "finish", reason: "stop" }])
+    expect(events).toEqual([{ type: "text.delta", text: "ok" }, { type: "finish", reason: "stop", response: { requestId: "req_TEST1" } }])
   })
 
   test("an unparseable frame is provider_internal and stops reading", async () => {
@@ -291,7 +291,7 @@ describe("OpenAIResponsesProvider over HTTP", () => {
 
   test("nothing is yielded after the terminal event and the body is released", async () => {
     const events = await collect(provider("after-terminal").stream(request, new AbortController().signal))
-    expect(events).toEqual([{ type: "finish", reason: "stop" }])
+    expect(events).toEqual([{ type: "finish", reason: "stop", response: { requestId: "req_TEST1" } }])
     await sleep(50)
     expect(cancelled.has("/after-terminal/responses")).toBe(true)
   })
@@ -342,7 +342,8 @@ describe("OpenAIResponsesProvider over HTTP", () => {
       baseUrl: `${base}/text`,
     })
     const events = await collect(instance.stream(withImage, new AbortController().signal))
-    expect(events.at(-1)).toEqual({ type: "finish", reason: "stop" })
+    // The finish says what the response said about itself: the request's ID from its header, and the model that answered.
+    expect(events.at(-1)).toEqual({ type: "finish", reason: "stop", response: { requestId: "req_TEST1", model: "gpt-6-luna" } })
     expect(reads).toEqual([blob.hash])
     expect(seen.at(-1)!.body).toContain('"image_url":"data:image/png;base64,AQID"')
   })

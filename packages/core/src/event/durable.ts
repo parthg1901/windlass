@@ -178,6 +178,31 @@ export type InstructionDetail = Infer<typeof instructionDetail>
  * taken in untrusted content from the admission on (`approval/taint.ts`), so
  * the turn the input starts is decided under that from its first call.
  */
+/**
+ * The slash command a user's message was produced by (`commands/`): a
+ * Markdown file whose template was expanded with what the user typed after
+ * its name. The message's content is the expanded text, stored once; this
+ * says where it came from, as fields, so nothing is parsed back out of it.
+ * - `name`, `path`, `scope`: the command (`frontend:test`), its file, and where the file was found.
+ * - `fingerprint`: the SHA-256 of the file's text as it was read, so the version that was used is known after the
+ *   file changes.
+ * - `arguments`: what was typed after the name, trimmed.
+ * - `missing`: the positions (`$2`) the template uses that were not given; they became empty text.
+ * - `unsupported`: what the file holds that other harnesses would run or read at this moment (a command in
+ *   backticks after `!`, an `@path`), with its line. Here it is left in the text as written, and never run.
+ */
+const commandUseFields = {
+  name: nonEmptyString,
+  path: nonEmptyString,
+  scope: oneOf(["project", "config", "user"]),
+  fingerprint: nonEmptyString,
+  arguments: string,
+  missing: array(integer(1)),
+  unsupported: array(object({ kind: oneOf(["shell", "include"]), text: nonEmptyString, line: integer(1) })),
+}
+export const commandUse = object(commandUseFields)
+export type CommandUse = Infer<typeof commandUse>
+
 export const untrustedInput = object({ kind: literal("wake"), wakeId: nonEmptyString, carries: oneOf(["webhook_body", "check_output"]) })
 export type UntrustedInput = Infer<typeof untrustedInput>
 
@@ -523,6 +548,23 @@ export const durableEvents = {
    * with the admission.
    */
   "inbox.enqueued": define(1, object({ messageId, origin: nullable(nonEmptyString), delivery, content, untrusted: optional(untrustedInput) })),
+  /**
+   * The message admitted by the event right before this one was produced by
+   * a slash command: the user typed `/name arguments`, and the content of
+   * that `inbox.enqueued` is the command's template with the arguments put
+   * in. Written in the same append as the admission, so a message never
+   * waits without it. The model is sent the expanded text and nothing of
+   * this; a client shows the line as typed, with the file it came from.
+   * `name`, `path` and `scope` are the command, its file and where the file
+   * was found; `fingerprint` is the SHA-256 of the file's text as it was
+   * read, so the version that was used is known after the file changes;
+   * `arguments` is what was typed after the name; `missing` lists the
+   * positions (`$2`) the template uses that were not given and became empty
+   * text; `unsupported` lists what the file holds that other harnesses run
+   * or read at this moment (a command in backticks after `!`, an `@path`),
+   * with its line: here it stays in the text as written and is never run.
+   */
+  "command.expanded": define(1, object({ messageId, ...commandUseFields })),
   /** A waiting item was switched between steer and queue. */
   "inbox.delivery_changed": define(1, object({ messageId, delivery })),
   /** A waiting item was withdrawn before delivery. It never becomes a message. */

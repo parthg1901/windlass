@@ -87,6 +87,9 @@ const IGNORED = new Set([
   "session.unarchived",
   "baseline.set",
   "instruction.appended",
+  "agent.switched",
+  "command.expanded",
+  "hook.ran",
   "inbox.delivery_changed",
   "inbox.cancelled",
   "synthetic.appended",
@@ -526,6 +529,7 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
       "gen_ai.request.model": row.model,
       "gen_ai.conversation.id": sessionId,
       ...(facts?.effort ? { "gen_ai.request.reasoning.level": facts.effort } : {}),
+      ...(row.responseModel ? { "gen_ai.response.model": row.responseModel } : {}),
       ...usageAttributes(row.usage),
       ...(facts?.finish && row.outcome === "ok" ? { "gen_ai.response.finish_reasons": [facts.finish] } : {}),
       [attr("request.id")]: row.id,
@@ -535,6 +539,8 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
       [attr("request.retried")]: retry !== null,
       [attr("request.blocks")]: row.blocks.length,
       ...(retry === null ? {} : { [attr("retry.delay_ms")]: retry.delayMs }),
+      // The provider's own ID of the request, as the ledger kept it: of a call that finished and of one that failed.
+      ...(row.providerRequestId ? { [attr("provider.request_id")]: row.providerRequestId } : {}),
       ...errorAttributes(error, row.errorKind),
     }
     const name = `chat ${row.model}`

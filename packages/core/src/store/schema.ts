@@ -43,8 +43,12 @@
  *    may carry `diagnostics`, a turn's ending may name stop hooks that were
  *    not satisfied, and the taint history a fork carries may hold a hook's
  *    output or a language server's note.
+ * 8: slash commands and what a trace needs of a model call: `command.expanded`
+ *    is new, an inbox item and a user message may carry the command that
+ *    produced them, and the request ledger keeps the provider's own ID of a
+ *    request and the model that answered (`provider_request_id`, `response_model`).
  */
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 /**
  * Run on every connection, before anything else.
@@ -178,7 +182,10 @@ CREATE TABLE request (
   -- What the provider says it wrote to its prompt cache, and the part of that with the 12-hour lifetime.
   -- NULL when the provider reported no such figure (which is not the same as zero).
   cache_write_tokens     INTEGER,
-  cache_write_12h_tokens INTEGER
+  cache_write_12h_tokens INTEGER,
+  -- What the response said about itself, when it did: the provider's own ID of the request, and the model that answered.
+  provider_request_id    TEXT,
+  response_model         TEXT
 ) STRICT;
 
 CREATE INDEX request_session ON request (session_id, ordinal);

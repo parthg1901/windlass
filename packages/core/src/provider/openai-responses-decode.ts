@@ -23,7 +23,7 @@
 import type { Json } from "../json.ts"
 import { type ProviderError, makeProviderError } from "./error.ts"
 import { classify, isRecord, stringOr } from "./openai-responses-error.ts"
-import type { StreamEvent } from "./provider.ts"
+import type { ResponseFacts, StreamEvent } from "./provider.ts"
 import type { SseEvent } from "./sse.ts"
 import type { Usage } from "./usage.ts"
 
@@ -220,7 +220,14 @@ export class ResponsesStreamMapper {
     if (this.refusal !== null)
       return [...events, ...this.fail(makeProviderError("content_policy", `refused: ${this.refusal}`, { code: "refusal" }))]
     this.terminated = true
-    return [...events, { type: "finish", reason: this.toolCalls > 0 ? "tool_calls" : "stop" }]
+    return [...events, { type: "finish", reason: this.toolCalls > 0 ? "tool_calls" : "stop", ...this.facts(response) }]
+  }
+
+  /** What the finished response says about itself, for the ledger: the request's ID (a header) and the model that answered. */
+  private facts(response: Record_): { readonly response?: ResponseFacts } {
+    const model = stringOr(response.model)
+    if (this.requestId === null && model === null) return {}
+    return { response: { ...(this.requestId === null ? {} : { requestId: this.requestId }), ...(model === null ? {} : { model }) } }
   }
 
   private incomplete(response: Record_): StreamEvent[] {
@@ -229,7 +236,7 @@ export class ResponsesStreamMapper {
     const events = this.usage(response)
     if (reason === "max_output_tokens") {
       this.terminated = true
-      return [...events, { type: "finish", reason: "length" }]
+      return [...events, { type: "finish", reason: "length", ...this.facts(response) }]
     }
     const error =
       reason === "content_filter" || this.refusal !== null

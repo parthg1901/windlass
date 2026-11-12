@@ -13,7 +13,7 @@
  */
 import type { Json } from "../json.ts"
 import { type ProviderError, type ProviderErrorDetail, type ProviderErrorKind, makeProviderError } from "../provider/error.ts"
-import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
+import type { FinishReason, Provider, ResponseFacts, StreamEvent } from "../provider/provider.ts"
 import type { Usage } from "../provider/usage.ts"
 import { type PrefixComparison, comparePrefix, hashRequest } from "../request/prefix.ts"
 import type { ModelRequest } from "../request/request.ts"
@@ -41,7 +41,7 @@ export type ScriptItem =
   /** Waits before the next item. Ends early if the call is aborted. */
   | { readonly type: "delay"; readonly ms: number }
   /** Terminal: the call succeeds. */
-  | { readonly type: "finish"; readonly reason: FinishReason }
+  | { readonly type: "finish"; readonly reason: FinishReason; readonly response?: ResponseFacts }
   /** Terminal: the call fails with a classified error, as a conforming provider reports it. */
   | { readonly type: "error"; readonly error: ProviderError }
   /** Terminal: the stream ends with no terminal event at all, which a consumer must treat as `incomplete_stream`. */
@@ -90,7 +90,8 @@ export const script = {
     usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, ...usage },
   }),
   delay: (ms: number): ScriptItem => ({ type: "delay", ms }),
-  finish: (reason: FinishReason): ScriptItem => ({ type: "finish", reason }),
+  /** `response`: what the provider says about the response it finished (its own ID of the request, the model that answered). */
+  finish: (reason: FinishReason, response?: ResponseFacts): ScriptItem => ({ type: "finish", reason, ...(response === undefined ? {} : { response }) }),
   /** Fails the call with an error of the given class. */
   fail: (
     kind: ProviderErrorKind,
@@ -271,7 +272,7 @@ function expand(items: readonly ScriptItem[]): Action[] {
       case "usage":
         return [emit({ type: "usage", usage: item.usage })]
       case "finish":
-        return [emit({ type: "finish", reason: item.reason })]
+        return [emit({ type: "finish", reason: item.reason, ...(item.response === undefined ? {} : { response: item.response }) })]
       case "error":
         return [emit({ type: "error", error: item.error })]
       case "delay":

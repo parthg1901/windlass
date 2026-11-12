@@ -93,6 +93,10 @@ export interface RequestFinish {
   readonly usage: Usage | null
   /** Set when `outcome` is `error`. */
   readonly errorKind: ProviderErrorKind | null
+  /** The provider's own ID of the request, when a response supplied one: of a call that finished, and of one that failed. */
+  readonly providerRequestId?: string | null
+  /** The model that answered, as the response named it, when it did. */
+  readonly responseModel?: string | null
 }
 
 /**
@@ -109,6 +113,10 @@ export interface RequestRecord extends RequestStart {
   readonly outcome: RequestFinish["outcome"] | null
   readonly usage: Usage | null
   readonly errorKind: ProviderErrorKind | null
+  /** `null` while in flight, and when no response supplied one. */
+  readonly providerRequestId: string | null
+  /** `null` while in flight, and when the response named no model. */
+  readonly responseModel: string | null
 }
 
 export interface StoredBlob {

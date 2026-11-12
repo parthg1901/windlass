@@ -181,6 +181,8 @@ const SCOPE = {
   "session.archived": "session",
   "session.unarchived": "session",
   "inbox.enqueued": "session",
+  // Part of the admission it describes: written with it, whatever the execution is doing.
+  "command.expanded": "session",
   "inbox.delivery_changed": "session",
   "inbox.cancelled": "session",
   "settings.changed": "session",
@@ -482,6 +484,16 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       }
       return { ...state, inbox: [...state.inbox, item] }
     }
+    case "command.expanded": {
+      // The record of where an admitted message's text came from: it follows that admission at once, in its append.
+      const index = state.inbox.findIndex((candidate) => candidate.messageId === event.data.messageId)
+      const item = state.inbox[index]
+      if (item === undefined) return fail("not_found", `inbox item ${event.data.messageId} is not waiting`)
+      if (item.seq !== event.seq - 1) fail("invalid_transition", `a command's record follows at once the admission of the message it produced, and ${event.data.messageId} was admitted at seq ${item.seq}`)
+      if (item.origin !== null) fail("invalid_transition", "a command produces a message of the user's, never one of the harness's")
+      const { messageId: _, ...command } = event.data
+      return { ...state, inbox: state.inbox.with(index, { ...item, command }) }
+    }
     case "inbox.delivery_changed": {
       const index = state.inbox.findIndex((item) => item.messageId === event.data.messageId)
       const item = state.inbox[index]
@@ -512,7 +524,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       }
       const delivered: Message =
         item.origin === null
-          ? { kind: "user", id: item.messageId, ...created, content: item.content, delivery: item.delivery }
+          ? { kind: "user", id: item.messageId, ...created, content: item.content, delivery: item.delivery, ...(item.command === undefined ? {} : { command: item.command }) }
           : {
               kind: "synthetic",
               id: item.messageId,

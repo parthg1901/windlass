@@ -431,12 +431,19 @@ describe("request ledger", () => {
       outcome: null,
       usage: null,
       errorKind: null,
+      providerRequestId: null,
+      responseModel: null,
     })
     store.beginRequest(start("req_other", "ses_2"))
-    store.beginRequest(start("req_2", "ses_1", "compaction"))
+    const summary = store.beginRequest(start("req_2", "ses_1", "compaction"))
     const usage = { inputTokens: 10, cachedInputTokens: 4, outputTokens: 3, reasoningTokens: 1 }
-    const finished = store.finishRequest("req_1" as RequestId, { outcome: "ok", usage, errorKind: null })
-    expect(finished).toMatchObject({ id: "req_1", finishedAt: 7, outcome: "ok", usage, errorKind: null })
+    // What the response said about itself is kept with the row: the provider's own ID of the request, and the model that answered.
+    const finished = store.finishRequest("req_1" as RequestId, { outcome: "ok", usage, errorKind: null, providerRequestId: "req_provider_1", responseModel: "gpt-test-2026-11-01" })
+    expect(finished).toMatchObject({ id: "req_1", finishedAt: 7, outcome: "ok", usage, errorKind: null, providerRequestId: "req_provider_1", responseModel: "gpt-test-2026-11-01" })
+    expect(store.readRequests(sid("ses_1"))[0]).toEqual(finished)
+    // A provider that says nothing about its response leaves both empty.
+    expect(store.readRequests(sid("ses_1"))[1]).toEqual(summary)
+    expect(summary).toMatchObject({ providerRequestId: null, responseModel: null })
     // The last row of any purpose, in flight or not; and the last row of one purpose.
     expect(store.lastRequest(sid("ses_1"))!.id).toBe("req_2" as RequestId)
     expect(store.lastRequest(sid("ses_1"), "step")).toEqual(finished)

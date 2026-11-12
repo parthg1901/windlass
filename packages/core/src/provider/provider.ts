@@ -20,6 +20,18 @@ import type { Usage } from "./usage.ts"
 export type FinishReason = "stop" | "tool_calls" | "length"
 
 /**
+ * What a provider says about a response it finished, when it says: facts
+ * for the request ledger and for a trace, never part of history and never
+ * sent back.
+ */
+export interface ResponseFacts {
+  /** The provider's own ID of the request (a response header), as on a `ProviderError`. */
+  readonly requestId?: string
+  /** The model that answered, as the response names it: it can be a dated or routed variant of the one asked for. */
+  readonly model?: string
+}
+
+/**
  * Events of one model call, in the order the provider produced them.
  *
  * Output items arrive one at a time: the deltas of an item are followed by its
@@ -53,8 +65,8 @@ export type StreamEvent =
     }
   /** Token counts for the call. Sent at most once, before the terminal event. */
   | { readonly type: "usage"; readonly usage: Usage }
-  /** Terminal: the call succeeded. */
-  | { readonly type: "finish"; readonly reason: FinishReason }
+  /** Terminal: the call succeeded. `response` is set when the provider said anything about the response (`ResponseFacts`). */
+  | { readonly type: "finish"; readonly reason: FinishReason; readonly response?: ResponseFacts }
   /** Terminal: the call failed, before or after partial output. */
   | { readonly type: "error"; readonly error: ProviderError }
 

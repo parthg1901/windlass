@@ -67,6 +67,7 @@ import {
   nullable,
   object,
   oneOf,
+  optional,
 } from "../validate.ts"
 import { type BlobStore, createFileBlobStore, createMemoryBlobStore } from "./blobs.ts"
 import { createHistoryIndex } from "./history-index.ts"
@@ -412,6 +413,8 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
         checked.usage?.reasoningTokens ?? null,
         checked.usage?.cacheWriteTokens ?? null,
         checked.usage?.cacheWrite12hTokens ?? null,
+        checked.providerRequestId ?? null,
+        checked.responseModel ?? null,
         id,
       ),
     )
@@ -578,6 +581,8 @@ interface RequestRow {
   readonly reasoning_tokens: number | null
   readonly cache_write_tokens: number | null
   readonly cache_write_12h_tokens: number | null
+  readonly provider_request_id: string | null
+  readonly response_model: string | null
 }
 
 interface EventSqlRow {
@@ -674,10 +679,11 @@ function prepare(database: Database) {
     ),
     finishRequest: database.query<
       RequestRow,
-      [number, string, string | null, number | null, number | null, number | null, number | null, number | null, number | null, string]
+      [number, string, string | null, number | null, number | null, number | null, number | null, number | null, number | null, string | null, string | null, string]
     >(
       `UPDATE request SET time_finished = ?, outcome = ?, error_kind = ?, input_tokens = ?, cached_input_tokens = ?,
-         output_tokens = ?, reasoning_tokens = ?, cache_write_tokens = ?, cache_write_12h_tokens = ?
+         output_tokens = ?, reasoning_tokens = ?, cache_write_tokens = ?, cache_write_12h_tokens = ?,
+         provider_request_id = ?, response_model = ?
        WHERE id = ? AND outcome IS NULL RETURNING *`,
     ),
     lastRequest: database.query<RequestRow, [string]>(
@@ -781,6 +787,8 @@ const requestFinish = object({
   outcome: oneOf(["ok", "error", "aborted"]),
   usage: nullable(usage),
   errorKind: nullable(providerErrorKind),
+  providerRequestId: optional(nullable(nonEmptyString)),
+  responseModel: optional(nullable(nonEmptyString)),
 }) satisfies Validator<RequestFinish>
 
 function requestRecord(row: RequestRow): RequestRecord {
@@ -818,6 +826,8 @@ function requestRecord(row: RequestRow): RequestRecord {
             `${what}.usage`,
           ),
     errorKind: nullable(providerErrorKind)(row.error_kind, `${what}.errorKind`),
+    providerRequestId: row.provider_request_id,
+    responseModel: row.response_model,
   }
 }
 

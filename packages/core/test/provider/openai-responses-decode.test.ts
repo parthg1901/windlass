@@ -14,6 +14,9 @@ const usage = (inputTokens: number, cachedInputTokens: number, outputTokens: num
 const terminalCount = (events: readonly StreamEvent[]) =>
   events.filter((event) => event.type === "finish" || event.type === "error").length
 
+/** The model the fixtures' responses say answered: the finish carries it, for the request ledger. */
+const MODEL = "gpt-6-luna"
+
 describe("Responses stream decoding: live fixtures", () => {
   test("text.sse: deltas, the whole text with id and phase, usage, stop", async () => {
     expect(await decodeFixture("text.sse")).toEqual([
@@ -23,7 +26,7 @@ describe("Responses stream decoding: live fixtures", () => {
       { type: "text.delta", text: "!" },
       { type: "text.end", text: "Hello, world!", providerData: { id: "msg_TEST1", phase: "final_answer" } },
       usage(13, 0, 8, 0),
-      { type: "finish", reason: "stop" },
+      { type: "finish", reason: "stop", response: { model: MODEL } },
     ])
   })
 
@@ -42,7 +45,7 @@ describe("Responses stream decoding: live fixtures", () => {
       },
       { type: "tool_call.end", callId: "call_TEST1", name: "get_weather", input: '{"city":"Paris"}', providerData: { id: "fc_TEST1" } },
       usage(71, 0, 33, 13),
-      { type: "finish", reason: "tool_calls" },
+      { type: "finish", reason: "tool_calls", response: { model: MODEL } },
     ])
     expect(events.filter((event) => event.type === "reasoning.delta")).toEqual([
       { type: "reasoning.delta", text: "**Computing 391 parity**" },
@@ -58,7 +61,7 @@ describe("Responses stream decoding: live fixtures", () => {
       { type: "tool_call.end", callId: "call_TEST1", name: "get_weather", input: '{"city": "Paris"}', providerData: { id: "fc_TEST1" } },
       { type: "tool_call.end", callId: "call_TEST2", name: "get_weather", input: '{"city": "Tokyo"}', providerData: { id: "fc_TEST2" } },
       usage(67, 0, 48, 0),
-      { type: "finish", reason: "tool_calls" },
+      { type: "finish", reason: "tool_calls", response: { model: MODEL } },
     ])
   })
 
@@ -66,7 +69,7 @@ describe("Responses stream decoding: live fixtures", () => {
     const events = await decodeFixture("function-call.sse")
     const ends = events.filter((event) => event.type === "tool_call.end")
     expect(ends).toHaveLength(1)
-    expect(events.at(-1)).toEqual({ type: "finish", reason: "tool_calls" })
+    expect(events.at(-1)).toEqual({ type: "finish", reason: "tool_calls", response: { model: MODEL } })
   })
 })
 
@@ -93,7 +96,7 @@ describe("Responses stream decoding: synthetic fixtures", () => {
   test("response.incomplete for max_output_tokens finishes with length and never ends the cut call", async () => {
     const events = await decodeFixture("synthetic-incomplete-max-output.sse")
     expect(events.some((event) => event.type === "tool_call.end")).toBe(false)
-    expect(events.slice(-2)).toEqual([usage(120, 0, 4096, 4000), { type: "finish", reason: "length" }])
+    expect(events.slice(-2)).toEqual([usage(120, 0, 4096, 4000), { type: "finish", reason: "length", response: { model: MODEL } }])
   })
 
   test("response.incomplete for content_filter is content_policy", async () => {
@@ -125,7 +128,7 @@ describe("Responses stream decoding: synthetic fixtures", () => {
     expect(events.slice(-3)).toEqual([
       { type: "tool_call.end", callId: "call_TEST1", name: "read_file", input: '{"path":"README.md"}', providerData: { id: "fc_TEST1" } },
       usage(50, 0, 30, 12),
-      { type: "finish", reason: "tool_calls" },
+      { type: "finish", reason: "tool_calls", response: { model: MODEL } },
     ])
   })
 })

@@ -111,7 +111,7 @@ import { selectModelHistory } from "../message/history.ts"
 import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
-import type { FinishReason, Provider, StreamEvent } from "../provider/provider.ts"
+import type { FinishReason, Provider, ResponseFacts, StreamEvent } from "../provider/provider.ts"
 import { type Usage, sumUsage } from "../provider/usage.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { type PrefixVerdict, checkPrefix } from "../request/build-break.ts"
@@ -2898,6 +2898,8 @@ class LiveSession implements EngineSession {
     let partialText = ""
     let whole = ""
     let end: ModelEnd | null = null
+    /** What the provider said about the response it finished: for the ledger, not for history. */
+    let response: ResponseFacts | null = null
     const streaming = new Set<string>()
     const threw = (error: unknown): ModelEnd => ({
       type: "error",
@@ -2997,6 +2999,7 @@ class LiveSession implements EngineSession {
             break
           case "finish":
             end = { type: "finish", reason: item.reason }
+            response = item.response ?? null
             break
           case "error":
             end = { type: "error", error: item.error }
@@ -3018,6 +3021,9 @@ class LiveSession implements EngineSession {
       outcome: overran ? "aborted" : end.type === "finish" ? "ok" : end.type === "error" ? "error" : "aborted",
       usage,
       errorKind: end.type === "error" ? end.error.kind : null,
+      // The provider's own ID of the request: of a call that finished, and of one that failed with a response.
+      providerRequestId: (end.type === "error" ? end.error.requestId : response?.requestId) ?? null,
+      responseModel: response?.model ?? null,
     })
     return { end, usage, partialText, cutOff: streaming.size > 0, text: whole, overran }
   }
