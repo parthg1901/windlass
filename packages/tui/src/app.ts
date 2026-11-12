@@ -1483,7 +1483,7 @@ export class App {
    */
   private async addWake(session: BackendSession, rest: string): Promise<void> {
     if (session.createWake === undefined) return this.unavailable("/wakeups add")
-    if (rest.trim() === "") return this.showLines(wakeAddUsageLines())
+    if (rest.trim() === "") return this.showLines(stackedUsage(wakeAddUsageLines()))
     const entry = wakeAddEntry(rest, this.now())
     if ("problem" in entry) return this.say(entry.problem, "warn")
     let run: WakeCreateParams["run"]
@@ -2064,6 +2064,20 @@ export class App {
       rows,
     ).concat(this.options.backend.label === "acp" ? [] : [[], [span(this.options.backend.label, "dim")]])
   }
+}
+
+/**
+ * A usage written as two padded columns (the form, then what it does), one
+ * under the other: the form on its own line, what it does indented under it,
+ * so neither wraps into the other's column on a terminal of any width.
+ */
+function stackedUsage(lines: readonly Line[]): Line[] {
+  return lines.flatMap((entry) => {
+    const columns = /^(\S.*?\S)\s{2,}(\S.*)$/.exec(entry.text)
+    if (columns === null) return [entry]
+    const indent = entry.indent ?? 0
+    return [{ ...entry, text: columns[1]!, tone: "plain" as const }, { ...entry, text: columns[2]!, indent: indent + 4 }]
+  })
 }
 
 function describePlan(plan: RevertPlan, undo: boolean): Span[][] {

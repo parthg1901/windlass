@@ -457,7 +457,11 @@ function tail(source: string[], limit: number, columns: number, role: Role): Spa
 
 function noticeLines(row: NoticeRow, columns: number): Span[][] {
   const first = wrapLine([span(`${row.symbol} `, row.tone), ...row.text], columns, [span("  ")])
-  const detail = row.detail.flatMap((line) => wrapLine([span("  "), ...line], columns, [span("    ")]))
+  // A detail line's own indentation is kept when it wraps: its rows go on two columns further in than it starts.
+  const detail = row.detail.flatMap((line) => {
+    const own = (line[0]?.text ?? "").length - (line[0]?.text ?? "").trimStart().length
+    return wrapLine([span("  "), ...line], columns, [span(" ".repeat(4 + own))])
+  })
   return [...first, ...detail]
 }
 

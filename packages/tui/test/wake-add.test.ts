@@ -48,6 +48,21 @@ async function run(entry: string): Promise<string> {
 test("a delay, an interval and a webhook are asked of the engine as typed; the secret is shown once; a refusal is the engine's sentence", async () => {
   const { asked } = await open()
   expect(await run("/wakeups add")).toContain("Set a wake-up of your own: the agent is told the message when it fires, as a new turn.")
+  // Each form on its own row, what it does on the rows under it, indented: no padded second column to wrap into.
+  const rows = (await mounted!.frame()).split("\n").map((row) => row.replace(/│.*$/, "").trimEnd())
+  const form = rows.findIndex((row) => row.trim() === '/wakeups add check <duration> "<command>" <message>')
+  expect(form).toBeGreaterThan(-1)
+  expect(rows[form + 1]).toMatch(/^\s+runs the command every <duration> and fires once it exits 0/)
+  expect(rows[form + 1]!.search(/\S/)).toBe(rows[form]!.search(/\S/) + 4)
+  expect(rows.some((row) => /<message>\s{2,}\S/.test(row))).toBe(false)
+  // A row that wraps keeps its indentation: the rest of it goes on further in, not back at the note's margin.
+  mounted!.setup.resize(100, 46)
+  await mounted!.settle()
+  const narrow = (await mounted!.frame()).split("\n").map((row) => row.replace(/│.*$/, "").trimEnd())
+  const at = narrow.findIndex((row) => row.trim() === '/wakeups add check <duration> "<command>" <message>')
+  expect(narrow[at + 2]!.search(/\S/)).toBe(narrow[at + 1]!.search(/\S/) + 2)
+  mounted!.setup.resize(170, 46)
+  await mounted!.settle()
   const set = await run("/wakeups add in 20m look at the deploy again")
   expect(asked).toEqual([{ message: "look at the deploy again", trigger: { kind: "after", delayMs: 20 * 60_000 } }])
   expect(set).toContain("Wake-up wk_1 set: after as asked")
