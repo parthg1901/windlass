@@ -10,7 +10,10 @@
  * (`taintHistoryOf` in `engine.ts`), the lookup of an admitted input, a
  * revert and the failure text of a compaction all read the fork's own
  * events. Only reading the inherited events themselves needs the parent's
- * file, and fails with `parent_missing`.
+ * file: the store fails with `parent_missing`; an open session's
+ * `readEvents` then gives the fork's own events and tells the user once
+ * (a `diagnostic` of kind `history`), and the engine's read by ID and a
+ * fork of the fork are refused in a sentence that names the file.
  *
  * And a store error is not reported as a configuration problem: only what
  * reads the configuration files is ("The configuration could not be
@@ -21,6 +24,8 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { resolveConfig } from "../../src/config/schema.ts"
+import type { EngineEvent } from "../../src/engine/channel.ts"
+import { EngineError } from "../../src/engine/engine.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import { StoreError } from "../../src/store/store.ts"
@@ -70,18 +75,63 @@ describe("a fork whose parent's file is gone", () => {
     expect(log.at(-1)?.type).toBe("execution.succeeded")
   }, 60_000)
 
-  test("reading its inherited events still fails with parent_missing, and names the parent; its own events read", async () => {
+  test("its log read through the open session is its own events, and the user is told once what is not shown; read by ID, the inherited part is refused in a sentence", async () => {
     const { engine, fork, parentId, log } = await forkWithoutParent(true)
     expect(log[0]?.type).toBe("session.created")
-    expect(() => fork.readEvents()).toThrow(new RegExp(`the history inherited from session ${parentId} cannot be read`))
-    try {
-      fork.readEvents()
-    } catch (error) {
-      expect(error).toBeInstanceOf(StoreError)
-      expect((error as StoreError).code).toBe("parent_missing")
-    }
+    const heard: EngineEvent[] = []
+    fork.subscribe((item) => heard.push(item))
+    // What a client replays when it opens the session: the fork's own part, from its first event.
+    expect(fork.readEvents()).toEqual([...log])
+    expect(fork.readEvents({ afterSeq: 0, limit: 2 })).toEqual(log.slice(0, 2))
+    expect(fork.readEvents()).toEqual([...log])
+    const said = heard.flatMap((item) => (item.type === "diagnostic" ? [item] : []))
+    expect(said.map((item) => item.kind)).toEqual(["history"])
+    expect(said[0]!.message).toMatch(new RegExp(`^The part of this conversation from before the fork cannot be shown: the history inherited from session ${parentId} cannot be read: .*${parentId}\\.db is missing\\. `))
+    // Without the session in hand the whole log is asked of the store, and what cannot be read is said, not thrown raw.
+    const refused = (() => {
+      try {
+        return engine.readEvents(fork.id)
+      } catch (error) {
+        return error
+      }
+    })()
+    expect(refused).toBeInstanceOf(EngineError)
+    expect((refused as EngineError).code).toBe("invalid_request")
+    expect((refused as EngineError).message).toMatch(new RegExp(`^the history inherited from session ${parentId} cannot be read: .* is missing$`))
+    expect(engine.readEvents(fork.id, { afterSeq: log[0]!.seq - 1 })).toEqual([...log])
+    // The store's own contract is unchanged: its error has a code.
+    expect(() => engine.readEvents(fork.id)).not.toThrow(StoreError)
     // The turns a client can still be told about are the fork's own.
     expect((await engine.turnChanges(fork.id)).map((turn) => turn.endSeq)).toEqual([log.at(-1)!.seq])
+  }, 60_000)
+
+  test("opened in another process, as a server does for a client: the log is read before anyone listens, the first listener hears why it is short, and the next turn runs", async () => {
+    const { data, workspace, root } = place("wl-fork-orphan-")
+    const script = [[call("read", { path: "notes.md" })], say("It is a notes file."), say("Still here, after a restart.")]
+    const first = start(data, script, { engine: { loadConfig: emptyConfig } })
+    const parent = first.harness.engine.createSession({ cwd: workspace("w"), settings: SETTINGS, title: "Notes" })
+    parent.send("What is notes.md?")
+    await parent.settled()
+    const forkId = (await first.harness.engine.forkSession(parent.id, { workspace: { copyTo: join(root, "copy") } })).id
+    const parentPath = first.harness.sessions.pathOf(parent.id as SessionId)
+    await first.harness.engine.close()
+    moveAway(parentPath, join(root, "moved"))
+
+    const second = start(data, script.slice(2), { engine: { loadConfig: emptyConfig } })
+    const fork = second.harness.engine.openSession(forkId as SessionId, { resume: "wait" })
+    const history = fork.readEvents()
+    expect(history.map((item) => item.type)).toEqual(["session.created"])
+    const heard: EngineEvent[] = []
+    fork.subscribe((item) => heard.push(item))
+    expect(heard.map((item) => (item.type === "diagnostic" ? item.kind : item.type))).toEqual(["history"])
+    fork.send("Are you still there?")
+    await fork.settled()
+    expect(fork.readEvents().at(-1)?.type).toBe("execution.succeeded")
+    expect(heard.some((item) => item.type === "text.ended" && item.data.text === "Still here, after a restart.")).toBe(true)
+    // Forking it is refused in words: a fork is folded onto the whole history up to its point.
+    const refused = (await second.harness.engine.forkSession(forkId as SessionId).catch((error: unknown) => error)) as EngineError
+    expect(refused).toBeInstanceOf(EngineError)
+    expect(refused.message).toBe(`session ${forkId} cannot be forked: the history inherited from session ${parent.id} cannot be read: ${parentPath} is missing`)
   }, 60_000)
 
   test("it is reverted and takes harness input like any session: both look at its own events", async () => {

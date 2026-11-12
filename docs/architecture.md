@@ -1354,11 +1354,17 @@ baseline and compaction into its own rows, and the entries its taint is derived 
 some policy). Nothing the loop does reads the parent afterwards: the taint fold, the lookup of an admitted
 input, a revert and `turnChanges` read the fork's own events (a revert to before an inherited message rewinds
 the conversation and restores no file: the snapshots of that history are the parent's). So a fork whose parent
-file is later missing still opens, runs and is listed; only reading its inherited events then fails, with
-`parent_missing`, which names the parent (a client that replays a fork's history should read from its fork
-point when that happens). Forking such a fork again is not possible: the new fork is folded onto the whole
-inherited log. Creating a fork of a session that cannot be found fails the same
-way. A process that dies while it forks leaves at most the copy of the workspace: the fork's session is created
+file is later missing still opens, runs and is listed; only reading its inherited events then fails in the store,
+with `parent_missing`, which names the parent and the file. The engine turns that into words for whoever asked.
+An open session's `readEvents` (what a client replays when it loads the session) returns the fork's own events,
+from its `session.created`, and the session says once what is not shown and which file is missing, as a
+`diagnostic` of kind `history`; said before the client subscribes, it is kept for it. `Engine.readEvents(id)`,
+which has no session to say it through, throws `invalid_request` with the store's sentence when the range reaches
+into the inherited part. Forking such a fork again is not possible, at any point: a fork is folded onto the whole
+log up to its point, and `forkSession` refuses with `invalid_request`, `session <id> cannot be forked: the
+history inherited from session <parent> cannot be read: <file> is missing`. A replay of it is refused the same
+way. No `StoreError` about a fork's parent reaches a client as it is. Creating a fork of a session that cannot be
+found fails with `session_not_found`. A process that dies while it forks leaves at most the copy of the workspace: the fork's session is created
 in one append, so it either exists whole or is not listed.
 
 **What sessions share.** Media is one file per blob, named by its SHA-256, written to a temporary file and then

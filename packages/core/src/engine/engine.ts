@@ -310,9 +310,10 @@ export interface Diagnostic {
    * the user to read, never the model: a skill that could not be loaded, a server of the project's that waits for
    * approval, a note file that is invalid, an agent definition that was skipped or names a tool that does not exist,
    * a hook that was skipped, failed or was left unsatisfied, a language server that gave an edit no diagnostics and
-   * why, a telemetry section that turns export on and cannot be used.
+   * why, a telemetry section that turns export on and cannot be used. `history` is for the user too: a fork's
+   * inherited events cannot be read because the file they are in is gone, so only its own part is shown.
    */
-  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry"
+  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry" | "history"
   readonly sessionId: SessionId | null
   readonly message: string
   readonly cause?: unknown
@@ -944,7 +945,14 @@ export interface EngineSession {
   readonly withdraw: (messageId: MessageId) => boolean
   /** The session's stored state. */
   readonly projection: () => Projection
-  /** The session's stored events in `seq` order: its whole log, or the part after `afterSeq`. What a client replays to show history. */
+  /**
+   * The session's stored events in `seq` order: its whole log, or the part
+   * after `afterSeq`. What a client replays to show history. For a fork
+   * whose parent's file is gone the inherited events cannot be had: its own
+   * events (from its `session.created`) are returned, and the session says
+   * once, in a `diagnostic` of kind `history`, what is not shown and which
+   * file is missing. The fork's state and what the model sees are whole.
+   */
   readonly readEvents: (range?: { readonly afterSeq?: number; readonly limit?: number }) => readonly StoredEvent[]
   /**
    * Returns the session to the state before a user message (by default the
@@ -1129,7 +1137,10 @@ export interface Engine {
   /**
    * A session's stored events in `seq` order, without opening it: the log a
    * client replays to show a session it loads. Works for a session another
-   * process is working in (it shows what is committed).
+   * process is working in (it shows what is committed). For a fork whose
+   * parent's file is gone a range that reaches into the inherited events
+   * throws `invalid_request`, in a sentence that names the parent and the
+   * file; `afterSeq` at its fork point reads its own.
    */
   readonly readEvents: (id: SessionId, range?: { readonly afterSeq?: number; readonly limit?: number }) => readonly StoredEvent[]
   /**
@@ -1686,6 +1697,13 @@ interface TurnEnding {
   readonly hooks?: HookEnding
 }
 
+/** What the user is told about history that cannot be read. */
+const HISTORY_TEXT = {
+  /** `reason`: the store's words, which name the session the history was inherited from and the file that is missing. */
+  inheritedMissing: (reason: string) =>
+    `The part of this conversation from before the fork cannot be shown: ${reason}. The session still has it, so the model sees it and the session goes on; only what happened since the fork is listed.`,
+}
+
 /** How many diagnostics said to nobody a session keeps for its first listener. */
 const UNHEARD_DIAGNOSTICS = 64
 
@@ -2094,7 +2112,16 @@ class LiveSession implements EngineSession {
     return true
   }
 
-  readEvents = (range?: { readonly afterSeq?: number; readonly limit?: number }): readonly StoredEvent[] => this.store.readEvents(this.id, range)
+  readEvents = (range?: { readonly afterSeq?: number; readonly limit?: number }): readonly StoredEvent[] => {
+    try {
+      return this.store.readEvents(this.id, range)
+    } catch (error) {
+      if (!(error instanceof StoreError) || error.code !== "parent_missing") throw error
+      // A fork whose parent's file is gone: its own events are what there is to read. The user is told, once, what is not shown.
+      this.say("history", HISTORY_TEXT.inheritedMissing(error.message))
+      return this.store.readEvents(this.id, { ...range, afterSeq: Math.max(range?.afterSeq ?? 0, forkOf(this.projection().session.lineage)?.throughSeq ?? 0) })
+    }
+  }
 
   settled = async (): Promise<void> => {
     while (this.run !== null || this.restoring !== null) await (this.run?.done ?? this.restoring?.catch(() => {}))
@@ -4973,7 +5000,7 @@ class LiveSession implements EngineSession {
   }
 
   /** Says something about a feature to the user, once per process. */
-  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry", message: string): void {
+  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry" | "history", message: string): void {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
@@ -6401,7 +6428,7 @@ async function forkSession(core: Core, askedId: SessionId, options: ForkOptions)
 
 /** Starts the replay of a recorded session (`Engine.replaySession`). */
 async function replaySession(core: Core, sourceId: SessionId, request: ReplayRequest): Promise<ReplayRun> {
-  const all = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)))
+  const all = storeErrors(() => core.stores.read(sourceId, (store) => store.readEvents(sourceId)), (message) => `session ${sourceId} cannot be replayed: ${message}`)
   const source = request.throughSeq === undefined ? all : all.filter((item) => item.seq <= request.throughSeq!)
   const last = source.at(-1)
   if (last === undefined) throw new EngineError("session_not_found", `session ${sourceId} has no event to replay`)
