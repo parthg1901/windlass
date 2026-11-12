@@ -42,6 +42,7 @@ evals/recall/
   fake.ts         the scripted "oracle reader" used by tests and by runs without --live
   run.ts          bun evals/recall/run.ts [--live] [--strategies full,engine] [--seed N] [--tokens N]
                   [--questions N] [--pause MS] [--keep DIR] [--max-requests N] [--out FILE]
+  track.ts        bun evals/recall/track.ts --live | --check: the score per commit, in history.jsonl
 ```
 
 ## What is planted
@@ -71,6 +72,42 @@ a failed call is retried once, which counts too. A run refuses to go past `--max
 full,engine` compares the ceiling with the product and makes no simulated compaction. `--pause MS` waits between
 the questions of a context strategy (see the cache finding below), and `--keep DIR` keeps the engine strategy's
 store file there, for `scripts/export-trace.ts --db DIR/recall.db`. Progress goes to stderr as counts only.
+
+## Tracking the score per commit
+
+`track.ts` runs the evaluation and appends one row to `history.jsonl`: the commit, the date, the model and effort,
+the session it measured (seed, size, questions), per strategy the score (`pass` of `total`) and the measured input
+tokens per question, and the number of model calls the run made, counted at the model function with retries.
+Numbers only: no answer, no session content.
+
+```
+bun evals/recall/track.ts --live                       # full and engine; at most 30 requests (--max-requests)
+bun evals/recall/track.ts --live --strategies engine   # the product alone
+bun evals/recall/track.ts --check [--margin 2]         # the latest row against the one before it
+bun evals/recall/track.ts                              # the scripted oracle model: prints the row, writes nothing
+```
+
+- It refuses to run when the working tree has uncommitted changes other than `history.jsonl` itself, because the row
+  would name a commit that is not what ran. `--allow-dirty` runs anyway and marks the row `dirty`. Commit the new row
+  afterwards.
+- Before it starts it says how many requests the strategies may need before retries: 12 for `full` plus the judge,
+  2 + 3 per question for `engine` (two summary calls at most, then two rounds of history tools and the answer), so 51
+  for `full,engine` and 39 for `engine` alone on 12 questions. The cap (`--max-requests`, default 30) is hard: a run
+  that reaches it stops and records nothing. Measured live, `full,engine` took 28 requests and `engine` alone 16 (the
+  model calls the history tools on one or two questions, not on all), so `engine` alone fits the default cap with room,
+  and `full,engine` fits only when nothing is retried.
+- `--check` compares only the latest row with the one before it, per strategy both have, and exits 1 when a score
+  dropped by more than the margin, 2 when there is nothing to compare (fewer than two rows, or rows of another model,
+  effort or session), 0 otherwise. Tokens per question are printed next to the score but never fail the check.
+
+**Why the margin is two questions.** A run is 12 questions on one generated session, so one question is 8 points, and
+a single run is noisy: the engine scored 10 and 12 of 12 on two runs of the same session a small prompt change apart (below, "The
+product"). Treating each question as an independent pass at about 90%, one run's score has a standard deviation of
+about one question (√(12 · 0.9 · 0.1) ≈ 1.04), and the difference between two runs about 1.5 questions. A drop of two
+questions is therefore well inside what chance gives; a drop of three (25 points) is about two standard deviations,
+which chance gives about one time in fifty. So `--check` fails on a drop of three or more. That catches a change that
+breaks recall (a checkpoint that loses its index, history tools that stop finding things) and not one that makes it a
+little worse; for that, run several times and compare the means, or raise `--questions`.
 
 ## The product: full history against the engine
 
