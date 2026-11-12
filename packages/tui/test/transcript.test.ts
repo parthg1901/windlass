@@ -153,6 +153,32 @@ describe("a turn that a queued message follows", () => {
   })
 })
 
+describe("a line of the interface's own at a turn's end", () => {
+  const texts = (transcript: Transcript) => transcript.rows.flatMap((row) => layoutRow(row, 140, { now: CLOCK_START, debug: false, color: false })).map((line) => line.map((part) => part.text).join("").trimEnd())
+
+  test("a command's answer that arrives after the turn's last row stands under the ending row; one from the middle of the turn, and a line about the stop, stay where they are", () => {
+    const transcript = new Transcript(() => CLOCK_START)
+    let seq = 0
+    const apply = (...events: NewEvent[]) => {
+      for (const item of events) transcript.apply({ ...item, sessionId: "s" as never, seq: ++seq, time: CLOCK_START + seq * 100 } as never)
+    }
+    apply(...opening("go"), stepStarted("a1"))
+    transcript.note("Skills (0): typed while the model was thinking")
+    apply(say("a1", "All done."), event("step.ended", { messageId: m("a1"), finish: "stop", usage: null }))
+    transcript.note("renamed: Login bug")
+    transcript.note("■ still stopping… press Ctrl-C again to exit now", "warn", "!", [], "work")
+    transcript.note("Memory is off.")
+    transcript.note("no tool call is running")
+    apply(executionSucceeded())
+    const lines = texts(transcript)
+    const at = (text: string) => lines.findIndex((line) => line.includes(text))
+    expect(at("typed while the model was thinking")).toBeLessThan(at("All done."))
+    expect(at("renamed: Login bug")).toBeLessThan(at("still stopping"))
+    expect(at("still stopping")).toBeLessThan(at("○ done"))
+    expect(lines.slice(at("○ done") + 1)).toEqual(["· Memory is off.", "· no tool call is running"])
+  })
+})
+
 describe("undo and redo", () => {
   const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
   const turn = (id: string, exe: string, prompt: string, answer: string) => [

@@ -603,7 +603,8 @@ export class App {
         this.say("exiting without waiting for the stop", "warn")
         return this.exitNow(130)
       }
-      if (this.transcript.activity.stopping && this.lastInterrupt !== 0) this.say("■ still stopping… press Ctrl-C again to exit now", "warn")
+      // About the turn that is stopping: it stays inside the turn, above its ending row.
+      if (this.transcript.activity.stopping && this.lastInterrupt !== 0) this.transcript.note([span("■ still stopping… press Ctrl-C again to exit now", "warn")], "warn", "!", [], "work")
       this.lastInterrupt = now
       this.transcript.markStopAsked()
       // A tool call's pending question goes from the screen now; it is answered `cancelled` once the stop has reached

@@ -335,9 +335,14 @@ export class Transcript {
     this.stopAsked = true
   }
 
-  /** A line from the TUI itself (a command's answer, an error), in the conversation. */
-  note(text: string | Span[], tone: Role = "dim", symbol: string = SYMBOL.note, detail: Span[][] = []): NoticeRow {
-    const row = this.add<NoticeRow>({ kind: "notice", symbol, tone, text: typeof text === "string" ? [span(text, tone === "dim" ? "dim" : undefined)] : text, detail, group: "session" }, false)
+  /**
+   * A line from the TUI itself (a command's answer, an error), in the
+   * conversation. `group`: `work` for a line about the turn in progress (that
+   * it is still stopping), which stays inside the turn; anything else the
+   * user asked for just as a turn ended is kept under that turn's ending row.
+   */
+  note(text: string | Span[], tone: Role = "dim", symbol: string = SYMBOL.note, detail: Span[][] = [], group: NoticeRow["group"] = "session"): NoticeRow {
+    const row = this.add<NoticeRow>({ kind: "notice", symbol, tone, text: typeof text === "string" ? [span(text, tone === "dim" ? "dim" : undefined)] : text, detail, group }, false)
     row.seq = -1
     return row
   }
@@ -1163,6 +1168,11 @@ export class Transcript {
   private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string; unsatisfied?: readonly string[] | null; objections?: readonly { readonly hook: string; readonly text: string }[]; continues?: boolean }, replay: boolean): void {
     const waiting = outcome === "interrupted" ? this.pending.length : 0
     this.stopRuns = []
+    // What the interface itself said last, after everything the turn did (the answer to a command typed just as the
+    // turn ended), is not part of the turn: the ending row closes the turn above it.
+    let own = this.rows.length
+    while (!replay && own > 0 && isOwnNote(this.rows[own - 1]!)) own -= 1
+    const after = this.rows.splice(own)
     this.add<OutcomeRow>(
       {
         kind: "outcome",
@@ -1189,6 +1199,7 @@ export class Transcript {
       },
       replay,
     )
+    this.rows.push(...after)
   }
 
   private closeStep(messageId: string, usage: Usage | null, ended: CallUsage["ended"]): void {
@@ -1304,6 +1315,11 @@ export class Transcript {
     row.version += 1
     this.version += 1
   }
+}
+
+/** A line of the interface's own that is not about the turn's work: a command's answer, something the user asked for. */
+function isOwnNote(row: Row): boolean {
+  return row.kind === "notice" && row.seq === -1 && row.group === "session"
 }
 
 /** Whether `/undo` took the row's turn out of the conversation (and no `/redo` put it back). */
