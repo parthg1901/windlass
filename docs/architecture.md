@@ -1001,7 +1001,10 @@ of it exists for the session, then or later, and its requests are byte for byte 
 this session changes), each delivery is recorded in memory's usage log before the message is appended, and the
 outcome of each turn is recorded from `execution.succeeded`, `turn.ended`, a user's interrupt and
 `history.reverted`. The model's quote of the user is looked up in the session's own visible user messages. A
-subagent is not offered memory. `EngineSession.memory()` gives a client the store. The A/B comparison that decides
+subagent is not offered memory. `EngineSession.memory()` gives a client the store, also before the session's
+first turn: with no baseline yet it answers by the rule the first baseline freezes the tool list with (a session a
+person started, the flag on in the files as they are now), so a note the user saves before the first message is
+saved at once. The loop itself follows only a frozen list, so nothing is delivered or recorded earlier for it. The A/B comparison that decides
 whether memory stays reads evaluation results and lives in `evals/memory-compare.ts`; core imports nothing from
 `evals/`.
 

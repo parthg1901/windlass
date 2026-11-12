@@ -1106,6 +1106,10 @@ export interface EngineSession {
    * retract, confirm and renew notes (`memory/README.md`, "The user"):
    * its settings and the store of the user's notes and the project's.
    * `null` when the engine offers no memory or the flag is off here.
+   * Before the session's first turn it answers from the configuration
+   * files as they are now, as the first turn will: a note the user saves
+   * then is saved, and nothing reaches the model before that turn's own
+   * delivery.
    */
   readonly memory: () => { readonly config: MemoryConfig; readonly store: MemoryStore } | null
   /** Whether an execution is being worked on in this process. */
@@ -5162,10 +5166,22 @@ class LiveSession implements EngineSession {
    * The session's notes, or `null` when memory does not exist for it: the
    * engine offers none, the flag is off now, or its frozen tool list was
    * set without the memory tools (the flag was off then, or it is a subagent).
+   *
+   * A session that has no baseline yet has no list to follow. The loop takes
+   * it to have no memory: nothing is delivered and nothing is recorded before
+   * the list is frozen. With `ahead`, the answer is the one the first
+   * baseline will give, by the rule it freezes the list with
+   * (`offeredTools`): a session a person started, with the flag on in the
+   * files as they are now.
    */
-  memoryStore(projection: Projection = this.projection()): MemoryStore | null {
+  memoryStore(projection: Projection = this.projection(), ahead = false): MemoryStore | null {
     const memory = this.core.memory
-    if (memory === null || !memory.tools.every((tool) => this.offers(projection, tool.name))) return null
+    if (memory === null) return null
+    const offered =
+      projection.baseline === null
+        ? ahead && projection.session.lineage?.kind !== "spawn" && projection.session.replay === undefined
+        : memory.tools.every((tool) => this.offers(projection, tool.name))
+    if (!offered) return null
     const config = this.memoryConfig()
     if (!config.enabled) return null
     const projectDir = this.config?.projectDir ?? projection.session.cwd
@@ -5176,7 +5192,8 @@ class LiveSession implements EngineSession {
   }
 
   memory = (): { readonly config: MemoryConfig; readonly store: MemoryStore } | null => {
-    const store = this.memoryStore()
+    // Also before the first turn: the user's own note is saved then, and is in the block the first turn is given.
+    const store = this.memoryStore(this.projection(), true)
     return store === null ? null : { config: this.memoryConfig(), store }
   }
 

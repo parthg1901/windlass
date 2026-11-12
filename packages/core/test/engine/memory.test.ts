@@ -205,6 +205,50 @@ describe("with the flag on", () => {
     }
   })
 
+  test("the session's memory is known before its first turn: the user's note is saved then, and is first given to the model in that turn's block", async () => {
+    const h = new Harness({ memory: withIds, userConfig: ON })
+    const alone = new Harness({ memory: withIds, userConfig: ON })
+    try {
+      const memory = h.create().memory()
+      expect(memory).not.toBeNull()
+      expect(memory!.config.enabled).toBe(true)
+      const saved = memory!.store.save({ text: "The release branch is called stable.", kind: "fact", scope: "project", status: "active", provenance: { author: "user", session: h.session.id, message: null, call: null, seq: null, quote: null, untrusted: false } })
+      expect(saved.outcome).toBe("saved")
+      expect(storeOf(h).load().entries.map((entry) => entry.text)).toEqual(["The release branch is called stable."])
+      // Nothing was delivered or recorded: the log has only the session, and the usage log names no delivery.
+      expect(h.log().map((item) => item.type)).toEqual(["session.created"])
+      expect(memory!.store.usage(h.session.id).records).toEqual([])
+
+      await turn(h)
+      expect(notes(h)).toHaveLength(1)
+      expect(developer(h.provider.requests[0]!).join("\n")).toContain("The release branch is called stable.")
+      expect(h.session.memory()!.store.paths).toEqual(memory!.store.paths)
+      expect(h.provider.prefixBreaks()).toEqual([])
+      h.verify()
+
+      // Asking early changes nothing of the request: the tool list and the instructions are those of a session that never asked.
+      await turn(alone)
+      expect(h.provider.requests[0]!.tools).toEqual(alone.provider.requests[0]!.tools)
+      expect(h.provider.requests[0]!.instructions).toBe(alone.provider.requests[0]!.instructions)
+    } finally {
+      await h.dispose()
+      await alone.dispose()
+    }
+  })
+
+  test("before its first turn a session has no memory where the first turn would give it none: the flag off, or an engine without memory", async () => {
+    const off = new Harness({ memory: withIds, userConfig: {} })
+    const without = new Harness({ userConfig: ON })
+    try {
+      expect(off.create().memory()).toBeNull()
+      expect(without.create().memory()).toBeNull()
+      expect(existsSync(join(off.dataDir, "memory"))).toBe(false)
+    } finally {
+      await off.dispose()
+      await without.dispose()
+    }
+  })
+
   test("turned off later, the tools stay in the frozen list and answer that memory is off; nothing more is delivered", async () => {
     const h = new Harness({ memory: withIds, userConfig: ON })
     try {
