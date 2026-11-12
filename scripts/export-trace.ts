@@ -27,6 +27,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { brand } from "../packages/core/src/brand.ts"
+import { forkOf } from "../packages/core/src/event/durable.ts"
 import type { SessionId } from "../packages/core/src/id.ts"
 import { SESSIONS_DIRECTORY, openSessionDirectory } from "../packages/core/src/store/directory.ts"
 import { openSqliteStore } from "../packages/core/src/store/sqlite.ts"
@@ -127,7 +128,8 @@ function fromDataDirectory(dataDir: string): Source {
       done.add(next)
       if (!existsSync(live.pathOf(next))) break
       snapshot(live.pathOf(next), copied.pathOf(next))
-      next = copied.get(next)?.session.lineage?.parentSessionId ?? null
+      const parent: SessionId | null = forkOf(copied.get(next)?.session.lineage ?? null)?.parentSessionId ?? null
+      next = parent
     }
   }
   return {

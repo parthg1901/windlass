@@ -141,6 +141,45 @@ export async function openSnapshots(workspace: string, options: SnapshotOptions 
   return createSnapshots(context, root, resolve(workspace), options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES)
 }
 
+/**
+ * Writes the files of snapshot `id` of `workspace` into the directory
+ * `into`, which is created when missing: a copy of the workspace as it was
+ * when the snapshot was taken, to work in without touching the original (a
+ * fork that gets its own directory, a replay that runs tools for real).
+ *
+ * The workspace itself is never read or written and need not exist any more:
+ * the snapshot lives in the private git directory that belongs to its path.
+ * What the copy holds is what a snapshot holds (see the README): no ignored
+ * file (so no `node_modules`), no untracked file over the size limit,
+ * nothing inside a nested repository, nothing outside the workspace.
+ * Existing files in `into` that the snapshot also has are overwritten;
+ * others are left alone. Returns how many files were written.
+ */
+export async function exportSnapshot(workspace: string, id: string, into: string, options: SnapshotOptions = {}): Promise<{ readonly files: number } | SnapshotUnavailable> {
+  const baseEnv: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin", ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) }
+  const probe = probeGit(options.gitPath, baseEnv)
+  if (probe.kind === "unavailable") return probe
+  // The private directory is named after the workspace's real path, which is the path itself once the directory is gone.
+  const root = await realpath(workspace).catch(() => resolve(workspace))
+  const gitDir = join(options.dataDir ?? defaultSnapshotDir(), createHash("sha256").update(root).digest("hex").slice(0, 32))
+  if (!(await exists(join(gitDir, "HEAD")))) return { kind: "unavailable", reason: "storage_failed", message: `no snapshot of ${workspace} was ever recorded` }
+  const context: GitContext = { git: probe.git, gitDir, baseEnv }
+  await mkdir(into, { recursive: true })
+  const target = await realpath(into)
+  const index = join(gitDir, `index.tmp-export-${process.pid}-${(counter += 1)}-${randomBytes(4).toString("hex")}`)
+  const run = { cwd: target, workTree: target, indexFile: index }
+  try {
+    const kind = new TextDecoder().decode((await runGit(context, ["cat-file", "-t", assertId(id as SnapshotId)], { ...run, okCodes: [0, 128] })).stdout).trim()
+    if (kind !== "tree") throw new SnapshotError(`${id} is not a snapshot of ${workspace} (it may have been dropped by retention)`)
+    await runGit(context, ["read-tree", id], run)
+    await runGit(context, ["checkout-index", "--all", "--force"], run)
+    const listed = new TextDecoder().decode((await runGit(context, ["ls-files", "-z"], run)).stdout)
+    return { files: splitNul(listed).length }
+  } finally {
+    await rm(index, { force: true })
+  }
+}
+
 /** Creates the private bare repository atomically (init elsewhere, then rename), so concurrent openers agree. */
 async function ensureRepository(context: GitContext, workspace: string) {
   if (!(await exists(join(context.gitDir, "HEAD")))) {

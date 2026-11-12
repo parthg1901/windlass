@@ -113,7 +113,7 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     cwd: event.data.cwd,
     title: event.data.title,
     lineage: event.data.lineage,
-    rootId: event.data.lineage === null || state === null ? event.sessionId : state.session.rootId,
+    rootId: event.data.lineage?.kind !== "fork" || state === null ? event.sessionId : state.session.rootId,
     archived: false,
     createdAt: event.time,
     settings: event.data.settings,
@@ -123,13 +123,15 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     // A fork starts untracked too: its snapshots, verification and undo history are its own.
     ...INITIAL_TRACKING,
     // It starts with no approvals of its own, and with its parent's taint: the content came with the history.
-    ...(event.data.lineage !== null && state?.session.approval?.taint != null ? { approval: { grants: [], taint: state.session.approval.taint } } : {}),
+    ...(event.data.lineage?.kind === "fork" && state?.session.approval?.taint != null ? { approval: { grants: [], taint: state.session.approval.taint } } : {}),
   }
   const lineage = event.data.lineage
-  if (lineage === null) {
+  if (lineage === null || lineage.kind !== "fork") {
+    // A root, a subagent and a replay all start a history of their own.
     if (state !== null) throw new ReduceError("out_of_order", "the session already exists", event)
-    if (event.seq !== 1) throw new ReduceError("out_of_order", "a root session starts at seq 1", event)
-    return { lastSeq: 1, updatedAt: event.time, session, baseline: null, messages: [], inbox: [] }
+    if (event.seq !== 1) throw new ReduceError("out_of_order", `a ${lineage === null ? "root" : lineage.kind} session starts at seq 1`, event)
+    const started: SessionState = lineage?.kind === "replay" ? { ...session, replay: { workspace: null, ended: null } } : session
+    return { lastSeq: 1, updatedAt: event.time, session: started, baseline: null, messages: [], inbox: [] }
   }
   if (state === null || state.session.id !== lineage.parentSessionId || state.lastSeq !== lineage.throughSeq)
     throw new ReduceError(
@@ -213,6 +215,12 @@ const SCOPE = {
   // Facts about the conversation, whatever the execution is doing: a result that settles during a wind-down still taints.
   "taint.noticed": "session",
   "taint.cleared": "session",
+  "spawn.started": "work",
+  // A fact about work that ran beside the steps: it ends when it ends, also while an interrupt is wound down.
+  "spawn.ended": "session",
+  "replay.call": "work",
+  "replay.diverged": "work",
+  "replay.ended": "session",
 } as const satisfies Record<AppliedEvent["type"], "session" | "wind_down" | "work">
 
 function apply(state: Projection, event: AppliedEvent): Projection {
@@ -941,6 +949,90 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       const open = state.session.open
       if (open === null || (open.kind !== "revert" && open.kind !== "undo")) fail("invalid_transition", "no revert is open")
       return session({ open: null })
+    }
+
+    case "spawn.started": {
+      claimed()
+      const spawned = state.session.spawned ?? { running: [], children: [], usage: null }
+      if (spawned.running.some((entry) => entry.spawnId === event.data.spawnId)) fail("duplicate_id", `spawned work ${event.data.spawnId} already exists`)
+      // It is started by a call that is running: the tool that spawns it.
+      const open = state.session.open
+      const owner = open?.kind === "step" && open.messageId === event.data.messageId ? state.messages.findLast((message) => message.id === open.messageId) : undefined
+      const part = owner?.kind === "assistant" ? owner.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === event.data.callId) : undefined
+      if (part?.type !== "tool_call" || part.state.status !== "running")
+        fail("invalid_transition", `work is spawned by a running tool call, and ${event.data.messageId}/${event.data.callId} is not one`)
+      const work = event.data.work
+      const child = work.kind === "subagent" ? work.sessionId : null
+      if (child === state.session.id) fail("invalid_transition", "a session does not spawn itself")
+      if (child !== null && spawned.running.some((entry) => entry.sessionId === child)) fail("invalid_transition", `subagent ${child} is still running: it takes a follow-up once it has ended`)
+      const entry = {
+        spawnId: event.data.spawnId,
+        seq: event.seq,
+        kind: work.kind,
+        background: event.data.background,
+        messageId: event.data.messageId,
+        callId: event.data.callId,
+        sessionId: child,
+        command: work.kind === "command" ? work.command : null,
+        logPath: work.kind === "command" ? work.logPath : null,
+        worktree: work.kind === "subagent" ? work.worktree : null,
+      }
+      return session({
+        spawned: {
+          ...spawned,
+          running: [...spawned.running, entry],
+          children: child === null || spawned.children.includes(child) ? spawned.children : [...spawned.children, child],
+        },
+      })
+    }
+    case "spawn.ended": {
+      const spawned = state.session.spawned
+      const entry = spawned?.running.find((candidate) => candidate.spawnId === event.data.spawnId)
+      if (spawned === undefined || entry === undefined) return fail("not_found", `spawned work ${event.data.spawnId} is not running`)
+      if (entry.kind === "command" && (event.data.usage !== null || event.data.tainted || event.data.merge !== null))
+        fail("invalid_transition", "a background command has no usage, taint or worktree")
+      if (event.data.merge !== null && entry.worktree === null) fail("invalid_transition", `subagent ${entry.sessionId} did not work in a worktree`)
+      const cost = event.data.usage
+      const total = spawned.usage
+      const usage =
+        cost === null
+          ? total
+          : total === null
+            ? cost
+            : {
+                inputTokens: total.inputTokens + cost.inputTokens,
+                cachedInputTokens: total.cachedInputTokens + cost.cachedInputTokens,
+                outputTokens: total.outputTokens + cost.outputTokens,
+                reasoningTokens: total.reasoningTokens + cost.reasoningTokens,
+              }
+      return session({ spawned: { ...spawned, running: spawned.running.filter((candidate) => candidate !== entry), usage } })
+    }
+
+    case "replay.call": {
+      if (state.session.replay === undefined) fail("invalid_transition", "the session is not a replay")
+      // Checks only: the call's own events carry its state.
+      return call(event.data.messageId, event.data.callId, (part) => {
+        if (part.state.status === "settled") fail("invalid_transition", `tool call ${part.callId} is settled: what the replay made of it is recorded before its result`)
+        if ((event.data.result === "matched" || event.data.result === "normalised") !== (event.data.recorded !== null))
+          fail("invalid_transition", "a matched call names the recorded call it matched, and only a matched call does")
+        if ((event.data.result === "diverged") !== (event.data.divergence !== null)) fail("invalid_transition", "the call that left the recording says how, and only that call does")
+        return part
+      })
+    }
+    case "replay.diverged": {
+      const replay = state.session.replay
+      if (replay === undefined) return fail("invalid_transition", "the session is not a replay")
+      claimed()
+      if (state.session.lineage?.kind === "replay" && state.session.lineage.policy === "stop") fail("invalid_transition", "a replay with the stop policy ends where it leaves the recording")
+      if (replay.workspace !== null) fail("invalid_transition", "the replay already left the recording")
+      if (replay.ended !== null) fail("invalid_transition", "the replay has ended")
+      return session({ replay: { ...replay, workspace: event.data.workspace } })
+    }
+    case "replay.ended": {
+      const replay = state.session.replay
+      if (replay === undefined) return fail("invalid_transition", "the session is not a replay")
+      if (replay.ended !== null) fail("invalid_transition", "the replay has already ended")
+      return session({ replay: { ...replay, ended: { seq: event.seq, outcome: event.data.outcome, reason: event.data.reason } } })
     }
 
     default:

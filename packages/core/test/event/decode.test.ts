@@ -170,6 +170,25 @@ const examples: { [T in EventType]: NewEvent<T> } = {
     text: "Content from a command that ran with network access is in this conversation and may contain instructions aimed at the model.",
   }),
   "taint.cleared": event("taint.cleared", {}),
+  "spawn.started": event("spawn.started", {
+    spawnId: "spn_1",
+    messageId: "a1" as MessageId,
+    callId: "call_1" as CallId,
+    background: true,
+    work: { kind: "subagent", sessionId: "ses_child" as SessionId, worktree: { path: "/data/worktrees/ses_child", branch: "harness/subagent-1", base: "0a1b2c", repository: "/repo" } },
+  }),
+  "spawn.ended": event("spawn.ended", {
+    spawnId: "spn_1",
+    outcome: "completed",
+    detail: "The subagent finished.",
+    exitCode: null,
+    usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 3, reasoningTokens: 0 },
+    tainted: false,
+    merge: { status: "merged", branch: "harness/subagent-1", commit: "0a1b2c", files: ["a.ts"], conflicts: [], kept: false },
+  }),
+  "replay.call": event("replay.call", { messageId: "a1" as MessageId, callId: "call_1" as CallId, result: "matched", executed: false, recorded: { step: 0, call: 0 }, divergence: null }),
+  "replay.diverged": event("replay.diverged", { workspace: "/data/replays/ses_r", snapshot: "0a1b2c", divergence: "arguments_differ" }),
+  "replay.ended": event("replay.ended", { outcome: "diverged", reason: "left the recording at step 2", report: { status: "diverged" } }),
 }
 
 const row = (stored: NewEvent, overrides: Partial<EventRow> = {}): EventRow => ({

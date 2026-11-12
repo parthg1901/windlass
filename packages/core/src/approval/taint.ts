@@ -10,7 +10,8 @@
  * - any result of an MCP tool, whatever effect it declares;
  * - a file tool result naming a path outside the workspace or in a hidden path;
  * - a file tool result naming a workspace path that matches `untrustedPaths`;
- * - a shell command that ran with network access the harness granted (an escalation).
+ * - a shell command that ran with network access the harness granted (an escalation);
+ * - the result of a subagent whose own conversation was tainted when it ended.
  *
  * Not sources, by decision:
  * - Workspace files in general, including ones this session did not write.
@@ -50,12 +51,14 @@ export type HistoryEntry =
       /** A shell command that ran in the sandbox with the network on. */
       readonly networkGranted: boolean
     }
+  /** The result of a subagent whose own conversation held untrusted content: what it says may carry that content on. */
+  | { readonly kind: "subagent_result"; readonly at: number; readonly session: string }
   /** The user said the conversation is trustworthy again. */
   | { readonly kind: "taint_cleared"; readonly at: number }
   /** Recorded for completeness; changes nothing. */
   | { readonly kind: "compaction"; readonly at: number }
 
-export type TaintSourceKind = "network-tool" | "mcp-tool" | "outside-file" | "untrusted-file" | "network-command"
+export type TaintSourceKind = "network-tool" | "mcp-tool" | "outside-file" | "untrusted-file" | "network-command" | "subagent"
 
 export interface TaintSource {
   readonly at: number
@@ -81,7 +84,7 @@ export function deriveTaint(history: readonly HistoryEntry[], options: { readonl
   return history.reduce<TaintState>((state, entry) => {
     if (entry.kind === "taint_cleared") return CLEAN
     if (entry.kind === "compaction") return state
-    const found = sourcesOf(entry, globs)
+    const found: TaintSource[] = entry.kind === "subagent_result" ? [{ at: entry.at, tool: "subagent", kind: "subagent", path: entry.session }] : sourcesOf(entry, globs)
     if (found.length === 0) return state
     return { tainted: true, since: state.since ?? entry.at, sources: [...state.sources, ...found] }
   }, CLEAN)
@@ -110,6 +113,8 @@ export function describeTaint(taint: TaintState): string {
         ? `the MCP tool ${first.tool}`
         : first.kind === "network-command"
           ? "a command that ran with network access"
+          : first.kind === "subagent"
+            ? `subagent ${first.path}, whose own conversation holds untrusted content,`
           : `${first.path} (${first.kind === "outside-file" ? "outside the workspace" : "marked untrusted"})`
   const more = taint.sources.length > 1 ? ` and ${taint.sources.length - 1} more` : ""
   return `Content from ${what}${more} is in this conversation and may contain instructions aimed at the model.`

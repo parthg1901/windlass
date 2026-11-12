@@ -76,6 +76,7 @@ import {
   HARNESS_ORIGIN,
   KEPT_LIMIT,
   event,
+  forkOf,
 } from "../event/durable.ts"
 import type { EphemeralEvent } from "../event/ephemeral.ts"
 import { type CallId, type ExecutionId, type MessageId, type RequestId, type SessionId, newId } from "../id.ts"
@@ -3056,7 +3057,7 @@ async function retainSnapshots(
     const projection = store.getProjection(id)
     if (projection === null) return []
     // A fork's own events: the snapshots of its inherited history belong to its parent.
-    const events = store.readEvents(id, { afterSeq: projection.session.lineage?.throughSeq ?? 0 })
+    const events = store.readEvents(id, { afterSeq: forkOf(projection.session.lineage)?.throughSeq ?? 0 })
     return neededSnapshots(projection, events) as SnapshotId[]
   }
   await snapshots.prune({

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { text } from "../../src/content.ts"
 import { EventDecodeError } from "../../src/event/decode.ts"
-import { event, type NewEvent, type StoredEvent } from "../../src/event/durable.ts"
+import { event, forkOf, type NewEvent, type StoredEvent } from "../../src/event/durable.ts"
 import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
 import { ReduceError } from "../../src/message/reducer.ts"
 import { type SqliteStore, StoreSchemaError, openSqliteStore } from "../../src/store/sqlite.ts"
@@ -224,7 +224,7 @@ describe("fork", () => {
   test("reads the parent's log through the fork point, then its own; copies messages, not events", () => {
     const store = open()
     const [parent, child, grandchild] = SCRIPTS.fork!(store, "f") as [SessionId, SessionId, SessionId]
-    const throughSeq = store.getSession(child)!.session.lineage!.throughSeq
+    const throughSeq = forkOf(store.getSession(child)!.session.lineage)!.throughSeq
     const parentEvents = store.readEvents(parent)
     const childEvents = store.readEvents(child)
     expect(childEvents.slice(0, throughSeq)).toEqual(parentEvents.slice(0, throughSeq))

@@ -175,7 +175,7 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
 
   /** The state a new session's first event folds onto: the parent at `throughSeq` for a fork, else nothing. */
   const startingState = (first: NewEvent): Projection | null => {
-    if (first.type !== "session.created" || first.data.lineage === null) return null
+    if (first.type !== "session.created" || first.data.lineage?.kind !== "fork") return null
     const parent = first.data.lineage.parentSessionId
     const through = first.data.lineage.throughSeq
     // The reducer rejects a fork whose parent is missing or shorter than `throughSeq`.
@@ -620,11 +620,13 @@ function sessionStateColumns(projection: Projection) {
 /** Every column of a new session row, in `insertSession` order. */
 function sessionColumns(projection: Projection) {
   const session = projection.session
+  const fork = session.lineage?.kind === "fork" ? session.lineage : null
   return [
     session.id,
-    session.lineage?.parentSessionId ?? null,
-    session.lineage?.kind ?? null,
-    session.lineage?.throughSeq ?? null,
+    // Only a fork reads a parent's log. A subagent and a replay name the session they come from in their state.
+    fork?.parentSessionId ?? null,
+    fork?.kind ?? null,
+    fork?.throughSeq ?? null,
     session.cwd,
     session.createdAt,
     ...sessionStateColumns(projection),

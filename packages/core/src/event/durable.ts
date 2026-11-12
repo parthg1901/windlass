@@ -59,15 +59,60 @@ import {
 export const delivery = oneOf(["steer", "queue"])
 export type Delivery = Infer<typeof delivery>
 
+/** What a replay does when the replayed model leaves the recording. */
+export const replayPolicy = oneOf(["stop", "execute-read-only", "execute"])
+export type ReplayPolicyKind = Infer<typeof replayPolicy>
+
 /**
- * Where a session came from. A fork owns no copy of its parent's history: its
- * log is the parent's events 1..`throughSeq` followed by its own events, which
- * start at `throughSeq + 1`.
+ * A git worktree a spawned session works in instead of its parent's
+ * workspace: the directory, the branch that was created for it, and the
+ * commit the branch started from (the parent's workspace as it was then).
+ */
+export const worktreeRecord = object({ path: nonEmptyString, branch: nonEmptyString, base: nonEmptyString, repository: nonEmptyString })
+export type WorktreeRecord = Infer<typeof worktreeRecord>
+
+/**
+ * Where a session came from.
+ * - `fork`: its history is its parent's. It owns no copy of it: its log is
+ *   the parent's events 1..`throughSeq` followed by its own events, which
+ *   start at `throughSeq + 1`. `copied` is set when the fork works in a
+ *   directory of its own: the snapshot of the parent's workspace that was
+ *   restored into its `cwd` (`null`: the directory was copied as it stood),
+ *   and the parent's working directory.
+ * - `spawn`: a subagent. It was started by a tool call of `parentSessionId`
+ *   (the spawned work `spawnId` in the parent's log) with a fresh
+ *   conversation: it inherits nothing of the parent's history. `depth` is 1
+ *   for a child of a session a person started. `worktree` is the git
+ *   worktree it works in, when it does not share the parent's workspace.
+ * - `replay`: a replay of the recorded session `sourceSessionId` through its
+ *   event `throughSeq`, against a baseline that differs from the recording's
+ *   in what `changed` names (the system prompt text, the descriptions of the
+ *   listed tools, the model settings). `policy` and `strict` are how it was
+ *   run. Its history is its own; it starts at `seq` 1.
  */
 export const lineage = variant("kind", {
-  fork: object({ kind: literal("fork"), parentSessionId: sessionId, throughSeq: integer(1) }),
+  fork: object({
+    kind: literal("fork"),
+    parentSessionId: sessionId,
+    throughSeq: integer(1),
+    copied: optional(object({ snapshot: nullable(nonEmptyString), from: nonEmptyString })),
+  }),
+  spawn: object({ kind: literal("spawn"), parentSessionId: sessionId, spawnId: nonEmptyString, depth: integer(1), worktree: nullable(worktreeRecord) }),
+  replay: object({
+    kind: literal("replay"),
+    sourceSessionId: sessionId,
+    throughSeq: integer(1),
+    policy: replayPolicy,
+    strict: boolean,
+    changed: object({ instructions: boolean, tools: array(nonEmptyString), settings: boolean }),
+  }),
 })
 export type Lineage = Infer<typeof lineage>
+
+/** The lineage of a session that inherits a parent's log, or `null`: only a fork reads events it does not own. */
+export function forkOf(value: Lineage | null): Extract<Lineage, { kind: "fork" }> | null {
+  return value?.kind === "fork" ? value : null
+}
 
 /**
  * The model settings a session's requests are sent with. They are part of the
@@ -225,6 +270,12 @@ export const HARNESS_ORIGIN = {
    * round), it is the one harness message that may be left unanswered.
    */
   checkReport: "check_report",
+  /** A background command of the session ended: how, and the end of its output. Delivered through the inbox. */
+  backgroundCommand: "background_command",
+  /** A subagent that ran in the background ended: its final answer, or how it failed. Delivered through the inbox. */
+  subagentResult: "subagent_result",
+  /** Spawned work that the harness could not keep (it restarted) or stopped itself (an interrupt). Delivered through the inbox. */
+  spawnLost: "spawn_lost",
 } as const
 
 function define<const V extends number, D>(v: V, data: Validator<D>) {
@@ -240,7 +291,7 @@ export const durableEvents = {
   /**
    * A session exists. Always the first event of a session's own log. For a
    * fork, `lineage` names the parent and the last inherited `seq`, and this
-   * event's `seq` is `throughSeq + 1`. `settings` is the model and reasoning
+   * event's `seq` is `throughSeq + 1`; a subagent and a replay start at 1. `settings` is the model and reasoning
    * effort the session starts with; a fork states its own, which may be the
    * parent's.
    */
@@ -538,6 +589,108 @@ export const durableEvents = {
       display: nullable(json),
     }),
   ),
+
+  // ---- spawned work: subagents and background commands ----
+
+  /**
+   * Work that runs beside the session's own steps began: a subagent (a child
+   * session) or a shell command started in the background. Written by the
+   * tool call `(messageId, callId)` that started it, before the child
+   * session exists and right after the command was spawned. `background`:
+   * the call returned at once and the result arrives later as a message;
+   * otherwise the call itself waits for it (subagents only). A follow-up
+   * message to a child that has ended starts new work with a new `spawnId`
+   * for the same child session.
+   */
+  "spawn.started": define(
+    1,
+    object({
+      spawnId: nonEmptyString,
+      messageId,
+      callId,
+      background: boolean,
+      work: variant("kind", {
+        command: object({ kind: literal("command"), command: string, logPath: nullable(string) }),
+        subagent: object({ kind: literal("subagent"), sessionId, worktree: nullable(worktreeRecord) }),
+      }),
+    }),
+  ),
+  /**
+   * Spawned work ended. `outcome`: `completed` (the command exited, with
+   * `exitCode`; the child's execution succeeded), `failed` (the child's
+   * execution failed, or the work could not be started), `stopped` (on
+   * request: the stop tool, or an interrupt of this session, which stops
+   * everything it spawned) or `lost` (the harness restarted while it ran).
+   * `detail` is one sentence for a person. For a subagent, `usage` is what
+   * its model calls cost during this piece of work (rolled up into this
+   * session's totals), `tainted` whether its conversation holds untrusted
+   * content (this session is tainted from here on, as by a tool result),
+   * and `merge` what became of its worktree: merged into this workspace
+   * (`files` changed), left on its branch because of `conflicts`, or
+   * nothing to merge.
+   */
+  "spawn.ended": define(
+    1,
+    object({
+      spawnId: nonEmptyString,
+      outcome: oneOf(["completed", "failed", "stopped", "lost"]),
+      detail: string,
+      exitCode: nullable(integer()),
+      usage: nullable(usage),
+      tainted: boolean,
+      merge: nullable(
+        object({
+          status: oneOf(["merged", "conflicts", "nothing", "failed"]),
+          branch: nonEmptyString,
+          commit: nullable(nonEmptyString),
+          files: array(string),
+          conflicts: array(string),
+          kept: boolean,
+        }),
+      ),
+    }),
+  ),
+
+  // ---- replay ----
+
+  /**
+   * In a replay session: what became of one call of the replayed model.
+   * `matched`: it is a call of the recording (same tool, same arguments) and
+   * got the recorded result; `normalised`: the same, equal only after the
+   * replay's normalisers; `dropped`: made in a step the recording's user cut
+   * short, beyond the calls the recording kept; `diverged`: the call that
+   * left the recording (`divergence` is its kind); `off_tape`: made after
+   * that. `executed`: the tool ran for real, in the replay's copy of the
+   * workspace. `recorded` names the recorded step and call (0-based) of a
+   * match. Written right before the call's `tool.settled`.
+   */
+  "replay.call": define(
+    1,
+    object({
+      messageId,
+      callId,
+      result: oneOf(["matched", "normalised", "dropped", "diverged", "off_tape"]),
+      executed: boolean,
+      recorded: nullable(object({ step: integer(0), call: integer(0) })),
+      divergence: nullable(nonEmptyString),
+    }),
+  ),
+  /**
+   * The replay left the recording and carries on in a copy of the workspace:
+   * `workspace` is the directory, restored from `snapshot` of the recorded
+   * session's working directory (`null`: none was recorded at that point and
+   * the copy starts empty). From here the session's tools run for real, in
+   * that directory.
+   */
+  "replay.diverged": define(1, object({ workspace: nonEmptyString, snapshot: nullable(nonEmptyString), divergence: nonEmptyString })),
+  /**
+   * The replay is over. `outcome`: `identical` (every recorded step was
+   * replayed and matched), `diverged` (it left the recording), `unsupported`
+   * (the recording does something a replay cannot reproduce) or `incomplete`
+   * (it ended for another reason: a provider error, an interrupt, a crash).
+   * `reason` is one line; `report` is the divergence report as JSON.
+   */
+  "replay.ended": define(1, object({ outcome: oneOf(["identical", "diverged", "unsupported", "incomplete"]), reason: string, report: json })),
 
   // ---- compaction ----
 

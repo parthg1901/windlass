@@ -57,7 +57,7 @@ export const storedQuestion = object({ title: string, subject: string, details: 
 export const storedTaintSource = object({
   at: integer(0),
   tool: nonEmptyString,
-  kind: oneOf(["network-tool", "mcp-tool", "outside-file", "untrusted-file", "network-command"]),
+  kind: oneOf(["network-tool", "mcp-tool", "outside-file", "untrusted-file", "network-command", "subagent"]),
   path: nullable(string),
 }) satisfies Validator<TaintSource>
 
@@ -85,6 +85,8 @@ export type TaintEvent =
   | { readonly type: "tool.started"; readonly data: { readonly messageId: string; readonly callId: string; readonly effect: Infer<typeof toolEffect>; readonly run?: CallRun } }
   | { readonly type: "tool.settled"; readonly seq: number; readonly data: { readonly messageId: string; readonly callId: string } }
   | { readonly type: "taint.cleared"; readonly seq: number }
+  | { readonly type: "spawn.started"; readonly data: { readonly spawnId: string; readonly work: { readonly kind: string; readonly sessionId?: string } } }
+  | { readonly type: "spawn.ended"; readonly seq: number; readonly data: { readonly spawnId: string; readonly tainted: boolean } }
   | { readonly type: "compaction.ended"; readonly seq: number }
 
 /**
@@ -97,6 +99,8 @@ export class TaintHistory {
   readonly entries: HistoryEntry[] = []
   private readonly names = new Map<string, string>()
   private readonly started = new Map<string, { readonly effect: Infer<typeof toolEffect>; readonly run: CallRun | undefined }>()
+  /** The child session of each subagent that is running, by its spawned work. */
+  private readonly children = new Map<string, string>()
 
   add(item: { readonly type: string; readonly seq?: number; readonly data?: unknown }): void {
     const event = item as TaintEvent
@@ -130,6 +134,15 @@ export class TaintHistory {
       case "taint.cleared":
         this.entries.push({ kind: "taint_cleared", at: event.seq })
         return
+      case "spawn.started":
+        if (event.data.work.sessionId !== undefined) this.children.set(event.data.spawnId, event.data.work.sessionId)
+        return
+      case "spawn.ended": {
+        const child = this.children.get(event.data.spawnId)
+        this.children.delete(event.data.spawnId)
+        if (event.data.tainted && child !== undefined) this.entries.push({ kind: "subagent_result", at: event.seq, session: child })
+        return
+      }
       case "compaction.ended":
         this.entries.push({ kind: "compaction", at: event.seq })
         return

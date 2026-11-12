@@ -21,6 +21,7 @@ import {
   snapshotUnavailableReason,
   stepError,
   toolOutcome,
+  worktreeRecord,
 } from "../event/durable.ts"
 import { callId, executionId, messageId, sessionId } from "../id.ts"
 import { interruptReason } from "../interrupt.ts"
@@ -306,7 +307,8 @@ export const sessionState = object({
   lineage: nullable(lineage),
   /**
    * The first session of the fork chain this session belongs to: its own ID
-   * for a root session, the parent's `rootId` for a fork. Requests use it as
+   * for a root session (a subagent and a replay are roots: their
+   * conversations are their own), the parent's `rootId` for a fork. Requests use it as
    * the prompt-cache key, so a fork's first request is its parent's request
    * at the fork point and reads the same cached prefix.
    */
@@ -410,6 +412,48 @@ export const sessionState = object({
     object({
       grants: array(grant),
       taint: nullable(object({ seq: integer(1), source: storedTaintSource, text: string })),
+    }),
+  ),
+  /**
+   * What the session spawned; absent until it spawns something.
+   * - `running`: the subagents and background commands that have not ended,
+   *   oldest first, each as `spawn.started` recorded it. A session that is
+   *   opened with entries here that nobody is running lost them to a restart.
+   * - `children`: every child session this session ever started, oldest
+   *   first: the ones a follow-up message can be sent to.
+   * - `usage`: what the children's model calls cost so far, added up from
+   *   each `spawn.ended`. Not part of this session's own requests.
+   */
+  spawned: optional(
+    object({
+      running: array(
+        object({
+          spawnId: nonEmptyString,
+          seq: integer(1),
+          kind: oneOf(["command", "subagent"]),
+          background: boolean,
+          messageId,
+          callId,
+          /** The child session, for a subagent. */
+          sessionId: nullable(sessionId),
+          /** The command line and where its output is written, for a command. */
+          command: nullable(string),
+          logPath: nullable(string),
+          worktree: nullable(worktreeRecord),
+        }),
+      ),
+      children: array(sessionId),
+      usage: nullable(usage),
+    }),
+  ),
+  /**
+   * Set for a replay session: the copy of the workspace it carries on in once
+   * it left the recording (`replay.diverged`), and how it ended.
+   */
+  replay: optional(
+    object({
+      workspace: nullable(string),
+      ended: nullable(object({ seq: integer(1), outcome: oneOf(["identical", "diverged", "unsupported", "incomplete"]), reason: string })),
     }),
   ),
 })

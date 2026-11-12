@@ -4,6 +4,7 @@
  * Every feature that appends events must keep `expectRebuildEqualsLive` true.
  */
 import { expect } from "bun:test"
+import { forkOf } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import type { Projection } from "../../src/message/message.ts"
@@ -35,9 +36,9 @@ export function expectRebuildEqualsLive(store: SqliteStore, sessionId: SessionId
   const session = rebuilt.session
   expect(database.query("SELECT * FROM session WHERE id = ?").get(sessionId)).toEqual({
     id: sessionId,
-    parent_id: session.lineage?.parentSessionId ?? null,
-    parent_kind: session.lineage?.kind ?? null,
-    parent_seq: session.lineage?.throughSeq ?? null,
+    parent_id: forkOf(session.lineage)?.parentSessionId ?? null,
+    parent_kind: forkOf(session.lineage)?.kind ?? null,
+    parent_seq: forkOf(session.lineage)?.throughSeq ?? null,
     cwd: session.cwd,
     title: session.title,
     archived: session.archived ? 1 : 0,
@@ -75,7 +76,7 @@ export function expectRebuildEqualsLive(store: SqliteStore, sessionId: SessionId
     .query<{ seq: number }, [string]>("SELECT seq FROM event WHERE session_id = ? ORDER BY seq")
     .all(sessionId)
     .map((row) => row.seq)
-  const first = (session.lineage?.throughSeq ?? 0) + 1
+  const first = (forkOf(session.lineage)?.throughSeq ?? 0) + 1
   expect(own).toEqual(Array.from({ length: rebuilt.lastSeq - first + 1 }, (_, index) => first + index))
   return rebuilt
 }
