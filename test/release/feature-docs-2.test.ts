@@ -620,6 +620,15 @@ describe("the module pages for integrators, where users read them too", () => {
     // The same form as the page for users.
     expect(text["docs/diagnostics.md"]).toContain(edited("math.ts", 1))
   })
+
+  test("the task list's page says the clients show the list, which they do", () => {
+    const todo = page("packages/core/src/tools/TODO-TOOL.md")
+    expect(todo).not.toContain("still to do")
+    expect(todo).toContain("The part about clients is done too")
+    expect(todo).toContain("≡ tasks · 1 of 3 done")
+    // Each interface draws the list from the tool's result (`display.todo`, read by `tasksOf`).
+    for (const file of ["packages/cli/src/renderer.ts", "packages/tui/src/transcript.ts"]) expect(read(join(ROOT, file)), file).toContain("tasksOf(")
+  })
 })
 
 describe("names against the code", () => {

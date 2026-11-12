@@ -3,7 +3,9 @@
 `todo.ts` exports `todoTool()`, a standard tool with a constant spec. It is wired: `createStandardTools`
 (`tools/index.ts`) has it, so it is in every session's frozen tool list from the first baseline, and a compaction's
 checkpoint carries the list (`engine.ts`, `compact`; `context/checkpoint.ts`, `todos`). What follows is the contract
-as it was written for that wiring; the part about clients is still to do.
+as it was written for that wiring. The part about clients is done too: the line interface prints the list on each
+`todo` result (`≡ tasks · 1 of 3 done`, then one line per task), the full-screen interface also keeps it in its
+panel, and a session opened again shows the list as it stands (`docs/task-list.md`).
 
 ## What it does
 
