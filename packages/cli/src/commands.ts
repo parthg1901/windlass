@@ -153,11 +153,26 @@ export function changeLabel(status: string, undo: boolean): string {
 /**
  * What a restore did to the files, from its count alone: an undo leaves each
  * as it was before the turn (written back, or removed when the turn created
- * it: "restored" would be wrong for those), a redo as the turn left it.
+ * it: "restored" would be wrong for those), a redo as the turn left it. The
+ * full-screen interface's wording; the line interface says the files written
+ * and the files removed apart (`restoreCounts`).
  */
 export function restoredFiles(changed: number, undone: boolean): string {
   const one = changed === 1
   return `${plural(changed, "file")} ${undone ? (one ? "as it was before the turn" : "as they were before the turn") : one ? "as the turn left it" : "as the turn left them"}`
+}
+
+/**
+ * What a restore did to the files, from the two counts the engine records: the files it wrote and the files it
+ * removed. An undo writes files back as they were before the turn and removes the ones that were not there then; a
+ * redo writes them as the turn left them and removes again what the turn had removed.
+ */
+export function restoreCounts(record: { readonly written: number; readonly removed: number }, undone: boolean): string {
+  const { written, removed } = record
+  if (written + removed === 0) return "no file needed to change"
+  const wrote = written === 0 ? null : `${plural(written, "file")} ${undone ? (written === 1 ? "as it was before the turn" : "as they were before the turn") : written === 1 ? "as the turn left it" : "as the turn left them"}`
+  const gone = removed === 0 ? null : `${plural(removed, "file")} removed${undone ? ` (${removed === 1 ? "it was" : "they were"} not there before the turn)` : " again"}`
+  return [wrote, gone].filter((part) => part !== null).join(", ")
 }
 
 /** What the command is about to do, in a few lines. */

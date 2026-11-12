@@ -8,20 +8,25 @@ import { describe, expect, test } from "bun:test"
 import { brand, event } from "@windlass/core"
 import { compactText, firstSentence } from "../src/agents.ts"
 import { helpText } from "../src/args.ts"
-import { restoredFiles } from "../src/commands.ts"
+import { restoreCounts } from "../src/commands.ts"
 import { localTime, localTimes, wakeLines, wakeMessageSummary } from "../src/features.ts"
 import { render, stored } from "./helpers.ts"
 
 describe("an undo and a redo", () => {
-  const restore = { target: "s1", before: "s2", after: "s1", kept: [], keptOmitted: 0 }
+  const restore = { target: "s1" as never, before: "s2" as never, after: "s1" as never, kept: [], keptOmitted: 0 }
 
-  test("one file is \"it\", several are \"them\"; an undo says the files are as before the turn, which is true of one it removed", () => {
-    expect(restoredFiles(1, false)).toBe("1 file as the turn left it")
-    expect(restoredFiles(2, false)).toBe("2 files as the turn left them")
-    expect(restoredFiles(1, true)).toBe("1 file as it was before the turn")
-    expect(restoredFiles(2, true)).toBe("2 files as they were before the turn")
-    const out = render(stored([event("history.reverted", { fromSeq: 1, restore: { ...restore, changed: 2 } as never }), event("history.restored", { revertSeq: 1, restore: { ...restore, changed: 1 } as never })]), { columns: () => 120 })
-    expect(out).toContain("↶ went back · 2 files as they were before the turn · /redo brings it back\n")
+  test("one file is \"it\", several are \"them\"; the files written and the files removed are counted apart, as the engine records them", () => {
+    expect(restoreCounts({ written: 1, removed: 0 }, false)).toBe("1 file as the turn left it")
+    expect(restoreCounts({ written: 2, removed: 0 }, false)).toBe("2 files as the turn left them")
+    expect(restoreCounts({ written: 1, removed: 0 }, true)).toBe("1 file as it was before the turn")
+    expect(restoreCounts({ written: 2, removed: 0 }, true)).toBe("2 files as they were before the turn")
+    // A file the turn created is removed by the undo, not put back as it was: said as that.
+    expect(restoreCounts({ written: 2, removed: 1 }, true)).toBe("2 files as they were before the turn, 1 file removed (it was not there before the turn)")
+    expect(restoreCounts({ written: 0, removed: 2 }, true)).toBe("2 files removed (they were not there before the turn)")
+    expect(restoreCounts({ written: 1, removed: 1 }, false)).toBe("1 file as the turn left it, 1 file removed again")
+    expect(restoreCounts({ written: 0, removed: 0 }, true)).toBe("no file needed to change")
+    const out = render(stored([event("history.reverted", { fromSeq: 1, restore: { ...restore, written: 1, removed: 1, changed: 2 } }), event("history.restored", { revertSeq: 1, restore: { ...restore, written: 1, removed: 0, changed: 1 } })]), { columns: () => 120 })
+    expect(out).toContain("↶ went back · 1 file as it was before the turn, 1 file removed (it was not there before the turn) · /redo brings it back\n")
     expect(out).toContain("↷ brought back · 1 file as the turn left it\n")
     expect(out).not.toContain("restored")
   })
