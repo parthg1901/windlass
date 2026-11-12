@@ -75,7 +75,7 @@ describe("read", () => {
     })
     expect(outputOf(await ws.call("read", { path: "nothing/here.txt" }))).toBe("File not found: nothing/here.txt")
     expect(outputOf(await ws.call("read", { path: "dir" }))).toBe("dir is a directory. Use ls to list it.")
-    expect(outputOf(await ws.call("read", { path: "blob.bin" }))).toBe("Cannot read blob.bin: it looks like a binary file (4 bytes).")
+    expect(outputOf(await ws.call("read", { path: "blob.bin" }))).toBe("Cannot read blob.bin: it appears to be binary data of no format this tool knows (4 bytes). read shows text files and PNG, JPEG, GIF and WebP images.")
     expect((await ws.call("read", { path: "empty.txt" })).settlement).toMatchObject({ outcome: "success", output: "(empty file)" })
   })
 

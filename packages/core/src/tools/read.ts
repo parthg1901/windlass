@@ -1,8 +1,9 @@
 import { readdir } from "node:fs/promises"
 import { basename, dirname } from "node:path"
 import { OUTPUT_LIMITS } from "../tool/cap.ts"
-import type { Tool } from "../tool/tool.ts"
+import type { Tool, ToolContext, ToolResult } from "../tool/tool.ts"
 import { byCodeUnits, cutLine, shownPath, errorCode, failure, looksBinary, toolPath, success, statPath } from "./common.ts"
+import { type ImageInfo, SNIFF_BYTES, describeBinary, sniffImage } from "./sniff.ts"
 
 export interface ReadInput {
   readonly path: string
@@ -16,6 +17,8 @@ const MAX_LINE_CHARS = 2000
 const PAGE_BYTES = OUTPUT_LIMITS.maxBytes - 1024
 const PAGE_LINES = OUTPUT_LIMITS.maxLines - 2
 const BINARY_SAMPLE = 8192
+/** An image is sent to the model with every later request of the session, base64-encoded. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 export function readTool(): Tool<ReadInput> {
   return {
@@ -44,8 +47,11 @@ export function readTool(): Tool<ReadInput> {
       }
       if (info.isDirectory()) return failure(`${shown} is a directory. Use ls to list it.`)
       const file = Bun.file(path)
-      if (looksBinary(new Uint8Array(await file.slice(0, BINARY_SAMPLE).arrayBuffer())))
-        return failure(`Cannot read ${shown}: it looks like a binary file (${info.size} bytes).`)
+      const sample = new Uint8Array(await file.slice(0, SNIFF_BYTES).arrayBuffer())
+      const image = sniffImage(sample)
+      if (image !== null) return readImage(file, shown, image, info.size, context)
+      if (looksBinary(sample.subarray(0, BINARY_SAMPLE)))
+        return failure(`Cannot read ${shown}: it appears to be ${describeBinary(sample)} (${info.size} bytes). read shows text files and PNG, JPEG, GIF and WebP images.`)
       const offset = input.offset ?? 1
       const page = await readPage(file.stream(), offset, input.limit ?? DEFAULT_LIMIT)
       if (page.totalLines === 0) return success("(empty file)", { path: shown, lines: 0 })
@@ -58,6 +64,29 @@ export function readTool(): Tool<ReadInput> {
         last < page.totalLines ? `\n\n[Showing lines ${offset}-${last} of ${page.totalLines}. Call read with offset ${last + 1} to continue.]` : ""
       return success(`${body}${footer}`, { path: shown, offset, lines: page.lines.length, totalLines: page.totalLines })
     },
+  }
+}
+
+/** An image file as an attachment, with one line that says what it is. */
+async function readImage(file: Bun.BunFile, shown: string, image: ImageInfo, size: number, context: ToolContext): Promise<ToolResult> {
+  const pixels = image.width === null ? "" : `, ${image.width}x${image.height} pixels`
+  if (size > MAX_IMAGE_BYTES)
+    return failure(
+      `Cannot show ${shown}: it is a ${image.name} image${pixels} of ${size} bytes, over the limit of ${MAX_IMAGE_BYTES} bytes (${MAX_IMAGE_BYTES / 1024 / 1024} MB) for an image. Make a smaller copy (scaled down or more compressed) and read that.`,
+    )
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let blob
+  try {
+    blob = context.putBlob(bytes, image.mediaType)
+  } catch (error) {
+    return failure(`Cannot show ${shown} (a ${image.name} image): images cannot be attached here (${error instanceof Error ? error.message : String(error)}).`)
+  }
+  return {
+    status: "success",
+    output: `${shown}: ${image.name} image (${image.mediaType})${pixels}, ${bytes.length} bytes, attached.`,
+    truncation: null,
+    attachments: [blob],
+    display: { path: shown, image: { mediaType: image.mediaType, width: image.width, height: image.height, bytes: bytes.length } },
   }
 }
 
