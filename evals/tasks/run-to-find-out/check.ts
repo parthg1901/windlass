@@ -24,7 +24,7 @@ try {
 
   // What the two CI steps reject: data/ under the ci profile, data/late/ under ci-late (.ci/pipeline.yml).
   const rejected = new Set<string>()
-  for (const [profile, dir] of [["ci", "data"], ["ci-late", "data/late"]]) {
+  for (const [profile, dir] of [["ci", "data"], ["ci-late", "data/late"]] as const) {
     const script = `import json, sys\nfrom pathlib import Path\nsys.path.insert(0, ${JSON.stringify(tools)})\nfrom validate import Invalid, load_profile, validate_record\nprofile = load_profile(${JSON.stringify(profile)})\nfor path in sorted(Path(${JSON.stringify(join(scratch, dir))}).glob("*.json")):\n    record = json.loads(path.read_text())\n    try:\n        validate_record(record, profile)\n    except Invalid:\n        print(record["id"])\n`
     const expected = await run(["python3", "-B", "-c", script], scratch)
     if (expected.code !== 0) throw new Error(`grader bug: ${expected.output}`)
