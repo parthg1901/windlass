@@ -94,3 +94,14 @@ Reading a result:
 - With a throwaway `XDG_DATA_HOME` there is no sign-in, and every subcommand that starts the server needs either the sign-in or `LH_ACP_SCRIPT`, `fork` included although it calls no model.
 - To reproduce "session in use" after a kill: put a command with `trap '' TERM` in the scripted turn, `kill -9` the CLI, then run `--continue` within 5 s.
 - In a git worktree, set `PREFIXLENS_DIR=/home/ubuntu/projects/prefixlens`: the prefix gate and the eval classifier look for prefixlens beside the repository and skip silently when it is not there.
+
+## MCP, skills and wake-ups (wired 2026-11-12)
+
+- A one-prompt run cannot call an MCP tool in the default mode: `mcp_call` is a network-class call, nobody is there to ask, and it is refused as unattended. For a scripted or live one-shot check use `--approval full` and `"untrusted": false` on the server; interactively the question is asked.
+- A server named by the PROJECT's config file is not started until the user approves it; only a server in the user's file starts by itself. Point `XDG_CONFIG_HOME` at a throwaway directory to give a run its own user config; the sign-in stays in the data directory.
+- A skill in the workspace (`.claude/skills/<name>/SKILL.md`) shows in the CLI as `· instructions updated (skills)` at the first step, then `▸ skill <name>`. Checked live: 3 requests, 3 full-request records, one provider-side miss.
+- Wake-ups fire only in a process whose engine was told to run them (`engine.wake.run`); the one-shot CLI does not.
+- A scripted turn can finish before an `await fetch()` in the test returns: take the event index before the request.
+- `afterEach` in a shared test helper runs only for the first test file that imports it; register clean-up in each file.
+- The frozen tool list has 19 tools since this pass (13 before); the first request of a session is about 5,000 tokens.
+
