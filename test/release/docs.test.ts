@@ -214,7 +214,7 @@ describe("the user guide against what the program prints and keeps", () => {
     const rows: readonly (readonly [string, readonly string[], string, readonly string[]])[] = [
       ["✓ done · checks passed", ['done("checks passed")'], "✓ done · checks passed", ['span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok")']],
       ["✓ done · nothing to check", ['done("nothing to check")'], "○ done · checks not needed: nothing they cover changed", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks not needed: nothing they cover changed", "dim")']],
-      ["✓ done · nothing to check", ['seg(" · nothing to check", "dim")'], "○ done · nothing to check", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim")']],
+      ["✓ done · nothing to check", ['done("nothing to check", hint)'], "○ done · nothing to check", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim")']],
       ["✓ done · no checks configured", ['done("no checks configured")'], "○ done · no checks configured", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · no checks configured", "dim")']],
       [`✓ done · ${leftToParent}`, ["done(LEFT_TO_PARENT)"], `○ done · ${leftToParent}`, ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(` · ${LEFT_TO_PARENT}`, "dim")']],
       ["✗ stopped with failing checks: <names>", ['seg("stopped with failing checks", ["red", "bold"])'], "✗ unresolved · failing checks: <names>", ['span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · failing checks: ${failing}`, "error")']],
@@ -226,7 +226,8 @@ describe("the user guide against what the program prints and keeps", () => {
       for (const piece of screenSource) expect(screen, piece).toContain(piece)
     }
     // The line interface draws a done turn with the ok mark; the full-screen one with ○ unless checks passed.
-    expect(line).toContain("const done = (basis: string) => this.summary([seg(`${SYMBOL.ok} `, \"green\"), seg(\"done\"")
+    expect(line).toContain("const done = (basis: string, more: readonly (readonly Segment[])[] = []) =>")
+    expect(line).toContain("seg(`${SYMBOL.ok} `, \"green\"), seg(\"done\"")
     expect(checks).not.toContain("`✓ done · no checks configured` or `✓ done · nothing to check`")
   })
 

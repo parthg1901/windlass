@@ -104,6 +104,8 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 | `/rename <title>` | yes | yes |
 | `/compact` | yes | yes |
 | `/mcp [approve <server>]` | the MCP servers and their state; approves one the project names | yes |
+| `/hooks [approve <hook>]` | the hooks, when each runs and its state; approves one the project names | yes |
+| `/lsp [approve <server>]` | the language servers that add diagnostics to edits; approves one the project names | yes |
 | `/skills` | the skills the model can load here | yes |
 | `/wakeups [cancel\|secret <id>]` | the session's wake-ups; cancels one, shows a webhook's secret | yes |
 | `/memory [confirm\|reject\|renew\|forget <id>]` | the notes later sessions are given, and the ones waiting for you | yes |

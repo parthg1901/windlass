@@ -116,8 +116,7 @@ By its exit code, with its **stdout** as the text:
 
 stderr never reaches the agent, and neither does stdout on exit 0. Both are kept for you in the hook's record (the
 `forUser` field of the `hook.ran` event, which `--json` prints).
-<!-- CLIENTS(hooks-shown): no client prints `forUser` yet; say here where it is shown once one does -->
-Neither the line interface nor the full-screen one prints them yet. A
+Both interfaces show what a hook printed on the row of the call or the turn it belongs to. A
 reason or note is cut at 2,000 characters, a stop message at 4,000. Exit 2 with nothing on stdout gives a default
 text ("refused it and gave no reason").
 
