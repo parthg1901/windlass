@@ -13,7 +13,7 @@ import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText } from "./features.ts"
 import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, objectionTexts, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
 import { restoreCounts } from "./commands.ts"
-import { commandSent, unusedArgumentsNote } from "./slash.ts"
+import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
@@ -649,8 +649,7 @@ export class PrettyRenderer implements Sink {
         if (item !== undefined) this.inbox.set(event.data.messageId, { ...item, text: said.typed })
         this.lineWrapped([seg(`${SYMBOL.note} `, "dim"), seg(said.typed, "bold"), seg(` · ${said.head}`, "dim")])
         this.pathLines(`  ${said.where}:`, said.path)
-        const unused = unusedArgumentsNote(event.data)
-        for (const note of unused === null ? said.notes : [unused, ...said.notes]) wrapWhole(note, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.unknown} ` : "    ", "yellow"), seg(line, "yellow")]))
+        for (const note of said.notes) wrapWhole(note, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.unknown} ` : "    ", "yellow"), seg(line, "yellow")]))
         return
       }
       case "inbox.delivered": {

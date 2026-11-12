@@ -269,6 +269,11 @@ describe("quoted program messages", () => {
     { page: "docs/commands.md", quote: "⚠ argument 2 was not given: it is empty in the text that was sent", pieces: ["argument ", " not given: ", " empty in the text that was sent"] },
     {
       page: "docs/commands.md",
+      quote: '⚠ argument 3 ("extra") was not used: the command file has no place for it, so it is not in the text that was sent',
+      pieces: [" was not used: the command file has no place for it, so it is not in the text that was sent"],
+    },
+    {
+      page: "docs/commands.md",
       quote: "⚠ !`git status` (line 1) was left as text: a command file runs nothing when it is used; the agent can run it with its shell tool, which asks as usual",
       pieces: [") was left as text: ", "a command file runs nothing when it is used; the agent can run it with its shell tool, which asks as usual"],
     },
@@ -414,8 +419,8 @@ describe("command files, run (docs/commands.md)", () => {
     expect(events(doubled.out).some((event) => event.type === "command.expanded")).toBe(false)
     // An argument the file has no place for is not in the text that was sent, and that is said under the message.
     const extra = await at.run(["/release-notes 1.4 1.3 extra"], [say("Drafted.")])
-    expect(extra.flat).toContain("⚠ argument 3 was not used: the command file has no place for it, so it is not in the text that was sent")
-    expect(page).toContain("argument 3 was not used: the command file has no place for it, so it is not in the text that was sent")
+    expect(extra.flat).toContain('⚠ argument 3 ("extra") was not used: the command file has no place for it, so it is not in the text that was sent')
+    expect(page).toContain('argument 3 ("extra") was not used: the command file has no place for it, so it is not in the text that was sent')
   }, 90_000)
 })
 

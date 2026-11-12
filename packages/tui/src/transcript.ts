@@ -13,7 +13,6 @@ import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack } from "./cli.ts"
 import { type EngineEvent, TASK_TOOL, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText, checkLines, checksSummary, fileList } from "./cli.ts"
-import { unusedArgumentsNote } from "./features.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -814,11 +813,8 @@ export class Transcript {
         return this.enqueued(event.data, replay)
       case "command.expanded": {
         // The message admitted just before is a command file's text: its row shows the entry as typed, with the file.
-        // The arguments the template had no place for are said here, once (`unused` is kept from the shared wording).
-        const use = { ...event.data, unused: [] as number[] }
-        const sent = commandSent(use, this.inboxText.get(event.data.messageId)?.text ?? null)
-        const unused = unusedArgumentsNote(event.data)
-        const note = unused === null ? sent : { ...sent, notes: [...sent.notes, unused] }
+        // What expansion reported (an argument not given, the ones the file has no place for) is in its notes.
+        const note = commandSent(event.data, this.inboxText.get(event.data.messageId)?.text ?? null)
         const shown = this.userRows.get(event.data.messageId)
         if (shown !== undefined) this.touch(shown, () => (shown.command = note))
         else this.commandNotes.set(event.data.messageId, note)

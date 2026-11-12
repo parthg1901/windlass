@@ -9,8 +9,6 @@ import type { ApprovalAsk } from "@windlass/acp/client"
 import { type HookInfo, type LspServerInfo, type McpServerInfo, type PlannedChange, handEditSentences } from "@windlass/acp/extensions"
 import { shownCommand } from "./cli.ts"
 import { type Line, hookNotNow, hookQuestionParts, lspNotNow, lspQuestionTitle } from "./cli.ts"
-import { splitArguments } from "../../core/src/commands/expand.ts"
-import { sanitize, truncate } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
 const ROLES: Record<Line["tone"], Role | undefined> = { plain: undefined, dim: "dim", warn: "warn", error: "error", ok: "ok", bold: undefined, accent: "accent" }
@@ -141,20 +139,6 @@ export function lspServerAsk(sessionId: string, server: LspServerInfo): Approval
     subagent: null,
     subagentSessionId: null,
   }
-}
-
-/**
- * What a command's row says about the arguments that were typed after its
- * name and that its template has no place for (`command.expanded.unused`,
- * their positions): which ones, as typed, and that they are not in the
- * message. `null` when every argument was used.
- */
-export function unusedArgumentsNote(use: { readonly arguments: string; readonly unused: readonly number[] }): string | null {
-  if (use.unused.length === 0) return null
-  const typed = splitArguments(use.arguments).arguments
-  const quoted = use.unused.map((position) => typed[position - 1]).filter((argument) => argument !== undefined).map((argument) => `"${truncate(sanitize(argument), 40)}"`)
-  const which = `${use.unused.length === 1 ? "argument" : "arguments"} ${use.unused.join(", ")}${quoted.length === use.unused.length ? ` (${quoted.join(", ")})` : ""}`
-  return use.unused.length === 1 ? `${which} was not used: the command file has no place for it, so it is not in the text that was sent` : `${which} were not used: the command file has no place for them, so they are not in the text that was sent`
 }
 
 /** What is said of a file an undo or a redo asks about because it changed while a command or the checks of this session ran and no tool call named it (`editedBy: unknown`). */

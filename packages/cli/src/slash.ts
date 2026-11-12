@@ -20,7 +20,8 @@
 import type { EventData } from "@windlass/core"
 import type { ClientCommand, CommandInfo, CommandsResult } from "@windlass/acp/extensions"
 import type { Line } from "./features.ts"
-import { nearest, plural } from "./text.ts"
+import { splitArguments } from "../../core/src/commands/expand.ts"
+import { flatten, nearest, plural, truncate } from "./text.ts"
 
 export interface SlashCommand {
   readonly name: string
@@ -175,25 +176,29 @@ const LEFT_AS_TEXT = {
 /**
  * What the transcript says about a message a command file produced
  * (`command.expanded`): the entry as typed, where its text came from, and
- * what expansion reported: an argument the file uses that was not given, and
- * what another harness would have run or read and this one left as text.
+ * what expansion reported: an argument the file uses that was not given, the
+ * arguments that were typed and that the file has no place for (they are
+ * not in the message), and what another harness would have run or read and
+ * this one left as text.
  */
-export function commandSent(use: Pick<EventData<"command.expanded">, "name" | "arguments" | "path" | "scope" | "missing" | "unsupported">, text: string | null): { readonly typed: string; readonly head: string; readonly where: string; readonly path: string; readonly notes: string[] } {
+export function commandSent(use: Pick<EventData<"command.expanded">, "name" | "arguments" | "path" | "scope" | "missing" | "unused" | "unsupported">, text: string | null): { readonly typed: string; readonly head: string; readonly where: string; readonly path: string; readonly notes: string[] } {
   const typed = `/${use.name}${use.arguments === "" ? "" : ` ${use.arguments}`}`
   const size = text === null ? "" : ` (${plural(text.split("\n").length, "line")})`
   const missing = use.missing.length === 0 ? [] : [`${use.missing.length === 1 ? `argument ${use.missing[0]} was` : `arguments ${use.missing.join(", ")} were`} not given: ${use.missing.length === 1 ? "it is" : "they are"} empty in the text that was sent`]
+  const unused = unusedArgumentsNote(use)
   const unsupported = use.unsupported.map((construct) => `${construct.text} (line ${construct.line}) was left as text: ${LEFT_AS_TEXT[construct.kind]}`)
-  return { typed, head: `the text of a command file was sent${size}`, where: COMMAND_SCOPE[use.scope], path: use.path, notes: [...missing, ...unsupported] }
+  return { typed, head: `the text of a command file was sent${size}`, where: COMMAND_SCOPE[use.scope], path: use.path, notes: [...missing, ...(unused === null ? [] : [unused]), ...unsupported] }
 }
 
 /**
- * What the line interface adds under a command file's message when arguments were typed that the file has no
- * place for (`command.expanded`'s `unused`): they are not in the text that was sent. `null` when every argument
- * was used.
+ * The arguments that were typed after a command's name and that its file has no place for
+ * (`command.expanded`'s `unused`, their positions): which ones, as typed, and that they are not in the message.
+ * `null` when every argument was used.
  */
-export function unusedArgumentsNote(use: Pick<EventData<"command.expanded">, "unused">): string | null {
-  const unused = use.unused
-  if (unused.length === 0) return null
-  const one = unused.length === 1
-  return `${one ? `argument ${unused[0]} was` : `arguments ${unused.join(", ")} were`} not used: the command file has no place for ${one ? "it" : "them"}, so ${one ? "it is" : "they are"} not in the text that was sent`
+function unusedArgumentsNote(use: Pick<EventData<"command.expanded">, "arguments" | "unused">): string | null {
+  if (use.unused.length === 0) return null
+  const typed = splitArguments(use.arguments).arguments
+  const quoted = use.unused.map((position) => typed[position - 1]).filter((argument) => argument !== undefined).map((argument) => `"${truncate(flatten(argument), 40)}"`)
+  const which = `${use.unused.length === 1 ? "argument" : "arguments"} ${use.unused.join(", ")}${quoted.length === use.unused.length ? ` (${quoted.join(", ")})` : ""}`
+  return use.unused.length === 1 ? `${which} was not used: the command file has no place for it, so it is not in the text that was sent` : `${which} were not used: the command file has no place for them, so they are not in the text that was sent`
 }

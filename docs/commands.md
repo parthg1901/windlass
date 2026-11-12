@@ -100,11 +100,11 @@ give becomes empty, and you are told:
 
 A text with no `$1` or `$ARGUMENTS` in it gets what you typed added as a last paragraph, `Arguments: ...`, so
 nothing you type is dropped. A text that names positions and has no `$ARGUMENTS` has no place for an argument
-beyond them: `/release-notes 1.4 1.3 extra` sends the text without `extra`, and the line interface says so under
-the message:
+beyond them: `/release-notes 1.4 1.3 extra` sends the text without `extra`, and both interfaces say so under the
+message:
 
 ```text
-  ⚠ argument 3 was not used: the command file has no place for it, so it is not in the text that was sent
+  ⚠ argument 3 ("extra") was not used: the command file has no place for it, so it is not in the text that was sent
 ```
 
 ## What is not supported, on purpose
