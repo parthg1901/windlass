@@ -18,8 +18,9 @@ evals/
   gate.test.ts       the gate and the baseline generator, on crafted results
   memory-compare.ts  the A/B comparison that decides whether memory stays: the same tasks with and without it
   memory-compare.test.ts  the comparison, on crafted results
+  memory-tasks/      the memory A/B task set (see "The memory A/B task set"), never part of --all
   tasks/<id>/
-    task.json        { id, title, prompt | prompts, tags, timeoutSeconds, maxSteps, setup? }
+    task.json        { id, title, prompt | prompts, tags, timeoutSeconds, maxSteps, setup?, run? }
     workspace/       the project the agent starts in
     check.ts         the grader: bun check.ts <finished-workspace>, exit 0 = pass, prints one line
     solve.ts         reference solution: bun solve.ts <workspace> (or solution.patch, applied with patch -p1)
@@ -76,6 +77,11 @@ with the real CLI; the export reads a copy of the session's file and never holds
 | `--timeout <s>`, `--grace <s>` | override every task's time limit; time between SIGINT and SIGKILL |
 | `--db <path>` | where to export traces from: a harness data directory, or a single database file (default: the CLI's data directory, under the agent's `XDG_DATA_HOME`) |
 | `--no-classify` | skip the trace export and cache classification |
+| `--memory with\|without` | one side of the memory A/B: tasks from `memory-tasks/`, each run with its own user configuration, memory on and the task's notes seeded, or memory off (see "The memory A/B task set") |
+
+A task can ask for its own run settings with `run` in its task.json. The only one is `contextWindow` (tokens): the
+runner sets the test context window variable (`<BRAND>_TEST_CONTEXT_WINDOW`, docs/architecture.md, "The context
+window in tests") for that task's runs, so a long task compacts early. An unknown key fails the run before it starts.
 
 The exit code is 0 only when every run passed.
 
@@ -257,6 +263,96 @@ its prompt as a careful engineer would, list the reasonable ways to satisfy it, 
 
 Every workspace is synthetic and hand-written for this purpose: a few small files, no code copied from real
 projects or other repositories, no secrets or real personal data, no dependencies beyond Bun's built-ins.
+
+## The harder tasks
+
+Twelve tasks added for the second baseline, because a suite on which `gpt-6-luna` at low effort passes 87% cannot
+show improvement. Each covers something the first fifteen do not. Measured with 3 live runs each on `gpt-6-luna` at
+low effort, on the final version of the task (2026-11-12, a busy two-core machine, so wall times are high):
+
+| task | what it tests | passed | median wall, tokens |
+| --- | --- | --- | --- |
+| `rename-across-files` | a field renamed across a type, operations, a report, reminders, an email template and tests, with old stored data still loadable (the Invoice type is checked with the repository's TypeScript on a probe file) | 2/3 | 72s, 113k |
+| `test-blames-wrong-file` | `report.test.ts` fails, the bug is the CSV splitter in `csv.ts` (quoted fields, separators); hidden statements | 2/3 | 64s, 105k |
+| `not-a-bug` | the reported bug is fixed in this version (the customer runs an old one): change nothing, explain in ANSWER.md | 1/3 | 22s, 41k |
+| `run-to-find-out` | which records the CI steps reject: the validator stops at the first and the checksums cannot be done by reading; two directories under two profiles (`.ci/pipeline.yml`) | 2/3 | 25s, 40k |
+| `audit-every-handler` | a documented rule applied to 42 handlers in six files; runs with `run.contextWindow` lowered so it compacts | 2/3 (29k window) | 58s, 90k |
+| `api-report-check` | add a function; the project check (an API report in `.api/`) fails until the report is updated: the verification gate sends the model back | 3/3 | 34s, 57k |
+| `follow-a-skill` | a schema change done the way `.claude/skills/schema-change/SKILL.md` says (new migration, regenerated snapshot, changelog line, API field null when unset); the prompt states none of it | 3/3 | 46s, 88k |
+| `nested-agents-md` | the same helper in two packages; a nested AGENTS.md says one package returns results instead of throwing | 3/3 | 88s, 76k |
+| `generated-file-trap` | add an error code where the obvious file is generated (with a content hash) from `errors.json` | 3/3 | 41s, 75k |
+| `read-chart-image` | which services to scale, readable only from a bar chart PNG (`make-chart.ts` in the task, outside the workspace, makes it; `graders.test.ts` checks the committed image is its output) | 0/3 | 62s, 83k |
+| `due-dates-feature` | harder: a CLI feature across parsing, storage, ordering and output, with exact behaviour specified, driven through the CLI on unseen scenarios | 2/3 | 86s, 158k |
+| `reconcile-several-bugs` | harder: a report wrong for three reasons in three Python modules (a dropped last page, a sign, rounding per SKU); a hidden second day of data | 1/3 | 53s, 107k |
+
+What the failures were, read against prompt and grader:
+
+- `not-a-bug` fails mostly because the model explains in its final message and does not write ANSWER.md (it said
+  once "I left the code unchanged and did not create ANSWER.md"), and once by "fixing" working code and adding a
+  test. The prompt was reworded twice to remove any reading of "don't change anything" that forbids the file
+  (0/3, 0/3, then 1/3). `answer-question` fails the same way.
+- `read-chart-image` fails because the model never gives the PNG to `read`: it tries Python, PIL, `file` and an MCP
+  search, then reports it cannot see the image. The `read` tool's description says "Read a text file" and never
+  mentions images, although it returns them. The task stays as it is: it should pass once the description says so.
+- `audit-every-handler` at a 20k or 26k window loops: the model reads all six files in one step, the context
+  compacts at once, the summary does not carry the files, and it reads them again (16 and 19 compactions in 38 and
+  46 steps, nothing edited). At 32k it rarely compacts (one compaction in three runs). The task asks for
+  `contextWindow: 29000`.
+- `reconcile-several-bugs` and `rename-across-files` fail on the model: rounding the total instead of each SKU,
+  which the README states; an email template still saying `{{userId}}`.
+- Easy ones stay for a reason: `api-report-check` shows the gate working (in every run the checks ran twice, the
+  first failing); `follow-a-skill` shows a workspace skill being loaded and followed; `nested-agents-md` and
+  `generated-file-trap` are guards against carelessness that would show a regression.
+
+Grader fixes made after reading failures (each has a case in `alternatives.test.ts`): `nested-agents-md` no longer
+requires `"1e3"` and `"0x50"` to be rejected (whether they are whole numbers is a matter of reading);
+`due-dates-feature` compares `list --overdue` as a set (the prompt fixes the order of `list` only);
+`rename-across-files` accepts the reminder's `to` field renamed too, and its type probe no longer passes when
+TypeScript fails to start.
+
+## The memory A/B task set
+
+`memory-tasks/` holds the tasks that decide whether memory ships (`memory-compare.ts`; the rule in
+`packages/core/src/memory/README.md`, "Measuring it"). They are kept out of `tasks/` so they never mix into the
+general baseline, `--all` or the nightly run. Each is a task like any other plus `memory/`, the notes a person or an
+earlier session left, in the file format a person can edit (one terse, one with a detail slightly out of date). In
+every task the convention can be found in the workspace with effort, and the note only saves the search:
+
+| task | the convention | where it can be found without memory | passed without memory |
+| --- | --- | --- | --- |
+| `changelog-fragments` | changelog entries are fragment files in `.changes/`; CHANGELOG.md is generated | CONTRIBUTING.md, `scripts/release.ts`, the hidden `.changes/` directory | 3/3 (6 of 6 over two versions) |
+| `amounts-in-cents` | every amount is integer cents | a comment at the end of `src/types.ts`, `src/ui/format.ts` dividing by 100 | 3/3 (9 of 9 over three versions) |
+| `error-codes` | bad input raises `AppError` with a new registered, documented `E4xxx` code; `users.ts` is old code | `docs/errors.md` (the README points at it), `orders.ts`, `payments.ts` | 0/3 (0 of 6) |
+| `prefixed-ids` | ids come from `newId(prefix)` with the prefix registered; two old modules use `randomUUID` | `src/ids.ts`, `threads.ts`, `comments.ts` | 3/3 (6 of 6) |
+| `commit-convention` | commit messages are `area: lowercase summary`, blank line, `Refs: #<issue>` | `git log` (CONTRIBUTING.md says to follow it) | 0/3 (0 of 6) |
+
+Measured without memory (3 runs each, `gpt-6-luna`, low effort) the set is lopsided, not "sometimes": three tasks
+always pass and two always fail. Each was adjusted once after the first measurement (the convention moved further
+from the code, or a pointer to it was added) without moving it. In the passing ones the model's routine first steps
+(`glob **/*`, reading the files it edits whole) find the convention; in the failing ones it follows the code nearest
+to the change (`users.ts` throws plain errors) or ignores what it saw (every `commit-convention` run ran
+`git log --oneline` and still wrote `Fix oversized upload error typo`). The three that always pass cannot show a gain;
+the two that always fail can, and the pooled test still has room (9 of 15 without; 15 of 15 with would be p < 0.01).
+More tasks in the middle are the next thing this set needs.
+
+Run both sides with the same model and effort, then compare:
+
+```
+bun evals/run-agent.ts --all --memory without --model gpt-6-luna --effort low --repeat 3 --out /tmp/mem-without
+bun evals/run-agent.ts --all --memory with    --model gpt-6-luna --effort low --repeat 3 --out /tmp/mem-with
+bun evals/memory-compare.ts --with /tmp/mem-with --without /tmp/mem-without
+```
+
+`--memory` reads the tasks from `memory-tasks/` and gives every run its own user configuration directory
+(`XDG_CONFIG_HOME`, beside the workspace, removed with it). On the `with` side its `config.json` is
+`{ "memory": { "enabled": true, "inRepository": true } }` and the task's notes are copied into the workspace's
+`.<brand.directory>/memory/` after setup, so they are project notes of that workspace; on the `without` side it is
+`{ "memory": { "enabled": false } }` and nothing is seeded. Both sides therefore ignore any user configuration on the
+machine; the sign-in and the session files stay in the data directory. Two things differ between the sides beyond
+the delivered notes, and both are part of the treatment: the `with` side has the three memory tools in its tool
+list, and its notes are files in the workspace (the model may find them with `ls -a`, and `git status` shows them as
+untracked in `commit-convention`). Graders ignore them. The notes lapse 90 days (a fact) or a year (a preference or
+correction) after their dates; re-date them if the comparison is run after that.
 
 ## The nightly run
 
