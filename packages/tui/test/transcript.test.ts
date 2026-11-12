@@ -248,6 +248,22 @@ describe("undo and redo", () => {
     expect(redone).toContain("Added one.")
     expect(redone.at(-1)).toBe('↷ redone: turn 2 "Now add a test." · back in the conversation · no file was restored')
   })
+
+  test("a second /undo names only the turn it took out, and its /redo only the turn it put back", () => {
+    const first = turn("u1", "exe_1", "Write the notes.", "Wrote them.")
+    const second = turn("u2", "exe_2", "Now add a test.", "Added one.")
+    const transcript = play([event("session.created", { cwd: "/w", title: null, lineage: null, settings: { model: "m", reasoningEffort: null } }), ...first, ...second])
+    const stored = (type: "history.reverted" | "history.restored", data: object, seq: number) => ({ ...event(type, data as never), sessionId: "s" as never, seq, time: CLOCK_START })
+    transcript.apply(stored("history.reverted", { fromSeq: 11, restore: null }, 16) as never)
+    // The first prompt is delivered at seq 4: this one takes turn 1 out, turn 2 being out already.
+    transcript.apply(stored("history.reverted", { fromSeq: 4, restore: null }, 17) as never)
+    expect(shown(transcript).at(-1)).toBe('↶ undone: turn 1 "Write the notes." · out of the conversation · no file was restored · /redo brings it back')
+    transcript.apply(stored("history.restored", { revertSeq: 17, restore: null }, 18) as never)
+    const back = shown(transcript)
+    expect(back.at(-1)).toBe('↷ redone: turn 1 "Write the notes." · back in the conversation · no file was restored')
+    expect(back).toContain("Wrote them.")
+    expect(back).not.toContain("Added one.")
+  })
 })
 
 describe("undo and redo of a turn that changed no file", () => {

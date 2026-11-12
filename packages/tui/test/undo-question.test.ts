@@ -5,7 +5,7 @@
  * the conversation shows; other changes keep the shared sentences.
  */
 import { afterEach, expect, test } from "bun:test"
-import type { RevertPlan } from "@windlass/core"
+import { type RevertPlan, event } from "@windlass/core"
 import { handEditLines, handEditTitle } from "../src/features.ts"
 import { flat } from "./builders.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
@@ -39,7 +39,7 @@ test("the question says which files changed while a command ran, apart from thos
 test("/undo shows the plan with such a file marked as changed while a command ran", async () => {
   const backend = new ScriptBackend()
   const plan = {
-    fromSeq: 4,
+    fromSeq: 3,
     messageId: null,
     messages: 3,
     target: "snap_1",
@@ -56,10 +56,20 @@ test("/undo shows the plan with such a file marked as changed while a command ra
     session.undoRevert = session.revert
   }
   mounted = await mount({ width: 170, height: 40, backend })
+  // One turn, its message delivered at seq 3: the plan says which turn it takes out.
+  backend.session!.emit(
+    event("inbox.enqueued", { messageId: "u1" as never, origin: null, delivery: "steer", content: [{ type: "text", text: "Write the notes." }] }),
+    event("execution.started", { executionId: "exe_1" as never }),
+    event("inbox.delivered", { messageId: "u1" as never }),
+    event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_configured" } }),
+  )
+  await mounted.settle()
   await mounted.setup.mockInput.typeText("/undo")
   mounted.setup.mockInput.pressEnter()
   await mounted.settle()
   const frame = flat(await mounted.frame())
+  expect(frame).toContain('↶ going back to before turn 1 "Write the notes."')
+  expect(frame).not.toContain("3 messages")
   expect(frame).toContain("notes.md (changed while a command ran)")
   expect(frame).toContain("README.md (changed outside this session)")
   expect(frame).toContain("nothing was changed")

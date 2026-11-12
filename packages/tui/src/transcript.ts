@@ -382,7 +382,8 @@ export class Transcript {
     if ("seq" in event && event.seq > this.lastSeq) {
       this.lastSeq = event.seq
       // Read before the tracker forgets that they were undone.
-      if (event.type === "history.restored") redone = this.turns.turns.filter((turn) => turn.undoneBy.has(event.data.revertSeq))
+      // Only the turns this /redo puts back in the conversation: one an earlier /undo also took stays out.
+      if (event.type === "history.restored") redone = this.turns.turns.filter((turn) => turn.undoneBy.has(event.data.revertSeq) && turn.undoneBy.size === 1)
       this.turns.add(event)
     }
     this.redone = redone
@@ -972,7 +973,8 @@ export class Transcript {
           const revert = event.data.revertSeq
           for (const row of this.rows) if (row.undoneBy.has(revert)) this.touch(row, () => row.undoneBy.delete(revert))
         }
-        const turns = undone ? this.turns.turns.filter((turn) => turn.undoneBy.has(event.seq)) : this.redone
+        // The turns this /undo took out: not one an earlier /undo had taken already.
+        const turns = undone ? this.turns.turns.filter((turn) => turn.undoneBy.has(event.seq) && turn.undoneBy.size === 1) : this.redone
         const which = turnsLabel(turns)
         const head = which === null ? (undone ? "went back" : "brought back") : undone ? `undone: ${which} · out of the conversation` : `redone: ${which} · back in the conversation`
         const what =

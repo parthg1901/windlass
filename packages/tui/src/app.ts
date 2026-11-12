@@ -30,8 +30,8 @@ import { PANEL_WIDTH, middle, panelLines, panelWidth, shorten } from "./panel.ts
 import { type Span, type Theme, span } from "./theme.ts"
 import { fileDiffLines } from "./rows.ts"
 import { ReviewView, reviewTarget } from "./review-view.ts"
-import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable, turnDiffParams } from "./transcript.ts"
-import { forkPointOfTurn } from "@windlass/acp/turns"
+import { type OutcomeRow, type Row, type ToolRow, Transcript, expandable, turnDiffParams, turnsLabel } from "./transcript.ts"
+import { forkPointOfTurn, isUndone } from "@windlass/acp/turns"
 import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
 /** What a demo offers in place of `/diff` and `/review`: its turn is a recording, with no real files behind it. */
@@ -920,8 +920,12 @@ export class App {
       const preview = await act({ dryRun: true })
       if (preview.kind !== "preview") return this.say(refusal(command, preview), "warn")
       const plan = preview.plan
-      this.transcript.note([span(undo ? "going back to before your last message" : "bringing back what the last /undo took away"), span(` · ${plural(plan.messages, "message")}`, "dim")], "accent", undo ? "↶" : "↷", describePlan(plan, undo))
-      this.redraw()
+      // What the files will do, before anything is asked or changed; with no file to change the line after the undo says it all.
+      if (plan.changes.length > 0 || plan.kept.length > 0 || plan.target === null) {
+        const leaving = turnsLabel(this.transcript.turns.turns.filter((turn) => !isUndone(turn) && turn.messageSeq >= plan.fromSeq))
+        this.transcript.note([span(undo ? `going back to before ${leaving ?? "your last message"}` : "bringing back what the last /undo took away")], "accent", undo ? "↶" : "↷", describePlan(plan, undo))
+        this.redraw()
+      }
       const byHand = plan.changes.filter((change) => change.handEdited)
       if (byHand.length === 0 && plan.target === null && undo) {
         const answer = await this.dialog.show({
