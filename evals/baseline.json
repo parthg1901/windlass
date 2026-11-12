@@ -1,23 +1,23 @@
 {
-  "note": "3 repeats per task.",
+  "note": "27 tasks, 3 repeats, after the engine fixes and the final tool list",
   "configuration": {
     "model": "gpt-6-luna",
     "effort": "low"
   },
   "date": "2026-11-12",
-  "commit": "d17af59855ab3cddd1227c9ed61d4d7f76b038ad",
+  "commit": "d3d80a1a4251c467f3350e91c80e0f56cbd22e27",
   "repeats": 3,
   "sources": [
-    "eval-run-3"
+    "baseline-run"
   ],
   "summary": {
-    "runs": 45,
-    "passes": 39,
-    "passRate": 0.8666666666666667,
-    "medianSteps": 7,
-    "medianWallMs": 25804,
-    "medianInputTokens": 24512,
-    "cachedShare": 0.771879644244679
+    "runs": 81,
+    "passes": 69,
+    "passRate": 0.8518518518518519,
+    "medianSteps": 8,
+    "medianWallMs": 33882,
+    "medianInputTokens": 51921,
+    "cachedShare": 0.8320300953916432
   },
   "tasks": {
     "add-feature": {
@@ -25,135 +25,243 @@
       "passes": 3,
       "passRate": 1,
       "medianSteps": 8,
-      "medianWallMs": 31160,
-      "medianInputTokens": 24674,
-      "cachedShare": 0.6366205106567961
+      "medianWallMs": 35053,
+      "medianInputTokens": 41248,
+      "cachedShare": 0.8684966626884144
     },
     "agents-md-rule": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
       "medianSteps": 8,
-      "medianWallMs": 29911,
-      "medianInputTokens": 27800,
-      "cachedShare": 0.7044438446825239
+      "medianWallMs": 28077,
+      "medianInputTokens": 42851,
+      "cachedShare": 0.7540426996706383
     },
     "answer-question": {
       "runs": 3,
-      "passes": 0,
-      "passRate": 0,
+      "passes": 3,
+      "passRate": 1,
       "medianSteps": 4,
-      "medianWallMs": 12093,
-      "medianInputTokens": 11193,
-      "cachedShare": 0.6090706319702602
+      "medianWallMs": 15359,
+      "medianInputTokens": 20073,
+      "cachedShare": 0.6199424129953565
+    },
+    "api-report-check": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 10,
+      "medianWallMs": 38598,
+      "medianInputTokens": 53594,
+      "cachedShare": 0.8094383420681073
+    },
+    "audit-every-handler": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 16,
+      "medianWallMs": 115617,
+      "medianInputTokens": 180891,
+      "cachedShare": 0.8081598292524267
     },
     "config-edits": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 6,
-      "medianWallMs": 25804,
-      "medianInputTokens": 17249,
-      "cachedShare": 0.6414121625801662
+      "medianSteps": 5,
+      "medianWallMs": 19072,
+      "medianInputTokens": 24748,
+      "cachedShare": 0.7669054168141833
     },
     "crashing-script": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 7,
-      "medianWallMs": 21060,
-      "medianInputTokens": 21190,
-      "cachedShare": 0.7040461340771618
+      "medianSteps": 6,
+      "medianWallMs": 22975,
+      "medianInputTokens": 30295,
+      "cachedShare": 0.7620472539118509
+    },
+    "due-dates-feature": {
+      "runs": 3,
+      "passes": 1,
+      "passRate": 0.3333333333333333,
+      "medianSteps": 18,
+      "medianWallMs": 80247,
+      "medianInputTokens": 131338,
+      "cachedShare": 0.875259451751609
     },
     "fix-failing-test": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 6,
-      "medianWallMs": 17613,
-      "medianInputTokens": 18525,
-      "cachedShare": 0.6656230319388214
+      "medianSteps": 7,
+      "medianWallMs": 19909,
+      "medianInputTokens": 37167,
+      "cachedShare": 0.8408545641494345
+    },
+    "follow-a-skill": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 14,
+      "medianWallMs": 41948,
+      "medianInputTokens": 83922,
+      "cachedShare": 0.8478308778516916
     },
     "follow-up-change": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
       "medianSteps": 14,
-      "medianWallMs": 48481,
-      "medianInputTokens": 49629,
-      "cachedShare": 0.7607483329638283
+      "medianWallMs": 54164,
+      "medianInputTokens": 73970,
+      "cachedShare": 0.8612279226240538
     },
     "frozen-api": {
       "runs": 3,
-      "passes": 1,
-      "passRate": 0.3333333333333333,
-      "medianSteps": 3,
-      "medianWallMs": 10895,
-      "medianInputTokens": 8925,
-      "cachedShare": 0.6869409660107334
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 8,
+      "medianWallMs": 23234,
+      "medianInputTokens": 40339,
+      "cachedShare": 0.875813276113165
+    },
+    "generated-file-trap": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 10,
+      "medianWallMs": 42331,
+      "medianInputTokens": 65711,
+      "cachedShare": 0.8260432142205542
     },
     "large-log": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 2,
-      "medianWallMs": 8693,
-      "medianInputTokens": 4904,
-      "cachedShare": 0.6161131275286527
+      "medianSteps": 4,
+      "medianWallMs": 13814,
+      "medianInputTokens": 24373,
+      "cachedShare": 0.6390764401655835
     },
     "long-file-search": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
       "medianSteps": 7,
-      "medianWallMs": 20625,
-      "medianInputTokens": 108688,
-      "cachedShare": 0.807286706667991
+      "medianWallMs": 25131,
+      "medianInputTokens": 142514,
+      "cachedShare": 0.8011567262845795
+    },
+    "nested-agents-md": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 11,
+      "medianWallMs": 61111,
+      "medianInputTokens": 73214,
+      "cachedShare": 0.870132463555881
     },
     "noisy-test-suite": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 8,
-      "medianWallMs": 32680,
-      "medianInputTokens": 141780,
-      "cachedShare": 0.8417420281924819
+      "medianSteps": 7,
+      "medianWallMs": 37788,
+      "medianInputTokens": 47551,
+      "cachedShare": 0.8467524683663352
+    },
+    "not-a-bug": {
+      "runs": 3,
+      "passes": 1,
+      "passRate": 0.3333333333333333,
+      "medianSteps": 9,
+      "medianWallMs": 26477,
+      "medianInputTokens": 47899,
+      "cachedShare": 0.8317905563347359
     },
     "options-refactor": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 15,
-      "medianWallMs": 46113,
-      "medianInputTokens": 75092,
-      "cachedShare": 0.820762825556066
+      "medianSteps": 18,
+      "medianWallMs": 61677,
+      "medianInputTokens": 119345,
+      "cachedShare": 0.8319785089950362
     },
     "project-checks": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 8,
-      "medianWallMs": 24882,
-      "medianInputTokens": 27837,
-      "cachedShare": 0.7607061702499563
+      "medianSteps": 7,
+      "medianWallMs": 23492,
+      "medianInputTokens": 40512,
+      "cachedShare": 0.8401515215428875
+    },
+    "read-chart-image": {
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "medianSteps": 6,
+      "medianWallMs": 24061,
+      "medianInputTokens": 29582,
+      "cachedShare": 0.8179956224013502
+    },
+    "reconcile-several-bugs": {
+      "runs": 3,
+      "passes": 2,
+      "passRate": 0.6666666666666666,
+      "medianSteps": 13,
+      "medianWallMs": 52020,
+      "medianInputTokens": 90546,
+      "cachedShare": 0.8579294712922632
+    },
+    "rename-across-files": {
+      "runs": 3,
+      "passes": 1,
+      "passRate": 0.3333333333333333,
+      "medianSteps": 16,
+      "medianWallMs": 83576,
+      "medianInputTokens": 146508,
+      "cachedShare": 0.8902115205971572
     },
     "rename-function": {
       "runs": 3,
       "passes": 3,
       "passRate": 1,
-      "medianSteps": 9,
-      "medianWallMs": 28711,
-      "medianInputTokens": 31641,
-      "cachedShare": 0.8042922728026992
+      "medianSteps": 12,
+      "medianWallMs": 35583,
+      "medianInputTokens": 60751,
+      "cachedShare": 0.8174548178668415
     },
     "retry-after-error": {
       "runs": 3,
       "passes": 2,
       "passRate": 0.6666666666666666,
-      "medianSteps": 7,
-      "medianWallMs": 28692,
-      "medianInputTokens": 23182,
-      "cachedShare": 0.7930427788669381
+      "medianSteps": 8,
+      "medianWallMs": 22169,
+      "medianInputTokens": 40968,
+      "cachedShare": 0.7846104429137372
+    },
+    "run-to-find-out": {
+      "runs": 3,
+      "passes": 1,
+      "passRate": 0.3333333333333333,
+      "medianSteps": 6,
+      "medianWallMs": 26049,
+      "medianInputTokens": 49043,
+      "cachedShare": 0.8478632478632478
+    },
+    "test-blames-wrong-file": {
+      "runs": 3,
+      "passes": 1,
+      "passRate": 0.3333333333333333,
+      "medianSteps": 16,
+      "medianWallMs": 58232,
+      "medianInputTokens": 108992,
+      "cachedShare": 0.817584860406277
     }
   }
 }
