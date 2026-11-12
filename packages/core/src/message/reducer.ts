@@ -42,11 +42,17 @@
  *   or, for a stop hook, no call, at a boundary; an ending names the stop
  *   hooks that were not satisfied only when there is one.
  *
+ * - One running call is stopped by itself (`tool.cancel_requested`) only
+ *   while it runs, once, and while no interrupt is requested.
+ * - A watch is set on a background command that runs; it fires together with
+ *   the message that tells the model, never past its limit; and a command
+ *   does not end while a watch on it could still fire (`watch.ended` first).
+ *
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
  */
 import { AGENT_KEY } from "../agents/use.ts"
-import { type StepError, type StoredEvent, HARNESS_ORIGIN } from "../event/durable.ts"
+import { type StepError, type StoredEvent, HARNESS_ORIGIN, WATCH_LIMITS } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
 import { sumUsage } from "../provider/usage.ts"
@@ -56,11 +62,13 @@ import {
   INITIAL_TRACKING,
   type Message,
   type MessageKind,
+  type OutputWatch,
   type Projection,
   type SessionState,
   type ToolCallPart,
   describeOpen,
   settleOutcomes,
+  watchInForce,
 } from "./message.ts"
 
 export type ReduceErrorCode =
@@ -237,6 +245,10 @@ const SCOPE = {
   "spawn.started": "work",
   // A fact about work that ran beside the steps: it ends when it ends, also while an interrupt is wound down.
   "spawn.ended": "session",
+  // What the user does to a command that runs beside the steps, and what that command prints: whatever the execution is doing.
+  "watch.started": "session",
+  "watch.fired": "session",
+  "watch.ended": "session",
   "replay.call": "work",
   "replay.diverged": "work",
   "replay.ended": "session",
@@ -387,6 +399,17 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       return { ...change(message), endedAt: event.time }
     })
     return { ...closed, session: { ...closed.session, open: null } }
+  }
+  /** The running background command a watch is on, and how to replace its watches. A subagent has no output to watch; work that ended has none either. */
+  const watched = (spawnId: string) => {
+    const spawned = state.session.spawned
+    const entry = spawned?.running.find((candidate) => candidate.spawnId === spawnId)
+    if (spawned === undefined || entry === undefined) return fail("not_found", `background command ${spawnId} is not running`)
+    if (entry.kind !== "command") fail("invalid_transition", `${spawnId} is a subagent: only a background command's output is watched`)
+    return {
+      entry,
+      change: (watches: readonly OutputWatch[]): Projection => session({ spawned: { ...spawned, running: spawned.running.map((candidate) => (candidate === entry ? { ...entry, watches } : candidate)) } }),
+    }
   }
   const execution = (id: string, statuses: readonly ("running" | "suspended")[]) => {
     const current = state.session.execution
@@ -1092,10 +1115,48 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (entry.kind === "command" && (event.data.usage !== null || event.data.tainted || event.data.merge !== null))
         fail("invalid_transition", "a background command has no usage, taint or worktree")
       if (event.data.merge !== null && entry.worktree === null) fail("invalid_transition", `subagent ${entry.sessionId} did not work in a worktree`)
+      // A watch is never silently gone: one that could still fire is ended, with the reason, before its command is.
+      const watching = (entry.watches ?? []).filter(watchInForce)
+      if (watching.length > 0) fail("invalid_transition", `the watches on ${entry.spawnId} that can still fire end first (watch.ended): ${watching.map((watch) => watch.watchId).join(", ")}`)
       const cost = event.data.usage
       const total = spawned.usage
       const usage = cost === null ? total : total === null ? cost : sumUsage(total, cost)
       return session({ spawned: { ...spawned, running: spawned.running.filter((candidate) => candidate !== entry), usage } })
+    }
+
+    case "watch.started": {
+      const { entry, change } = watched(event.data.spawnId)
+      const all = (state.session.spawned?.running ?? []).flatMap((candidate) => candidate.watches ?? [])
+      if (all.some((watch) => watch.watchId === event.data.watchId)) fail("duplicate_id", `watch ${event.data.watchId} already exists`)
+      if (event.data.limit > WATCH_LIMITS.maxFirings) fail("invalid_transition", `a watch fires at most ${WATCH_LIMITS.maxFirings} times`)
+      const watches = entry.watches ?? []
+      if (watches.filter(watchInForce).length >= WATCH_LIMITS.perCommand) fail("invalid_transition", `a command has at most ${WATCH_LIMITS.perCommand} watches that can still fire`)
+      const { spawnId: _, ...watch } = event.data
+      return change([...watches, { ...watch, seq: event.seq, fired: 0, ended: null }])
+    }
+    case "watch.fired": {
+      const { entry, change } = watched(event.data.spawnId)
+      const watches = entry.watches ?? []
+      const index = watches.findIndex((candidate) => candidate.watchId === event.data.watchId)
+      const watch = watches[index]
+      if (watch === undefined) return fail("not_found", `${entry.spawnId} has no watch ${event.data.watchId}`)
+      if (!watchInForce(watch)) fail("invalid_transition", watch.ended !== null ? `watch ${watch.watchId} has ended (${watch.ended})` : `watch ${watch.watchId} has fired ${watch.limit} time(s), which is its limit`)
+      if (event.data.firing !== watch.fired + 1) fail("invalid_transition", `the next firing of watch ${watch.watchId} is number ${watch.fired + 1}`)
+      // A firing is the message that tells the model: admitted right before this event, in its append.
+      const told = state.inbox.find((candidate) => candidate.messageId === event.data.messageId)
+      if (told === undefined) return fail("not_found", `inbox item ${event.data.messageId} is not waiting`)
+      if (told.seq !== event.seq - 1 || told.origin !== HARNESS_ORIGIN.backgroundWatch)
+        fail("invalid_transition", `a firing follows at once the admission of the ${HARNESS_ORIGIN.backgroundWatch} message that tells the model`)
+      return change(watches.with(index, { ...watch, fired: watch.fired + 1 }))
+    }
+    case "watch.ended": {
+      const { entry, change } = watched(event.data.spawnId)
+      const watches = entry.watches ?? []
+      const index = watches.findIndex((candidate) => candidate.watchId === event.data.watchId)
+      const watch = watches[index]
+      if (watch === undefined) return fail("not_found", `${entry.spawnId} has no watch ${event.data.watchId}`)
+      if (!watchInForce(watch)) fail("invalid_transition", `watch ${watch.watchId} is over already: it ${watch.ended !== null ? `ended (${watch.ended})` : "fired as often as it may"}`)
+      return change(watches.with(index, { ...watch, ended: event.data.reason }))
     }
 
     case "replay.call": {

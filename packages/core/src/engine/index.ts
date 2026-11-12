@@ -11,7 +11,7 @@ export {
   DEFAULT_NORMALISERS,
   REPLAY_TEXT,
 } from "./replay.ts"
-export { type ChildResult, type SpawnSettings, type SubagentInput, BACKGROUND_OUTPUT_TOOL, BACKGROUND_STOP_TOOL, SUBAGENT_TOOL, SUBAGENT_NOTE, childResult } from "./spawn.ts"
+export { type ChildResult, type SpawnSettings, type SubagentInput, type WatchPattern, BACKGROUND_OUTPUT_TOOL, BACKGROUND_STOP_TOOL, SUBAGENT_TOOL, SUBAGENT_NOTE, childResult, describeWatch } from "./spawn.ts"
 export { type MergeOutcome } from "./worktree.ts"
 export { type McpServerPlan, type McpServerQuestion, type McpSetup, type McpState, MCP_START_WAIT_MS } from "./mcp.ts"
 export { type HookQuestion, type HooksSetup, type HooksState } from "./hooks.ts"

@@ -24,7 +24,7 @@ say which process works in it. The log is the table `event`:
 
 The other tables (`session`, `message`, `inbox`) are projections: they are rewritten from the events in the
 same transaction as each append, and rebuilding them from the log gives the same rows. `request` is the ledger of
-model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 8 in this build;
+model calls, kept beside the log. The database's `PRAGMA user_version` is the schema version, 9 in this build;
 a build refuses a file of another version rather than misread it.
 
 ## The rules
@@ -128,7 +128,7 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 
 ## The events
 
-57 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
+61 event types, in 15 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
 
 | Group | Events |
 | --- | --- |
@@ -138,10 +138,10 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 | execution | [`execution.started`](#executionstarted), [`execution.resumed`](#executionresumed), [`execution.succeeded`](#executionsucceeded), [`execution.failed`](#executionfailed), [`execution.interrupt_requested`](#executioninterrupt_requested), [`execution.interrupted`](#executioninterrupted) |
 | step: one model call | [`step.started`](#stepstarted), [`step.ended`](#stepended), [`step.failed`](#stepfailed), [`step.refused`](#steprefused), [`retry.scheduled`](#retryscheduled) |
 | model output | [`text.ended`](#textended), [`reasoning.ended`](#reasoningended) |
-| tools | [`tool.called`](#toolcalled), [`tool.started`](#toolstarted) |
+| tools | [`tool.called`](#toolcalled), [`tool.started`](#toolstarted), [`tool.cancel_requested`](#toolcancel_requested) |
 | approval | [`approval.requested`](#approvalrequested), [`approval.answered`](#approvalanswered), [`approval.denied`](#approvaldenied), [`taint.noticed`](#taintnoticed), [`taint.cleared`](#taintcleared), [`tool.settled`](#toolsettled) |
 | hooks | [`hook.ran`](#hookran) |
-| spawned work: subagents and background commands | [`spawn.started`](#spawnstarted), [`spawn.ended`](#spawnended) |
+| spawned work: subagents and background commands | [`spawn.started`](#spawnstarted), [`spawn.ended`](#spawnended), [`watch.started`](#watchstarted), [`watch.fired`](#watchfired), [`watch.ended`](#watchended) |
 | replay | [`replay.call`](#replaycall), [`replay.diverged`](#replaydiverged), [`replay.ended`](#replayended) |
 | compaction | [`compaction.started`](#compactionstarted), [`compaction.repair_requested`](#compactionrepair_requested), [`compaction.ended`](#compactionended), [`compaction.failed`](#compactionfailed) |
 | workspace snapshots | [`snapshot.taken`](#snapshottaken), [`snapshot.unavailable`](#snapshotunavailable), [`snapshot.coverage`](#snapshotcoverage) |
@@ -525,6 +525,17 @@ The tool began executing. From here a side effect may have happened, so a call t
 | `effect` | one of `"read"`, `"write"`, `"exec"`, `"network"` | yes |
 | `run` | [callRun](#callrun) | may be absent |
 
+### `tool.cancel_requested`
+
+Version 1.
+
+The user asked for this one call to stop, and for nothing else: the execution is not interrupted, the step carries on with its other calls, and the model reads the call's result like any other. Written before the call's abort signal fires, so the request is durable before anything stops. Only for a call that is running, once. The call then settles as any running call does: with what its tool observed and a line that says the user stopped it (a command), with its ordinary result when it could not be stopped midway (a file read, a write), or, when the tool reported nothing in time, from its effect class.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `messageId` | string, not empty | yes |
+| `callId` | string, not empty | yes |
+
 ## Approval
 
 ### `approval.requested`
@@ -684,6 +695,47 @@ Spawned work ended. `outcome`: `completed` (the command exited, with `exitCode`;
 | `merge.files` | list of string | yes |
 | `merge.conflicts` | list of string | yes |
 | `merge.kept` | boolean | yes |
+
+### `watch.started`
+
+Version 1.
+
+The user set a watch on the output of a background command that is running: from now on (and for the output that is still in memory) the model is told when the command prints a line that matches. `pattern` is text a line must contain, or with `regex` a regular expression a line must match; `ignoreCase` makes either ignore case. `limit` is how often it may fire at most (`WATCH_LIMITS.maxFirings` at the very most); it then ends by itself. The model is not told that a watch was set: it is told when it fires. Only for a command, never for a subagent, and never for one that has ended.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `watchId` | string, not empty | yes |
+| `spawnId` | string, not empty | yes |
+| `pattern` | string, not empty | yes |
+| `regex` | boolean | yes |
+| `ignoreCase` | boolean | yes |
+| `limit` | integer ≥ 1 | yes |
+
+### `watch.fired`
+
+Version 1.
+
+A watch fired: the command printed a matching line. `firing` counts from 1 and never passes the watch's limit; `line` is the line as the model is shown it (redacted like all command output, and cut when it is long). `messageId` is the harness message (`background_watch`) that tells the model, admitted to the inbox right before this event in the same append: a firing without its message does not exist. The message wakes the session if it is idle, exactly as a command's end does.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `watchId` | string, not empty | yes |
+| `spawnId` | string, not empty | yes |
+| `firing` | integer ≥ 1 | yes |
+| `line` | string | yes |
+| `messageId` | string, not empty | yes |
+
+### `watch.ended`
+
+Version 1.
+
+A watch that could still fire ended without using up its limit: the user removed it (`removed`), its command ended (`command_ended`; in the same append, right before the command's `spawn.ended`), or the harness restarted and the command was lost with it (`lost`; likewise). A watch is therefore never silently gone: it fires its last time, or this says why it will not.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `watchId` | string, not empty | yes |
+| `spawnId` | string, not empty | yes |
+| `reason` | one of `"removed"`, `"command_ended"`, `"lost"` | yes |
 
 ## Replay
 

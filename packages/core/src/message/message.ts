@@ -115,6 +115,27 @@ export function hasSideEffect(effect: ToolEffect): boolean {
 }
 
 /**
+ * A watch on the output of a background command (`watch.started`). It is in
+ * force while it has not ended and has not fired `limit` times (`watchInForce`).
+ */
+export const outputWatch = object({
+  watchId: nonEmptyString,
+  seq: integer(1),
+  pattern: nonEmptyString,
+  regex: boolean,
+  ignoreCase: boolean,
+  limit: integer(1),
+  fired: integer(0),
+  ended: nullable(oneOf(["removed", "command_ended", "lost"])),
+})
+export type OutputWatch = Infer<typeof outputWatch>
+
+/** Whether a watch can still fire. */
+export function watchInForce(watch: OutputWatch): boolean {
+  return watch.ended === null && watch.fired < watch.limit
+}
+
+/**
  * What the approval layer did with a call that did not simply run.
  * - `asked`: the user was asked (`approval.requested`); `answer` is `null`
  *   while the question is pending, then what they chose. The call starts only
@@ -458,6 +479,12 @@ export const sessionState = object({
           command: nullable(string),
           logPath: nullable(string),
           worktree: nullable(worktreeRecord),
+          /**
+           * The watches the user set on a command's output, oldest first, each as `watch.started` recorded it:
+           * how often it fired, and why it ended when it ended without using up its limit. Absent until one is set.
+           * They go with the entry when the command ends.
+           */
+          watches: optional(array(outputWatch)),
         }),
       ),
       children: array(sessionId),

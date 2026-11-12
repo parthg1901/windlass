@@ -47,8 +47,12 @@
  *    is new, an inbox item and a user message may carry the command that
  *    produced them, and the request ledger keeps the provider's own ID of a
  *    request and the model that answered (`provider_request_id`, `response_model`).
+ * 9: one tool call stopped by the user, and watches on a background command's
+ *    output: `tool.cancel_requested`, `watch.started`, `watch.fired` and
+ *    `watch.ended` are new, a tool call may carry the request to stop it
+ *    (`cancel`), and a running background command the watches set on it.
  */
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 /**
  * Run on every connection, before anything else.

@@ -58,6 +58,8 @@ const MAX_TIMEOUT_SECONDS = 3600
 /** Each is more than half the byte limit, which is what `renderCapped` needs from a streaming source. */
 const HEAD_KEEP = 64 * 1024
 const TAIL_KEEP = 64 * 1024
+/** How much of one line a listener of `lines` is given: a longer line is cut there. */
+const LINE_KEEP = 16 * 1024
 const PROGRESS_INTERVAL_MS = 200
 const PROGRESS_LINES = 20
 /** How long to wait for the pipes to close after the process group is gone (a process that left the group may hold them). */
@@ -250,6 +252,7 @@ async function startBackground(
       await exited
     },
     output: shown,
+    lines: buffer.lines,
     exited,
   })
   return {
@@ -368,6 +371,30 @@ function createOutputBuffer(sink: Bun.FileSink, spillLimit: number, context: Too
   let spilled = 0
   let lastProgress = 0
   let closed = false
+  // For `lines`: who listens, and the line that is being printed (its first `LINE_KEEP` bytes). Nothing is kept while nobody listens.
+  let listeners: Set<(line: string) => void> | null = null
+  const unfinished = new Uint8Array(LINE_KEEP)
+  let unfinishedLength = 0
+  const keep = (bytes: Uint8Array) => {
+    const part = bytes.subarray(0, LINE_KEEP - unfinishedLength)
+    unfinished.set(part, unfinishedLength)
+    unfinishedLength += part.length
+  }
+  const tell = (line: Uint8Array) => {
+    // A line cut in the middle of a character ends with the replacement character, which is as good as any cut.
+    const text = decoder.decode(line.length > 0 && line[line.length - 1] === 0x0d ? line.subarray(0, line.length - 1) : line)
+    for (const listener of [...(listeners ?? [])]) listener(text)
+  }
+  const follow = (chunk: Uint8Array) => {
+    let start = 0
+    for (let end = chunk.indexOf(0x0a); end !== -1; end = chunk.indexOf(0x0a, start)) {
+      keep(chunk.subarray(start, end))
+      tell(unfinished.subarray(0, unfinishedLength))
+      unfinishedLength = 0
+      start = end + 1
+    }
+    keep(chunk.subarray(start))
+  }
 
   const tailBytes = (keep: number) => {
     const length = Math.min(total, keep)
@@ -398,6 +425,7 @@ function createOutputBuffer(sink: Bun.FileSink, spillLimit: number, context: Too
     for (let index = chunk.indexOf(0x0a); index !== -1; index = chunk.indexOf(0x0a, index + 1)) newlines += 1
     total += chunk.length
     lastByte = chunk[chunk.length - 1]!
+    if (listeners !== null) follow(chunk)
     const now = performance.now()
     if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
       lastProgress = now
@@ -416,7 +444,36 @@ function createOutputBuffer(sink: Bun.FileSink, spillLimit: number, context: Too
       if (closed) return
       redacting?.end()
       closed = true
+      // The last line of a command that ended without a line break is a line too.
+      if (listeners !== null && unfinishedLength > 0) tell(unfinished.subarray(0, unfinishedLength))
+      unfinishedLength = 0
       await sink.end()
+    },
+    /** `BackgroundCommand.lines`: the complete lines still in memory, then each further line as it completes. */
+    lines(listener: (line: string) => void): () => void {
+      const recent = tailBytes(TAIL_KEEP + 1)
+      // Whether what is in memory starts at the start of a line: all of the output does, the tail only after a line break.
+      const whole = total <= TAIL_KEEP
+      const bytes = whole ? recent : recent.subarray(1)
+      const lastBreak = bytes.lastIndexOf(0x0a)
+      if (listeners === null) {
+        // From here on lines are assembled as they arrive: the line being printed right now is the end of the tail.
+        listeners = new Set()
+        unfinishedLength = 0
+        if (!closed) keep(bytes.subarray(lastBreak + 1))
+      }
+      let start = whole || recent[0] === 0x0a ? 0 : bytes.indexOf(0x0a) + 1
+      const found = listeners
+      found.add(listener)
+      while (start <= lastBreak && found.has(listener)) {
+        const end = bytes.indexOf(0x0a, start)
+        const line = bytes.subarray(start, Math.min(end, start + LINE_KEEP))
+        listener(decoder.decode(line.length > 0 && line[line.length - 1] === 0x0d ? line.subarray(0, line.length - 1) : line))
+        start = end + 1
+      }
+      // A command that has ended printed its last line without a line break: it is in memory, and nothing follows.
+      if (closed && lastBreak + 1 < bytes.length && found.has(listener)) listener(decoder.decode(bytes.subarray(lastBreak + 1, lastBreak + 1 + LINE_KEEP)))
+      return () => void found.delete(listener)
     },
     get totalBytes() {
       return total

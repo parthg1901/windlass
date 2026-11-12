@@ -93,6 +93,7 @@ import {
   type VerificationOutcome,
   HARNESS_ORIGIN,
   KEPT_LIMIT,
+  WATCH_LIMITS,
   event,
   forkOf,
 } from "../event/durable.ts"
@@ -110,7 +111,7 @@ import type { Json } from "../json.ts"
 import type { LspPlan } from "../lsp/config.ts"
 import type { LspNotice } from "../lsp/registry.ts"
 import { selectModelHistory } from "../message/history.ts"
-import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect } from "../message/message.ts"
+import { type AssistantMessage, type Projection, type ToolCallPart, hasSideEffect, watchInForce } from "../message/message.ts"
 import { reduce } from "../message/reducer.ts"
 import { type ProviderError, makeProviderError } from "../provider/error.ts"
 import type { FinishReason, Provider, ResponseFacts, StreamEvent } from "../provider/provider.ts"
@@ -177,12 +178,16 @@ import {
   type SpawnSettings,
   type SubagentInput,
   childResult,
+  type WatchPattern,
   renderChildResult,
   renderCommandEnd,
+  renderWatchFired,
   result as toolResult,
   spawnTools,
   taskMessage,
   taskTitle,
+  watchMatcher,
+  watchedLine,
 } from "./spawn.ts"
 import { type MergeOutcome, createWorktree, mergeWorktree, removeWorktree, salvageWorktree, worktreeBranch } from "./worktree.ts"
 import {
@@ -710,6 +715,27 @@ export interface SendOptions {
   readonly maxSteps?: number
 }
 
+/** What a client asks a watch on a background command's output to look for. */
+export interface OutputWatchRequest {
+  /** Text a line must contain, or with `regex` a regular expression (JavaScript's) a line must match. */
+  readonly pattern: string
+  readonly regex?: boolean
+  readonly ignoreCase?: boolean
+  /** How often it may fire. Default 1; at most `WATCH_LIMITS.maxFirings`. */
+  readonly limit?: number
+}
+
+/** A watch as it was set (`watch.started`), and how often it fired at once, on output the command had already printed. */
+export interface OutputWatchSet {
+  readonly watchId: string
+  readonly spawnId: string
+  readonly pattern: string
+  readonly regex: boolean
+  readonly ignoreCase: boolean
+  readonly limit: number
+  readonly fired: number
+}
+
 export interface EngineSession {
   readonly id: SessionId
   /**
@@ -775,6 +801,42 @@ export interface EngineSession {
   readonly start: () => void
   /** Asks the running execution to stop, as the user. The request is durable before anything stops. A no-op when idle. */
   readonly interrupt: () => void
+  /**
+   * Sets a watch on the output of a background command that is running:
+   * the model is told, without polling, when the command prints a line that
+   * matches. `id` is the command's handle (`spawn.started.spawnId`; the
+   * running ones are `projection().session.spawned.running`).
+   *
+   * The watch is recorded (`watch.started`) and looks at the command's
+   * output a line at a time: at once at what is still in memory of what it
+   * already printed, then at each further line. A match is a harness
+   * message (`background_watch`) admitted in one append with `watch.fired`:
+   * it says which command and watch, and quotes the line inside a fence
+   * labelled as output, redacted like all command output. It is delivered
+   * at the next step boundary and wakes the session if it is idle, exactly
+   * as the command's end does. The watch fires at most `limit` times, then
+   * ends. One that could still fire when its command ends, or when the
+   * command is lost to a restart, is recorded as ended with that reason
+   * (`watch.ended`), and the message about the command says so.
+   *
+   * This is the user's to ask for, through a client: the model has no tool
+   * for it, because the tool list is fixed and a command's own output must
+   * not be able to arrange for its delivery.
+   *
+   * Throws `EngineError` `invalid_request`, with the sentence to show the
+   * user, and writes nothing: when no such command is running (it ended, or
+   * never existed), when `id` names a subagent, when the pattern is empty,
+   * too long, has a line break or is not a regular expression, when `limit`
+   * is out of range, or when the command already has
+   * `WATCH_LIMITS.perCommand` watches that can still fire.
+   */
+  readonly watchOutput: (id: string, watch: OutputWatchRequest) => OutputWatchSet
+  /**
+   * Removes a watch that could still fire (`watch.ended`, `removed`).
+   * Returns whether there was one: `false` for a watch that has fired as
+   * often as it may, has ended, or is unknown.
+   */
+  readonly unwatchOutput: (watchId: string) => boolean
   /**
    * Stops one running tool call, as the user, and nothing else: the turn
    * goes on. The request is durable first (`tool.cancel_requested`), then
@@ -1668,6 +1730,8 @@ interface LiveSpawn {
   stopping: "interrupt" | "shutdown" | "tool" | "call" | null
   /** What the model is told about its end, once that is recorded. */
   result: string | null
+  /** The watches on a command's output that this process follows, by watch: how to stop following. */
+  readonly watches: Map<string, () => void>
   /** Resolves when its end is recorded. */
   readonly done: Promise<void>
 }
@@ -3589,15 +3653,105 @@ class LiveSession implements EngineSession {
    */
   private spawnEnded(spawnId: string, data: Omit<EventData<"spawn.ended">, "spawnId">, message: { readonly origin: string; readonly text: string } | null): void {
     try {
+      // A watch that could still fire is never silently gone: it ends here, with the reason, in the same append.
+      const reason = data.outcome === "lost" ? ("lost" as const) : ("command_ended" as const)
       this.write([
+        ...this.watching(spawnId).map((watch) => event("watch.ended", { watchId: watch.watchId, spawnId, reason })),
         event("spawn.ended", { spawnId, ...data }),
         ...(message === null ? [] : [event("inbox.enqueued", { messageId: this.core.ids.message(), origin: message.origin, delivery: "steer" as const, content: text(message.text) })]),
       ])
+      for (const unfollow of [...(this.spawns.get(spawnId)?.watches.values() ?? [])]) unfollow()
       // A subagent's taint is this session's from here on.
       this.noticeTaint()
     } catch (error) {
       this.core.report({ kind: "internal_error", sessionId: this.id, message: `the end of spawned work ${spawnId} could not be recorded: ${describe(error)}`, cause: error })
     }
+  }
+
+  /** The watches on a running command's output that can still fire, as the log has them. */
+  private watching(spawnId: string) {
+    return (this.projection().session.spawned?.running.find((entry) => entry.spawnId === spawnId)?.watches ?? []).filter(watchInForce)
+  }
+
+  watchOutput = (id: string, request: OutputWatchRequest): OutputWatchSet => {
+    this.assertOpen()
+    const refuse = (message: string): never => {
+      throw new EngineError("invalid_request", message)
+    }
+    const live = this.findSpawn(id)
+    const entry = live === undefined ? undefined : this.projection().session.spawned?.running.find((candidate) => candidate.spawnId === live.spawnId)
+    if (live === undefined || entry === undefined || live.result !== null) {
+      const running = [...this.spawns.values()].flatMap((candidate) => (candidate.command !== null && candidate.result === null ? [candidate.spawnId] : []))
+      return refuse(`No background command ${id} is running, so its output cannot be watched: a watch is set while the command runs.${running.length === 0 ? "" : ` Running: ${running.join(", ")}.`}`)
+    }
+    const command = live.command
+    if (command === null) return refuse(`${id} is a subagent. Only the output of a background command can be watched.`)
+    if (live.stopping !== null) return refuse(`Background command ${live.spawnId} is being stopped, so its output is not watched any more.`)
+    const follow = command.lines
+    if (follow === undefined) return refuse(`The output of background command ${live.spawnId} cannot be followed, so it cannot be watched.`)
+    const watch: WatchPattern = { pattern: request.pattern, regex: request.regex === true, ignoreCase: request.ignoreCase === true }
+    const matcher = watchMatcher(watch)
+    if ("problem" in matcher) return refuse(`The watch was not set. ${matcher.problem}`)
+    const limit = request.limit ?? 1
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > WATCH_LIMITS.maxFirings) return refuse(`The watch was not set. A watch fires between 1 and ${WATCH_LIMITS.maxFirings} times, not ${limit}.`)
+    const watches = entry.watches ?? []
+    if (watches.filter(watchInForce).length >= WATCH_LIMITS.perCommand)
+      return refuse(`The watch was not set. Background command ${live.spawnId} already has ${WATCH_LIMITS.perCommand} watches that can still fire; remove one first.`)
+    // Its ID is its place among the command's watches: the same from the log alone.
+    const watchId = `${live.spawnId}.w${watches.length + 1}`
+    this.write([event("watch.started", { watchId, spawnId: live.spawnId, ...watch, limit })])
+
+    const state = { fired: 0, over: false }
+    let unfollow = () => {}
+    const end = () => {
+      state.over = true
+      unfollow()
+      live.watches.delete(watchId)
+    }
+    live.watches.set(watchId, end)
+    // The lines still in memory are looked at before this returns, so `end` may be called before `unfollow` is the real one.
+    unfollow = follow((line) => {
+      // A command that is being stopped reports its end, not what it printed on the way down.
+      if (state.over || live.stopping !== null || live.result !== null || this.closing !== null) return
+      if (!matcher.matches(line)) return
+      state.fired += 1
+      if (state.fired >= limit) end()
+      try {
+        this.watchFired(live.spawnId, command.command, watchId, watch, state.fired, limit, line)
+      } catch (error) {
+        end()
+        this.core.report({ kind: "internal_error", sessionId: this.id, message: `a firing of watch ${watchId} could not be recorded: ${describe(error)}`, cause: error })
+      }
+    })
+    if (state.over) unfollow()
+    return { watchId, spawnId: live.spawnId, ...watch, limit, fired: state.fired }
+  }
+
+  unwatchOutput = (watchId: string): boolean => {
+    this.assertOpen()
+    const entry = this.projection().session.spawned?.running.find((candidate) => (candidate.watches ?? []).some((watch) => watch.watchId === watchId && watchInForce(watch)))
+    if (entry === undefined) return false
+    this.write([event("watch.ended", { watchId, spawnId: entry.spawnId, reason: "removed" })])
+    this.spawns.get(entry.spawnId)?.watches.get(watchId)?.()
+    return true
+  }
+
+  /**
+   * A watch fired: the message that tells the model and the record of the
+   * firing are one append, and the message wakes the session exactly as a
+   * command's end does. The line is the command's output: it is shown
+   * redacted like any, inside a fence, and said to be output.
+   */
+  private watchFired(spawnId: string, command: string, watchId: string, watch: WatchPattern, firing: number, limit: number, line: string): void {
+    const secrets = this.core.approvals?.secrets
+    const show = (value: string) => (secrets === undefined ? value : redact(aliased(value, this.tempContext().temp), secrets).text)
+    const shown = show(line)
+    const messageId = this.core.ids.message()
+    this.write([
+      event("inbox.enqueued", { messageId, origin: HARNESS_ORIGIN.backgroundWatch, delivery: "steer" as const, content: text(show(renderWatchFired(spawnId, { command, watch, firing, limit, line: shown }))) }),
+      event("watch.fired", { watchId, spawnId, firing, line: watchedLine(shown), messageId }),
+    ])
+    this.wake()
   }
 
   /** `ToolContext.background.command`: takes over a command the shell tool just started. */
@@ -3612,13 +3766,13 @@ class LiveSession implements EngineSession {
     }
     this.probe("spawn.started")
     let finish = () => {}
-    const live: LiveSpawn = { spawnId, background: true, child: null, fromSeq: 0, command: work, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+    const live: LiveSpawn = { spawnId, background: true, child: null, fromSeq: 0, command: work, stopping: null, result: null, watches: new Map(), done: new Promise<void>((resolve) => (finish = resolve)) }
     this.spawns.set(spawnId, live)
     this.track(
       work.exited.then((end) => {
         const stopped = live.stopping
         const secrets = this.core.approvals?.secrets
-        const rendered = renderCommandEnd(spawnId, { ...end, command: work.command, stopped: stopped === null ? null : STOPPED_BY[stopped], logPath: work.logPath })
+        const rendered = renderCommandEnd(spawnId, { ...end, command: work.command, stopped: stopped === null ? null : STOPPED_BY[stopped], logPath: work.logPath, watches: this.watching(spawnId) })
         // Its output is tool output: what the model is shown of it is redacted like any other.
         const shown = secrets === undefined ? rendered : redact(aliased(rendered, this.tempContext().temp), secrets).text
         live.result = shown
@@ -3788,7 +3942,7 @@ class LiveSession implements EngineSession {
       if ("seq" in item) this.ephemeral({ type: "child.event", sessionId: this.id, child: child.id, spawnId, title: work.title, event: item })
     })
     let finish = () => {}
-    const live: LiveSpawn = { spawnId, background: work.background, child, fromSeq, command: null, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+    const live: LiveSpawn = { spawnId, background: work.background, child, fromSeq, command: null, stopping: null, result: null, watches: new Map(), done: new Promise<void>((resolve) => (finish = resolve)) }
     this.spawns.set(spawnId, live)
     const display = { subagent: { sessionId: child.id, spawnId, title: work.title, background: work.background } }
 
@@ -3922,13 +4076,13 @@ class LiveSession implements EngineSession {
         this.spawnEnded(
           entry.spawnId,
           { outcome: "lost", detail: SPAWN_TEXT.commandLostDetail, exitCode: null, usage: null, tainted: false, merge: null },
-          { origin: HARNESS_ORIGIN.spawnLost, text: SPAWN_TEXT.commandLost(entry.spawnId, entry.command, entry.logPath) },
+          { origin: HARNESS_ORIGIN.spawnLost, text: SPAWN_TEXT.commandLost(entry.spawnId, entry.command, entry.logPath, (entry.watches ?? []).filter(watchInForce)) },
         )
         continue
       }
       // Held here, as work in progress, until its end is recorded.
       let finish = () => {}
-      const live: LiveSpawn = { spawnId: entry.spawnId, background: entry.background, child: null, fromSeq: 0, lost: true, command: null, stopping: null, result: null, done: new Promise<void>((resolve) => (finish = resolve)) }
+      const live: LiveSpawn = { spawnId: entry.spawnId, background: entry.background, child: null, fromSeq: 0, lost: true, command: null, stopping: null, result: null, watches: new Map(), done: new Promise<void>((resolve) => (finish = resolve)) }
       this.spawns.set(entry.spawnId, live)
       this.track(
         this.reapChild(entry.spawnId, entry.sessionId!, entry.worktree).finally(() => {

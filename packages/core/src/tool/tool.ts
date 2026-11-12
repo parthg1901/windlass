@@ -86,6 +86,17 @@ export interface BackgroundCommand {
   readonly stop: () => Promise<void>
   /** Its output so far, capped for the model. */
   readonly output: () => string
+  /**
+   * Its output a line at a time, for a watch: `listener` is called at once
+   * with each complete line that is still in memory (the most recent
+   * output, oldest first), then with each further line when it is complete,
+   * and with a last line that has no line break when the command ends.
+   * Lines are what the log holds (redacted when the output is), without
+   * their line break, and a very long line is cut. Returns the function
+   * that stops the calls. A listener must not throw. Absent where a
+   * command's output cannot be followed.
+   */
+  readonly lines?: (listener: (line: string) => void) => () => void
   /** Resolves when it is gone, however it ended. */
   readonly exited: Promise<{ readonly exitCode: number | null; readonly signal: string | null; readonly timedOut: boolean; readonly durationMs: number; readonly output: string }>
 }

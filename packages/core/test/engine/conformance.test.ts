@@ -52,6 +52,7 @@ import {
 import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { CHILD_WORDS, INTERRUPTED_LINT, STOPPED_TESTS } from "../scenarios/call-stop.ts"
+import { ERROR_WATCH, UP_WATCH } from "../scenarios/lineage.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, HAND_EDITED, SECOND_FIX } from "../scenarios/verification.ts"
 import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
@@ -1313,8 +1314,17 @@ async function replayInto(h: Harness, prompt: string, policy: "stop" | "execute"
 function scriptedCommand(command: string) {
   let end: (result: { exitCode: number | null; signal: string | null; timedOut: boolean; durationMs: number; output: string }) => void = () => {}
   const exited = new Promise<Parameters<typeof end>[0]>((resolve) => (end = resolve))
+  const listeners = new Set<(line: string) => void>()
+  const lines = (listener: (line: string) => void) => {
+    listeners.add(listener)
+    return () => void listeners.delete(listener)
+  }
   return {
-    start: (_input: Record<string, unknown>, context: ToolContext) => `Started in the background as ${context.background!.command({ command, logPath: "/tmp/.spill/bg.log", stop: async () => {}, output: () => "", exited }).id}.`,
+    start: (_input: Record<string, unknown>, context: ToolContext) => `Started in the background as ${context.background!.command({ command, logPath: "/tmp/.spill/bg.log", stop: async () => {}, output: () => "", lines, exited }).id}.`,
+    /** The command prints a line: whoever follows its output is told. */
+    print: (line: string) => [...listeners].forEach((listener) => listener(line)),
+    /** How many follow its output right now. */
+    followers: () => listeners.size,
     exit: (exitCode: number, output: string) => end({ exitCode, signal: null, timedOut: false, durationMs: 2500, output }),
   }
 }
@@ -1392,6 +1402,71 @@ Object.assign(PLAYS, {
     h.tools.on("shell", watcher.start)
     h.create().send(say[0]!)
     await h.settled()
+    h.kill()
+    // (The scenario's second input is the harness's own message about the lost command; the user's is the third.)
+    h.restart().send(say[2]!)
+    await h.settled()
+  },
+
+  "A watch on a background command's output wakes the idle session when a line matches": async (h, say) => {
+    const server = scriptedCommand("bun run dev")
+    h.provider.enqueue([call("call_1", "shell", { command: "bun run dev", background: true }), U], answer("The server is starting."), answer("The server is up on port 3000."), answer("The server has stopped."))
+    h.tools.on("shell", server.start)
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.session.watchOutput("bg_1", UP_WATCH)).toEqual({ watchId: "bg_1.w1", spawnId: "bg_1", pattern: "listening on", regex: false, ignoreCase: false, limit: 1, fired: 0 })
+    // Setting it told the model nothing and started nothing.
+    expect(h.session.working).toBe(false)
+    expect(h.session.projection().inbox).toEqual([])
+    server.print("$ bun run dev")
+    expect(h.session.working).toBe(false)
+    const from = h.seenEvents.length
+    server.print("Server listening on http://localhost:3000")
+    await h.seen((item) => item.type === "execution.succeeded", from)
+    await h.settled()
+    // It fired as often as it may: nothing follows the output any more, and a later match is nobody's.
+    expect(server.followers()).toBe(0)
+    server.print("Server listening on http://localhost:3001")
+    expect(h.session.unwatchOutput("bg_1.w1")).toBe(false)
+    const later = h.seenEvents.length
+    server.exit(0, "Server listening on http://localhost:3000\n")
+    await h.seen((item) => item.type === "execution.succeeded", later)
+    await h.settled()
+    expect(() => h.session.watchOutput("bg_1", UP_WATCH)).toThrow("No background command bg_1 is running")
+  },
+
+  "A watch fires while a turn runs, and ends with its command": async (h, say) => {
+    const build = scriptedCommand("bun run build --watch")
+    h.provider.enqueue(
+      [call("call_1", "shell", { command: "bun run build --watch", background: true }), U],
+      [call("call_1", "read", { path: "src/a.ts" }), U],
+      answer("The build reports the type error on line 3 of a.ts: the value is a string."),
+      answer("The build stopped with the type error still in place."),
+    )
+    h.tools.on("shell", build.start).on("read", () => {
+      build.print("[12:00:01] compiling...")
+      build.print("src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.")
+      return "const a: number = '1'"
+    })
+    // The user sets the watch while the first step is still open.
+    h.at("tool.settled", 1, () => void h.session.watchOutput("bg_1", ERROR_WATCH))
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.session.projection().session.spawned?.running[0]?.watches).toMatchObject([{ watchId: "bg_1.w1", fired: 1, limit: 3, ended: null }])
+    const from = h.seenEvents.length
+    build.exit(1, "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\n")
+    await h.seen((item) => item.type === "execution.succeeded", from)
+    await h.settled()
+    expect(build.followers()).toBe(0)
+  },
+
+  "A watch is lost with its command when the process dies": async (h, say) => {
+    const server = scriptedCommand("bun run dev")
+    h.provider.enqueue([call("call_1", "shell", { command: "bun run dev", background: true }), U], answer("The server is starting."), answer("The server stopped when the harness restarted, and so did the watch for its start. Shall I start it again?"))
+    h.tools.on("shell", server.start)
+    h.create().send(say[0]!)
+    await h.settled()
+    h.session.watchOutput("bg_1", UP_WATCH)
     h.kill()
     // (The scenario's second input is the harness's own message about the lost command; the user's is the third.)
     h.restart().send(say[2]!)
@@ -1790,7 +1865,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(110)
+    expect(scenarios).toHaveLength(113)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

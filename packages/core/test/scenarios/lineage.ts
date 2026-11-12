@@ -10,7 +10,7 @@
  */
 import { event } from "../../src/event/durable.ts"
 import { REPLAY_TEXT } from "../../src/engine/replay.ts"
-import { SPAWN_TEXT, renderChildResult, renderCommandEnd, taskMessage } from "../../src/engine/spawn.ts"
+import { SPAWN_TEXT, renderChildResult, renderCommandEnd, renderWatchFired, taskMessage } from "../../src/engine/spawn.ts"
 import { STOPPED_OUTPUT } from "../../src/replay/replay.ts"
 import {
   OTHER,
@@ -33,6 +33,9 @@ import {
   spawnEnded,
   spawnStarted,
   spawnedBy,
+  watchEnded,
+  watchFired,
+  watchStarted,
   stepEnded,
   stepStarted,
   toolStarted,
@@ -203,6 +206,7 @@ export const subagentReturns: Scenario = {
       rejects: [
         { event: spawnStarted("bg_1", "a1", "call_1", "subagent"), code: "duplicate_id", why: "a piece of spawned work starts once" },
         { event: spawnEnded("bg_2", "completed", "It finished.", { steps: 1 }), code: "not_found", why: "only work that is running ends" },
+        { event: watchStarted("bg_1.w1", "bg_1", { pattern: "fixed" }), code: "invalid_transition", why: "only a background command's output is watched: a subagent's words are its own conversation" },
       ],
     },
     {
@@ -371,6 +375,189 @@ export const backgroundCommandLost: Scenario = {
   ],
 }
 
+// ---------------------------------------------------------------- watches on a background command's output
+
+const DEV = "bun run dev"
+const LISTENING = "Server listening on http://localhost:3000"
+/** The watch of the first scenario: the line that says the server is up, once. */
+export const UP_WATCH = { pattern: "listening on" } as const
+const up = { ...UP_WATCH, regex: false, ignoreCase: false }
+const serverUp = renderWatchFired("bg_1", { command: DEV, watch: up, firing: 1, limit: 1, line: LISTENING })
+const serverExited = renderCommandEnd("bg_1", { command: DEV, exitCode: 0, signal: null, timedOut: false, stopped: null, durationMs: 2500, output: `${LISTENING}\n`, logPath: LOG })
+
+/** The server is started in the background, and the turn ends while it runs. */
+const serverStarted = (prompt: string) => [
+  ...opening(prompt),
+  stepStarted("a1"),
+  called("a1", "call_1", "shell", '{"command":"bun run dev","background":true}'),
+  toolStarted("a1", "call_1", "shell"),
+  spawnStarted("bg_1", "a1", "call_1", { command: DEV, logPath: LOG }, true),
+  settled("a1", "call_1", "success", "Started in the background as bg_1."),
+  stepEnded("a1", "tool_calls"),
+  stepStarted("a2"),
+  say("a2", "The server is starting."),
+  stepEnded("a2"),
+  executionSucceeded(),
+]
+
+export const watchWakes: Scenario = {
+  title: "A watch on a background command's output wakes the idle session when a line matches",
+  description:
+    "A background command wakes the session when it exits; a server does not exit. The user, through their client, sets a watch on the running command's output: text a line must contain (or a regular expression), and how often it may fire (once by default, a bounded number at most). The watch is recorded (`watch.started`) and nothing else happens: the model is not told, and nothing starts. The model cannot ask for a watch itself: the tool list is fixed, and what a command prints must not be able to arrange for its own delivery. When the command prints a matching line, a harness message (`background_watch`) and `watch.fired` are one append: the message names the command and the watch and quotes the line inside a fence, labelled as output, which it is, not instructions; it is redacted like all command output. The message wakes the session exactly as a command's end does: the session is idle, so it starts a new execution, is delivered, and the model answers. The watch has fired as often as it may, so it is over, and the command ends later like any command.",
+  provider: "step 1 calls shell with background; step 2 answers; the user sets a watch; the server prints the line; step 3 answers; the server exits; step 4 answers",
+  spawn: {},
+  phases: [
+    {
+      label: "the server is started in the background and the turn ends",
+      events: serverStarted("Start the dev server."),
+      expect: { execution: null, inbox: [] },
+      rejects: [{ event: watchStarted("bg_2.w1", "bg_2", UP_WATCH), code: "not_found", why: "a watch is set on a command that is running" }],
+    },
+    {
+      label: "the user sets a watch for the line that says the server is up",
+      events: [watchStarted("bg_1.w1", "bg_1", UP_WATCH)],
+      expect: { execution: null, inbox: [], ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }] },
+      rejects: [
+        { event: watchStarted("bg_1.w1", "bg_1", { pattern: "error" }), code: "duplicate_id", why: "a watch is set once" },
+        { event: watchStarted("bg_1.w2", "bg_1", { pattern: "error", limit: 21 }), code: "invalid_transition", why: "a watch fires a bounded number of times" },
+        { event: watchFired("bg_1.w1", "bg_1", 1, LISTENING, "s1"), code: "not_found", why: "a firing is the message that tells the model: the message is admitted first, in the same append" },
+        { event: spawnEnded("bg_1", "completed", "It exited.", { exitCode: 0 }), code: "invalid_transition", why: "a command does not end while a watch on it could still fire: the watch is ended first, with the reason" },
+      ],
+    },
+    {
+      label: "the server prints the line; the message wakes the session",
+      events: [
+        enqueue("s1", serverUp, "steer", "background_watch"),
+        watchFired("bg_1.w1", "bg_1", 1, LISTENING, "s1"),
+        executionStarted("exe_2"),
+        deliver("s1"),
+        stepStarted("a3"),
+        say("a3", "The server is up on port 3000."),
+        stepEnded("a3"),
+        executionSucceeded("exe_2"),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "s1", kind: "synthetic", origin: "background_watch", text: serverUp }, { id: "a3" }], execution: null, inbox: [] },
+      rejects: [
+        { event: watchEnded("bg_1.w1", "bg_1", "removed"), code: "invalid_transition", why: "a watch that fired as often as it may is over: there is nothing left to remove" },
+        { event: watchStarted("bg_1.w1", "bg_1", UP_WATCH), code: "duplicate_id", why: "a watch that is over keeps its ID" },
+      ],
+    },
+    {
+      label: "the server exits later, like any background command",
+      events: [
+        spawnEnded("bg_1", "completed", serverExited.split("\n")[0]!, { exitCode: 0 }),
+        enqueue("s2", serverExited, "steer", "background_command"),
+        executionStarted("exe_3"),
+        deliver("s2"),
+        stepStarted("a4"),
+        say("a4", "The server has stopped."),
+        stepEnded("a4"),
+        executionSucceeded("exe_3"),
+      ],
+      expect: { execution: null, inbox: [] },
+      rejects: [{ event: watchStarted("bg_1.w2", "bg_1", UP_WATCH), code: "not_found", why: "a watch on a command that has ended is refused" }],
+    },
+  ],
+}
+
+const BUILD = "bun run build --watch"
+const TYPE_ERROR = "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'."
+/** The watch of the second scenario: any line that mentions an error, up to three times. */
+export const ERROR_WATCH = { pattern: "error|failed", regex: true, ignoreCase: true, limit: 3 } as const
+const buildFailed = renderWatchFired("bg_1", { command: BUILD, watch: ERROR_WATCH, firing: 1, limit: 3, line: TYPE_ERROR })
+const buildExited = renderCommandEnd("bg_1", { command: BUILD, exitCode: 1, signal: null, timedOut: false, stopped: null, durationMs: 2500, output: `${TYPE_ERROR}\n`, logPath: LOG, watches: [ERROR_WATCH] })
+
+export const watchFiresMidTurn: Scenario = {
+  title: "A watch fires while a turn runs, and ends with its command",
+  description:
+    "A watch can be set at any moment, also while the model works: it is the user's act, like sending a message. This one is a regular expression that ignores case and may fire three times. The command prints a matching line while a tool call of the turn runs. The message is admitted at once (one append with `watch.fired`) and, being a steer, is delivered at the next step boundary: the model reads it together with its tool's result and goes on. The watch has two firings left when the command exits. A watch is never silently gone: `watch.ended` records that it ended with its command, in the same append as `spawn.ended` and right before it, and the message about the command's end says so.",
+  provider: "step 1 calls shell with background (the user sets a watch); step 2 calls read, and the build prints an error meanwhile; step 3 answers; the build exits; step 4 answers",
+  spawn: {},
+  phases: [
+    {
+      label: "the build is started in the background; the user sets a watch while the turn runs",
+      events: [
+        ...opening("Run the build in watch mode and look at a.ts."),
+        stepStarted("a1"),
+        called("a1", "call_1", "shell", '{"command":"bun run build --watch","background":true}'),
+        toolStarted("a1", "call_1", "shell"),
+        spawnStarted("bg_1", "a1", "call_1", { command: BUILD, logPath: LOG }, true),
+        settled("a1", "call_1", "success", "Started in the background as bg_1."),
+        watchStarted("bg_1.w1", "bg_1", ERROR_WATCH),
+        stepEnded("a1", "tool_calls"),
+      ],
+      expect: { execution: { status: "running", crashResumes: 0 }, open: null, inbox: [] },
+    },
+    {
+      label: "the build prints an error while a file is read; the message is delivered at the next boundary",
+      events: [
+        stepStarted("a2"),
+        called("a2", "call_1", "read", '{"path":"src/a.ts"}'),
+        toolStarted("a2", "call_1", "read"),
+        enqueue("s1", buildFailed, "steer", "background_watch"),
+        watchFired("bg_1.w1", "bg_1", 1, TYPE_ERROR, "s1"),
+        settled("a2", "call_1", "success", "const a: number = '1'"),
+        stepEnded("a2", "tool_calls"),
+        deliver("s1"),
+        stepStarted("a3"),
+        say("a3", "The build reports the type error on line 3 of a.ts: the value is a string."),
+        stepEnded("a3"),
+        executionSucceeded(),
+      ],
+      expect: { execution: null, inbox: [], ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "s1", origin: "background_watch" }, { id: "a3" }], history: ["u1", "a1", "a2", "s1", "a3"] },
+      rejects: [{ event: watchFired("bg_1.w1", "bg_1", 3, TYPE_ERROR, "s1"), code: "invalid_transition", why: "firings are counted one by one, up to the limit" }],
+    },
+    {
+      label: "the build exits: the watch that could still fire ends with it",
+      events: [
+        watchEnded("bg_1.w1", "bg_1", "command_ended"),
+        spawnEnded("bg_1", "completed", buildExited.split("\n")[0]!, { exitCode: 1 }),
+        enqueue("s2", buildExited, "steer", "background_command"),
+        executionStarted("exe_2"),
+        deliver("s2"),
+        stepStarted("a4"),
+        say("a4", "The build stopped with the type error still in place."),
+        stepEnded("a4"),
+        executionSucceeded("exe_2"),
+      ],
+      expect: { execution: null, inbox: [] },
+    },
+  ],
+}
+
+export const watchLost: Scenario = {
+  title: "A watch is lost with its command when the process dies",
+  description:
+    "A watch lives in the process that runs its command: the command dies with the harness (its guard kills the process group), and nothing follows its output any more. The log still says that the command runs and that a watch on it could fire. When the session is opened again, the watch is recorded as lost (`watch.ended lost`) right before its command is (`spawn.ended lost`), in one append with the harness message that tells the model that the command is gone and that the watch on it will not fire. So after a restart a watch is never just gone, and the model is not left waiting for a message that cannot come.",
+  provider: "step 1 calls shell with background; step 2 answers; the user sets a watch; the process dies; the user asks again; step 3 answers",
+  spawn: {},
+  phases: [
+    {
+      label: "the server runs in the background with a watch on its output; the process dies",
+      events: [...serverStarted("Start the dev server and tell me when it is up."), watchStarted("bg_1.w1", "bg_1", UP_WATCH)],
+      expect: { execution: null },
+    },
+    {
+      label: "at the next start the watch and its command are recorded as lost; the model is told with the next prompt",
+      events: [
+        watchEnded("bg_1.w1", "bg_1", "lost"),
+        spawnEnded("bg_1", "lost", SPAWN_TEXT.commandLostDetail),
+        enqueue("s1", SPAWN_TEXT.commandLost("bg_1", DEV, LOG, [up]), "steer", "spawn_lost"),
+        enqueue("u2", "Is it up?"),
+        executionStarted("exe_2"),
+        deliver("s1"),
+        deliver("u2"),
+        stepStarted("a3"),
+        say("a3", "The server stopped when the harness restarted, and so did the watch for its start. Shall I start it again?"),
+        stepEnded("a3"),
+        executionSucceeded("exe_2"),
+      ],
+      expect: { ui: [{ id: "u1" }, { id: "a1" }, { id: "a2" }, { id: "s1", kind: "synthetic", origin: "spawn_lost" }, { id: "u2", kind: "user" }, { id: "a3" }], execution: null, inbox: [] },
+      rejects: [{ event: watchEnded("bg_1.w1", "bg_1", "lost"), code: "not_found", why: "a watch ends once, and goes with its command" }],
+    },
+  ],
+}
+
 /**
  * A fork's log spans two sessions' files: it begins with its parent's
  * events. A scenario of it therefore cannot be stored as one session under
@@ -378,5 +565,5 @@ export const backgroundCommandLost: Scenario = {
  */
 export const forkScenarios = [forkContinues]
 
-export const lineageScenarios = [replayIdentical, replayStops, replayExecutes, subagentReturns, subagentLog, subagentInBackground, backgroundCommandWakes, backgroundCommandLost]
+export const lineageScenarios = [replayIdentical, replayStops, replayExecutes, subagentReturns, subagentLog, subagentInBackground, backgroundCommandWakes, backgroundCommandLost, watchWakes, watchFiresMidTurn, watchLost]
 

@@ -391,6 +391,18 @@ export type DiagnosticsRecord = Infer<typeof diagnosticsRecord>
  * Any other non-empty string is a valid origin too (a background command, a
  * wake-up); these are the ones the loop and the reducer agree on.
  */
+/** The bounds of a watch on a background command's output. The reducer enforces the first two. */
+export const WATCH_LIMITS = {
+  /** How often one watch may fire at most. */
+  maxFirings: 20,
+  /** How many watches that can still fire one command may have. */
+  perCommand: 8,
+  /** The longest pattern, in characters. */
+  patternChars: 500,
+  /** How much of a matching line the model is shown, in characters. */
+  lineChars: 2000,
+} as const
+
 export const HARNESS_ORIGIN = {
   /**
    * The marker that the previous response was cut short. It must directly
@@ -425,6 +437,11 @@ export const HARNESS_ORIGIN = {
   stopHook: "stop_hook",
   /** A background command of the session ended: how, and the end of its output. Delivered through the inbox. */
   backgroundCommand: "background_command",
+  /**
+   * A background command that is still running printed a line that matches a watch the user set on its output:
+   * which watch, and the line, fenced and labelled as output. Delivered through the inbox, in one append with `watch.fired`.
+   */
+  backgroundWatch: "background_watch",
   /** A subagent that ran in the background ended: its final answer, or how it failed. Delivered through the inbox. */
   subagentResult: "subagent_result",
   /** Spawned work that the harness could not keep (it restarted) or stopped itself (an interrupt). Delivered through the inbox. */
@@ -902,6 +919,38 @@ export const durableEvents = {
       ),
     }),
   ),
+
+  /**
+   * The user set a watch on the output of a background command that is
+   * running: from now on (and for the output that is still in memory) the
+   * model is told when the command prints a line that matches. `pattern` is
+   * text a line must contain, or with `regex` a regular expression a line
+   * must match; `ignoreCase` makes either ignore case. `limit` is how often
+   * it may fire at most (`WATCH_LIMITS.maxFirings` at the very most); it then
+   * ends by itself. The model is not told that a watch was set: it is told
+   * when it fires. Only for a command, never for a subagent, and never for
+   * one that has ended.
+   */
+  "watch.started": define(1, object({ watchId: nonEmptyString, spawnId: nonEmptyString, pattern: nonEmptyString, regex: boolean, ignoreCase: boolean, limit: integer(1) })),
+  /**
+   * A watch fired: the command printed a matching line. `firing` counts from
+   * 1 and never passes the watch's limit; `line` is the line as the model is
+   * shown it (redacted like all command output, and cut when it is long).
+   * `messageId` is the harness message (`background_watch`) that tells the
+   * model, admitted to the inbox right before this event in the same append:
+   * a firing without its message does not exist. The message wakes the
+   * session if it is idle, exactly as a command's end does.
+   */
+  "watch.fired": define(1, object({ watchId: nonEmptyString, spawnId: nonEmptyString, firing: integer(1), line: string, messageId })),
+  /**
+   * A watch that could still fire ended without using up its limit: the
+   * user removed it (`removed`), its command ended (`command_ended`; in the
+   * same append, right before the command's `spawn.ended`), or the harness
+   * restarted and the command was lost with it (`lost`; likewise). A watch
+   * is therefore never silently gone: it fires its last time, or this says
+   * why it will not.
+   */
+  "watch.ended": define(1, object({ watchId: nonEmptyString, spawnId: nonEmptyString, reason: oneOf(["removed", "command_ended", "lost"]) })),
 
   // ---- replay ----
 

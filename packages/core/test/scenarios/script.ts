@@ -263,6 +263,20 @@ export const spawnEnded = (spawnId: string, outcome: "completed" | "failed" | "s
     tainted: false,
     merge: null,
   })
+/** What the scenarios' watches look for, as `watch.started` records it. */
+export interface WatchSetting {
+  readonly pattern: string
+  readonly regex?: boolean
+  readonly ignoreCase?: boolean
+  readonly limit?: number
+}
+/** The user sets a watch on the output of a running background command. */
+export const watchStarted = (watchId: string, spawnId: string, watch: WatchSetting) =>
+  event("watch.started", { watchId, spawnId, pattern: watch.pattern, regex: watch.regex ?? false, ignoreCase: watch.ignoreCase ?? false, limit: watch.limit ?? 1 })
+/** A watch fired: the message `id`, admitted right before, tells the model, and quotes `line`. */
+export const watchFired = (watchId: string, spawnId: string, firing: number, line: string, id: string) => event("watch.fired", { watchId, spawnId, firing, line, messageId: m(id) })
+/** A watch that could still fire ended: the user removed it, its command ended, or the command was lost to a restart. */
+export const watchEnded = (watchId: string, spawnId: string, reason: "removed" | "command_ended" | "lost") => event("watch.ended", { watchId, spawnId, reason })
 /** What a replay made of one call: matched against the recorded step and call, or how it left the recording. */
 export const replayCall = (id: string, callId: string, result: "matched" | "normalised" | "dropped" | "diverged" | "off_tape", more: { readonly executed?: boolean; readonly recorded?: readonly [number, number]; readonly divergence?: string } = {}) =>
   event("replay.call", {
@@ -814,6 +828,12 @@ export function describeEvent(item: NewEvent): string {
       const work = item.data.work
       return `spawn.started ${d.spawnId} by ${d.messageId}/${d.callId} ${work.kind === "subagent" ? `subagent ${work.sessionId}` : `command ${quote(work.command)}`}${d.background ? " background" : ""}`
     }
+    case "watch.started":
+      return `watch.started ${d.watchId} on ${d.spawnId} ${d.regex ? `/${d.pattern}/${d.ignoreCase ? "i" : ""}` : `${quote(d.pattern)}${d.ignoreCase ? " ignoring case" : ""}`} limit=${d.limit}`
+    case "watch.fired":
+      return `watch.fired ${d.watchId} on ${d.spawnId} firing=${d.firing} ${quote(d.line)} told by ${d.messageId}`
+    case "watch.ended":
+      return `watch.ended ${d.watchId} on ${d.spawnId} ${d.reason}`
     case "spawn.ended":
       return `spawn.ended ${d.spawnId} ${d.outcome}${d.exitCode === null ? "" : ` exit=${d.exitCode}`}${item.data.usage === null ? "" : ` usage=${item.data.usage.inputTokens}in/${item.data.usage.outputTokens}out`}`
     case "replay.call":
