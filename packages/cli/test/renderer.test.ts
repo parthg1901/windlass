@@ -522,6 +522,28 @@ describe("verification, the workspace and reverts", () => {
     ])
   })
 
+  test("a second /undo, and the /redo of it, name only the turn that revert changed", () => {
+    const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
+    const turn = (id: string, exe: string, prompt: string) => [said(id, prompt), event("execution.started", { executionId: exe as never }), event("inbox.delivered", { messageId: m(id) }), event("execution.succeeded", { executionId: exe as never, verification: { status: "not_configured" } })]
+    const history = [...turn("u1", "exe_1", "Write the notes."), ...turn("u2", "exe_2", "Now add a test.")]
+    const shown = lines([...history, event("history.reverted", { fromSeq: 7, restore: null }), event("history.reverted", { fromSeq: 3, restore: null }), event("history.restored", { revertSeq: 10, restore: null })], 140)
+    expect(shown.filter((line) => /^[↶↷]/.test(line))).toEqual([
+      '↶ undone: turn 2 "Now add a test." · out of the conversation · no file was restored · /redo brings it back',
+      '↶ undone: turn 1 "Write the notes." · out of the conversation · no file was restored · /redo brings it back',
+      '↷ redone: turn 1 "Write the notes." · back in the conversation · no file was restored',
+    ])
+  })
+
+  test("an /undo that takes back only a message sent into a turn names that message", () => {
+    const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
+    const history = [said("u1", "Fix a.ts."), event("execution.started", { executionId: "exe_1" as never }), event("inbox.delivered", { messageId: m("u1") }), said("u2", "Also b.ts."), event("inbox.delivered", { messageId: m("u2") }), event("execution.succeeded", { executionId: "exe_1" as never, verification: { status: "not_configured" } })]
+    const shown = lines([...history, event("history.reverted", { fromSeq: 5, restore: null }), event("history.restored", { revertSeq: 7, restore: null })], 140)
+    expect(shown.filter((line) => /^[↶↷]/.test(line))).toEqual([
+      '↶ undone: your message "Also b.ts." (sent during turn 1) · out of the conversation · no file was restored · /redo brings it back',
+      '↷ redone: your message "Also b.ts." (sent during turn 1) · back in the conversation · no file was restored',
+    ])
+  })
+
   test("a diagnostic of the engine is printed in full", () => {
     const diagnostic: EphemeralEvent = {
       type: "diagnostic",

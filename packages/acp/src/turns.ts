@@ -44,6 +44,17 @@ export interface TurnInfo {
   readonly undoneBy: Set<number>
 }
 
+/** A message the user sent into a turn already under way (a steer): `/undo` takes these back before the turn itself. */
+export interface SteerInfo {
+  /** The number of the turn it was sent into. */
+  readonly turn: number
+  readonly text: string
+  /** The seq of its delivery. */
+  readonly seq: number
+  /** The seqs of the reverts that took it back and were not undone since. */
+  readonly undoneBy: Set<number>
+}
+
 /** Whether `/undo` has taken the turn back (and no `/redo` brought it back). */
 export function isUndone(turn: TurnInfo): boolean {
   return turn.undoneBy.size > 0
@@ -55,6 +66,7 @@ export function isUndone(turn: TurnInfo): boolean {
  */
 export class TurnTracker {
   readonly turns: TurnInfo[] = []
+  readonly steers: SteerInfo[] = []
   private readonly prompts = new Map<string, string>()
   private current: TurnInfo | null = null
   /** A queued message ended the previous turn: its delivery starts the next one. */
@@ -108,7 +120,7 @@ export class TurnTracker {
           turn.prompt = text
           turn.messageSeq = event.seq
           this.delivered.add(turn)
-        }
+        } else if (turn !== null && this.delivered.has(turn)) this.steers.push({ turn: turn.number, text, seq: event.seq, undoneBy: new Set() })
         return
       }
       case "turn.ended": {
@@ -137,11 +149,13 @@ export class TurnTracker {
       case "history.reverted": {
         const from = Number(data.fromSeq)
         for (const turn of this.turns) if (turn.messageSeq >= from && turn.messageSeq < event.seq) turn.undoneBy.add(event.seq)
+        for (const steer of this.steers) if (steer.seq >= from && steer.seq < event.seq) steer.undoneBy.add(event.seq)
         return
       }
       case "history.restored": {
         const revert = Number(data.revertSeq)
         for (const turn of this.turns) turn.undoneBy.delete(revert)
+        for (const steer of this.steers) steer.undoneBy.delete(revert)
         return
       }
       default:
@@ -157,6 +171,19 @@ export class TurnTracker {
     this.turns.push(turn)
     return turn
   }
+}
+
+/**
+ * What the revert recorded at `revertSeq` changes and no other revert covers: the turns it takes out of the
+ * conversation that were in it (or, read before its `history.restored`, the turns that redo puts back), and the
+ * messages sent into a turn it keeps. A second `/undo` covers the turns the first took out as well; it names only
+ * the new one.
+ */
+export function changedByRevert(tracker: TurnTracker, revertSeq: number): { readonly turns: TurnInfo[]; readonly steers: SteerInfo[] } {
+  const only = (undoneBy: Set<number>) => undoneBy.has(revertSeq) && undoneBy.size === 1
+  const turns = tracker.turns.filter((turn) => only(turn.undoneBy))
+  const numbers = new Set(turns.map((turn) => turn.number))
+  return { turns, steers: tracker.steers.filter((steer) => only(steer.undoneBy) && !numbers.has(steer.turn)) }
 }
 
 export function turnsOf(events: Iterable<TurnEvent>): TurnInfo[] {

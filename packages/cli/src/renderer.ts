@@ -15,7 +15,7 @@ import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRe
 import { restoreCounts } from "./commands.ts"
 import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
-import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
+import { type SteerInfo, type TurnEvent, type TurnInfo, TurnTracker, changedByRevert } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapKeeping, wrapWhole } from "./text.ts"
 
@@ -206,8 +206,8 @@ export class PrettyRenderer implements Sink {
   private readonly hookRuns = new Map<string, HookRecord[]>()
   /** The stop hooks that objected when the turn last tried to end: said when the agent is sent back, or on the ending. */
   private stopRuns: HookRecord[] = []
-  /** The turns a `history.restored` brings back, read before the tracker forgets that they were undone. */
-  private redone: readonly TurnInfo[] = []
+  /** What a `history.restored` brings back, read before the tracker forgets that it was undone. */
+  private redone: { readonly turns: readonly TurnInfo[]; readonly steers: readonly SteerInfo[] } = { turns: [], steers: [] }
   private lastSeq = 0
 
   constructor(private readonly options: PrettyOptions) {}
@@ -216,7 +216,7 @@ export class PrettyRenderer implements Sink {
     // Counted once each: the stored history may already hold what the stream brings (`primeTurns`).
     if ("seq" in event && event.seq > this.lastSeq) {
       this.lastSeq = event.seq
-      if (event.type === "history.restored") this.redone = this.turns.turns.filter((turn) => turn.undoneBy.has(event.data.revertSeq))
+      if (event.type === "history.restored") this.redone = changedByRevert(this.turns, event.data.revertSeq)
       this.turns.add(event)
     }
     this.handle(event)
@@ -815,9 +815,9 @@ export class PrettyRenderer implements Sink {
         const undone = event.type === "history.reverted"
         const record = event.data.restore
         // Which turns: taken out of the conversation, or put back in it.
-        const turns = undone ? this.turns.turns.filter((turn) => turn.undoneBy.has(event.seq)) : this.redone
-        this.redone = []
-        const which = turnsLabel(turns)
+        const changed = undone ? changedByRevert(this.turns, event.seq) : this.redone
+        this.redone = { turns: [], steers: [] }
+        const which = turnsLabel(changed.turns) ?? steersLabel(changed.steers)
         const head = [seg(`${undone ? SYMBOL.undo : SYMBOL.redo} `, "cyan"), seg(which === null ? (undone ? "went back" : "brought back") : undone ? `undone: ${which}` : `redone: ${which}`)]
         const what = which === null ? "" : undone ? " · out of the conversation" : " · back in the conversation"
         if (record === null) this.lineWrapped([...head, seg(what), seg(undone ? " · no file was restored · /redo brings it back" : " · no file was restored", "dim")])
@@ -1805,6 +1805,15 @@ export function turnsLabel(turns: readonly TurnInfo[]): string | null {
     return `turn ${turn.number}${turn.prompt === "" ? "" : ` "${truncate(flatten(turn.prompt), 40)}"`}`
   }
   return `turns ${turns[0]!.number} to ${turns.at(-1)!.number}`
+}
+
+/** Messages sent into a turn, as `/undo` names them: `your message "check b.ts" (sent during turn 3)`; `null` for none. */
+export function steersLabel(steers: readonly SteerInfo[]): string | null {
+  if (steers.length === 0) return null
+  const during = [...new Set(steers.map((steer) => steer.turn))]
+  const when = during.length === 1 ? `sent during turn ${during[0]}` : `sent during turns ${during[0]} to ${during.at(-1)}`
+  if (steers.length > 1) return `${steers.length} of your messages (${when})`
+  return `your message "${truncate(flatten(steers[0]!.text), 40)}" (${when})`
 }
 
 /** In the compact form the summary follows the symbol directly; with no summary the duration does. */
