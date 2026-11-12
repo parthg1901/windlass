@@ -29,8 +29,22 @@ $T new-session -d -s tui -x 120 -y 40 "bun packages/cli/src/main.ts tui --cwd $T
 
 - `--demo-speed 4` plays a demo faster; `--demo-grace <ms>` makes a stopped command take that long to wind down (for Ctrl-C tests).
 - A script for `LH_ACP_SCRIPT` is `{ "responses": [[items...], ...] }`, one list per model call; items are `text`, `reasoning`, `tool_call` (`callId`, `name`, `input`), `usage`, `delay` (`ms`), `finish`, `fail` (see `packages/acp/src/scripted.ts`). The workspace needs `git init` and a commit for undo to have snapshots.
+- Approvals are scripted with calls the default mode (`auto`) asks about, so the question is the engine's own: a `write` to a path outside the workspace (not under `/tmp`, see Known issues), a `shell` call with `"sandbox": { "network": true }`, or anything after `/approval ask`. A `read` of a file outside the workspace taints the session. `{ "type": "delay", "ms": 1500 }` before the call gives a test time to type first.
 - `LH_TUI_DEBUG=1` shows events the TUI does not know as dim rows; `NO_COLOR=1` turns colour off; `LH_TUI=1` makes plain `lh` (interactive, no prompt) start the TUI.
 - In tests use `packages/tui/test/tmux.ts`: `Tmux.start({ width, height, command, env })` runs the command under a shell that records its exit status and keeps the pane, on a private server per test process.
+
+## Approvals, taint and diffs
+
+- The approval dock opens above the input. It takes the keys only when the input is empty and nothing was typed for 1.2 s, and then ignores its own letters and Enter for 0.4 s; otherwise its last line says `Tab answers the question` and everything typed goes to the input. Focused, its last line starts `↑↓ Enter · a s p n m`. Answer `a` once, `s` session, `p` project (not offered for the network), `n` no, `m` no with a note (type it, Enter). Esc gives the keys back to the input; Ctrl-C stops the turn and answers `cancelled`.
+- While a question waits the status line says `? waiting for your answer · <tool> <argument> · <time>`, and the call's row `? <tool> … · waiting for your approval`.
+- A command's row ends in `⊡` when it ran in the sandbox, `⊡ +network` / `⊡ +write <dir>` with extra access, `· no sandbox` without it. A refused call is `⊘`.
+- `/approval` (picker, or `/approval ask`), `/clear-taint` (asks first), `/diff` (full-screen per-file diffs of the selected step or turn, the latest by default; n and p jump between files, Esc closes), `/rename` (says it waits for an engine operation).
+
+```sh
+$T send-keys -t tui -l "write it outside"; $T send-keys -t tui Enter
+until $T capture-pane -p -t tui | grep -q "↑↓ Enter · a s"; do sleep 0.1; done; sleep 0.5   # focused and armed
+$T send-keys -t tui -l "m"; $T send-keys -t tui -l "keep it in the workspace"; $T send-keys -t tui Enter
+```
 
 ## Send keys
 
@@ -93,8 +107,11 @@ To kill the ACP server under a running TUI: `pgrep -P <TUI pid> -f "main.ts acp"
 ## The suites
 
 ```sh
-bun test packages/tui                       # everything: about 50 tests, 35 s on two cores
-bun test packages/tui/test/e2e.test.ts      # tmux only: demo turn, steer, Ctrl-C once and twice, crash, resize, undo, sessions, killed server, server stderr
+bun test packages/tui                       # everything: about 75 tests, 45 s on two cores
+bun test packages/tui/test/e2e.test.ts      # tmux only: demo turn, steer, Ctrl-C once and twice, crash, resize, undo, sessions, killed server, server stderr,
+                                            #   approval approved / declined with a note / cancelled by Ctrl-C, typing kept, taint and /clear-taint, /diff
+bun test packages/tui/test/approval.test.ts # component tests of the dock, the safety rows, the mode picker and the diff view at fixed sizes
+bun test packages/acp/test/client.test.ts   # the shared protocol client the TUI and the CLI use
 bun test packages/tui/test/frames.test.ts --update-snapshots   # after an intended change to the showcase frames
 ```
 
@@ -116,9 +133,7 @@ $T kill-server; rm -f /tmp/tmux-$(id -u)/lh-manual
 
 What a good frame shows: tool rows with outcome and duration, the turn ending row with its verification state, the changed-files line, and on the right the panel with session totals, the last call, and one cache bar per model call (the first call 0% cached, later ones high).
 
-Open cosmetic issues seen on screen (2026-11-12, 120 columns):
-- The one-line demo hint at the top is cut off by the panel ("/help li…"); it should wrap or shorten.
-- In demo mode the panel shows "context 9.5k (window unknown)"; with the real server it should show the window.
+Reviewed at 80, 100, 120 and 200 columns (2026-11-12): the demo hint wraps instead of being cut by the panel; the demo's panel shows the context window (the scenario's, or 272k); the idle hint at exactly 80 columns was cut mid-key ("Ctrl-P panel · C…") and now falls back to its short form; the help at 80 columns ran past the screen with wrapped lines at column 0 and a key run into its text ("\ at the endnew line") and now wraps under its keys and scrolls; the approval mode picker cut each mode's description and now says them in full above the list; titles are shortened at a word.
 
 ## Known issues and gotchas
 
@@ -138,6 +153,16 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **Several TUIs on one session**: a session is open in one process at a time; `--continue` in three panes at once left two waiting on a session in use. Use one workspace or data directory per pane.
 - **A styled TextRenderable's `content.toString()` is `[object Object]`.** Comparing it with a string on every frame made the TUI re-render forever: 9% CPU at idle until fixed (now 0%). Measure idle CPU with `/proc/<pid>/stat` over a few seconds after `● ready`.
 - **Mouse reporting is on** (wheel scrolling): text selection needs Shift-drag in most terminals, and inside tmux the copy mode of the outer tmux.
+- **Esc then text in one burst is Alt-<letter>.** `send-keys Escape` followed at once by `send-keys -l "Fetch …"` lost the "F": the key parser read `ESC F` as Alt-F. Send Escape, wait 100 ms or more, then type.
+- **A second turn's "○ done" is already on the screen.** Waiting for `○ done` after the second prompt matched the first turn's ending row at once. Wait for text only the new turn has (its reply, a unique tool row), or for `● ready` to go first.
+- **The dock does not take keys from someone typing**, by design: a test that typed its prompt less than 1.2 s before the question arrived saw `Tab answers the question` and its `a` went into the input. Submitting clears that (a sent message is not typing). Wait for the focused footer, then 0.5 s for the arming; or press Tab, which toggles (Tab on a focused dock gives the keys back).
+- **The network question has no "project" choice** (network is never remembered for a project), so `p` is absent and Up/Down counts differ from a file question's. Read the choices before scripting keys.
+- **An "outside" path under /tmp is not outside.** With the workspace in /tmp, a path beside it is the session's own temp directory: no question, no taint. Use `/var/tmp` (or the home directory) for the outside directory in tests.
+- **A cancelled question was recorded as a refusal.** The client answered the pending `session/request_permission` with `cancelled` right after sending `session/cancel`; inside the server the answer overtook the cancel and the engine recorded `approval.answered` with `deny`. The shared client now answers once the interrupt is in the log (at most 1 s later); the dock leaves the screen at once.
+- **Replayed turn endings came before the replayed events.** On `session/load` a full-fidelity client got every `_light-harness/turn` before the events of the turns they end, so the changed files had no ending row to go to. Fixed in the server; a TUI test asserts a replayed ending gets its files.
+- **`conversation()` does not read dialogs.** It splits each line at `│` to drop the panel, and a dialog's own borders are `│` too: check dialog text in the raw frame.
+- **The live model may skip the failure.** Asked to fetch a URL it often asks for `sandbox: { network: true }` up front (the question appears in the first step); told "exactly this, no extra arguments" it reported the sandbox's DNS failure instead of asking. Steering ("ask for network access and run it again") then asked.
+- **Engine work in progress breaks unrelated suites.** Another agent edits `packages/core` in this checkout; once every engine-backed test failed with `this.concludeReplay is not a function` from `engine.ts`. Not the TUI: retry a few minutes later, and run the component tests (no engine) meanwhile.
 - **The live model's second call often reads 0% from cache** (seen in the panel's per-call bars: 89%, 0%, 90%, 83%). That is the provider's lag on quick follow-ups described in the harness-testing skill, not the TUI.
 
 ## Measured (two-core aarch64, 2026-11-12)

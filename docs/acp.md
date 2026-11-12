@@ -50,7 +50,7 @@ every command the agent started is stopped, and the session resumes later where 
 | `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["light-harness"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`) and `attended` (default `true`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_light-harness/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["light-harness"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), and `archived: true` opens an archived session too. |
-| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort, archived? }`. With `_meta["light-harness"] = { archived: true }` archived sessions are listed too. |
+| `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort, archived? }`. With `_meta["light-harness"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first message (below). |
 | `session/prompt` | Text, `resource_link` (named as `[file: /path]` or `[link: uri]` so the model can open it) and embedded text `resource` (the text in a fenced block under the same header). The response is the stop reason of the turn, with how it ended under `_meta["light-harness"]` (below). `_meta["light-harness/maxSteps"]` sets the step limit of the turn the prompt starts. |
 | A prompt while the agent works | Steers it: the message reaches the model at the next step boundary (after the running tool calls), in the same turn. Every prompt the turn took in is answered when it ends, with the same stop reason. |
 | `session/cancel` | Prompts not yet delivered are withdrawn and answered `cancelled` at once; the running turn is interrupted (commands are stopped) and its prompt is answered `cancelled` after its last update. A prompt sent right after a cancel starts the next turn. |
@@ -87,7 +87,13 @@ How a turn ended goes beyond the stop reason: the verification gate decides whet
 carry `outcome` (`succeeded`, `unresolved`: done but the project's checks still fail, `failed`, `interrupted`), the
 gate's `verification` (`passed` with the evidence, `not_needed`, `not_configured`, or `unresolved` with the reason
 and the failing checks), and the files the turn changed. On `session/load` every earlier turn's ending is replayed
-as a `_light-harness/turn` notification marked `replay: true`, after that turn's updates.
+as a `_light-harness/turn` notification marked `replay: true`, after that turn's updates (and, for a client that
+takes the harness's events, after that turn's events), with the files it changed worked out from its snapshots.
+
+**Titles.** A session the user did not name gets a title without a model call: the first line of its first
+message, trimmed, runs of spaces collapsed, shortened at a word to 60 characters with `…` (`deriveTitle` in
+`packages/acp/src/extensions.ts`). It is what `session/list`, `session_info_update` (on load and resume, and live
+when the first message arrives) and `_light-harness/session` report; nothing is written to the log.
 
 ## Approval
 
@@ -142,8 +148,10 @@ A client tells the two apart by `_meta["light-harness"]`: `approval` or `plan`.
 - The client's file system and terminal methods (`fs/*`, `terminal/*`): tools run inside the agent.
 - Session modes, plans, slash commands (`available_commands_update`), `logout`, additional directories, and system
   prompt overrides.
-- The files an earlier turn changed are not replayed (`changedFiles: null`): the list is computed from snapshots
-  when a turn ends and not stored, and the engine has no operation to compute it later.
+- Renaming a session: the engine has no operation that appends `session.renamed` (it would be
+  `EngineSession.rename(title)`), so `_light-harness/rename` is not offered and titles are derived (below).
+- Compaction on request: the engine compacts only when its policy says so and has no operation to ask for one
+  (`EngineSession.compact()`), so `_light-harness/compact` is not offered.
 - ACP v2. The SDK's v2 is an experimental draft whose prompt turn works differently (a prompt is answered once it is
   inserted and completion is a `state_update`), so serving it means a second set of handlers rather than a flag.
 
@@ -174,8 +182,11 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | The three turn endings and exit code 3 | `execution.succeeded`'s `verification` in the events; for other clients `_light-harness/turn` and the prompt response's `_meta` |
 | The files a turn changed | the `workspace.changes` event; for other clients `changedFiles` in `_light-harness/turn` |
 | Diagnostics | the `diagnostic` event; for other clients `_light-harness/diagnostic`, and a `notice` to clients that show them |
-| `--list-sessions` | `session/list` (all pages) |
+| `--list-sessions` | `session/list` (all pages), with the derived titles |
 | `--models` | `_light-harness/models` |
+| `/approval [ask\|auto\|full]` | `session/set_config_option` `approval`, then `_light-harness/approval` for the mode in force |
+| `/diff` | `_light-harness/diff` for the latest turn |
+| The sandbox marker on a command (`⊡`, `+network`, `+write <dir>`, "no sandbox") | `tool.started`'s `run.sandbox` in the events |
 | Not signed in, an unknown model or session, a session in use | errors with `data["light-harness"] = { reason, message, holderPid? }`; the CLI prints `message` |
 
 Engine operations a client can use that the CLI does not: `_light-harness/withdraw` (take back an undelivered
@@ -185,6 +196,30 @@ When `lh acp` dies under a turn, the CLI says so on stderr, names the session to
 next open of that session recovers it through the engine's crash recovery. A server that does not answer
 `initialize` within 20 seconds (`LH_ENGINE_START_TIMEOUT_MS`), exits first (its last log line is shown), or does not
 offer `_light-harness/event` is reported in one line, exit code 1.
+
+## The client library
+
+Both terminal clients (`lh` and `lh tui`) use one protocol client, `@light-harness/acp/client`
+(`packages/acp/src/client.ts`), and another client can too. It lives in this package because it is the protocol's
+other half: it depends on the SDK and on `extensions.ts`, never on a client, so nothing depends back on it.
+
+- `HarnessConnection.start({ transport, clientInfo, log?, startTimeoutMs? })` starts `lh acp` as a child process
+  (`{ kind: "child", command, env }`, its own process group, its stderr parsed into log lines) or the server in the
+  same process (`{ kind: "memory", harness }`, for tests), and negotiates the harness's events
+  (`events: true, updates: false`). It refuses a server that does not offer them, with a sentence.
+- A connection serves any number of sessions: `newSession`, `resolve`, `openSession` (load or resume),
+  `listSessions`, `listModels`, `storedEvents`, `unarchive`. Listings never stop a server in use; `stop()` does.
+- A `ClientSession` has `events` (typed harness events with `replay`) or `items` (the events and the session's
+  notifications: turn endings, state, usage, taint, notices, in arrival order), `send` (steer or queue), `cancel`,
+  `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `close`, and the
+  features a server may lack behind `offers(method)` (`rename`, `compact`).
+- Permission requests are routed to the session they are about: `approver(ask, signal)` gets the whole approval
+  question (choices with what each remembers, `needs`, `then`, and `subagent` when a request names one), and
+  `handEdits(ask, signal)` the hand-edit question of an undo. `cancel()` answers a pending question `cancelled`
+  once the server has withdrawn it (its interrupt is in the log), and aborts `signal` so the client can close it.
+- Errors are `ClientError`s with the server's `reason` (`auth_required`, `session_in_use`, `session_not_found`,
+  ..., `closed` when the server is gone or never started); `lost()` says how a server went away.
+- `HarnessClient` wraps a connection that can be made again (`reconnect()`), for the TUI's `/reconnect`.
 
 ## Extensions
 
@@ -221,7 +256,7 @@ do not ask get the standard updates exactly as before, and none of this.
                                     //   | { status: "not_configured" } | { status: "unresolved", reason, failing, acknowledgement, evidence }
   message?: string,                 // failed: why
   reason?: "user" | "shutdown",     // interrupted: by whom
-  changedFiles: string[] | null,    // null on a replay, or when no snapshot could tell
+  changedFiles: string[] | null,    // also on a replay (from the turn's snapshots); null when no snapshot could tell
   continues?: true,                 // the turn ended inside the execution because a queued message waited for it
   replay?: true
 }
@@ -245,6 +280,25 @@ latest by default), the files and the conversation, and undo that. Only while th
   | { kind: "refused", reason: "busy" | "nothing_to_revert" | "not_found" | "compacted", message } | { kind: "failed", plan, message }
 // plan: { fromSeq, messageId, messages, target, unrestorable, changes: { path, status, handEdited }[], kept }
 ```
+
+**`_light-harness/diff`** (request): the files a turn or a step changed, with bounded per-file patches, from the
+workspace snapshots the engine recorded around it (`snapshot.taken`). A turn runs from the workspace as it was when
+its first message was delivered to the last snapshot before it ended; a step from its `step_start` to its
+`step_end`. Read from the stored log, so it works for any session, also one this connection did not open.
+
+```ts
+// params
+{ sessionId: string, executionId?: string, messageId?: string, patch?: boolean }  // a turn (the latest by default) or a step (its assistant message); patch: false lists files only
+// result
+{ available: true, scope: "turn" | "step", executionId: string | null, messageId: string | null, from: string, to: string,
+  files: { path, status: "added" | "deleted" | "modified" | "mode_changed" | "type_changed", binary: boolean,
+           patch: string | null, truncated: boolean, omitted: boolean, added: number, removed: number }[] }
+| { available: false, reason: "not_found" | "no_snapshots" | "unavailable", message: string }
+```
+
+Patches are cut at 32 KiB per file (`truncated`) and 256 KiB in all (later files `omitted`); a file git finds
+binary has `binary: true` and no patch. `no_snapshots`: nothing around it could change files (a step of reads), or
+snapshots were off. `unavailable`: the snapshot store cannot be read (no git, or the snapshots were pruned).
 
 **`_light-harness/withdraw`** (request) `{ sessionId, messageId }` → `{ withdrawn: boolean }`: takes back a message
 that was admitted and not delivered yet (`inbox.cancelled`); `false` when it was delivered or is unknown.
