@@ -150,7 +150,7 @@ Reading a result:
 
 ## After the engine fixes (2026-11-12)
 
-- The store's schema version is 10 (it changes with most engine passes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
+- The store's schema version is 12 (it changes with most engine changes): session files written before are refused (`schema_mismatch`) and not listed. Nothing is migrated, since nothing is released.
 - A one-prompt run can search and call a tool of an untrusted MCP server with `--approval full`; only the call's result taints the session, the search does not.
 - `wake_cancel`, `memory_save` and `memory_retract` run unattended in `auto` and `full`; `ask` still asks.
 - A compaction's ending carries `calls`, the summary calls it took: count them with `bun evals/dogfood/events.ts <id> --type compaction.ended`. Model requests of a turn are its steps plus those calls.
