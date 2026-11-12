@@ -230,13 +230,19 @@ describe("wake-ups against the code", () => {
 
   test("the section on where wake-ups fire is still true (WAKE-UPS-FIRE)", () => {
     expect(page).toContain("<!-- WAKE-UPS-FIRE:")
-    expect(page).toContain("**At this commit no part of the program fires a wake-up.**")
-    // The scheduler runs only where an engine is created with `wake: { run: true }`. No entry point does that yet;
-    // when one does, this fails until docs/wake-ups.md says where wake-ups fire.
+    expect(page).toContain("**Wake-ups fire while a server process of the program runs**")
+    expect(page).toContain("`LH_WAKE=off`".replace("LH", brand.binary.toUpperCase()))
+    // The scheduler runs only where an engine is created with `wake: { run: true }`: the stdio server, unless its
+    // switch says off. When another entry point starts it, or this one stops, docs/wake-ups.md must say so.
+    const runs = (file: string) => /wake\s*:\s*\{[^}]*run\s*:\s*true/.test(withoutComments(readFileSync(file, "utf8")))
+    const server = join(ROOT, "packages/acp/src/stdio.ts")
+    expect(runs(server), "the stdio server runs the wake-up scheduler").toBe(true)
     for (const dir of ["packages/acp/src", "packages/cli/src", "packages/tui/src", "packages/core/src/assembly.ts"]) {
       const files = dir.endsWith(".ts") ? [join(ROOT, dir)] : sourceFiles().filter((file) => file.startsWith(join(ROOT, dir)))
-      for (const file of files) expect(/wake\s*:\s*\{[^}]*run\s*:\s*true/.test(withoutComments(readFileSync(file, "utf8"))), `${file} runs the wake-up scheduler: update docs/wake-ups.md`).toBe(false)
+      for (const file of files) if (file !== server) expect(runs(file), `${file} runs the wake-up scheduler: update docs/wake-ups.md`).toBe(false)
     }
+    // A run nobody sits in front of switches it off for its server.
+    expect(readFileSync(join(ROOT, "packages/cli/src/main.ts"), "utf8")).toContain('[WAKE_ENV]: "off"')
   })
 
   test("no client shows a webhook's secret yet", () => {

@@ -128,12 +128,12 @@ add `approval.requested` and `approval.answered` between `tool.called` and `tool
 
 ## The events
 
-54 event types, in 14 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
+55 event types, in 14 groups. In the tables, "Required: may be absent" marks a field that can be left out of `data`; every other field is always present (inside an object that is itself present), and a type that ends in "or `null`" may be `null`. A field inside an object or a list is written with dots (`work.command`, `paths[].real`); "when `kind: ...`" marks the fields of one shape of a union. Shapes used in several places are under [Shared shapes](#shared-shapes).
 
 | Group | Events |
 | --- | --- |
 | session lifecycle | [`session.created`](#sessioncreated), [`settings.changed`](#settingschanged), [`session.renamed`](#sessionrenamed), [`session.archived`](#sessionarchived), [`session.unarchived`](#sessionunarchived) |
-| frozen request prefix | [`baseline.set`](#baselineset), [`instruction.appended`](#instructionappended) |
+| frozen request prefix | [`baseline.set`](#baselineset), [`instruction.appended`](#instructionappended), [`agent.switched`](#agentswitched) |
 | inbox | [`inbox.enqueued`](#inboxenqueued), [`inbox.delivery_changed`](#inboxdelivery_changed), [`inbox.cancelled`](#inboxcancelled), [`inbox.delivered`](#inboxdelivered), [`turn.ended`](#turnended), [`synthetic.appended`](#syntheticappended) |
 | execution | [`execution.started`](#executionstarted), [`execution.resumed`](#executionresumed), [`execution.succeeded`](#executionsucceeded), [`execution.failed`](#executionfailed), [`execution.interrupt_requested`](#executioninterrupt_requested), [`execution.interrupted`](#executioninterrupted) |
 | step: one model call | [`step.started`](#stepstarted), [`step.ended`](#stepended), [`step.failed`](#stepfailed), [`step.refused`](#steprefused), [`retry.scheduled`](#retryscheduled) |
@@ -226,6 +226,20 @@ An instruction that changed after the baseline (the date, an edited AGENTS.md, a
 | `text` | string | yes |
 | `fingerprint` | string, not empty, or `null` | yes |
 | `detail` | [instructionDetail](#instructiondetail) | may be absent |
+
+### `agent.switched`
+
+Version 1.
+
+The agent the session runs as changed: a role kept as a file, with instructions, restrictions and sometimes a model (`agents/`). `to` is the definition as it was when it was selected (its instructions, the restrictions in force, its fingerprint), so the session never reads the file again; `null` switches the agent off. `from` names the agent before.
+
+Written in two places. With `messageId: null`, before the session's first baseline: the session starts as the agent, whose instructions are then a section of that baseline (a subagent started as an agent, or under a parent that runs as one, has it from its creation). Otherwise at a step boundary, right after the `instruction.appended` message (source `agent`) that gives the model the new instructions, and `messageId` is that message: the baseline is frozen, so a switch is an appended message. From this event on every call is checked against `to.restrictions` before the approval layer decides it.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `messageId` | string, not empty, or `null` | yes |
+| `from` | string, not empty, or `null` | yes |
+| `to` | [agentRecord](#agentrecord), or `null` | yes |
 
 ## Inbox
 
@@ -522,7 +536,7 @@ The user's answer to the question of this call: the choice, a note if they wrote
 
 Version 1.
 
-The call was refused without anyone being asked: by the policy (`policy`), or because it needed approval and nobody was present (`unattended`; `needs` is what it needed). `stop`: the run ends with it. The call's `tool.settled` follows in the same append, with the text the model sees.
+The call was refused without anyone being asked: by the policy (`policy`), or because it needed approval and nobody was present (`unattended`; `needs` is what it needed). `agent` is set when the policy that refused it is the restrictions of the agent the session runs as, and names that agent: they are checked before the approval layer, so `paths` is empty (nothing about the call was looked at) and `mode` is the mode in force then. `stop`: the run ends with it. The call's `tool.settled` follows in the same append, with the text the model sees.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -534,6 +548,7 @@ The call was refused without anyone being asked: by the policy (`policy`), or be
 | `reason` | one of `"policy"`, `"unattended"` | yes |
 | `needs` | list of [storedNeed](#storedneed) | yes |
 | `stop` | boolean | yes |
+| `agent` | string, not empty | may be absent |
 
 ### `taint.noticed`
 
@@ -576,7 +591,7 @@ The call's one terminal result. `output` is the text for the model, capped once 
 
 Version 1.
 
-Work that runs beside the session's own steps began: a subagent (a child session) or a shell command started in the background. Written by the tool call `(messageId, callId)` that started it, before the child session exists and right after the command was spawned. `background`: the call returned at once and the result arrives later as a message; otherwise the call itself waits for it (subagents only). A follow-up message to a child that has ended starts new work with a new `spawnId` for the same child session.
+Work that runs beside the session's own steps began: a subagent (a child session) or a shell command started in the background. Written by the tool call `(messageId, callId)` that started it, before the child session exists and right after the command was spawned. `background`: the call returned at once and the result arrives later as a message; otherwise the call itself waits for it (subagents only). A follow-up message to a child that has ended starts new work with a new `spawnId` for the same child session. `agent` names the agent a new subagent runs as, for display; the child's own log has the record.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -589,6 +604,7 @@ Work that runs beside the session's own steps began: a subagent (a child session
 | `work.logPath` | when `kind: "command"`: string, or `null` | yes |
 | `work.sessionId` | when `kind: "subagent"`: string, not empty | yes |
 | `work.worktree` | when `kind: "subagent"`: [worktreeRecord](#worktreerecord), or `null` | yes |
+| `work.agent` | when `kind: "subagent"`: string, not empty | may be absent |
 
 ### `spawn.ended`
 
@@ -861,6 +877,27 @@ The open revert, or undo of one, could not restore the workspace. Nothing change
 
 Declared in `packages/core/src/verify/acknowledge.ts`.
 
+### `agentRecord`
+
+What a session (or a child) runs as, as the log should store it: the definition as it was when it was selected, so the session never depends on the file again. Suggested schema for a durable field (`event/durable.ts` can use this validator as is).
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `name` | string, not empty | yes |
+| `path` | string, not empty | yes |
+| `scope` | one of `"project"`, `"config"`, `"user"` | yes |
+| `definition` | string, not empty | yes |
+| `instructions` | string | yes |
+| `restrictions` | object | yes |
+| `restrictions.effects` | list of one of `"read"`, `"write"`, `"exec"`, `"network"`, or `null` | yes |
+| `restrictions.tools` | list of string, not empty, or `null` | yes |
+| `restrictions.deniedTools` | list of string, not empty | yes |
+| `restrictions.approval` | one of `"ask"`, `"auto"`, `"full"`, or `null` | yes |
+| `model` | string, not empty, or `null` | yes |
+| `effort` | string, not empty, or `null` | yes |
+
+Declared in `packages/core/src/agents/use.ts`.
+
 ### `blobRef`
 
 A reference to bytes in the content-addressed blob table (storage rule 8). `hash` is the lowercase hex SHA-256 of the bytes, so the same media stored twice is one row and a request block that contains the reference hashes the same on every call.
@@ -996,6 +1033,7 @@ What an appended instruction message carries, for the sources whose text is not 
 - `mcp`: the catalogue. Its tool names and descriptions were written by the listed servers; `untrusted` is whether the server's content counts as content the harness does not control.
 - `memory`: the notes the model holds once the message is in its history, each by its ID and the hash of the line it was shown as.
 - `skills`: the skills the index lists, each with the file it comes from.
+- `agents`: the agents the list of agents names (source `agent-index`), each with the file that defines it.
 
 One of these, told apart by `kind`:
 
@@ -1026,6 +1064,15 @@ One of these, told apart by `kind`:
 | `skills` | list of objects | yes |
 | `skills[].name` | string, not empty | yes |
 | `skills[].path` | string, not empty | yes |
+
+`kind: "agents"`
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `kind` | `"agents"` | yes |
+| `agents` | list of objects | yes |
+| `agents[].name` | string, not empty | yes |
+| `agents[].path` | string, not empty | yes |
 
 Declared in `packages/core/src/event/durable.ts`.
 
@@ -1494,7 +1541,7 @@ Declared in `packages/core/src/verify/evidence.ts`.
 
 What the verification gate found when an execution ended as done.
 - `not_configured`: verification is off, or no check is configured. Nothing was verified.
-- `not_needed`: checks are configured and none applied: nothing they cover changed since the last verification that passed.
+- `not_needed`: checks are configured and none ran. Either nothing they cover changed since the last verification that passed, or this turn changed no file: the gate verifies a turn's own work, and a turn that only answered has none. In the second case `unverified` is set when files the checks cover did change since the last verification, outside this turn (the user edited by hand, a turn was undone, an earlier turn ended with its checks failing): they are still to be checked, and are, with everything else, at the end of the next turn that changes a file.
 - `passed`: every check that applied passed; `evidence` is that run.
 - `unresolved`: checks still fail and the execution ended anyway. `reason` says why it was allowed to: the model reported with the acknowledgement tool that it cannot fix them (`acknowledgement` is what it said), the model had been sent back `maxRounds` times, or the mode is `report`, which never sends the model back.
 
@@ -1511,6 +1558,7 @@ One of these, told apart by `status`:
 | Field | Type | Required |
 | --- | --- | --- |
 | `status` | `"not_needed"` | yes |
+| `unverified` | `true` | may be absent |
 
 `status: "passed"`
 

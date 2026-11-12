@@ -165,7 +165,7 @@ export async function run(io: Io): Promise<number> {
   if (interactive && options.output !== "pretty") return usage(io, `--${options.output} needs a prompt (as arguments or on stdin)`)
   if (interactive && !io.stdin.isTTY) return usage(io, "interactive mode needs a terminal on stdin")
 
-  const engine = await engineFor(io, options, demo)
+  const engine = await engineFor(io, options, demo, interactive)
   if (engine === null) return EXIT.usage
   const screen = interactive ? new Screen({ write: (text) => io.stdout.write(text), columns: () => io.stdout.columns(), color: colorEnabled(io.stdout.isTTY, io.env) }) : null
   const sink = makeSink(io, options, autoplay, screen)
@@ -280,9 +280,17 @@ async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: str
   })
 }
 
-/** The engine for this run, or `null` after saying why there is none. */
-async function engineFor(io: Io, options: Options, demo: DemoScenario | null): Promise<Engine | null> {
+/** The server's switch for firing wake-ups (`WAKE_ENV` in the ACP package, which this process loads only to serve). */
+const WAKE_ENV = `${brand.binary.toUpperCase()}_WAKE`
+
+/**
+ * The engine for this run, or `null` after saying why there is none. Only a run someone sits in front of
+ * (`wakes`) lets its server fire wake-ups: a one-prompt run, a listing or a subcommand would start other
+ * sessions' wake-up turns and cut them short when it exits a moment later.
+ */
+async function engineFor(io: Io, options: Options, demo: DemoScenario | null, wakes = false): Promise<Engine | null> {
   if (io.engine !== undefined && demo === null) return io.engine()
+  const env = wakes ? io.env : { ...io.env, [WAKE_ENV]: "off" }
   const trace = io.env[DEMO_TRACE_ENV]
   const selected = await selectEngine(
     demo === null
@@ -297,7 +305,7 @@ async function engineFor(io: Io, options: Options, demo: DemoScenario | null): P
         },
     io.realEngineModule,
     options.engine,
-    { env: io.env, stderr: (text) => io.stderr.write(text), version: await version() },
+    { env, stderr: (text) => io.stderr.write(text), version: await version() },
   )
   if (selected.kind === "engine") return selected.engine
   const why = selected.reason === null ? "" : ` (${selected.reason})`

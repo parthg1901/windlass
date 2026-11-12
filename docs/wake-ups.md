@@ -8,13 +8,15 @@ and messages on this page against the code.
 
 ## Where wake-ups fire today
 
-<!-- WAKE-UPS-FIRE: update this section when an entry point starts the scheduler -->
-**At this commit no part of the program fires a wake-up.** The agent can create, list and cancel wake-ups in every
-session (`lh`, `lh tui`, an editor through `lh acp`), and they are kept, but the scheduler that fires them and the
-webhook listener that receives requests run only in a process whose engine is told to run them, and none of `lh`,
-`lh tui` or `lh acp` does yet. A wake-up created now fires in the first process that runs the scheduler, late, as
-described under "Missed while nothing ran". What the rest of this page says about firing was seen by running the
-program's engine with the scheduler switched on, outside these entry points.
+<!-- WAKE-UPS-FIRE: update this section when where wake-ups fire changes -->
+**Wake-ups fire while a server process of the program runs**: an interactive `lh`, `lh tui`, or an editor's
+`lh acp`. That process fires every wake-up that comes due, of any session, and runs the webhook listener. When
+several run at once, each wake-up is fired by exactly one of them. A one-prompt run (`lh "..."`), a listing and
+the `fork` and `replay` subcommands never fire wake-ups: they would start another session's turn and cut it
+short when they exit. `LH_WAKE=off` switches firing off for a process.
+
+So a wake-up fires on time only if one of those is open then. One that came due while nothing ran fires once in
+the next process that does, late, as described under "Missed while nothing ran".
 
 ## Creating one
 

@@ -114,6 +114,7 @@ Every key:
 | `skills` | skills: `paths` (extra directories, from your own file only) and `disabled` (names to leave out) |
 | `wake` | wake-ups: `enabled` (default on), `hourlyCeiling`, `maxActive`, `webhook`; a project's file can only tighten |
 | `memory` | memory: `enabled` (default off), `inRepository`, `projectChars`, `userChars` |
+| `agents` | agents: `paths` (extra directories), `disabled` (names to leave out) and `default` (the agent a new session runs as; from your own file only) |
 
 | Key in `checks[]` | Value |
 |---|---|
@@ -263,6 +264,7 @@ own.
 | `LH_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
 | `LH_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
 | `LH_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
+| `LH_WAKE` | `off`: this process's server fires no wake-ups (an interactive `lh`, `lh tui` and `lh acp` fire them; a one-prompt run never does) |
 | `DISPLAY`, `WAYLAND_DISPLAY`, `SSH_CONNECTION`, `SSH_TTY` | `lh login` opens a browser only with a display and not over SSH |
 | `OPENTUI_LIB_PATH`, `OPENTUI_LIBC` | read by the full-screen interface's library: another native library, or `musl` |
 
