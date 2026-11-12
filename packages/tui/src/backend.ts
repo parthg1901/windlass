@@ -17,6 +17,8 @@ export type Delivery = "steer" | "queue"
 /** A fork that was made: where it works, and from what. */
 export interface ForkInfo {
   readonly sessionId: string
+  /** The session it was made from: this one, or, for a point this one inherited (it is a fork itself), the session it inherited it from. */
+  readonly parentSessionId: string
   readonly cwd: string
   /** The directory the copy was made from; `null` when the fork shares the original's. */
   readonly copiedFrom: string | null

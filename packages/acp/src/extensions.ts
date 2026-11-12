@@ -220,6 +220,12 @@ export interface ForkParams {
 /** Result of `<prefix>/fork`. */
 export interface ForkResult {
   readonly sessionId: string
+  /**
+   * The session the fork was made from (its lineage). The one named in the
+   * request, unless that is a fork itself and `throughSeq` lies in what it
+   * inherited: such a point belongs to the session it was forked from (or
+   * that one's parent), and the new session is a fork of that session.
+   */
   readonly parentSessionId: string
   readonly throughSeq: number
   /** Where the fork works: the parent's directory, or the copy. */

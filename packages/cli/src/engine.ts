@@ -179,9 +179,14 @@ export interface Engine {
   /** `--models`: the models `--model` accepts. Optional, like `listSessions`. */
   listModels?(): Promise<readonly ModelInfo[]>
   /** `fork`: a new session with another's conversation up to a step boundary. Optional: without it the subcommand says this engine cannot fork. */
-  fork?(request: ForkRequest): Promise<ForkResult>
+  fork?(request: ForkRequest): Promise<ForkOutcome>
   /** `replay`: replays a recorded session; `progress` gets the replay session's events as they happen, and `cancel` ends it as incomplete. */
   replay?(request: ReplayCommand, progress: ReplayProgress): Promise<ReplayResult>
+}
+
+/** A fork that was made, and the session the request named (`ForkResult.parentSessionId` is the one it was made from, which is another when the fork point lies in what the named session inherited). */
+export interface ForkOutcome extends ForkResult {
+  readonly named: string
 }
 
 /** What `fork` forks. `session` is an ID or a unique start of one; `null` is the latest session in `cwd`. */

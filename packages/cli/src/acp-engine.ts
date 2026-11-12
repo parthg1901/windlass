@@ -38,7 +38,6 @@ import {
   type CompactResult,
   type DiffResult,
   EXT,
-  type ForkResult,
   type HooksStateResult,
   type LspStateResult,
   type McpStateResult,
@@ -59,6 +58,7 @@ import {
   type Engine,
   type EngineEvent,
   EngineUnavailable,
+  type ForkOutcome,
   type ForkRequest,
   type HandEditQuestion,
   type ModelInfo,
@@ -146,7 +146,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
         return listed.models.map((model): ModelInfo => ({ id: model.id, description: model.name === model.id ? null : model.name, efforts: model.efforts, isDefault: model.id === listed.defaultModel }))
       }),
     // A one-off: the server is let go of after it, as after a listing.
-    fork: (request: ForkRequest): Promise<ForkResult> =>
+    fork: (request: ForkRequest): Promise<ForkOutcome> =>
       listing(async (connected) => {
         try {
           const named = request.session === null ? await connected.resolve(request.cwd) : await connected.resolveTyped(request.cwd, request.session)
@@ -158,7 +158,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
             if ("problem" in point) throw new EngineUnavailable(`${point.problem}${turnList(turns)}`, "usage")
             throughSeq = point.throughSeq
           }
-          return await connected.fork({
+          const forked = await connected.fork({
             sessionId: named.sessionId,
             ...(throughSeq === null ? {} : { throughSeq }),
             ...(request.copy === null ? {} : { workspace: request.copy.copyTo === null ? {} : { copyTo: request.copy.copyTo } }),
@@ -166,6 +166,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
             ...(request.effort === null ? {} : { effort: request.effort === "default" ? null : request.effort }),
             ...(request.title === null ? {} : { title: request.title }),
           })
+          return { ...forked, named: named.sessionId }
         } catch (error) {
           throw unavailable(error)
         }

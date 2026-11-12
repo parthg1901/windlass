@@ -177,7 +177,7 @@ describe("forks", () => {
     let forked = 0
     session.fork = async () => {
       forked += 1
-      return { sessionId: "ses_x", cwd: "/work", copiedFrom: null, title: null }
+      return { sessionId: "ses_x", parentSessionId: "ses_parent", cwd: "/work", copiedFrom: null, title: null }
     }
     await mounted!.setup.mockInput.typeText("/fork")
     mounted!.setup.mockInput.pressEnter()

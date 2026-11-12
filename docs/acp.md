@@ -432,6 +432,10 @@ It is listed like any session; its title is the parent's with " (fork)" unless o
 { sessionId, parentSessionId, throughSeq, cwd, copiedFrom: string | null, title: string | null, model, effort: string | null }
 ```
 
+`parentSessionId` is the session the fork was made from, as the fork's lineage records it. It is the session the
+request names unless that one is a fork itself and `throughSeq` lies in the history it inherited: such a point
+belongs to the session it was forked from (or that one's parent), and the new session is a fork of that session.
+
 A fork point inside a step, or anything else the engine cannot do as asked, is `-32602` with
 `data["windlass"].reason = "invalid_request"` and the engine's sentence; an unknown parent is `-32002`.
 

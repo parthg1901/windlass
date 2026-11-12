@@ -859,7 +859,12 @@ export class App {
         [span("forked", "accent"), span(` from ${from.title === null ? from.id : `"${shorten(from.title, 40)}"`} · this is a new session with ${upTo}, ${where}`, "dim")],
         "accent",
         "⑂",
-        [[span(`the original is unchanged: /sessions goes back to it (${from.id})`, "dim")], ...(forked.copiedFrom === null ? [] : [[span(COPY_NOTE, "warn")]])],
+        [
+          // The turn lies in what this session inherited: the fork is of the session it inherited it from.
+          ...(forked.parentSessionId === from.id ? [] : [[span(`turn ${turn} is part of what this session inherited from ${forked.parentSessionId} (it is a fork itself), so the new session is a fork of that one`, "dim")]]),
+          [span(`the original is unchanged: /sessions goes back to it (${from.id})`, "dim")],
+          ...(forked.copiedFrom === null ? [] : [[span(COPY_NOTE, "warn")]]),
+        ],
       ),
     )
   }

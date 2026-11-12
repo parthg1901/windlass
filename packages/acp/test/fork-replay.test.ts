@@ -58,6 +58,12 @@ describe("fork", () => {
     expect(userTexts(h, 2)).toContain("And now?")
     // The parent is untouched.
     expect(h.backend.engine.readEvents(parent as never).some((item) => item.type === "inbox.enqueued" && JSON.stringify(item.data).includes("And now?"))).toBe(false)
+    // A fork of the fork at a point the fork inherited is a fork of the session that point belongs to, and the answer names it.
+    const inherited = await ext<ForkResult>(h, EXT.fork, { sessionId: forked.sessionId, throughSeq: forked.throughSeq })
+    expect(inherited.parentSessionId).toBe(parent)
+    // At a point of the fork's own, it is the fork's.
+    const own = await ext<ForkResult>(h, EXT.fork, { sessionId: forked.sessionId })
+    expect(own.parentSessionId).toBe(forked.sessionId)
   })
 
   test("into a copy of the workspace, with its own model settings; a fork point inside a step is refused with the reason", async () => {

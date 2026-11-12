@@ -218,7 +218,7 @@ class AcpSession implements BackendSession {
     if (session.offers(EXT.fork))
       this.fork = async ({ copy, throughSeq }) => {
         const forked = await this.call(() => session.connection.fork({ sessionId: session.id, ...(copy ? { workspace: {} } : {}), ...(throughSeq === undefined ? {} : { throughSeq }) }))
-        return { sessionId: forked.sessionId, cwd: forked.cwd, copiedFrom: forked.copiedFrom, title: forked.title }
+        return { sessionId: forked.sessionId, parentSessionId: forked.parentSessionId, cwd: forked.cwd, copiedFrom: forked.copiedFrom, title: forked.title }
       }
     if (session.offers(EXT.rename)) this.rename = (title) => this.call(() => session.rename(title))
     if (session.offers(EXT.agents)) this.agents = () => this.call(() => session.agents())

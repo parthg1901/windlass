@@ -135,6 +135,13 @@ describe("as a process", () => {
     // The fork is now the latest session here: the original is named.
     const pretty = await cli(at, [], ["fork", result.parentSessionId, "--turn", "2"])
     expect(pretty.out).toMatch(/^Forked ses_\w+ after turn 2 \(event \d+\)\./)
+    // A fork of the fork after a turn the fork inherited is made from the session that turn belongs to: that one is printed.
+    const again = await cli(at, [], ["fork", result.sessionId, "--turn", "1"])
+    expect(again.err).toBe("")
+    expect(again.out).toStartWith(`Forked ${result.parentSessionId} after turn 1 (event ${result.throughSeq}).\n${result.sessionId} is a fork itself and inherited that point from ${result.parentSessionId}, so the new session is a fork of ${result.parentSessionId}.\nNew session: `)
+    expect(JSON.parse((await cli(at, [], ["fork", result.sessionId, "--turn", "1", "--json"])).out)).toMatchObject({ parentSessionId: result.parentSessionId, throughSeq: result.throughSeq })
+    // After a turn of its own, the fork itself is what was forked.
+    expect((await cli(at, [], ["fork", result.sessionId, "--turn", "2"])).out).toStartWith(`Forked ${result.sessionId} after turn 2 `)
     const missing = await cli(at, [], ["fork", result.parentSessionId, "--turn", "7"])
     expect(missing.code).toBe(2)
     expect(missing.err).toBe(`${brand.binary}: there is no turn 7: the session has turns 1 to 2\nIts turns:\n  1  "write b"\n  2  "now check it"\n`)

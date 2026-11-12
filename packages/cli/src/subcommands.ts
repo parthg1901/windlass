@@ -9,9 +9,9 @@
  * `runReplay` print and return the exit code.
  */
 import { parseArgs as parseFlags } from "node:util"
-import type { ForkResult, ReplayParams, ReplayResult } from "@windlass/acp/extensions"
+import type { ReplayParams, ReplayResult } from "@windlass/acp/extensions"
 import { brand } from "@windlass/core"
-import { type Engine, type EngineEvent, EngineUnavailable, exitCodeOfRefusal } from "./engine.ts"
+import { type Engine, type EngineEvent, EngineUnavailable, type ForkOutcome, exitCodeOfRefusal } from "./engine.ts"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { COPY_NOTE } from "./features.ts"
 import { flatten, nearest, plural, truncate } from "./text.ts"
@@ -203,17 +203,20 @@ export interface SubcommandIo {
 /** `fork`: forks and says how to continue in the fork. */
 export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOptions, cwd: string): Promise<number> {
   if (engine.fork === undefined) return fail(io, "fork is not available with this engine")
-  let forked: ForkResult
+  let made: ForkOutcome
   try {
-    forked = await engine.fork({ cwd, session: options.session, throughSeq: options.throughSeq, turn: options.turn, copy: options.copy, model: options.model, effort: options.effort, title: options.title })
+    made = await engine.fork({ cwd, session: options.session, throughSeq: options.throughSeq, turn: options.turn, copy: options.copy, model: options.model, effort: options.effort, title: options.title })
   } catch (error) {
     if (!(error instanceof EngineUnavailable)) throw error
     return fail(io, error.message, exitCodeOfRefusal(error))
   }
+  const { named, ...forked } = made
   if (options.json) {
     io.stdout.write(`${JSON.stringify(forked)}\n`)
     return 0
   }
+  // The point lies in what the named session inherited: the fork is of the session it inherited it from, and that is said.
+  const inherited = forked.parentSessionId === named ? [] : [`${named} is a fork itself and inherited that point from ${forked.parentSessionId}, so the new session is a fork of ${forked.parentSessionId}.`]
   const b = brand.binary
   const title = forked.title === null ? "" : ` "${truncate(flatten(forked.title), 60)}"`
   const where =
@@ -223,7 +226,8 @@ export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOpt
   io.stdout.write(
     [
       `Forked ${forked.parentSessionId} ${options.turn !== null ? `after turn ${options.turn} (event ${forked.throughSeq})` : options.throughSeq === null ? "after its latest step" : `after event ${forked.throughSeq}`}.`,
-      `New session: ${forked.sessionId}${title} (${forked.model}${forked.effort === null ? "" : `, effort ${forked.effort}`}), with the conversation so far; the original is unchanged.`,
+      ...inherited,
+      `New session: ${forked.sessionId}${title} (${forked.model}${forked.effort === null ? "" : `, effort ${forked.effort}`}), with the conversation ${options.turn === null && options.throughSeq === null ? "so far" : "up to there"}; the original is unchanged.`,
       where,
       "",
       "Continue in the fork:",

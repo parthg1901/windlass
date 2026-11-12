@@ -800,7 +800,9 @@ class ConnectionState {
     const lineage = session.lineage
     const result: ForkResult = {
       sessionId: forked.id,
-      parentSessionId: params.sessionId,
+      // The session the fork was made from, as its lineage records it: the one named, or, for a point that one
+      // inherited (it is a fork itself), the session it inherited it from.
+      parentSessionId: lineage?.kind === "fork" ? lineage.parentSessionId : params.sessionId,
       throughSeq: lineage?.kind === "fork" ? lineage.throughSeq : 0,
       cwd: session.cwd,
       copiedFrom: lineage?.kind === "fork" ? (lineage.copied?.from ?? null) : null,
