@@ -113,3 +113,7 @@ message that starts with a slash, begin it with two (`//etc` sends `/etc`).
 - [docs/safety.md](docs/safety.md): what the agent may do without asking, and what the sandbox does and does not stop.
 - [docs/acp.md](docs/acp.md): using it from an editor.
 - `lh --help`: every option and exit code.
+
+## Licence
+
+MIT; see `LICENSE`. `CONTRIBUTING.md` says how to work on it.

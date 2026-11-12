@@ -105,3 +105,12 @@ Reading a result:
 - `afterEach` in a shared test helper runs only for the first test file that imports it; register clean-up in each file.
 - The frozen tool list has 19 tools since this pass (13 before); the first request of a session is about 5,000 tokens.
 
+## The line CLI after the first-user fixes (2026-11-12)
+
+- `--json` ends each turn with a `{"type":"cli.summary",…}` line (steps, time, usage, cached share): the engine's last event is the line before it (`.at(-2)`). The eval runner counts the line under `unknownEvents`; that is information, not a failure.
+- `LH_ACP_SCRIPT` accepts every `--model`, so an unknown-model test needs an in-process harness with `engine.listModels`.
+- `export XDG_DATA_HOME=…` in one tool call does not carry to the next: set it inline on each command, or a "signed out" check quietly uses the real sign-in.
+- A first word of `/<letters>` is taken as a command and never sent to the model; `//` at the start sends a message that begins with a slash. `/tmp is full` is caught; `/etc/hosts …` (a second slash) is sent as typed.
+- A queued message is its own turn; a steer belongs to the turn it steers. Fork points can be given as turns (`fork --turn N`).
+- Listing, reading, resolving an ID and forking work signed out; opening a session (`session/new`, `session/load`) still needs the sign-in.
+
