@@ -169,6 +169,10 @@ describe("a turn that a queued message follows", () => {
     // Two ending rows and no other line about the first turn's end.
     expect(lines.filter((line) => line.includes("done ·"))).toHaveLength(2)
     expect(transcript.activity.executing).toBe(false)
+    // Narrow, the key that shows the diffs goes to the next row whole.
+    const ending = transcript.rows.find((row) => row.kind === "outcome")!
+    const narrow = layoutRow(ending, 58, { now: CLOCK_START, debug: false, color: false }).map((line) => line.map((part) => part.text).join("").trimEnd())
+    expect(narrow.some((line) => line.trim() === "Ctrl-O for diffs" || line.endsWith("· Ctrl-O for diffs"))).toBe(true)
   })
 
   test("what the first turn rests on is on its own row: checks that passed, failing ones left unresolved, a stop hook that still objected", () => {

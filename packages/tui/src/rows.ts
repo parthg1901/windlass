@@ -532,7 +532,7 @@ function changedLines(row: OutcomeRow, columns: number, nested: boolean): Span[]
   const paths = server?.files.map((file) => file.path) ?? known ?? edited
   if (paths.length === 0) return []
   const source = server === null && known === null ? "edited" : "changed"
-  const hint = `${server === null && known === null ? " (from its tool calls)" : ""}${row.expanded || nested ? "" : " · Ctrl-O for diffs"}`
+  const hint = `${server === null && known === null ? " (from its tool calls)" : ""}${row.expanded || nested ? "" : " · Ctrl-O\u00a0for\u00a0diffs"}`
   const lines = wrapLine([span(`  ${source} ${plural(paths.length, "file")}: `, "dim"), span(fileList(paths, row.expanded ? paths.length : 6)), span(hint, "dim")], columns, [span("    ")])
   if (!row.expanded) return lines
   if (row.serverDiff === "loading") lines.push([span(`${INDENT}loading the per-file diffs…`, "dim")])
