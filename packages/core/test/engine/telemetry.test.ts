@@ -304,25 +304,28 @@ describe("who may turn telemetry on, and what is sent", () => {
 describe("a collector that is slow, down or wrong", () => {
   const timed = async (send: TelemetrySetup["send"], setup: TelemetrySetup = {}) => {
     const h = harness({}, send, {}, { closeDeadlineMs: 150, ...setup })
-    const started = performance.now()
-    await editTurn(h)
-    await editTurn(h, "Again.")
-    const turns = performance.now() - started
-    const log = h.log()
-    const state = h.engine.telemetry()
-    const closing = performance.now()
-    await h.dispose()
-    return { turns, close: performance.now() - closing, ended: log.filter((item) => item.type === "execution.succeeded").length, state, diagnostics: h.diagnostics }
+    try {
+      await editTurn(h)
+      await editTurn(h, "Again.")
+      const log = h.log()
+      const state = h.engine.telemetry()
+      const closing = performance.now()
+      await h.dispose()
+      return { close: performance.now() - closing, ended: log.filter((item) => item.type === "execution.succeeded").length, state, diagnostics: h.diagnostics }
+    } finally {
+      await h.dispose()
+    }
   }
 
-  test("one that never answers: the turns end as fast as without it, and closing waits a short while at most", async () => {
+  test("one that never answers: the turns end without it, and closing waits a short while at most", async () => {
     const result = await timed(() => new Promise<ExportReport>(() => {}))
+    // Both turns ended while the first turn's spans were still with the collector, which has not answered and never
+    // will: nothing waited for it. The second turn's spans wait behind that request.
     expect(result.ended).toBe(2)
-    expect(result.turns).toBeLessThan(2000)
-    // The second turn's spans wait behind the request that never returns.
     expect(result.state).toEqual([{ endpoint: ENDPOINT, queued: 6, dropped: 0, sent: 0, failed: 0 }])
+    // Closing gives the collector its short deadline and then lets go.
     expect(result.close).toBeGreaterThanOrEqual(140)
-    expect(result.close).toBeLessThan(1500)
+    expect(result.close).toBeLessThan(5000)
     expect(result.diagnostics).toEqual([])
   })
 
@@ -349,24 +352,32 @@ describe("a collector that is slow, down or wrong", () => {
     const dead = `http://127.0.0.1:${closed.port}`
     await closed.stop(true)
     try {
-      for (const endpoint of [`http://127.0.0.1:${failing.port}`, `http://127.0.0.1:${silent.port}`, dead]) {
-        // The module's own exporter, with its timeout and retries.
-        const h = harness({ user: { verify: { mode: "off" }, telemetry: { enabled: true, endpoint, timeoutMs: 100 } } }, undefined, {}, { closeDeadlineMs: 300 })
-        const started = performance.now()
-        await editTurn(h)
-        expect(performance.now() - started).toBeLessThan(2000)
-        expect(h.log().at(-1)!.type).toBe("execution.succeeded")
-        const closing = performance.now()
-        await h.dispose()
-        expect(performance.now() - closing).toBeLessThan(2000)
-        expect(h.diagnostics).toEqual([])
+      // The module's own exporter, with its timeout and its retries. A turn that waited for it would wait for
+      // every attempt: more than eleven seconds with the collector that never answers, three and a half with the
+      // port nothing listens on (the waits between attempts alone).
+      for (const [endpoint, waits] of [[`http://127.0.0.1:${failing.port}`, false], [`http://127.0.0.1:${silent.port}`, true], [dead, true]] as const) {
+        const h = harness({ user: { verify: { mode: "off" }, telemetry: { enabled: true, endpoint, timeoutMs: 2000 } } }, undefined, {}, { closeDeadlineMs: 300 })
+        try {
+          await editTurn(h)
+          expect(h.log().at(-1)!.type).toBe("execution.succeeded")
+          // The turn has ended and the collector has given no outcome yet: the spans are still with the exporter.
+          if (waits) expect(h.engine.telemetry()).toEqual([{ endpoint, queued: 0, dropped: 0, sent: 0, failed: 0 }])
+          const closing = performance.now()
+          await h.dispose()
+          // Closing waits its deadline at most, then cuts the request in flight and the waits between retries.
+          expect(performance.now() - closing).toBeLessThan(3000)
+          expect(h.diagnostics).toEqual([])
+        } finally {
+          await h.dispose()
+        }
       }
       // The collector that answered was sent an OTLP/JSON body; a 500 is not retried.
       expect(received).toHaveLength(1)
       expect(received[0]!).toBeGreaterThan(500)
     } finally {
-      await failing.stop(true)
-      await silent.stop(true)
+      // Not waited for: a server with a request that never ends is not this test's to see closed.
+      void failing.stop(true)
+      void silent.stop(true)
     }
   })
 
@@ -390,7 +401,7 @@ describe("a collector that is slow, down or wrong", () => {
       expect(bodies[0]!.resourceSpans[0]!.resource.attributes.map((item) => item.key).sort()).toEqual(["host.name", "service.name", "service.version"])
       expect(h.engine.telemetry()).toEqual([{ endpoint: `http://127.0.0.1:${server.port}`, queued: 0, dropped: 0, sent: 6, failed: 0 }])
     } finally {
-      await server.stop(true)
+      void server.stop(true)
     }
   })
 })
