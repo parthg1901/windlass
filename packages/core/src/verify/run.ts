@@ -21,7 +21,7 @@ import { type InterruptReason, interruptReason, interruptReasonOf } from "../int
 import type { Json } from "../json.ts"
 import { type CapSource, countLines } from "../tool/cap.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
-import { type SandboxRun, type ToolResult, noBlobStore } from "../tool/tool.ts"
+import { type SandboxRun, type ToolContext, type ToolResult, noBlobStore } from "../tool/tool.ts"
 import { shellTool } from "../tools/shell.ts"
 import { boolean, integer, nullable, object, safeDecode, string, type Infer } from "../validate.ts"
 import type { CheckStatus } from "./status.ts"
@@ -75,6 +75,17 @@ export interface RunCheckOptions {
   readonly sandbox?: { readonly sandbox: CommandSandbox; readonly run: SandboxRun; readonly sessionId: string }
   /** Ephemeral progress (the tail of the running check's output), for display only. */
   readonly progress?: (check: string, text: string) => void
+  /**
+   * The harness's redaction of tool output (`ToolContext.redact`). With it a
+   * check's output is redacted as it arrives, as a command of the model's
+   * is: the progress, the kept file and the counts all hold the redacted
+   * output, never what the command printed byte for byte. The kept file is
+   * therefore named by the hash of the redacted output: output that differs
+   * only in a credential's value is the same output.
+   */
+  readonly redact?: ToolContext["redact"]
+  /** With `redact`: where the end of a text may be the beginning of a value not yet whole (`ToolContext.unfinishedSecret`). */
+  readonly unfinishedSecret?: ToolContext["unfinishedSecret"]
 }
 
 /** Runs checks one after another, in the given order. Once interrupted, the remaining checks are reported as interrupted without running. */
@@ -110,6 +121,9 @@ export async function runCheck(check: CheckConfig, options: RunCheckOptions): Pr
       progress: (update) => options.progress?.(check.name, update.text),
       // A check is a shell command: it returns text, never media.
       putBlob: noBlobStore,
+      // A check's output is tool output: redacted as it arrives, before it is shown or kept.
+      ...(options.redact === undefined ? {} : { redact: options.redact }),
+      ...(options.unfinishedSecret === undefined ? {} : { unfinishedSecret: options.unfinishedSecret }),
     },
   )
   const durationMs = Math.round(performance.now() - startedAt)

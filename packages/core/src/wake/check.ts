@@ -6,7 +6,7 @@
  * recorded access, or not at all: where the sandbox is unavailable the run is an error, never an unsandboxed run.
  */
 import { rm } from "node:fs/promises"
-import { type RedactedPiece, redactPieces } from "../approval/redact.ts"
+import { type RedactedPiece, redactPieces, unfinishedSecret } from "../approval/redact.ts"
 import { createInterrupt } from "../interrupt.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { isContinuation, markerAround } from "../tool/cap.ts"
@@ -65,6 +65,10 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
     const interrupt = createInterrupt()
     const forward = () => interrupt.interrupt("shutdown")
     request.signal.addEventListener("abort", forward, { once: true })
+    // The check's output is redacted as it arrives, so the file that keeps it while the check runs never holds a
+    // value in clear. The fingerprint below is therefore of the redacted output: a check whose output differs
+    // only in a credential's value has not changed.
+    const secrets = options.secrets?.() ?? []
     try {
       const result = await runCheck(
         { name: request.name, command: request.command, timeoutSeconds: Math.max(1, Math.ceil(request.timeoutMs / 1000)), when: null },
@@ -75,6 +79,7 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
           ...(options.shell === undefined ? {} : { shell: options.shell }),
           ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
           spillLimitBytes: 16 * 1024 * 1024,
+          ...(secrets.length === 0 ? {} : { redact: (value: string) => redactPieces(value, secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, secrets) }),
           ...(sandboxed && request.run.kind === "sandboxed"
             ? { sandbox: { sandbox: options.sandbox!, run: { network: request.run.network, writableRoots: [...request.run.writableRoots] }, sessionId: request.sessionId } }
             : {}),
@@ -88,7 +93,7 @@ export function createCheckRunner(options: CheckRunnerOptions): CheckRunner {
         return hasher.digest("hex")
       })()
       if (path !== null) await rm(path, { force: true })
-      const output = shown(result.output.source, shownBytes, options.secrets?.() ?? [])
+      const output = shown(result.output.source, shownBytes, secrets)
       switch (result.status) {
         case "passed":
         case "failed":

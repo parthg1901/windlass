@@ -4813,6 +4813,8 @@ class LiveSession implements EngineSession {
         signal,
         ...(confined === undefined ? {} : { sandbox: confined }),
         progress: (name, value) => this.ephemeral({ type: "checks.progress", sessionId: this.id, run: number, check: name, text: value }),
+        // A check's output is tool output: what is shown while it runs and what is kept in full are redacted too.
+        ...(this.core.approvals === null ? {} : { redact: redactor(this.core.approvals.secrets), unfinishedSecret: (value: string) => unfinishedSecret(value, this.core.approvals!.secrets) }),
       })
       .then(
         (results) => ({ results }),
