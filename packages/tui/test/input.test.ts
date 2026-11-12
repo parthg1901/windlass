@@ -105,6 +105,13 @@ describe("while the agent works", () => {
     let frame = await mounted.frame()
     expect(frame).toContain("steer ›")
     expect(frame).toContain("Enter steers the running turn")
+    // The label follows the key at once, with nothing else happening.
+    keys(mounted).pressKey("t", { ctrl: true })
+    frame = await mounted.frame()
+    expect(frame).toContain("queue ›")
+    expect(frame).not.toContain("steer ›")
+    keys(mounted).pressKey("t", { ctrl: true })
+    expect(await mounted.frame()).toContain("steer ›")
     await keys(mounted).typeText("look at the docs too")
     keys(mounted).pressEnter()
     keys(mounted).pressKey("t", { ctrl: true })

@@ -497,6 +497,8 @@ export class App {
     }
     if (ctrl && name === "t") {
       this.mode = this.mode === "steer" ? "queue" : "steer"
+      // The label beside the input says the mode at once, not at the next event or key.
+      this.layout()
       return handled()
     }
     if (ctrl && name === "x") {
