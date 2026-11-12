@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import type { RevertOptions, RevertPlan, RevertResult } from "@windlass/core"
-import { type RevertableSession, askLocally, revertable, sessionCommand } from "../src/commands.ts"
+import { type RevertableSession, askLocally, handEditChoices, revertable, sessionCommand } from "../src/commands.ts"
 import { type EditorAction, Screen } from "../src/terminal.ts"
 import { VirtualTerminal } from "./vt.ts"
 
@@ -124,6 +124,23 @@ describe("/undo", () => {
     expect(actions).toEqual([])
     expect(prompt()).toBe("› type a message")
     await screen.commandsSettled()
+  })
+
+  test("several files are \"they\" where they act and \"them\" where something is done to them; one file is \"it\"", () => {
+    expect(handEditChoices(true)).toEqual([
+      "  y  overwrite: they go back to before the turn and those changes are lost (/redo brings them back)",
+      "  k  keep: they stay exactly as now, those changes and the agent's in them both; the other files go back",
+      "  n  change nothing",
+    ])
+    expect(handEditChoices(false)).toEqual([
+      "  y  overwrite: they go back to how the turn left them, and the changes since the /undo are lost for good",
+      "  k  keep: they stay exactly as now, with those changes; the other files come back",
+      "  n  change nothing",
+    ])
+    expect(handEditChoices(false, "it").slice(0, 2)).toEqual([
+      "  y  overwrite: it goes back to how the turn left it, and the changes since the /undo are lost for good",
+      "  k  keep: it stays exactly as now, with those changes; the other files come back",
+    ])
   })
 
   test("the question says who changed each file, as far as the engine can tell", async () => {

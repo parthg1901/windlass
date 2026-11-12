@@ -120,15 +120,18 @@ export async function runSessionCommand(command: Command, session: RevertableSes
  * hand, one line each: the same words the TUI and the server's question use.
  */
 export function handEditChoices(undo: boolean, them = "them"): string[] {
+  // One file is "it" as subject and object; several are "they" as the subject and "them" as the object.
+  const one = them === "it"
+  const they = one ? "it" : "they"
   return undo
     ? [
-        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to before the turn and those changes are lost (/redo brings them back)`,
-        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, those changes and the agent's in ${them} both; the other files go back`,
+        `  y  overwrite: ${they} go${one ? "es" : ""} back to before the turn and those changes are lost (/redo brings them back)`,
+        `  k  keep: ${they} stay${one ? "s" : ""} exactly as now, those changes and the agent's in ${them} both; the other files go back`,
         "  n  change nothing",
       ]
     : [
-        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to how the turn left ${them}, and the changes since the /undo are lost for good`,
-        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, with those changes; the other files come back`,
+        `  y  overwrite: ${they} go${one ? "es" : ""} back to how the turn left ${them}, and the changes since the /undo are lost for good`,
+        `  k  keep: ${they} stay${one ? "s" : ""} exactly as now, with those changes; the other files come back`,
         "  n  change nothing",
       ]
 }
