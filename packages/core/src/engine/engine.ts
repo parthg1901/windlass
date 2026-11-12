@@ -685,6 +685,13 @@ export type RevertResult =
   | { readonly kind: "failed"; readonly plan: RevertPlan | null; readonly message: string }
 
 /** What happens to a held claim when its session is opened. Recovery of a crashed claim always runs. */
+/** One page of the session listing (`Engine.listSessionsPage`). */
+export interface SessionPage {
+  readonly sessions: readonly SessionSummary[]
+  /** What to pass as `cursor` for the page after this one; `null` when there is none. */
+  readonly nextCursor: string | null
+}
+
 export type ResumeMode =
   /** Resume the claim and start working at once. The default. */
   | "start"
@@ -1175,6 +1182,19 @@ export interface Engine {
    * Reading only; nothing is opened, held or closed.
    */
   readonly listSessions: (query?: SessionQuery) => readonly SessionSummary[]
+  /**
+   * The same listing a page at a time: at most `limit` sessions (all of
+   * them without one) after the session `cursor` stands for, and the cursor
+   * of the page after it, `null` when this was the last. A cursor is the
+   * place of the page's last session in the order (when it was last
+   * updated, then its ID), so it needs nothing kept between two calls and
+   * is not moved by sessions that arrive meanwhile: they are newer, sort
+   * before it, and are in no later page; no session is listed twice. A
+   * session that is worked in between two pages moves to the front, where a
+   * new listing has it. Throws `invalid_request` for a cursor this method
+   * did not give.
+   */
+  readonly listSessionsPage: (query?: SessionQuery & { readonly cursor?: string | null }) => SessionPage
   /** One session's summary, or `null`. Works for a session another process holds. */
   readonly getSession: (id: SessionId) => SessionSummary | null
   /** The session an ID or a unique prefix of one names. Throws `session_not_found` or `ambiguous_session`. */
@@ -1653,6 +1673,17 @@ export function createEngine(options: EngineOptions): Engine {
     },
     latestSession: (cwd) => listed(core, { cwd, limit: 1 })[0] ?? null,
     listSessions: (query) => listed(core, query),
+    listSessionsPage: (query = {}) => {
+      const { cursor, limit, ...rest } = query
+      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new EngineError("invalid_request", `a page holds at least one session: ${String(limit)} is not a page size`)
+      const after = cursor == null ? null : pagePlace(cursor)
+      // The order is total (two sessions updated in the same millisecond are told apart by ID), so a place in it is a cursor.
+      const all = [...listed(core, rest)].sort((a, b) => b.updatedAt - a.updatedAt || (a.session.id < b.session.id ? 1 : a.session.id > b.session.id ? -1 : 0))
+      const remaining = after === null ? all : all.filter((summary) => summary.updatedAt < after.updatedAt || (summary.updatedAt === after.updatedAt && summary.session.id < after.id))
+      const sessions = limit === undefined ? remaining : remaining.slice(0, limit)
+      const last = sessions.at(-1)
+      return { sessions, nextCursor: last === undefined || sessions.length === remaining.length ? null : `${last.updatedAt}:${last.session.id}` }
+    },
     getSession: (id) => core.stores.get(id),
     resolveSession: (idOrPrefix) => storeErrors(() => core.stores.resolve(idOrPrefix)),
     readEvents: (id, range) => storeErrors(() => core.stores.read(id, (store) => store.readEvents(id, range))),
@@ -6530,6 +6561,13 @@ function listed(core: Core, query: SessionQuery = {}): readonly SessionSummary[]
   const { limit, ...rest } = query
   const own = core.stores.list(rest).filter((summary) => summary.session.lineage?.kind !== "spawn" && summary.session.lineage?.kind !== "replay")
   return limit === undefined ? own : own.slice(0, limit)
+}
+
+/** The place in the listing a page cursor stands for: when its last session was updated, and that session's ID. */
+function pagePlace(cursor: string): { readonly updatedAt: number; readonly id: string } {
+  const match = /^(\d{1,16}):([A-Za-z0-9_-]+)$/.exec(cursor)
+  if (match === null) throw new EngineError("invalid_request", `${JSON.stringify(cursor)} is not a cursor of the session listing`)
+  return { updatedAt: Number(match[1]), id: match[2]! }
 }
 
 /** What `replay.call` records for one call of a replayed step. */

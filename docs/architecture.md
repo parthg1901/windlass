@@ -465,7 +465,7 @@ is a new version with a decoder for the old one.
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
   other sessions carry on.
 - The engine offers `forkSession` (see "Forks"), `replaySession` (see "Replay" and `docs/replay.md`),
-  `createSession`, `openSession`, `listSessions` (by directory, without archived ones and without the harness's own sessions, subagents and replays, unless
+  `createSession`, `openSession`, `listSessions` and `listSessionsPage` (by directory, without archived ones and without the harness's own sessions, subagents and replays, unless
   asked), `latestSession`, `getSession`, `resolveSession` (an ID or a unique prefix), `readEvents` (of any session,
   open or not, held here or elsewhere), `archiveSession` and `unarchiveSession` (through the session's log, holding
   it only for that append), `turnChanges` (the files each ended turn of a stored session changed, from its
@@ -1368,6 +1368,13 @@ listing is computed from the files alone. "The most recent session for this dire
 changed. That read brings the summary and, with it, the beginning of the user's first prompt (`firstPrompt`),
 which the cache keeps under the same rules: a session nobody titled is named from the listing itself, and no
 session's log is opened for a title.
+
+**A page at a time.** `Engine.listSessionsPage({ ...query, limit, cursor })` gives at most `limit` sessions and
+the cursor of the page after them. The cursor is a place in the listing's order (when the page's last session
+was updated, then its ID, which makes the order total), so nothing is kept between two calls: each page is the
+listing as it is now, from that place on. A session that arrives meanwhile is newer, sorts before the cursor,
+and is in no later page; nothing is listed twice. A session that is worked in between two pages moves to the
+front, where a new listing has it.
 
 **Forks.** `Engine.forkSession(id, options)` forks a session at a step boundary (the latest one by default, or the
 event `throughSeq` names, which is refused when it lies inside a step). What the fork inherits, as of that point:
