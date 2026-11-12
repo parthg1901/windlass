@@ -48,7 +48,8 @@ import {
 } from "../scenarios/script.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, SECOND_FIX } from "../scenarios/verification.ts"
-import { FakeWorkspace, Harness, ScriptedTools, comparable, failed, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
+import type { ToolContext } from "../../src/tool/tool.ts"
+import { FakeWorkspace, Harness, ScriptedTools, comparable, converse, failed, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
 
@@ -1033,6 +1034,117 @@ const DEVIATIONS: Record<string, { readonly why: string; readonly expected: (eve
   },
 }
 
+// ---------------------------------------------------------------- forks, replays, subagents and background work
+
+/** Records the session the replay scenarios replay: one read, then an answer. */
+async function recordForReplay(h: Harness, prompt: string) {
+  h.provider.enqueue([call("call_1", "read", { path: "a.test.ts" }), U], answer("The expectation is wrong."))
+  h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+  h.create().send(prompt)
+  await h.settled()
+  return h.session.id
+}
+
+/** Replays the recorded session with the model doing `first` in its first step, and makes the replay session the one the test looks at. */
+async function replayInto(h: Harness, prompt: string, policy: "stop" | "execute", first: Parameters<typeof h.provider.enqueue>[0], rest: Parameters<typeof h.provider.enqueue> = []) {
+  const source = await recordForReplay(h, prompt)
+  h.provider.enqueue(first, ...rest)
+  const run = await h.engine.replaySession(source, { systemPrompt: "You are a careful coding agent.", policy })
+  await run.done
+  await run.session.settled()
+  h.session = run.session
+}
+
+/** A background command as the scripted shell tool hands it to the session: it runs until the test ends it. */
+function scriptedCommand(command: string) {
+  let end: (result: { exitCode: number | null; signal: string | null; timedOut: boolean; durationMs: number; output: string }) => void = () => {}
+  const exited = new Promise<Parameters<typeof end>[0]>((resolve) => (end = resolve))
+  return {
+    start: (_input: Record<string, unknown>, context: ToolContext) => `Started in the background as ${context.background!.command({ command, logPath: "/tmp/.spill/bg.log", stop: async () => {}, output: () => "", exited }).id}.`,
+    exit: (exitCode: number, output: string) => end({ exitCode, signal: null, timedOut: false, durationMs: 2500, output }),
+  }
+}
+
+Object.assign(PLAYS, {
+  "A fork continues from its parent's history": async (h, say) => {
+    h.provider.enqueue(answer("It adds two numbers."), answer("There is no subtract."))
+    h.create().send(say[0]!)
+    await h.settled()
+    const fork = await h.engine.forkSession(h.session.id)
+    h.session = fork
+    fork.send(say[1]!)
+    await fork.settled()
+  },
+
+  "A replay that stays on its recording": (h, say) => replayInto(h, say[0]!, "stop", [call("call_1", "read", { path: "a.test.ts" }), U], [answer("The expectation is wrong.")]),
+
+  "A replay that leaves its recording stops there": (h, say) => replayInto(h, say[0]!, "stop", [call("call_1", "read", { path: "b.test.ts" }), U]),
+
+  "A replay that leaves its recording carries on in a copy": async (h, say) => {
+    // The second read is the replay's own, off the recording: it runs for real.
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)", "expect(sub(2, 1)).toBe(1)")
+    h.provider.enqueue([call("call_1", "read", { path: "a.test.ts" }), U], answer("The expectation is wrong."))
+    h.create().send(say[0]!)
+    await h.settled()
+    h.provider.enqueue([call("call_1", "read", { path: "b.test.ts" }), U], answer("b.test.ts is fine."))
+    const run = await h.engine.replaySession(h.session.id, { systemPrompt: "You are a careful coding agent.", policy: "execute" })
+    await run.done
+    await run.session.settled()
+    h.session = run.session
+  },
+
+  "A subagent runs a task and its answer is the call's result": async (h, say) => {
+    converse(h.provider, { [say[0]!]: [[call("call_1", "subagent", { task: "Fix module a" }), U], answer("Module a is fixed.")], "Fix module a": [answer("a.ts is fixed.")] })
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "The subagent's own log": async (h) => {
+    converse(h.provider, { "Delegate": [[call("call_1", "subagent", { task: "Fix module a" }), U], answer("Module a is fixed.")], "Fix module a": [answer("a.ts is fixed.")] })
+    h.create().send("Delegate module a.")
+    await h.settled()
+    // The child: the second session of this engine.
+    h.session = h.engine.openSession(h.session.projection().session.spawned!.children[0]!)
+  },
+
+  "A background subagent's answer arrives as a message": async (h, say) => {
+    converse(h.provider, {
+      [say[0]!]: [[call("call_1", "subagent", { task: "Fix module a", background: true }), U], answer("Started."), answer("The subagent fixed module a.")],
+      "Fix module a": [[call("call_1", "read", { path: "a.ts" }), U], answer("a.ts is fixed.")],
+    })
+    // The child is still reading when the parent says that it started.
+    h.tools.on("read", async () => {
+      await h.seen((item) => item.type === "step.ended" && item.data.finish === "stop")
+      return "export const a = 1"
+    })
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "A background command's exit wakes the idle session": async (h, say) => {
+    const tests = scriptedCommand("bun test")
+    h.provider.enqueue([call("call_1", "shell", { command: "bun test", background: true }), U], answer("The tests are running."), answer("The tests pass."))
+    h.tools.on("shell", tests.start)
+    h.create().send(say[0]!)
+    await h.settled()
+    tests.exit(0, "3 pass\n")
+    await h.seen((item) => item.type === "execution.started" && item.seq > 15)
+    await h.settled()
+  },
+
+  "A background command is lost when the process dies": async (h, say) => {
+    const watcher = scriptedCommand("bun test --watch")
+    h.provider.enqueue([call("call_1", "shell", { command: "bun test --watch", background: true }), U], answer("Watching."), answer("The watcher stopped when the harness restarted."))
+    h.tools.on("shell", watcher.start)
+    h.create().send(say[0]!)
+    await h.settled()
+    h.kill()
+    // (The scenario's second input is the harness's own message about the lost command; the user's is the third.)
+    h.restart().send(say[2]!)
+    await h.settled()
+  },
+} satisfies Record<string, Play>)
+
 const scenarios = Object.entries(families).flatMap(([family, list]) => list.map((scenario) => ({ family, scenario })))
 
 describe("the loop writes each scenario's events", () => {
@@ -1050,6 +1162,8 @@ describe("the loop writes each scenario's events", () => {
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
         ...(setup?.config === undefined ? {} : { config: setup.config }),
         ...(scenario.contextWindow === undefined ? {} : { contextWindow: scenario.contextWindow }),
+        // Subagents and background work are offered only where the scenario is about them.
+        ...(scenario.spawn === undefined ? {} : { spawn: scenario.spawn }),
         // The approval layer is off unless the scenario is about it; then it runs under exactly what the scenario says.
         ...(scenario.approval === undefined
           ? {}
@@ -1082,7 +1196,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(75)
+    expect(scenarios).toHaveLength(84)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

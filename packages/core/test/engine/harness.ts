@@ -639,6 +639,8 @@ type Plain = { readonly type: string; readonly data: Record<string, unknown> }
  * - a replay: the directory of its copy (a path under the data directory),
  *   and the report stored with `replay.ended` (the loop stores the whole
  *   divergence report). The outcome and the reason are compared.
+ * - a subagent's result: the structured `display` data a client is given
+ *   beside the text (the child's session, its steps and tool calls).
  */
 export function comparable(events: readonly NewEvent[]): Plain[] {
   return others(events.map((item) => plain(item, events)).map(copies))
@@ -666,6 +668,9 @@ function copies(item: Plain): Plain {
   if (item.type === "session.created" && lineage?.kind === "replay" && lineage.policy !== "stop") return { type: item.type, data: { ...item.data, cwd: "<copy>" } }
   if (item.type === "replay.diverged") return { type: item.type, data: { ...item.data, workspace: "<copy>" } }
   if (item.type === "replay.ended") return { type: item.type, data: { ...item.data, report: null } }
+  // What a client is given besides the text of a subagent's result (its session, its counts): the scenario writes the text.
+  const display = (item.data as { display?: unknown }).display
+  if (item.type === "tool.settled" && typeof display === "object" && display !== null && "subagent" in display) return { type: item.type, data: { ...item.data, display: null } }
   return item
 }
 

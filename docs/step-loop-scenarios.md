@@ -2587,6 +2587,303 @@ Where commands cannot be sandboxed, `auto` does not quietly become `full`: each 
 
 *Model sees next:* u1, a1, a2.
 
+### Forks, replays, subagents and background work
+
+#### 76. A fork continues from its parent's history
+
+A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
+
+*Provider:* the parent answers one prompt; the fork answers another.
+
+```
+-- the parent's step is open
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+-- the parent's turn ends
+  7  text.ended a1 "It adds two numbers."
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+-- the fork is created and takes a prompt of its own
+ 10  session.created fork of ses_scenario through seq 9
+ 11  inbox.enqueued u2 steer "And subtract?"
+ 12  execution.started exe_2
+ 13  inbox.delivered u2
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "There is no subtract."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed · u2 user · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, u2, a2.
+
+*The reducer rejects:*
+- after "the parent's step is open": `session.created fork of ses_scenario through seq 6` (invalid_transition). A fork point is a step boundary: the history up to it must be whole.
+- after "the parent's turn ends": `session.created fork of ses_scenario through seq 4` (invalid_range). A fork is folded onto its parent at exactly the seq it names.
+
+#### 77. A replay that stays on its recording
+
+A recorded session (a read, then an answer) is replayed against a changed system prompt. The replay is a session of its own, typed as a replay of the recording. Its baseline is the recording's with the new prompt; the recording's prompt is delivered where it arrived. The model makes the recorded call: it is answered from the recording (`replay.call matched`, then the recorded `tool.started` and the recorded result, byte for byte) and nothing runs. No snapshot is taken, no check runs, nobody is asked. When the recording's last step is replayed the execution ends, and `replay.ended` says the replay was identical.
+
+*Provider:* as in the recording: step 1 calls read with the recorded arguments; step 2 answers.
+
+```
+-- the replay session starts with the changed baseline and the recorded prompt
+  1  session.created replay of ses_other through seq 14, policy stop, changed: the system prompt
+  2  execution.started exe_1
+  3  baseline.set
+  4  inbox.enqueued u1 steer "Fix the failing test."
+  5  inbox.delivered u1
+-- the model makes the recorded call and is given the recorded result
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"a.test.ts"}
+-- the recording's answer follows, and the replay ends as identical
+  8  tool.started a1/call_1 effect=read
+  9  replay.call a1/call_1 matched recorded step 1 call 1
+ 10  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "The expectation is wrong."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+ 16  replay.ended identical "all 2 recorded steps replayed without a divergence"
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the replay session starts with the changed baseline and the recorded prompt": `replay.diverged arguments_differ -> /data/replays/copy (no snapshot: the copy is empty)` (invalid_transition). Under the stop policy a replay ends where it leaves the recording; it has no copy to carry on in.
+- after "the model makes the recorded call and is given the recorded result": `replay.call a1/call_1 matched` (invalid_transition). A matched call names the recorded call it matched.
+- after "the model makes the recorded call and is given the recorded result": `replay.call a1/call_1 diverged recorded step 1 call 1 (arguments_differ)` (invalid_transition). Only a matched call names a recorded call.
+- after "the recording's answer follows, and the replay ends as identical": `replay.ended identical "again"` (invalid_transition). A replay ends once.
+
+#### 78. A replay that leaves its recording stops there
+
+Under the `stop` policy. The replayed model reads another file than the recording did. That call is not on the recording: it is recorded as the divergence (`replay.call diverged`, with the kind), it is not run, and it settles as not started with a text that says the replay stopped. The step closes, and the execution ends without an answer, marked as ended by the replay (`execution.failed` with `cause: replay`: nothing failed, but there is no answer to end on). `replay.ended` carries the report: where the replay left and what the recording did there.
+
+*Provider:* step 1 calls read with other arguments than the recording's.
+
+```
+-- the model calls read with other arguments
+  1  session.created replay of ses_other through seq 14, policy stop, changed: the system prompt
+  2  execution.started exe_1
+  3  baseline.set
+  4  inbox.enqueued u1 steer "Fix the failing test."
+  5  inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"b.test.ts"}
+-- the call is not run, and the replay ends there
+  8  replay.call a1/call_1 diverged (arguments_differ)
+  9  tool.settled a1/call_1 not_started "Not run: the replay left the recording at this call and s..."
+ 10  step.ended a1 finish=tool_calls
+ 11  execution.failed exe_1 cause=replay "The replay ended: left the recording at step 1, call 1: a..."
+ 12  replay.ended diverged "left the recording at step 1, call 1: arguments differ"
+```
+
+*UI:* u1 user · a1 completed [read not_started]. *Claim:* released.
+
+*Model sees next:* u1, a1.
+
+#### 79. A replay that leaves its recording carries on in a copy
+
+Under the `execute` policy. At the first call that is not on the recording, the recorded workspace as it was at that point is restored into a copy (`replay.diverged`: the directory and the snapshot it was restored from; here the recording has none, so the copy starts empty), and from there the replay is an ordinary turn in that copy: the call runs for real (`replay.call diverged executed`), with the sandbox and without the network where the approval layer is on, and the turn runs to its answer. The recording's workspace is never touched. `replay.ended` says the replay diverged; what the copy holds can be graded.
+
+*Provider:* step 1 calls read with other arguments than the recording's; step 2 answers.
+
+```
+-- the model leaves the recording; the copy is made and the call runs in it
+  1  session.created replay of ses_other through seq 14, policy execute, changed: the system prompt
+  2  execution.started exe_1
+  3  baseline.set
+  4  inbox.enqueued u1 steer "Fix the failing test."
+  5  inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 read {"path":"b.test.ts"}
+  8  replay.diverged arguments_differ -> /data/replays/copy (no snapshot: the copy is empty)
+  9  tool.started a1/call_1 effect=read
+ 10  replay.call a1/call_1 diverged (arguments_differ) executed
+ 11  tool.settled a1/call_1 success "expect(sub(2, 1)).toBe(1)"
+ 12  step.ended a1 finish=tool_calls
+-- the turn runs to its answer in the copy
+ 13  step.started a2 attempt=1
+ 14  text.ended a2 "b.test.ts is fine."
+ 15  step.ended a2 finish=stop
+ 16  execution.succeeded exe_1
+ 17  replay.ended diverged "left the recording at step 1, call 1: arguments differ"
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the model leaves the recording; the copy is made and the call runs in it": `replay.diverged extra_call -> /data/replays/copy (no snapshot: the copy is empty)` (invalid_transition). A replay leaves its recording once.
+
+#### 80. A subagent runs a task and its answer is the call's result
+
+The model hands a task to a subagent. The call starts like any tool (its effect class says the step may change files); the child session is named in the parent's log (`spawn.started`) before it exists. The child runs its own loop in the same workspace with a fresh conversation. When it ends, `spawn.ended` records how, and what its model calls cost (rolled up into the parent's totals), and the call settles with the child's final answer and a reference to its session. Several such calls in one response run side by side. The subagent's turn is not verified; the parent's is.
+
+*Provider:* step 1 calls subagent; the child answers in one step; step 2 answers.
+
+```
+-- the model asks for a subagent
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 subagent {"task":"Fix module a"}
+-- the child is started and runs
+  8  tool.started a1/call_1 effect=exec
+  9  spawn.started bg_1 by a1/call_1 subagent ses_other
+-- the child ends; its answer is the call's result
+ 10  spawn.ended bg_1 completed usage=1000in/50out
+ 11  tool.settled a1/call_1 success "a.ts is fixed.\n\n[subagent ses_other: finished after 1 ste..."
+ 12  step.ended a1 finish=tool_calls
+ 13  step.started a2 attempt=1
+ 14  text.ended a2 "Module a is fixed."
+ 15  step.ended a2 finish=stop
+ 16  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [subagent success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the model asks for a subagent": `spawn.started bg_1 by a1/call_1 subagent ses_other` (invalid_transition). Work is spawned by a tool call that is running: its start is durable first.
+- after "the child is started and runs": `spawn.started bg_1 by a1/call_1 subagent ses_other` (duplicate_id). A piece of spawned work starts once.
+- after "the child is started and runs": `spawn.ended bg_2 completed usage=1000in/50out` (not_found). Only work that is running ends.
+- after "the child ends; its answer is the call's result": `spawn.ended bg_1 completed usage=1000in/50out` (not_found). Spawned work ends once.
+
+#### 81. The subagent's own log
+
+The same situation from the child's side. A subagent is a real session, typed as spawned by its parent: it starts at seq 1 with a fresh conversation (the baseline and its task; nothing of the parent's history), the parent's settings and working directory, and a cache key of its own. Its task is delivered like a prompt, with a note that says who reads its answer. It ends like any turn, without the verification gate. At the depth limit (one level by default) its tool list has no `subagent`.
+
+*Provider:* the child answers in one step.
+
+```
+-- the child is created with its task and works
+  1  session.created subagent of ses_other (bg_1, depth 1) "Fix module a"
+  2  inbox.enqueued u1 steer "Fix module a\n\n(You are a subagent. Another agent gave you..."
+  3  execution.started exe_1
+  4  baseline.set
+  5  inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "a.ts is fixed."
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed. *Claim:* released.
+
+*Model sees next:* u1, a1.
+
+*The reducer rejects:*
+- after "the child is created with its task and works": `spawn.ended bg_1 completed` (not_found). The end of the child's work is recorded in its parent's log, not its own.
+
+#### 82. A background subagent's answer arrives as a message
+
+With `background: true` the call returns at once with the child's reference, and the model goes on. When the model has nothing more to do while the child still works, the turn does not end: the loop waits at the boundary (the checks would see the child's work half done). When the child ends, `spawn.ended` and the message that carries its answer are one append; the message is a harness message (`subagent_result`), delivered as a steer at the boundary, and the model answers it. Had the session been idle (its own turn failed, say), the message would have started a new execution.
+
+*Provider:* step 1 calls subagent with background; step 2 says it started; the child, which read a file meanwhile, answers; step 3 reports.
+
+```
+-- the call returns at once and the model goes on
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 subagent {"task":"Fix module a","background":true}
+  8  tool.started a1/call_1 effect=exec
+  9  spawn.started bg_1 by a1/call_1 subagent ses_other background
+ 10  tool.settled a1/call_1 success "Started subagent ses_other in the background. Its answer ..."
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "Started."
+ 14  step.ended a2 finish=stop
+-- the child ends: its answer is delivered, and the model reports
+ 15  spawn.ended bg_1 completed usage=2000in/100out
+ 16  inbox.enqueued s1 steer origin=subagent_result "a.ts is fixed.\n\n[subagent ses_other: finished after 2 ste..."
+ 17  inbox.delivered s1
+ 18  step.started a3 attempt=1
+ 19  text.ended a3 "The subagent fixed module a."
+ 20  step.ended a3 finish=stop
+ 21  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [subagent success] · a2 completed · s1 synthetic · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, s1, a3.
+
+#### 83. A background command's exit wakes the idle session
+
+The shell tool's `background` argument starts a command and returns a handle at once. The command is spawned work of the session (`spawn.started`): it runs beside the steps, in the same sandbox a foreground command would, and is stopped when the session is interrupted or closed. The turn ends while it runs. When it exits, `spawn.ended` (with the exit code) and a harness message with the end of its output (`background_command`) are one append; the session is idle, so the message starts a new execution, is delivered, and the model answers.
+
+*Provider:* step 1 calls shell with background; step 2 answers; after the command exits, step 3 answers.
+
+```
+-- the command is started in the background and the turn ends
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 shell {"command":"bun test","background":true}
+  8  tool.started a1/call_1 effect=exec
+  9  spawn.started bg_1 by a1/call_1 command "bun test" background
+ 10  tool.settled a1/call_1 success "Started in the background as bg_1."
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "The tests are running."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+-- the command exits; the message wakes the session
+ 16  spawn.ended bg_1 completed exit=0
+ 17  inbox.enqueued s1 steer origin=background_command "Background command bg_1 exited with code 0 after 2.5 s.\nC..."
+ 18  execution.started exe_2
+ 19  inbox.delivered s1
+ 20  step.started a3 attempt=1
+ 21  text.ended a3 "The tests pass."
+ 22  step.ended a3 finish=stop
+ 23  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed [shell success] · a2 completed · s1 synthetic · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, s1, a3.
+
+#### 84. A background command is lost when the process dies
+
+A background command dies with the harness process: the guard that every command has kills its process group. The session's log still says it runs. When the session is opened again, the command is recorded as lost (`spawn.ended lost`) together with a harness message that says so (`spawn_lost`). Opening a session starts nothing, so the message waits in the inbox and is delivered, before the user's next prompt, when that prompt starts the next turn.
+
+*Provider:* step 1 calls shell with background; step 2 answers; the process dies; the user asks again; step 3 answers.
+
+```
+-- the command runs in the background; the turn ends; the process dies
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 shell {"command":"bun test --watch","background":true}
+  8  tool.started a1/call_1 effect=exec
+  9  spawn.started bg_1 by a1/call_1 command "bun test --watch" background
+ 10  tool.settled a1/call_1 success "Started in the background as bg_1."
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "Watching."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+-- at the next start the command is recorded as lost; the model is told with the next prompt
+ 16  spawn.ended bg_1 lost
+ 17  inbox.enqueued s1 steer origin=spawn_lost "Background command bg_1 is gone: the harness restarted wh..."
+ 18  inbox.enqueued u2 steer "Still watching?"
+ 19  execution.started exe_2
+ 20  inbox.delivered s1
+ 21  inbox.delivered u2
+ 22  step.started a3 attempt=1
+ 23  text.ended a3 "The watcher stopped when the harness restarted."
+ 24  step.ended a3 finish=stop
+ 25  execution.succeeded exe_2
+```
+
+*UI:* u1 user · a1 completed [shell success] · a2 completed · s1 synthetic · u2 user · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2, s1, u2, a3.
+
 <!-- scenarios:end -->
 
 ## What the reducer enforces

@@ -8,6 +8,7 @@ import { cancelScenarios } from "./cancel.ts"
 import { compactionScenarios } from "./compaction.ts"
 import { crashScenarios } from "./crash.ts"
 import { happyPaths } from "./happy.ts"
+import { lineageScenarios } from "./lineage.ts"
 import { refusalScenarios } from "./refusal.ts"
 import { retryScenarios } from "./retry.ts"
 import { revertScenarios } from "./revert.ts"
@@ -30,4 +31,5 @@ export const families: Record<string, readonly Scenario[]> = {
   Revert: revertScenarios,
   Compaction: compactionScenarios,
   "Approval and the sandbox": approvalScenarios,
+  "Forks, replays, subagents and background work": lineageScenarios,
 }
