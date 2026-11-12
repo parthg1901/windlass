@@ -52,6 +52,16 @@ $T send-keys -t tui -l "m"; $T send-keys -t tui -l "keep it in the workspace"; $
 - The `subagent` row: collapsed, one `↳` line (`starting`, `now: <tool> <arg>`, `it asks you something: answer below`, `finished after N steps, M tool calls`); selected (Alt-Up until `▌` is on it) and expanded (Ctrl-O), the child's own rows framed by `│ `, a second Ctrl-O shows all of them. A running subagent is in the panel (`agents ⋯ <task>`, `?` when it asks, `◌` in the background) and, in the background or after the turn, in the status line (`· 1 subagent at work: <task>`).
 - `/fork` (or `/fork copy`) switches to the new session: the `⑂ forked from …` note first, then the history. `lh fork` and `lh replay` are one-off CLI subcommands; test them headless (`packages/cli/test/fork-replay.test.ts`), not in tmux.
 
+## MCP servers, skills, wake-ups, memory, background work
+
+- A project's MCP server (`.light-harness/config.json` → `mcp.servers`; the core fixture `packages/core/test/mcp/fixtures/stdio-server.ts --only echo` is a real one) is asked about in the dock after the first message's `⚠ mcp: ... It was not started` line: `─ ? Start the MCP server "<name>" ...`, the command, `Defined in <file>`, the engine's details, `[a] Start it for this project` / `[n] Not now`. No "with a note" item. `a` → `✓ approved: MCP server "<name>" starts now`; the next `/mcp` shows `<name> · running · N tools` (the first `/mcp` right after can still say starting). A tool call's question displaces it and it comes back after. The approval is kept under the data directory: a fresh `XDG_DATA_HOME` asks again.
+- An MCP call's dock shows `mcp_call  <server>/<tool>` and `sends: {...}` (the arguments), the row `mcp_call <server>/<tool>`.
+- `/skills`, `/mcp`, `/wakeups`, `/memory` print notes in the conversation (the line CLI's words); long paths wrap, never cut. A webhook `wake_create` is followed at once by `⏰ Webhook wake-up created <id>` with `URL` and `secret`; `/wakeups secret <id>` again. Memory off: `· Memory is off. To turn it on, ...`.
+- A background command: `◌ background <id> · <command>` with `output: <path on this machine>` (the tool's own output names the sandbox's `/tmp/.spill/...`), status line `● ready · ◌ background <id>: <command>`, panel `bg ◌ <id>: ...`, a note after the turn's ending row, and on `/quit` the TUI prints `lh: leaving stopped the background command still running (<id>); ...` after the screen is gone.
+- The panel counts a model call only when the response reports usage: a scripted response without a `usage` item leaves `no model call yet`. Give scripted responses `{ "type": "usage", ... }` when a test reads tokens.
+- `/fork copy` shows the copy note (no ignored files, not a git repository); `/sessions` is 120 columns wide at most and marks a fork `⑂`, with `fork of <id>` and `in <dir>` for a copy elsewhere.
+- The line CLI in tmux: keys typed before its prompt (even with Enter) are sent as the first message; a project's server is asked at the prompt (`[y] start it · [N] not now ›`), also after the turn ended.
+
 ## Send keys
 
 ```sh
@@ -143,6 +153,8 @@ What a good frame shows: tool rows with outcome and duration, the turn ending ro
 Reviewed at 80, 100, 120 and 200 columns (2026-11-12): the demo hint wraps instead of being cut by the panel; the demo's panel shows the context window (the scenario's, or 272k); the idle hint at exactly 80 columns was cut mid-key ("Ctrl-P panel · C…") and now falls back to its short form; the help at 80 columns ran past the screen with wrapped lines at column 0 and a key run into its text ("\ at the endnew line") and now wraps under its keys and scrolls; the approval mode picker cut each mode's description and now says them in full above the list; titles are shortened at a word.
 
 ## Known issues and gotchas
+
+- Send the text and Enter apart (`send-keys -l "<text>"`, wait about half a second, then `send-keys Enter`): an Enter that arrives with a `/command` still being typed can be eaten by the command palette, and nothing runs.
 
 Everything here was hit while building and testing the TUI (2026-11-12).
 
