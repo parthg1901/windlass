@@ -51,7 +51,7 @@ export const NEXT_STEP_MARKER = "Next step:"
 /** The appended prompt. `maxWords` is a soft bound the model can follow; `validateSummary` checks tokens. */
 export function summaryPrompt(maxWords = 1_200): string {
   return [
-    "The conversation above is about to be replaced by a checkpoint, because it is getting too long for the context window. Write the summary part of that checkpoint now. Do not call tools.",
+    "Pause the task here. Do not continue it and do not reply to the user: this message is from the harness, and tools are switched off for this one reply on purpose. The conversation above is about to be replaced by a checkpoint, because it is getting too long for the context window. Write the summary part of that checkpoint now, as your whole reply. Do not call tools.",
     "Whoever continues sees only the checkpoint and the most recent messages. Next to your summary the harness adds, by itself, an index of exact file paths, commands, error messages, commit hashes and test names taken from the conversation, the user's own messages quoted verbatim, and tools to search and read the full earlier conversation. So write what those cannot give: what things mean, why they were done, and where the work stands.",
     "Use exactly these headings, in this order, each followed by short bullet points. Under a heading with nothing to report, write `- None.`",
     ...SUMMARY_SECTIONS.map((section) => `## ${section.heading}: ${section.ask}`),

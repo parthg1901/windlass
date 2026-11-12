@@ -136,6 +136,51 @@ describe("one very long turn", () => {
     }, { contextWindow: WINDOW }))
 })
 
+describe("when what must be kept is most of the context", () => {
+  // A window of 24,000 tokens: 19,200 usable, compacted from 15,360.
+  const options = { contextWindow: 24_000 }
+
+  test("one large result that still fits is sent as it is: a compaction could take out nothing but the prompt, and costs a summary call", () =>
+    withHarness(async (h) => {
+      h.tools.on("read", fileText("big", 12_000))
+      h.provider.enqueue(reads("big.ts"), answers("It exports constants."))
+      h.create().send("Read big.ts.")
+      await h.settled()
+      // The second request was over the trigger and under the window.
+      const size = estimateRequest(h.provider.requests[1]!)
+      expect(size).toBeGreaterThan(12_000)
+      expect(size).toBeLessThan(19_200)
+      expect(ofType(h, "compaction.started")).toHaveLength(0)
+      expect(h.provider.calls).toHaveLength(2)
+      h.verify()
+    }, options))
+
+  test("a step whose results alone do not fit is compacted aggressively at once: one summary call, not a normal compaction and then an aggressive one", () =>
+    withHarness(async (h) => {
+      h.tools.on("read", fileText("left", 12_000), fileText("right", 12_000))
+      h.provider.enqueue(
+        (request) => [script.toolCall("call_1", "read", { path: "left.ts" }), script.toolCall("call_2", "read", { path: "right.ts" }), usageOf(request)],
+        summarises(),
+        (request) => [script.toolCall("call_1", "history_search", { query: "left_17" }), usageOf(request)],
+        answers("Both export constants."),
+      )
+      h.create().send("Read left.ts and right.ts.")
+      await h.settled()
+      const started = ofType(h, "compaction.started")
+      expect(started).toHaveLength(1)
+      expect(started[0]!.data).toMatchObject({ trigger: "auto", mode: "aggressive" })
+      // Nothing is kept word for word: the cut is the compaction's own position.
+      expect(started[0]!.data.keepFromSeq).toBe(started[0]!.seq)
+      expect(ofType(h, "compaction.ended")[0]!.data.tokensAfter).toBeLessThan(3_000)
+      // The request after it is the checkpoint alone, and what the step read is one search away.
+      expect(h.provider.requests[2]!.input).toHaveLength(1)
+      const found = ofType(h, "tool.settled").at(-1)!.data
+      expect(found.output).toContain('export const left_17 = compute_left(17, "value 17 of left")')
+      expect(h.log().at(-1)).toMatchObject({ type: "execution.succeeded" })
+      h.verify()
+    }, options))
+})
+
 describe("a summary that does not end", () => {
   const oneBigStep = (h: Harness) => {
     h.tools.on("read", "export const big = 1")

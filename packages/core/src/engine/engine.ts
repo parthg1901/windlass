@@ -55,7 +55,7 @@ import { text } from "../content.ts"
 import { buildCheckpoint } from "../context/checkpoint.ts"
 import { ITEM_OVERHEAD, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool } from "../context/estimate.ts"
 import { HISTORY_READ, HISTORY_SEARCH } from "../context/history-tools.ts"
-import { type CompactionConfig, type CompactionDecision, DEFAULT_COMPACTION_CONFIG, decideAfterOverflow, decideCompaction } from "../context/policy.ts"
+import { type CompactionConfig, type CompactionDecision, DEFAULT_COMPACTION_CONFIG, decideAfterOverflow, decideCompaction, tailBudget } from "../context/policy.ts"
 import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPrompt, summaryRepairPrompt } from "../context/summary.ts"
 import { chooseTail } from "../context/tail.ts"
 import {
@@ -717,6 +717,13 @@ interface CompactionPlan {
   readonly tailBudget: number
   /** The size estimate of the request that set it off. */
   readonly tokensBefore: number
+  /**
+   * For a normal compaction that turns out to have almost nothing to take
+   * out, because what must be kept is most of the context: whether the
+   * request still fits the window (then nothing is done), and the budget of
+   * the aggressive compaction that is made instead when it does not.
+   */
+  readonly otherwise?: { readonly fits: boolean; readonly aggressiveBudget: number }
 }
 
 type StepResult =
@@ -1166,8 +1173,14 @@ class LiveSession implements EngineSession {
       if (signal.aborted) return this.finishInterrupt(run)
       const next = this.prepare(this.projection(), toolChoice)
       const decision = window === null ? null : this.beforeStep(next, window)
-      if (decision?.kind === "now") {
-        const outcome = await this.compact(run, { trigger: decision.trigger, mode: decision.mode, tailBudget: decision.tailBudget, tokensBefore: this.measure(next).total })
+      if (window !== null && decision?.kind === "now") {
+        const outcome = await this.compact(run, {
+          trigger: decision.trigger,
+          mode: decision.mode,
+          tailBudget: decision.tailBudget,
+          tokensBefore: this.measure(next).total,
+          otherwise: { fits: decision.share <= 1, aggressiveBudget: this.aggressiveBudget(next, window) },
+        })
         if (outcome === "done") return
         // The baseline is set again and the request rebuilt at the top of the loop.
         if (outcome === "compacted") continue
@@ -1224,6 +1237,12 @@ class LiveSession implements EngineSession {
     // With no known window the only thing known is that the rejected request was too large.
     if (window === null) return { contextWindow: Number.MAX_SAFE_INTEGER, reservedOutput: 0 }
     return { contextWindow: window, reservedOutput: Math.min(this.core.limits.reservedOutputTokens, Math.floor(window / 5)) }
+  }
+
+  /** Tokens of history an aggressive compaction keeps word for word in a window of this size. */
+  private aggressiveBudget(prepared: Prepared, window: number): number {
+    const { contextWindow, reservedOutput } = this.windowInput(window)
+    return tailBudget(Math.floor((contextWindow - reservedOutput) * this.core.compaction.aggressiveTargetRatio), this.fixedTokens(prepared), this.core.compaction)
   }
 
   /** The policy's decision before a step: send the request, or compact first. */
@@ -1686,7 +1705,10 @@ class LiveSession implements EngineSession {
    * 1. The cut. `chooseTail` keeps as much recent history as the plan's
    *    budget allows, never splitting a step. It may fall inside the turn in
    *    progress: then the turn's recent steps stay and the checkpoint carries
-   *    its request and where the work stands.
+   *    its request and where the work stands. A normal compaction that would
+   *    take out less than a quarter of what is in view is not made: either
+   *    nothing happens (the request still fits) or the compaction is
+   *    aggressive straight away (it does not).
    * 2. `compaction.started` records the cut, the mode, the size and the
    *    prompt before anything is sent, so the summary request is a function
    *    of the log.
@@ -1714,13 +1736,22 @@ class LiveSession implements EngineSession {
     const signal = run.interrupt.signal
     const start = this.projection()
     const view = selectModelHistory(start).messages
-    const tail = chooseTail(view, { budget: plan.tailBudget, mandatory: plan.mode === "aggressive" ? "if_fits" : "always" })
+    let mode = plan.mode
+    let tail = chooseTail(view, { budget: plan.tailBudget, mandatory: mode === "aggressive" ? "if_fits" : "always" })
+    if (mode === "normal" && plan.otherwise !== undefined && tail.removedTokens < config.minFreedRatio * (tail.removedTokens + tail.keptTokens)) {
+      // What must be kept (one large tool result, say) is most of the context: a normal compaction would cost a
+      // summary call and free too little. While the request still fits, nothing is done; when it does not, the
+      // compaction is aggressive at once instead of after a normal one that could not have helped.
+      if (plan.otherwise.fits) return "nothing"
+      mode = "aggressive"
+      tail = chooseTail(view, { budget: plan.otherwise.aggressiveBudget, mandatory: "if_fits" })
+    }
     if (tail.nothingToRemove) return "nothing"
     const messageId = ids.message()
     // Nothing kept: the cut is the compaction's own position in the log.
     const keepFromSeq = tail.keepFromSeq ?? start.lastSeq + 1
     this.write(
-      [event("compaction.started", { messageId, trigger: plan.trigger, mode: plan.mode, keepFromSeq, prompt: summaryPrompt(), tokensBefore: Math.round(plan.tokensBefore) })],
+      [event("compaction.started", { messageId, trigger: plan.trigger, mode, keepFromSeq, prompt: summaryPrompt(), tokensBefore: Math.round(plan.tokensBefore) })],
       { expectedSeq: start.lastSeq },
     )
     this.probe("compaction.started")

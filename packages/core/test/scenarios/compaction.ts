@@ -13,6 +13,12 @@
  * word is zero at that size, so a compaction keeps exactly what the next
  * call has to answer: the new input at a user-message boundary, the last
  * step in the middle of a turn.
+ *
+ * One thing no scenario shows, because nothing is written for it: a normal
+ * compaction that would take out less than a quarter of what is in view
+ * (one huge tool result is the last step) is not made. While the request
+ * still fits, the loop sends it; when it does not, the compaction is
+ * aggressive at once. `test/engine/compaction.test.ts` covers it.
  */
 import {
   NOT_A_SUMMARY,
@@ -244,7 +250,8 @@ export const ineffective: Scenario = {
 
 // ---------------------------------------------------------------- the summary is not usable
 
-const oneBigStep = [...opening(), ...reads("a1", "a.test.ts", "expect(add(1, 1)).toBe(3)", 6000)]
+/** A prompt and one step measured at 6,000 tokens: the next request is over the trigger, and the prompt is a fair share of what is in view. */
+const oneBigStep = [...opening("Find out why the add test fails, fix what is wrong, and tell me what you changed and why."), ...reads("a1", "a.test.ts", "expect(add(1, 1)).toBe(3)", 6000)]
 
 export const summaryRepaired: Scenario = {
   title: "An invalid summary is repaired",

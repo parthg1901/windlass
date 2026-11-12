@@ -32,6 +32,8 @@ describe("summaryPrompt", () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
     expect(prompt).toContain('"Next step:"')
     expect(prompt).toContain("Do not call tools")
+    // The live runs showed why it has to say so: with tools switched off, a small model answered the user ("I can't run the tests right now").
+    expect(prompt.startsWith("Pause the task here. Do not continue it and do not reply to the user")).toBe(true)
     expect(summaryPrompt()).toBe(prompt)
   })
 })
