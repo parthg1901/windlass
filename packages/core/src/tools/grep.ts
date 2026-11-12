@@ -9,6 +9,7 @@
  * (Rust regex versus JavaScript regex with the `u` flag).
  */
 import { basename, dirname, join } from "node:path"
+import { callStopReasonOf } from "../interrupt.ts"
 import type { Tool } from "../tool/tool.ts"
 import { SKIPPED_DIRECTORIES, cutLine, shownPath, errorCode, failure, looksBinary, toolPath, success, walkFiles, statPath, placeName } from "./common.ts"
 
@@ -94,7 +95,8 @@ export function grepTool(options: GrepOptions = {}): Tool<GrepInput> {
       const kept = within(units, MAX_OUTPUT_BYTES)
       const lines = units.slice(0, kept).flat().join("\n")
       const display = { matches: collector.matches, shown: kept, files: collector.files, engine: ripgrep === null ? "pure" : "ripgrep" }
-      if (context.signal.aborted) return failure(`${lines === "" ? "" : `${lines}\n\n`}[Search interrupted; results are incomplete.]`, display)
+      if (context.signal.aborted)
+        return failure(`${lines === "" ? "" : `${lines}\n\n`}[Search ${callStopReasonOf(context.signal) === "call" ? "stopped by the user" : "interrupted"}; results are incomplete.]`, display)
       if (collector.matches === 0) return success(`No matches for ${JSON.stringify(input.pattern)} in ${placeName(shown)}.`, display)
       const narrow = `Narrow the pattern, path or glob${search.context > 0 ? ", or ask for fewer context lines" : ""}.`
       const more =

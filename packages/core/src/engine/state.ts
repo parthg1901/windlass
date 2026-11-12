@@ -146,6 +146,8 @@ export interface OrphanTexts {
 }
 
 export const STOPPED: OrphanTexts = { read: TOOL_TEXT.interruptedRead, effectUnknown: TOOL_TEXT.effectUnknown }
+/** For a call the user stopped by itself and whose tool reported nothing. */
+export const CANCELLED: OrphanTexts = { read: TOOL_TEXT.cancelledRead, effectUnknown: TOOL_TEXT.cancelledEffectUnknown }
 export const CRASHED: OrphanTexts = { read: TOOL_TEXT.crashRead, effectUnknown: TOOL_TEXT.crashEffectUnknown }
 
 /**

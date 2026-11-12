@@ -72,6 +72,10 @@ const base = {
  *   pending --tool.settled--> settled   (outcome: not_started | error)
  *   running --tool.settled--> settled   (outcome: success | error | effect_unknown)
  *
+ * While it runs, the user may ask once for this call alone to stop
+ * (`tool.cancel_requested`, recorded on the call as `cancel`). That changes
+ * nothing about how it settles: a running call settles as above.
+ *
  * A running call carries the effect class it started with. A `read` call has
  * no side effect, so it cannot settle as `effect_unknown`.
  *
@@ -146,6 +150,8 @@ export const assistantPart = variant("type", {
     state: toolCallState,
     /** Set when the call was asked about or denied; absent for a call that simply ran. */
     approval: optional(callApproval),
+    /** Set when the user asked for this one call to stop while it ran (`tool.cancel_requested`): where in the log. Its result says what came of it. */
+    cancel: optional(object({ seq: integer(1) })),
   }),
 })
 export type AssistantPart = Infer<typeof assistantPart>

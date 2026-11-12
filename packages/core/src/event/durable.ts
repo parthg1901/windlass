@@ -726,6 +726,18 @@ export const durableEvents = {
    * from the disk again. Absent when the approval layer is off.
    */
   "tool.started": define(1, object({ messageId, callId, effect: toolEffect, run: optional(callRun) })),
+  /**
+   * The user asked for this one call to stop, and for nothing else: the
+   * execution is not interrupted, the step carries on with its other calls,
+   * and the model reads the call's result like any other. Written before the
+   * call's abort signal fires, so the request is durable before anything
+   * stops. Only for a call that is running, once. The call then settles as
+   * any running call does: with what its tool observed and a line that says
+   * the user stopped it (a command), with its ordinary result when it could
+   * not be stopped midway (a file read, a write), or, when the tool reported
+   * nothing in time, from its effect class.
+   */
+  "tool.cancel_requested": define(1, object({ messageId, callId })),
 
   // ---- approval ----
 

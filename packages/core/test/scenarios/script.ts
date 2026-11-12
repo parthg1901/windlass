@@ -176,7 +176,7 @@ export interface MessageView {
   readonly attempt: number | null
   /** The text a UI renders: user and synthetic content, or the assistant's text parts joined with "|". */
   readonly text: string
-  /** One entry per tool call: `"<callId> <name> <state>"`, where state is pending, running or the outcome. */
+  /** One entry per tool call: `"<callId> <name> <state>"`, where state is pending, running or the outcome, followed by `(stopped by the user)` when the user asked for that one call to stop. */
   readonly calls: readonly string[]
   /** For a failed step: the error, e.g. `"interrupted:user"`, `"provider:rate_limit"`, `"crashed"`. */
   readonly error: string | null
@@ -395,6 +395,8 @@ export const startedAs = (id: string, callId: string, name: ToolName, run: CallR
 /** The start of a call to a tool outside `TOOLS`, with the effect class its registry entry had when it ran. */
 export const toolStartedAs = (id: string, callId: string, effect: ToolEffect) =>
   event("tool.started", { messageId: m(id), callId: c(callId), effect })
+/** The user asks for this one running call to stop; the turn goes on. Durable before the call's signal fires. */
+export const cancelRequested = (id: string, callId: string) => event("tool.cancel_requested", { messageId: m(id), callId: c(callId) })
 export const settled = (id: string, callId: string, outcome: ToolOutcome, output: string) =>
   event("tool.settled", {
     messageId: m(id),
@@ -458,6 +460,12 @@ export const NOT_STARTED = "Not run: the response was stopped before this call s
 export const INTERRUPTED_READ = "Stopped before it finished. Nothing was changed; it is safe to call it again."
 export const EFFECT_UNKNOWN =
   "Started, but stopped before it reported a result. It may or may not have taken effect: check the current state before repeating it."
+/** For a call the user stopped by itself and whose tool reported nothing. */
+export const CANCELLED_READ = "Stopped by the user before it finished; the user stopped this call only, and the turn goes on. Nothing was changed."
+export const CANCELLED_EFFECT_UNKNOWN =
+  "Stopped by the user before it reported a result; the user stopped this call only, and the turn goes on. It may or may not have taken effect: check the current state before repeating it."
+/** The line the shell tool ends its output with when the user stopped that one command. */
+export const STOPPED_BY_USER = "[Stopped by the user. The command and its child processes were stopped; the output above is everything it printed before that.]"
 export const CRASH_READ = "Cut short by a restart before it finished. Nothing was changed; it is safe to call it again."
 export const CRASH_EFFECT_UNKNOWN =
   "Started, but the harness restarted before its result was recorded. It may or may not have taken effect: check the current state before repeating it."
@@ -751,7 +759,7 @@ export function view(projection: Projection): MessageView[] {
           text: message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("|"),
           calls: message.parts.flatMap((part) =>
             part.type === "tool_call"
-              ? [`${part.callId} ${part.name} ${part.state.status === "settled" ? part.state.outcome : part.state.status}`]
+              ? [`${part.callId} ${part.name} ${part.state.status === "settled" ? part.state.outcome : part.state.status}${part.cancel === undefined ? "" : " (stopped by the user)"}`]
               : [],
           ),
           error: message.error === null ? null : errorText(message.error),
@@ -853,6 +861,8 @@ export function describeEvent(item: NewEvent): string {
       const where = run.paths.length === 0 ? "" : ` ${run.paths.map((path) => `${path.given}:${path.place}`).join(",")}`
       return `tool.started ${d.messageId}/${d.callId} effect=${d.effect} mode=${run.mode}${how}${where}`
     }
+    case "tool.cancel_requested":
+      return `tool.cancel_requested ${d.messageId}/${d.callId}`
     case "approval.requested":
       return `approval.requested ${d.messageId}/${d.callId} ${quote(item.data.question.title)} choices=${item.data.question.choices.map((choice) => choice.id).join(",")}`
     case "approval.answered":

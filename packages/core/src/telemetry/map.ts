@@ -356,6 +356,14 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
         }
         break
       }
+      case "tool.cancel_requested": {
+        // The user stopped this one call; the turn went on.
+        const span = tools.get(call())
+        if (span === undefined) break
+        span.attributes[attr("tool.cancel_requested")] = true
+        span.events.push({ name: "tool.cancel_requested", timeMs: event.time, attributes: {} })
+        break
+      }
       case "approval.requested": {
         const span = tools.get(call())
         if (span === undefined) break

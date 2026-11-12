@@ -211,6 +211,8 @@ const SCOPE = {
   "reasoning.ended": "work",
   "tool.called": "work",
   "tool.started": "work",
+  // Stopping one call keeps the turn going, so it is work: once an interrupt was requested everything stops anyway.
+  "tool.cancel_requested": "work",
   "compaction.started": "work",
   "compaction.repair_requested": "work",
   "compaction.ended": "work",
@@ -768,6 +770,14 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         if (part.approval?.kind === "asked" && part.approval.answer?.approve !== true)
           fail("invalid_transition", `tool call ${part.callId} ${part.approval.answer === null ? "waits for the user's answer" : "was declined by the user"}`)
         return { ...part, state: { status: "running", effect: event.data.effect } }
+      })
+    case "tool.cancel_requested":
+      claimed()
+      return call(event.data.messageId, event.data.callId, (part) => {
+        // Only a call that runs is stopped by itself: one that waits is declined or never begins, one that has its result is over.
+        if (part.state.status !== "running") fail("invalid_transition", `tool call ${part.callId} is ${part.state.status}: only a running call is stopped by itself`)
+        if (part.cancel !== undefined) fail("invalid_transition", `tool call ${part.callId} was already asked to stop`)
+        return { ...part, cancel: { seq: event.seq } }
       })
     case "approval.requested":
       return call(event.data.messageId, event.data.callId, (part) => {

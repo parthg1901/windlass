@@ -19,7 +19,7 @@ import { dirname, join } from "node:path"
 import { type NewEvent, event } from "../../src/event/durable.ts"
 import { ENGINE_LIMITS, FAILURE_TEXT, NOTE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
-import { createInterrupt } from "../../src/interrupt.ts"
+import { callStopReasonOf, createInterrupt } from "../../src/interrupt.ts"
 import type { Json } from "../../src/json.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
@@ -51,6 +51,7 @@ import {
 } from "../scenarios/script.ts"
 import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
+import { CHILD_WORDS, INTERRUPTED_LINT, STOPPED_TESTS } from "../scenarios/call-stop.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, HAND_EDITED, SECOND_FIX } from "../scenarios/verification.ts"
 import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
@@ -318,6 +319,111 @@ const PLAYS: Record<string, Play> = {
     h.session.interrupt()
     await h.settled()
     expect(h.clock.slept).toEqual([3000])
+  },
+
+  // ---------------------------------------------------------------- one call stopped by the user
+
+  "The user stops one command and the turn goes on": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: "bun test" }), U], answer("The test run hung after 12 tests, so you stopped it. The next test is the one to look at."))
+    h.tools.on("shell", async (_input, context) => {
+      await untilAbort(context.signal)
+      // The signal is the call's own, and its reason says that this call was stopped, not the turn.
+      expect(callStopReasonOf(context.signal)).toBe("call")
+      return failed(STOPPED_TESTS)
+    })
+    h.create().send(say[0]!)
+    // Not before it runs: a call that has not started is not stopped this way.
+    await h.seen((item) => item.type === "tool.called")
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(false)
+    await h.seen((item) => item.type === "tool.started")
+    expect(h.session.cancelCall({ callId: c("call_2") })).toBe(false)
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
+    // Once.
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(false)
+    await h.settled()
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(false)
+  },
+
+  "A stopped call that reports nothing is settled from its effect class, and the step's other call finishes": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: "bun run migrate" }), call("call_2", "read", { path: "a.ts" }), U], answer("a.ts exports a = 1. I do not know whether the migration was applied: let me check its status."))
+    let readSignal: AbortSignal | null = null
+    h.tools
+      .on("shell", async (_input, context) => {
+        await untilAbort(context.signal)
+        throw new Error("aborted")
+      })
+      .on("read", async (_input, context) => {
+        readSignal = context.signal
+        await h.seen((item) => item.type === "tool.settled")
+        return "export const a = 1"
+      })
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "tool.started" && item.data.callId === "call_2")
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
+    await h.settled()
+    // The other call of the step was never told to stop.
+    expect(readSignal!.aborted).toBe(false)
+  },
+
+  "A call that cannot be stopped midway finishes with its ordinary result": async (h, say) => {
+    h.provider.enqueue([call("call_1", "read", { path: "a.ts" }), U], answer("It exports a = 1."))
+    // A read does not look at its signal: it returns the file.
+    h.tools.on("read", async () => {
+      await h.seen((item) => item.type === "tool.cancel_requested")
+      return "export const a = 1"
+    })
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "tool.started")
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
+    await h.settled()
+  },
+
+  "The user stops one call and then the whole turn": async (h, say) => {
+    h.provider.enqueue([call("call_1", "shell", { command: "bun test" }), call("call_2", "shell", { command: "bun run lint" }), U])
+    const reasons: (string | null)[] = []
+    h.tools
+      .on("shell", async (_input, context) => {
+        await untilAbort(context.signal)
+        // It reports only once the turn is being interrupted too.
+        await h.seen((item) => item.type === "execution.interrupt_requested")
+        reasons.push(callStopReasonOf(context.signal))
+        return failed(STOPPED_TESTS)
+      })
+      .on("shell", async (_input, context) => {
+        await untilAbort(context.signal)
+        await h.seen((item) => item.type === "tool.settled")
+        reasons.push(callStopReasonOf(context.signal))
+        return failed(INTERRUPTED_LINT)
+      })
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "tool.started" && item.data.callId === "call_2")
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
+    h.session.interrupt()
+    // Everything stops now: no single call is stopped any more.
+    expect(h.session.cancelCall({ callId: c("call_2") })).toBe(false)
+    await h.settled()
+    // The first abort of a call's signal wins: the first call was stopped as a call, the second by the interrupt.
+    expect(reasons).toEqual(["call", "user"])
+  },
+
+  "The user stops a subagent call: the child is interrupted and the call says so": async (h, say) => {
+    converse(h.provider, {
+      [say[0]!]: [[call("call_1", "subagent", { task: "Fix module a" }), U], answer("You stopped the subagent before it changed anything. Module a is not fixed.")],
+      "Fix module a": [[script.text(CHILD_WORDS), call("call_1", "read", { path: "a.ts" }), U]],
+    })
+    // The child is reading when the user stops the parent's call; its read stops with the child's own interrupt.
+    h.tools.on("read", async (_input, context) => {
+      await untilAbort(context.signal)
+      expect(callStopReasonOf(context.signal)).toBe("user")
+      return failed("Stopped.")
+    })
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "child.event" && item.event.type === "tool.started")
+    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
+    await h.settled()
+    // The child's own turn ended as interrupted by its user, and its conversation stays.
+    const child = h.session.projection().session.spawned!.children[0]!
+    expect(h.engine.readEvents(child).filter((item) => item.type === "execution.interrupted").map((item) => item.data)).toMatchObject([{ reason: "user" }])
   },
 
   // ---------------------------------------------------------------- steering and queueing
@@ -1684,7 +1790,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(105)
+    expect(scenarios).toHaveLength(110)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

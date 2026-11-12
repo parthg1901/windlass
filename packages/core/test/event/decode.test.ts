@@ -119,6 +119,7 @@ const examples: { [T in EventType]: NewEvent<T> } = {
   "reasoning.ended": event("reasoning.ended", { messageId, text: "", providerData: { encrypted_content: "gAAAA" } }),
   "tool.called": event("tool.called", { messageId, callId, name: "read", input: '{"path":"a.ts"}', providerData: null }),
   "tool.started": event("tool.started", { messageId, callId, effect: "exec" }),
+  "tool.cancel_requested": event("tool.cancel_requested", { messageId, callId }),
   "tool.settled": event("tool.settled", {
     messageId,
     callId,

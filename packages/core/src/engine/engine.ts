@@ -105,7 +105,7 @@ import { type HookRunner, createHookRunner } from "../hooks/run.ts"
 import { type DiscoveryInput, discoverSources } from "../instructions/discover.ts"
 import type { InstructionSource } from "../instructions/source.ts"
 import { type AppendedSource, detectAppendedChanges, instructionState, knownAgentsFiles, prepareInstructions } from "../instructions/state.ts"
-import { type Interrupt, type InterruptReason, createInterrupt, interruptReasonOf } from "../interrupt.ts"
+import { type CallStop, type Interrupt, type InterruptReason, callStopReasonOf, createCallStop, createInterrupt, interruptReasonOf } from "../interrupt.ts"
 import type { Json } from "../json.ts"
 import type { LspPlan } from "../lsp/config.ts"
 import type { LspNotice } from "../lsp/registry.ts"
@@ -186,6 +186,7 @@ import {
 } from "./spawn.ts"
 import { type MergeOutcome, createWorktree, mergeWorktree, removeWorktree, salvageWorktree, worktreeBranch } from "./worktree.ts"
 import {
+  CANCELLED,
   STOPPED,
   acknowledgementThisTurn,
   atInputBoundary,
@@ -204,6 +205,7 @@ import {
   reportsThisTurn,
   saysNothing,
   settleUnsettled,
+  settledBy,
   spawnedWorkEndedThisTurn,
   stepsThisTurn,
   turnBeginning,
@@ -265,6 +267,8 @@ export type ProbePoint =
   | "retry.scheduled"
   /** `execution.interrupt_requested` is durable; nothing was stopped yet. */
   | "interrupt.requested"
+  /** `tool.cancel_requested` is durable; the call's signal has not fired yet. */
+  | "call.cancel_requested"
   /** The loop found nothing left to do; the claim is not yet released. */
   | "execution.ending"
   /** `checks.started` is durable; no check has run. */
@@ -771,6 +775,33 @@ export interface EngineSession {
   readonly start: () => void
   /** Asks the running execution to stop, as the user. The request is durable before anything stops. A no-op when idle. */
   readonly interrupt: () => void
+  /**
+   * Stops one running tool call, as the user, and nothing else: the turn
+   * goes on. The request is durable first (`tool.cancel_requested`), then
+   * the call's own abort signal fires with a reason that says the user
+   * stopped this call (`callStopReasonOf(signal) === "call"`). The call
+   * settles like any running call, the step carries on with its other calls,
+   * and the model reads the result:
+   * - a command (`exec`): its process group is stopped, and the result is
+   *   what it had printed and a line that says the user stopped it;
+   * - a subagent call: the child is interrupted as by its user, and the
+   *   result says that it was stopped and quotes its last words;
+   * - a read, or a write that cannot be stopped midway: it finishes, and its
+   *   result is the ordinary one;
+   * - a tool that reports nothing within the stop grace period
+   *   (`toolStopGraceMs`), or throws while it is being stopped: the result
+   *   follows from the effect class the call started with (`error` for a
+   *   read, `effect_unknown` otherwise) and says that the user stopped it.
+   *
+   * `messageId` names the step when a client has it; without it the call is
+   * looked for in the step in progress. `sessionId` names a subagent of this
+   * session whose call it is. Returns whether the request was taken: `false`
+   * when that call is not running (it has not started, already has its
+   * result, or was already asked to stop), when the turn is being
+   * interrupted (everything stops then), or in a replay, whose calls are
+   * answered from its recording.
+   */
+  readonly cancelCall: (target: { readonly callId: CallId; readonly messageId?: MessageId; readonly sessionId?: SessionId }) => boolean
   /**
    * Changes the model or the reasoning effort. Takes effect at the next step
    * boundary. Throws `EngineError` (`unknown_model`, `unknown_effort`) when
@@ -1633,15 +1664,15 @@ interface LiveSpawn {
   /** A subagent that was lost to a restart and is being looked at: its end is on its way, as a message. */
   readonly lost?: boolean
   readonly command: BackgroundCommand | null
-  /** Who asked for it to stop, once someone did: an interrupt of this session, its shutdown, or the stop tool. */
-  stopping: "interrupt" | "shutdown" | "tool" | null
+  /** Who asked for it to stop, once someone did: an interrupt of this session, its shutdown, the stop tool, or the user stopping the call that waits for it. */
+  stopping: "interrupt" | "shutdown" | "tool" | "call" | null
   /** What the model is told about its end, once that is recorded. */
   result: string | null
   /** Resolves when its end is recorded. */
   readonly done: Promise<void>
 }
 
-const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop" } as const
+const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop", call: "the user stopped this call" } as const
 
 /** The replay a session is, while it runs. Lost with the process: a replay is not taken up again. */
 interface Director {
@@ -1700,6 +1731,8 @@ class LiveSession implements EngineSession {
   private readonly decided = new Map<string, Decided>()
   /** Set when a call that nobody could approve ends the run: the denial's text. */
   private stopping: string | null = null
+  /** How to stop each call of the step in progress by itself, by call: fires its signal and starts its grace period. */
+  private readonly callStops = new Map<string, () => void>()
   /** The history taint is derived from, built from the log on first use and kept up with every append. A cache of a pure function of the log. */
   private taintHistory: TaintHistory | null = null
   /** The notices already shown in this process, so each is said once. */
@@ -2338,6 +2371,33 @@ class LiveSession implements EngineSession {
     const run: Run = { executionId, interrupt: createInterrupt(), done: Promise.resolve() }
     this.run = run
     run.done = this.drain(run)
+  }
+
+  /**
+   * Stops one running call and nothing else. Like an interrupt, the request
+   * is durable before anything stops; unlike one, the execution goes on.
+   */
+  cancelCall = (target: { readonly callId: CallId; readonly messageId?: MessageId; readonly sessionId?: SessionId }): boolean => {
+    if (target.sessionId !== undefined && target.sessionId !== this.id) {
+      const child = [...this.children].find((candidate) => candidate.id === target.sessionId)
+      return child === undefined ? false : child.cancelCall({ callId: target.callId, ...(target.messageId === undefined ? {} : { messageId: target.messageId }) })
+    }
+    const run = this.run
+    if (run === null || this.closing !== null || run.interrupt.signal.aborted || this.director !== null) return false
+    const projection = this.projection()
+    const execution = projection.session.execution
+    if (execution === null || execution.id !== run.executionId || execution.status !== "running" || execution.interrupting !== null) return false
+    const step = openStep(projection)
+    if (step === null || (target.messageId !== undefined && target.messageId !== step.id)) return false
+    const part = step.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === target.callId)
+    if (part?.type !== "tool_call" || part.state.status !== "running" || part.cancel !== undefined) return false
+    const stop = this.callStops.get(callKey(step.id, target.callId))
+    // A call the log says is running and this process does not run was settled from here already (its tool came back late).
+    if (stop === undefined) return false
+    this.write([event("tool.cancel_requested", { messageId: step.id, callId: target.callId })])
+    this.probe("call.cancel_requested")
+    stop()
+    return true
   }
 
   /**
@@ -3247,6 +3307,12 @@ class LiveSession implements EngineSession {
     const unsettled = new Set<CallId>()
     const abandoned = new Set<CallId>()
     const failure: { error?: unknown; failed: boolean } = { failed: false }
+    // Each call has a signal of its own: it follows the execution's, and the user can fire it for that call alone.
+    const stops = new Map<CallId, CallStop>(calls.map((call) => [call.callId, createCallStop(signal)]))
+    const stopOf = (call: ToolCallPart) => stops.get(call.callId)!
+    /** Ends the wait for a call whose tool did not come back within the grace period after the user stopped it. */
+    const giveUp = new Map<CallId, () => void>()
+    const graces: AbortController[] = []
     const refuse = (call: ToolCallPart, output: string) =>
       this.write([
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output, truncation: null, attachments: [], display: null }),
@@ -3284,7 +3350,7 @@ class LiveSession implements EngineSession {
         messageId,
         callId: call.callId,
         cwd: before.session.cwd,
-        signal,
+        signal: stopOf(call).signal,
         progress: (update) => {
           if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
         },
@@ -3315,9 +3381,10 @@ class LiveSession implements EngineSession {
       const effect = effects.get(call.name) ?? (match?.kind === "matched" ? match.recorded.started?.effect : undefined)
       const key = callKey(messageId, call.callId)
       unsettled.add(call.callId)
+      const gaveUp = new Promise<void>((resolve) => giveUp.set(call.callId, resolve))
       const run$ = (hooks: Parameters<ToolRuntime["run"]>[1]) =>
         plan === null ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(calls.indexOf(call), request(call), hooks)
-      return run$(
+      const work = run$(
           {
             // With before hooks or language servers the decision has more to it; without them it is the approval layer's alone, as ever.
             ...(before$
@@ -3346,7 +3413,7 @@ class LiveSession implements EngineSession {
           unsettled.delete(call.callId)
           const decided = this.decided.get(key)
           this.decided.delete(key)
-          const settlement = this.settlement(result, effect, signal)
+          const settlement = this.settlement(result, effect, stopOf(call).signal)
           // The note for a failure the sandbox causes, then the redaction: what is stored is what is replayed.
           const shown = approvals === null ? settlement : { ...settlement, ...finishOutput(settlement, decided?.run, effect, approvals.secrets, place.temp) }
           // The hooks that applied to the call are recorded with what they decided, and what the language servers said with the result their note is in.
@@ -3370,7 +3437,47 @@ class LiveSession implements EngineSession {
           if (!failure.failed) failure.error = error
           failure.failed = true
         })
+        .finally(() => stopOf(call).release())
+      // The step goes on when the call has its result: its tool's, or the one written for a tool that did not stop in time.
+      return Promise.race([work, gaveUp])
     }
+
+    /**
+     * `cancelCall` for a call of this step: fires the call's own signal, and
+     * gives its tool the grace period an interrupt gives every tool. A tool
+     * that has not come back by then is settled from the effect class it
+     * started with, and whatever it returns later is dropped.
+     */
+    const cancel = (call: ToolCallPart) => {
+      stopOf(call).cancel()
+      const timer = new AbortController()
+      graces.push(timer)
+      void clock.sleep(limits.toolStopGraceMs, timer.signal).then(() => {
+        // Over meanwhile, or the whole turn is being interrupted: the wind-down settles what is left.
+        if (timer.signal.aborted || signal.aborted || !unsettled.has(call.callId)) return
+        const key = callKey(messageId, call.callId)
+        const step = openStep(this.projection())
+        const part = step?.id === messageId ? step.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === call.callId) : undefined
+        if (part?.type !== "tool_call" || part.state.status !== "running") return
+        abandoned.add(call.callId)
+        unsettled.delete(call.callId)
+        try {
+          // The hooks that had finished for the call are on record before its result, as when an interrupt settles it.
+          this.write([...(this.hookRecords.get(key) ?? []), settledBy(messageId, part, CANCELLED)])
+          this.probe("tool.settled")
+          this.noticeTaint()
+        } catch (error) {
+          if (!failure.failed) failure.error = error
+          failure.failed = true
+        }
+        this.decided.delete(key)
+        this.hookRecords.delete(key)
+        this.lspSaid.delete(key)
+        this.lspBefore.delete(key)
+        giveUp.get(call.callId)?.()
+      })
+    }
+    for (const call of calls) this.callStops.set(callKey(messageId, call.callId), () => cancel(call))
 
     /** The line of calls that can change something: each starts when the one before it has its result. */
     let line: Promise<void> | null = null
@@ -3409,6 +3516,9 @@ class LiveSession implements EngineSession {
       for (const callId of unsettled) abandoned.add(callId)
     }
     this.decided.clear()
+    this.callStops.clear()
+    for (const timer of graces) timer.abort()
+    for (const stop of stops.values()) stop.release()
     if (failure.failed) throw failure.error
   }
 
@@ -3574,7 +3684,7 @@ class LiveSession implements EngineSession {
       if (worktree !== null) await removeWorktree(worktree, { keepBranch: false })
       return toolResult("error", `The subagent was not started: ${describe(why)}`)
     }
-    if (context.signal.aborted) return discard("the session was interrupted")
+    if (context.signal.aborted) return discard(callStopReasonOf(context.signal) === "call" ? "the user stopped this call" : "the session was interrupted")
     try {
       // Write-ahead: the parent's log names the child before the child exists.
       this.write([event("spawn.started", { spawnId, messageId: context.messageId, callId: context.callId, background, work: { kind: "subagent", sessionId: childId, worktree, ...(runsAs === null ? {} : { agent: runsAs.name }) } })])
@@ -3722,7 +3832,8 @@ class LiveSession implements EngineSession {
 
     if (!work.background) {
       const stop = () => {
-        live.stopping ??= "interrupt"
+        // The turn was interrupted, or the user stopped this one call: either way the child stops as by its user.
+        live.stopping ??= callStopReasonOf(context.signal) === "call" ? "call" : "interrupt"
         child.interrupt()
       }
       if (context.signal.aborted) stop()
@@ -4295,15 +4406,17 @@ class LiveSession implements EngineSession {
     return { sandbox: { sandbox: approvals.sandbox(), run: { network: false, writableRoots: [] }, sessionId: this.id } }
   }
 
-  /** What `tool.settled` records for an outcome of the runtime. */
+  /** What `tool.settled` records for an outcome of the runtime. `signal` is the call's own. */
   private settlement(result: ToolCallOutcome, effect: ToolEffect | undefined, signal: AbortSignal) {
     if (result.kind !== "crashed") return result.settlement
-    // A tool that threw while it was being stopped reported nothing: the outcome follows from its effect class.
+    // A tool that threw while it was being stopped reported nothing: the outcome follows from its effect class,
+    // and the text says who stopped it (an interrupt of the turn, or the user stopping this one call).
     if (signal.aborted) {
       const base = { truncation: null, attachments: [], display: null }
+      const texts = callStopReasonOf(signal) === "call" ? CANCELLED : STOPPED
       return effect === "read"
-        ? { ...base, outcome: "error" as const, output: STOPPED.read }
-        : { ...base, outcome: "effect_unknown" as const, output: STOPPED.effectUnknown }
+        ? { ...base, outcome: "error" as const, output: texts.read }
+        : { ...base, outcome: "effect_unknown" as const, output: texts.effectUnknown }
     }
     this.core.report({ kind: "tool_crashed", sessionId: this.id, message: describe(result.error), cause: result.error })
     return result.settlement

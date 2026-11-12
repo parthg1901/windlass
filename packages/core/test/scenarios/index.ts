@@ -5,6 +5,7 @@
  */
 import { agentScenarios } from "./agents.ts"
 import { approvalScenarios } from "./approval.ts"
+import { callStopScenarios } from "./call-stop.ts"
 import { cancelScenarios } from "./cancel.ts"
 import { commandScenarios } from "./commands.ts"
 import { compactionScenarios } from "./compaction.ts"
@@ -26,6 +27,7 @@ export * from "./script.ts"
 export const families: Record<string, readonly Scenario[]> = {
   "Happy paths": happyPaths,
   "Cancel by the user": cancelScenarios,
+  "One call stopped by the user": callStopScenarios,
   "Steering and queueing": steeringScenarios,
   Retries: retryScenarios,
   Refusal: refusalScenarios,

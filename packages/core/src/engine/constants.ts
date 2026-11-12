@@ -117,6 +117,11 @@ export const TOOL_TEXT = {
   /** A side-effecting call that was stopped and returned nothing. */
   effectUnknown:
     "Started, but stopped before it reported a result. It may or may not have taken effect: check the current state before repeating it.",
+  /** A read the user stopped by itself (the turn went on) and that returned nothing. */
+  cancelledRead: "Stopped by the user before it finished; the user stopped this call only, and the turn goes on. Nothing was changed.",
+  /** A side-effecting call the user stopped by itself and that returned nothing. */
+  cancelledEffectUnknown:
+    "Stopped by the user before it reported a result; the user stopped this call only, and the turn goes on. It may or may not have taken effect: check the current state before repeating it.",
   /** A read the previous process died in. */
   crashRead: "Cut short by a restart before it finished. Nothing was changed; it is safe to call it again.",
   /** A side-effecting call the previous process died in, or died after before its result was written. */
