@@ -79,3 +79,10 @@ Reading a result:
 - `calls.ts --since <minutes>` counts every session in the data directory, other agents' too; count with `--cwd <workspace>`.
 - Checks run in the sandbox and tests that listen on localhost pass there (prefixlens's proxy tests).
 - The model's first command is often `find .. -name AGENTS.md`, which walks the workspace's parent: keep workspaces in their own empty parent directory so that walk stays small.
+
+## Replay measurements
+
+- An `execute` replay costs about as many requests as the recording has steps (5.9 per replay on 4 to 5-step tasks, 2026-11-12). Count before spending.
+- At low and medium effort every unchanged replay leaves its recording within four steps (20 of 20 at low effort), so never read divergence counts. Read which files changed and the grade.
+- Byte-for-byte file comparisons differ for equivalent work (reordered YAML entries, an equivalent formula, prose notes): 12 of 20 unchanged replays differed in bytes while 0 of 20 changed other files.
+- A replay that answered without running a tool leaves an empty `<data dir>-work/replays/<id>` behind; nothing removes it yet.
