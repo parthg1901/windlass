@@ -1,7 +1,8 @@
 /**
  * The note a sandboxed command's result gets, with real commands in the real
  * sandbox: a change to the repository's git configuration or hooks, which
- * stays refused whatever access is granted.
+ * stays refused whatever access is granted, and a network failure that a
+ * pipeline or `|| true` hid from the exit code.
  *
  * Skipped, visibly, where bubblewrap cannot run.
  */
@@ -120,5 +121,47 @@ describe.skipIf(skipReason !== null)("git configuration and hooks stay read-only
     const commit = await sh(repo, "git add b.txt && git -c user.name=agent -c user.email=agent@example.com commit -qm b && git log --format=%an -1")
     expect(commit.output).toBe("agent\n")
     expect(commit.hint).toBeNull()
+  })
+})
+
+describe.skipIf(skipReason !== null)("a network failure hidden by a pipeline still gets the note", () => {
+  let workspace = ""
+  beforeAll(() => {
+    workspace = join(base, "net")
+    mkdirSync(workspace, { recursive: true })
+  })
+
+  const shapes: [string, string][] = [
+    ["curl", "curl -sS https://example.com | head -3"],
+    ["curl", "curl -sS https://example.com 2>&1 | cat"],
+    ["npm", "npm view left-pad version --fetch-retries=0 2>&1 | cat"],
+    ["git", "git ls-remote https://example.com/r.git 2>&1 || true"],
+    ["python3", "python3 -c 'import urllib.request; urllib.request.urlopen(\"https://example.com\")' 2>&1 | tail -1"],
+    ["wget", "wget https://example.com 2>&1 | cat"],
+  ]
+  for (const [program, command] of shapes)
+    test.skipIf(Bun.which(program) === null)(command, async () => {
+      const result = await sh(workspace, command)
+      expect(result.exitCode).toBe(0)
+      expect(result.hint?.suspects).toEqual(["network"])
+      expect(result.hint?.note).toContain('`sandbox: { "network": true }`')
+      expect(result.hint?.note).toContain("although it exited 0")
+    }, 30_000)
+
+  test("output that only mentions DNS, a lookup error code or the message in source code gets no note", async () => {
+    writeFileSync(
+      join(workspace, "net.ts"),
+      'if (error.code === "ENOTFOUND" || error.code === "EAI_AGAIN") retry()\nthrow new Error(`Could not resolve host: ${host}`)\n// getaddrinfo EAI_AGAIN means the DNS lookup timed out\nlog("Temporary failure in name resolution")\n',
+    )
+    const result = await sh(workspace, "cat net.ts; grep -n ENOTFOUND net.ts; echo 'DNS lookup ok' | cat")
+    expect(result.exitCode).toBe(0)
+    expect(result.output).toContain("ENOTFOUND")
+    expect(result.hint).toBeNull()
+  })
+
+  test("a command that swallows the error and prints nothing still gets no note: there is nothing to read", async () => {
+    const result = await sh(workspace, "curl -s https://example.com | cat")
+    expect(result.output).toBe("(no output)")
+    expect(result.hint).toBeNull()
   })
 })

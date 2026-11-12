@@ -8,7 +8,9 @@
  * caused a failure. It knows reliably only that the command ran sandboxed,
  * with what access, and that it failed. `sandboxHint` adds a factual note to
  * a failed sandboxed command's output when the output contains an error the
- * sandbox produces (EROFS, EACCES, a DNS or connection failure). A wrong guess
+ * sandbox produces (EROFS, EACCES, a DNS or connection failure), and to one
+ * that exited 0 when its output shows the network's refusal as a client
+ * reports it (a pipeline hid the failure). A wrong guess
  * is harmless: the note costs a few lines, and nothing runs with more access
  * until the model asks explicitly and the user approves.
  *
@@ -99,6 +101,26 @@ export interface SandboxHint {
 const WRITE_MARKERS = /Read-only file system|EROFS|Permission denied|EACCES|Operation not permitted|EPERM/
 const NETWORK_MARKERS =
   /Could not resolve|Temporary failure in name resolution|Name or service not known|nodename nor servname|getaddrinfo|EAI_AGAIN|ENOTFOUND|Network is unreachable|ENETUNREACH|Connection refused|ECONNREFUSED|No route to host|EHOSTUNREACH|Failed to establish a new connection|network is unreachable|Failed to connect to|Couldn't connect to server|ConnectionRefused|DNSResolveFailed/i
+/**
+ * What a client prints when a name lookup failed, naming the host it looked
+ * up. With the network off every connection to another machine starts with
+ * a lookup that fails, so this is the sandbox's refusal as programs report
+ * it. It is matched also when the command exited 0, because a pipeline
+ * (`curl ... | head`) or `|| true` hides the exit code: hence only these
+ * shapes, which source code or a log that merely mentions DNS does not have
+ * (a dotted host name, not a word, a `${host}` or a quote, must follow).
+ * Seen under bubblewrap: curl and git, wget, Python, Node and npm, Bun.
+ */
+const HOST = "[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+(?![A-Za-z0-9${'\"`-]|\\.[A-Za-z0-9])"
+const NETWORK_REFUSALS = new RegExp(
+  [
+    String.raw`Could not resolve host(?:name)?:? ${HOST}`,
+    String.raw`unable to resolve host address ['‘"]?${HOST}`,
+    String.raw`getaddrinfo (?:EAI_AGAIN|ENOTFOUND|ETIMEOUT) ${HOST}`,
+    String.raw`(?:\]|failed:|: ${HOST}:) Temporary failure in name resolution`,
+    String.raw`DNSResolveFailed downloading`,
+  ].join("|"),
+)
 /** A write git or a hook installer reports when the sandbox's read-only git configuration, hooks or project directory refused it. */
 const PROTECTED_MARKERS = new RegExp(
   [
@@ -112,7 +134,10 @@ const PROTECTED_MARKERS = new RegExp(
 
 /**
  * A note for a sandboxed command whose output shows an error the sandbox
- * causes; null otherwise. Only a failed command (exit code not 0) gets one.
+ * causes; null otherwise. A failed command (exit code not 0) is looked at for
+ * every such error. One that exited 0 only for the network's refusal as
+ * clients report it (`NETWORK_REFUSALS`): its failure was hidden by a
+ * pipeline or `|| true`. A command that was stopped gets no note.
  */
 export function sandboxHint(run: SandboxRun): SandboxHint | null {
   if (!run.sandboxed || run.exitCode === null) return null
@@ -121,14 +146,15 @@ export function sandboxHint(run: SandboxRun): SandboxHint | null {
   const git = failed && lines.some((line) => PROTECTED_MARKERS.test(line))
   // A refused write to what stays read-only whatever is granted is not a reason to ask for writes.
   const write = failed && lines.some((line) => WRITE_MARKERS.test(line) && !PROTECTED_MARKERS.test(line))
-  const network = failed && !run.network && NETWORK_MARKERS.test(run.output)
+  const network = !run.network && (failed ? NETWORK_MARKERS.test(run.output) : NETWORK_REFUSALS.test(run.output))
   const suspects = [...(network ? (["network"] as const) : []), ...(write ? (["write"] as const) : []), ...(git ? (["git"] as const) : [])]
   if (suspects.length === 0) return null
   const notes: string[] = []
   if (network || write) {
     const limits = run.network ? "writes only inside the workspace and the temp directory" : "no network, and writes only inside the workspace and the temp directory"
     const ask = [...(network ? ['`sandbox: { "network": true }`'] : []), ...(write ? ['`sandbox: { "write": ["<directory>"] }`'] : [])].join(" or ")
-    notes.push(`[sandbox] This command ran in the sandbox (${limits}), and its output shows an error the sandbox can cause. If it needs that access, run it again with ${ask}; the user will be asked.`)
+    const shows = failed ? "its output shows an error the sandbox can cause" : "its output shows that a network request failed, although it exited 0 (a pipeline or `|| true` hides a failure)"
+    notes.push(`[sandbox] This command ran in the sandbox (${limits}), and ${shows}. If it needs that access, run it again with ${ask}; the user will be asked.`)
   }
   if (git)
     notes.push(

@@ -79,6 +79,37 @@ describe("sandboxHint", () => {
     expect(run("touch: cannot touch '.git/hooks/x': Read-only file system\ntouch: cannot touch '/opt/y': Read-only file system")?.suspects).toEqual(["write", "git"])
     expect(run("error: could not write config file .git/config: Device or resource busy", { exitCode: 0 })).toBeNull()
   })
+
+  test("a command that exited 0 gets the network note only for a failed lookup as a client reports it", () => {
+    for (const output of [
+      "curl: (6) Could not resolve host: example.com",
+      "fatal: unable to access 'https://example.com/r.git/': Could not resolve host: example.com",
+      "npm error request to https://registry.npmjs.org/left-pad failed, reason: getaddrinfo EAI_AGAIN registry.npmjs.org",
+      "TypeError: getaddrinfo ETIMEOUT example.com",
+      "urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>",
+      "Resolving example.com (example.com)... failed: Temporary failure in name resolution.",
+      "wget: unable to resolve host address \u2018example.com\u2019",
+      "ping: example.com: Temporary failure in name resolution",
+      "ssh: Could not resolve hostname example.com: Temporary failure in name resolution",
+      "error: DNSResolveFailed downloading package manifest typescript",
+    ]) {
+      const hint = run(output, { exitCode: 0 })
+      expect(hint?.suspects, output).toEqual(["network"])
+      expect(hint?.note).toContain("although it exited 0")
+    }
+    for (const output of [
+      'if (error.code === "ENOTFOUND" || error.code === "EAI_AGAIN") retry()',
+      "throw new Error(`Could not resolve host: ${host}`)",
+      "throw new Error('Could not resolve host: ' + host)",
+      "// getaddrinfo EAI_AGAIN means the DNS lookup timed out",
+      'log("Temporary failure in name resolution")',
+      "DNS lookup ok",
+      "curl: (7) Failed to connect to 127.0.0.1 port 3000 after 0 ms: Couldn't connect to server",
+      "Error: connect ECONNREFUSED 127.0.0.1:5432",
+    ])
+      expect(run(output, { exitCode: 0 }), output).toBeNull()
+    expect(run("curl: (6) Could not resolve host: example.com", { exitCode: 0, network: true })).toBeNull()
+  })
 })
 
 describe("the escalation flow", () => {
