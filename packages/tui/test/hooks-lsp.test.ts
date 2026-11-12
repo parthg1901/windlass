@@ -223,13 +223,15 @@ describe("what a hook did, and what the language servers said", () => {
       stop({ toModel: "SCRATCH.md still exists. Delete it before you finish." }),
       event("synthetic.appended", { messageId: m("m2"), origin: "stop_hook", text: "[Stop hook 1 of at most 1] The turn cannot end yet." } as never),
       stop({}),
-      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"] } } as never),
+      event("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" }, hooks: { unsatisfied: ["no-scratch"], objections: [{ hook: "no-scratch", text: "SCRATCH.md is still there. Nobody deleted it." }] } } as never),
     )
     await mounted!.settle()
     const frame = flat(await mounted!.frame())
     expect(frame).toContain('↻ the stop hook "no-scratch" did not let the turn end · the agent is sent back with what it said')
     expect(frame).toContain("SCRATCH.md still exists. Delete it before you finish.")
     expect(frame).toContain('⚠ ended with the stop hook "no-scratch" unsatisfied · no checks configured')
+    // The last round sent nobody back, so its record has no text: the ending says what the hook said then.
+    expect(frame).toContain("SCRATCH.md is still there. Nobody deleted it.")
     expect(frame).not.toContain("note to the model")
     expect(frame).not.toContain("hook.ran")
   })

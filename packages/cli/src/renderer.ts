@@ -11,7 +11,7 @@ import { type EventData, type ProviderError, type SessionSettings, type StepErro
 import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
-import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
+import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, objectionTexts, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
 import { restoredFiles } from "./commands.ts"
 import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
@@ -624,7 +624,7 @@ export class PrettyRenderer implements Sink {
         const next = seg(" · on to the queued message", "dim")
         if (event.data.hooks !== undefined) {
           this.line("info", [seg(`${SYMBOL.unknown} `, "yellow"), seg(unsatisfiedText(event.data.hooks.unsatisfied), "yellow"), next])
-          for (const line of this.objections()) this.line("info", line)
+          for (const line of this.said(event.data.hooks.objections)) this.line("info", line)
         }
         this.stopRuns = []
         if (verification.status === "passed") this.line("info", [seg(`${SYMBOL.ok} `, "green"), seg("checks passed", "green"), next])
@@ -667,7 +667,7 @@ export class PrettyRenderer implements Sink {
         // A compaction the user asked for while idle runs under an execution of its own: no turn ended here.
         if (compactionOnly(turn)) return
         const parts = [turn === null ? null : requestsOf(turn), turn === null ? null : formatDuration(event.time - turn.start)]
-        return this.succeeded(event.data.verification, parts, turn, event.data.hooks?.unsatisfied ?? null)
+        return this.succeeded(event.data.verification, parts, turn, event.data.hooks ?? null)
       }
       case "execution.failed": {
         const turn = this.endTurn()
@@ -956,9 +956,14 @@ export class PrettyRenderer implements Sink {
     for (const said of hookCallLines(hooks, started, false)) for (const line of excerpt(said.text, this.width - 4, HOOK_TEXT_ROWS)) this.line("info", [seg(`    ${line}`, said.tone === "warn" ? "yellow" : "dim")])
   }
 
-  /** What the stop hooks that still object said, under the line that says what became of it. */
+  /** What the stop hooks that object said, under the line that says the agent is sent back with it. */
   private objections(): Segment[][] {
     return stopHookSentBack(this.stopRuns).reasons.flatMap((reason) => excerpt(reason, this.width - 2, HOOK_TEXT_ROWS).map((line) => [seg(`  ${line}`)]))
+  }
+
+  /** What each stop hook said when the turn ended with it unsatisfied (the ending's `hooks.objections`), under the ending. */
+  private said(objections: readonly { readonly hook: string; readonly text: string }[]): Segment[][] {
+    return objectionTexts(objections).flatMap((text) => excerpt(text, this.width - 2, HOOK_TEXT_ROWS).map((line) => [seg(`  ${line}`)]))
   }
 
   private stepFailed(error: StepError): void {
@@ -991,10 +996,11 @@ export class PrettyRenderer implements Sink {
   }
 
   /** The three ways a turn ends as done: on passing checks, without any, or with checks that still fail. */
-  private succeeded(verification: VerificationOutcome, parts: readonly (string | null)[], turn: Turn | null, unsatisfied: readonly string[] | null = null): void {
+  private succeeded(verification: VerificationOutcome, parts: readonly (string | null)[], turn: Turn | null, hooks: EventData<"execution.succeeded">["hooks"] | null = null): void {
     // Stop hooks still objected after the agent was sent back as often as a turn allows: its own kind of ending,
-    // with what the hooks last said. (The engine's own sentence about it came just before, as a warning.)
-    const objected = unsatisfied === null ? [] : this.objections()
+    // with what each hook said this last time. (The engine's own sentence about it came just before, as a warning.)
+    const unsatisfied = hooks == null ? null : hooks.unsatisfied
+    const objected = hooks == null ? [] : this.said(hooks.objections)
     this.stopRuns = []
     const done = (basis: string, more: readonly (readonly Segment[])[] = []) =>
       unsatisfied === null

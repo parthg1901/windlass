@@ -186,7 +186,8 @@ describe("what a hook did", () => {
     expect(flat).toContain('the hook "broken" printed: no formatter installed')
     expect(flat).toContain('↻ the stop hook "never-done" did not let the turn end · the agent is sent back with what it said SCRATCH.md still exists.')
     expect(flat).toContain('⚠ ended with the stop hook "never-done" unsatisfied · no checks configured')
-    // What the hook said is said where the agent was sent back, and nothing is made up for the ending.
+    // What the hook said is said where the agent was sent back, and again under the ending, which carries its last words.
+    expect(out).toMatch(/⚠ ended with the stop hook "never-done" unsatisfied · no checks configured[^\n]*\n  SCRATCH\.md still exists\.\n/)
     expect(flat).not.toContain("it gave no reason")
     // Nothing of it is called a note to the model or an internal problem.
     expect(flat).not.toContain("note to the model")

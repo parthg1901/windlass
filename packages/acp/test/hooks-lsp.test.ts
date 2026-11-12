@@ -169,9 +169,10 @@ describe("hooks", () => {
     expect(said).toContainEqual(expect.objectContaining({ severity: "warning", title: 'The stop hook "never-done" did not let the turn end', description: "Not yet." }))
     expect(said.filter((notice) => notice.title.startsWith("Internal problem"))).toEqual([])
     const turn = notes<TurnNotification>(harness, EXT.turn).at(-1)!
-    expect(turn).toMatchObject({ outcome: "succeeded", hooks: { unsatisfied: ["never-done"] } })
+    // The ending carries what the hook said that last time: nobody was sent back with it.
+    expect(turn).toMatchObject({ outcome: "succeeded", hooks: { unsatisfied: ["never-done"], objections: [{ hook: "never-done", text: "Not yet." }] } })
     expect(answer.stopReason).toBe("end_turn")
-    expect(answer._meta![NS]!.hooks).toEqual({ unsatisfied: ["never-done"] })
+    expect(answer._meta![NS]!.hooks).toEqual({ unsatisfied: ["never-done"], objections: [{ hook: "never-done", text: "Not yet." }] })
 
     // The listing says which hook could not answer when it last ran, and why.
     const state = await ext<HooksStateResult>(harness, EXT.hooks, { sessionId })

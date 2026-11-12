@@ -10,7 +10,7 @@
  * capped; a second expansion shows it in full up to `FULL_OUTPUT_LINES`.
  */
 import { SUBAGENT_NOTE } from "@windlass/core"
-import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diagnosticsSummary, diffStat, hookCallLines, hookRefusal, unsatisfiedText, errorSummary, fileList, formatBytes, formatDuration, requestsText, successSummary, tasksOf, tasksProgress, unresolvedReason, usageText } from "./cli.ts"
+import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, detailLines, diagnosticsSummary, diffStat, hookCallLines, hookRefusal, objectionTexts, unsatisfiedText, errorSummary, fileList, formatBytes, formatDuration, requestsText, successSummary, tasksOf, tasksProgress, unresolvedReason, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
@@ -448,6 +448,10 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
   const after = parts.length === 0 ? "" : ` · ${parts.join(" · ")}`
   const lines: Span[][] = []
   const wrapped = (spans: Span[], indent = "  ") => lines.push(...wrapLine(spans, columns, [span(indent)]))
+  // What each stop hook said when the turn ended with it unsatisfied: a few whole lines each, under the ending.
+  const said = () => {
+    for (const text of objectionTexts(row.objections)) lines.push(...clip(wrapLine([span(`  ${text}`)], columns, [span("  ")]), HOOK_TEXT_ROWS))
+  }
   switch (row.outcome) {
     case "succeeded": {
       const status = row.verification?.status
@@ -455,6 +459,7 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
       if (row.unsatisfied !== null) {
         const basis = status === "passed" ? "checks passed" : status === "not_needed" ? "nothing to check" : status === "left_to_parent" ? LEFT_TO_PARENT : "no checks configured"
         wrapped([span("⚠ ", "warn"), span(unsatisfiedText(row.unsatisfied), "warn", { bold: true }), span(` · ${basis}`, "dim"), span(after, "dim")])
+        said()
         if (row.verification?.status === "not_needed" && row.verification.unverified === true) wrapped([span(`  ${UNVERIFIED_HINT}`, "warn")], "    ")
       } else if (status === "passed") wrapped([span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok"), span(after, "dim")])
       else if (row.verification?.status === "not_needed" && row.verification.unverified === true) {
@@ -471,7 +476,10 @@ function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][
       const failing = verification?.status === "unresolved" ? verification.failing.join(", ") : ""
       wrapped([span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · failing checks: ${failing}`, "error"), span(after, "dim")])
       if (verification?.status === "unresolved") wrapped([span(`  ${unresolvedReason(verification)}`, "warn")], "    ")
-      if (row.unsatisfied !== null) wrapped([span(`  ⚠ it also ${unsatisfiedText(row.unsatisfied)}`, "warn")], "    ")
+      if (row.unsatisfied !== null) {
+        wrapped([span(`  ⚠ it also ${unsatisfiedText(row.unsatisfied)}`, "warn")], "    ")
+        said()
+      }
       break
     }
     case "failed":

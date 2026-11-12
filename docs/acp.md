@@ -230,7 +230,7 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | `/mcp`, the question about a project's server, a server that failed to start | `_windlass/mcp`, `_windlass/mcp_approve`, `_windlass/mcp_changed` |
 | `/hooks`, the question about a project's hook, how to approve it in a run with nobody to ask | `_windlass/hooks`, `_windlass/hook_approve`, `_windlass/hooks_changed` (and at once after a `diagnostic` of kind `hooks`) |
 | `/lsp`, the question about a project's language server | `_windlass/lsp`, `_windlass/lsp_approve`, `_windlass/lsp_changed` (and at once after a `diagnostic` of kind `lsp`) |
-| A call a hook refused, a note a hook added, a stop hook that sent the agent back, a turn that ended with one unsatisfied | the `hook.ran` events (before the `tool.settled`, the `stop_hook` message or the ending they belong to) and `hooks.unsatisfied` on `execution.succeeded` and `turn.ended`; for other clients `_meta["windlass/hooks"]` on the settled call, a `notice`, and `hooks` in `_windlass/turn` |
+| A call a hook refused, a note a hook added, a stop hook that sent the agent back, a turn that ended with one unsatisfied | the `hook.ran` events (before the `tool.settled`, the `stop_hook` message or the ending they belong to) and `hooks.unsatisfied` with `hooks.objections` (what each hook said that last time) on `execution.succeeded` and `turn.ended`; for other clients `_meta["windlass/hooks"]` on the settled call, a `notice`, and `hooks` in `_windlass/turn` |
 | An edit that got diagnostics: how many, from which server | `tool.settled`'s `diagnostics`; for other clients `_meta["windlass/diagnostics"]` on the settled call |
 | `/skills` | `_windlass/skills` |
 | `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_windlass/wakeups`, `_windlass/wake_cancel`, `_windlass/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
@@ -326,8 +326,10 @@ do not ask get the standard updates exactly as before, and none of this.
   verification?: object,            // execution.succeeded's verification: { status: "passed", evidence } | { status: "not_needed", unverified?: true }
                                     //   | { status: "not_configured" } | { status: "left_to_parent" }
                                     //   | { status: "unresolved", reason, failing, acknowledgement, evidence }
-  hooks?: { unsatisfied: string[] }, // stop hooks still objected after the agent had been sent back as often as a turn
-                                    //   allows (hooks.maxStopRounds): the turn ended anyway, with these hooks unsatisfied
+  hooks?: { unsatisfied: string[],  // stop hooks still objected after the agent had been sent back as often as a turn
+            objections: { hook: string, text: string }[] },   // allows (hooks.maxStopRounds): the turn ended anyway, with
+                                    //   these hooks unsatisfied; objections: what each said that last time, for the
+                                    //   user (nobody was sent back with it; text is empty for a hook that gave no reason)
   message?: string,                 // failed: why
   reason?: "user" | "shutdown",     // interrupted: by whom
   changedFiles: string[] | null,    // also on a replay (from the turn's snapshots); null when no snapshot could tell
@@ -714,7 +716,7 @@ _meta: {
 
 A stop hook that sends the agent back is a `notice` (`warning`, titled with the hook's name, its text as the
 description) to a client that shows notices; a turn that ends with stop hooks still objecting has `hooks.unsatisfied`
-in `_windlass/turn` and in the prompt response's `_meta`.
+and `hooks.objections` (what each hook said) in `_windlass/turn` and in the prompt response's `_meta`.
 
 **`_windlass/skills`** (request) → `{ sessionId, available, skills: { name, description, path, scope, root }[],
 problems: { path, severity: "skipped" | "shadowed" | "warning", reason }[], roots: { dir, scope }[] }`: the skills of

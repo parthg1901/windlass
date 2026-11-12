@@ -186,7 +186,7 @@ export class Translator {
       case "execution.succeeded": {
         const verification = item.data.verification
         const outcome = verification.status === "unresolved" ? "unresolved" : "succeeded"
-        const hooks = item.data.hooks === undefined ? {} : { hooks: { unsatisfied: [...item.data.hooks.unsatisfied] } }
+        const hooks = item.data.hooks === undefined ? {} : { hooks: hookEnding(item.data.hooks) }
         out.push(...this.finishTools(update), ...this.end({ kind: "stop", stopReason: this.successReason() }, replay, { executionId: item.data.executionId, outcome, verification, ...hooks }))
         break
       }
@@ -199,7 +199,7 @@ export class Translator {
           outcome: verification.status === "unresolved" ? "unresolved" : "succeeded",
           stopReason: this.successReason(),
           verification,
-          ...(item.data.hooks === undefined ? {} : { hooks: { unsatisfied: [...item.data.hooks.unsatisfied] } }),
+          ...(item.data.hooks === undefined ? {} : { hooks: hookEnding(item.data.hooks) }),
           changedFiles: replay ? null : this.turn.changedFiles,
           continues: true,
           ...(replay ? { replay: true } : {}),
@@ -545,6 +545,11 @@ function freshTurn() {
     lastFinish: null as EventData<"step.ended">["finish"] | null,
     providerError: null as ProviderError | null,
   }
+}
+
+/** A turn's ending with stop hooks unsatisfied, as `<prefix>/turn` carries it: which hooks, and what each said that last time. */
+function hookEnding(hooks: NonNullable<EventData<"execution.succeeded">["hooks"]>): NonNullable<TurnNotification["hooks"]> {
+  return { unsatisfied: [...hooks.unsatisfied], objections: hooks.objections.map((objection) => ({ hook: objection.hook, text: objection.text })) }
 }
 
 function toolKey(messageId: string, callId: string): string {

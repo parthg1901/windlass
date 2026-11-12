@@ -11,7 +11,7 @@
 import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } from "@windlass/acp/extensions"
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
-import { type DiagnosticsRecord, type HookRecord, hookPrinted, stopHookSentBack, unsatisfiedText } from "./cli.ts"
+import { type DiagnosticsRecord, type HookRecord, hookPrinted, objectionTexts, stopHookSentBack, unsatisfiedText } from "./cli.ts"
 import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
@@ -178,6 +178,8 @@ export interface OutcomeRow extends RowBase {
   readonly turn: number | null
   /** The stop hooks that still objected when the turn ended anyway (`hooks.unsatisfied`); `null` when none did. */
   readonly unsatisfied: readonly string[] | null
+  /** What each of them said that last time (`hooks.objections`): the ending's to show, since nobody was sent back with it. */
+  readonly objections: readonly { readonly hook: string; readonly text: string }[]
 }
 
 export interface DebugRow extends RowBase {
@@ -806,7 +808,7 @@ export class Transcript {
       case "turn.ended": {
         const verification = event.data.verification
         const next = span(" · on to the queued message", "dim")
-        if (event.data.hooks !== undefined) this.notice(SYMBOL.unknown, "warn", [span(unsatisfiedText(event.data.hooks.unsatisfied), "warn"), next], [], replay, "work")
+        if (event.data.hooks !== undefined) this.notice(SYMBOL.unknown, "warn", [span(unsatisfiedText(event.data.hooks.unsatisfied), "warn"), next], objectionTexts(event.data.hooks.objections).map((text) => [span(sanitize(text))]), replay, "work")
         this.stopRuns = []
         if (verification.status === "passed") this.notice(SYMBOL.ok, "ok", [span("checks passed", "ok"), next], [], replay, "work")
         else if (verification.status === "unresolved")
@@ -833,7 +835,7 @@ export class Transcript {
         // A compaction the user asked for while idle runs under an execution of its own: no turn ended here.
         if (compactionOnly(turn)) return
         const unresolved = event.data.verification.status === "unresolved"
-        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification, executionId: event.data.executionId, unsatisfied: event.data.hooks?.unsatisfied ?? null }, replay)
+        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification, executionId: event.data.executionId, unsatisfied: event.data.hooks?.unsatisfied ?? null, objections: (event.data.hooks?.objections ?? []).map((objection) => ({ hook: objection.hook, text: sanitize(objection.text) })) }, replay)
         return
       }
       case "execution.failed": {
@@ -1115,7 +1117,7 @@ export class Transcript {
     return turn
   }
 
-  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string; unsatisfied?: readonly string[] | null }, replay: boolean): void {
+  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string; unsatisfied?: readonly string[] | null; objections?: readonly { readonly hook: string; readonly text: string }[] }, replay: boolean): void {
     const waiting = outcome === "interrupted" ? this.pending.length : 0
     this.stopRuns = []
     this.add<OutcomeRow>(
@@ -1139,6 +1141,7 @@ export class Transcript {
         expanded: false,
         turn: this.turns.turns.findLast((candidate) => candidate.endSeq === this.lastSeq)?.number ?? null,
         unsatisfied: extra.unsatisfied ?? null,
+        objections: extra.objections ?? [],
       },
       replay,
     )

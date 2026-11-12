@@ -244,6 +244,20 @@ export function unsatisfiedText(names: readonly string[]): string {
   return names.length === 1 ? `ended with the stop hook "${names[0]}" unsatisfied` : `ended with stop hooks unsatisfied: ${names.join(", ")}`
 }
 
+/**
+ * What each stop hook said when the turn ended although it still objected
+ * (`hooks.objections` of the ending: the last round sent nobody back, so
+ * its `hook.ran` has no text and the ending carries the words), one entry
+ * per hook: its own words, under its name when several objected; a hook
+ * that gave no reason is said to have given none.
+ */
+export function objectionTexts(objections: readonly { readonly hook: string; readonly text: string }[]): string[] {
+  return objections.map((objection) => {
+    const said = objection.text.trim() === "" ? "(it gave no reason)" : objection.text
+    return objections.length === 1 ? said : `${objection.hook}: ${said}`
+  })
+}
+
 // ---------------------------------------------------------------- what the language servers said
 
 /** What a row says when its result got diagnostics: how many new ones, from which server. `null` when no note was added. */

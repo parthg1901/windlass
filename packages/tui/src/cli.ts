@@ -44,6 +44,7 @@ export {
   lspQuestionTitle,
   stopHookSentBack,
   unsatisfiedText,
+  objectionTexts,
 } from "../../cli/src/hooks.ts"
 export { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentLines, agentProblemLines, agentRefused, agentSwitchText, compactText, requestsText, taskLines, tasksOf, tasksProgress } from "../../cli/src/agents.ts"
 export { usageText } from "../../cli/src/renderer.ts"

@@ -330,8 +330,12 @@ export interface TurnNotification {
   readonly stopReason: string
   /** The verification gate's outcome (`execution.succeeded`'s `verification`), when the turn ended as done. */
   readonly verification?: unknown
-  /** The stop hooks that still objected when the turn ended: it had been sent back as often as a turn may be (`hooks.unsatisfied` on the ending). */
-  readonly hooks?: { readonly unsatisfied: readonly string[] }
+  /**
+   * The stop hooks that still objected when the turn ended: it had been sent back as often as a turn may be
+   * (`hooks` on the ending). `objections` is what each of them said that last time, in the order they ran (`text`
+   * is empty for a hook that gave no reason): nobody was sent back with it, so it is here for the user.
+   */
+  readonly hooks?: { readonly unsatisfied: readonly string[]; readonly objections: readonly { readonly hook: string; readonly text: string }[] }
   /** On a failure: why. */
   readonly message?: string
   /** On an interrupt: `user` or `shutdown`. */
