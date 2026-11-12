@@ -47,7 +47,7 @@ every command the agent started is stopped, and the session resumes later where 
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
 | `authenticate` | Checks the saved sign-in; succeeds if it is usable, otherwise answers auth-required with how to sign in. There is no in-client browser flow. |
-| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["light-harness"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`) and `attended` (default `true`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
+| `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["light-harness"] = { model, effort }` starts it with those settings, the model checked against the account's models first (an unknown one is refused with `-32602` and the list of valid ones). `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_light-harness/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["light-harness"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), and `archived: true` opens an archived session too. |
 | `session/list` | Sessions (not deleted), newest first, filtered by `cwd`, 100 per page. Each has `_meta["light-harness"] = { model, effort, archived? }`. With `_meta["light-harness"] = { archived: true }` archived sessions are listed too. The `title` is the session's own, or else derived from its first message (below). |
@@ -135,6 +135,18 @@ Before every tool call the harness decides whether it runs, runs in the sandbox,
   with `replay: true`; it shows them as history and puts no question. No question is ever pending in a stored
   session: one that a process died under was settled as "not started" by recovery, and the model asks again.
 
+**A subagent's question.** A session's subagents (the `subagent` tool) ask through their parent's client. A client
+that is attended answers for them too, unless it opened the session with `children: false`; without someone to ask, a
+subagent's call that would ask is refused as unattended. The question is a `session/request_permission` on the
+**parent** session, like the parent's own, with these differences: `toolCall.toolCallId` is
+`<subagent session>/<message>/<call>` (the call is the subagent's, not one the client shows for the parent), the
+`title` is prefixed `Subagent "<first line of its task>": `, the content ends with "Asked by a subagent working on:
+<task>", and `_meta["light-harness"].approval.subagent = { sessionId, title, spawnId, toolCallId }` names the subagent
+(`toolCallId` is the parent's `subagent` call that started it, when this connection saw it start). The answer is the
+selected option, as for any question; the server hands it to the subagent through its parent. A cancel of the parent
+withdraws it: the parent's interrupt stops its subagents, and the request is answered `cancelled`. What the subagent
+does is forwarded as it happens (`_light-harness/child`, or `child.event` in the events, below).
+
 The other question the agent asks is the hand-edit question of an undo or redo (`_light-harness/revert`, below):
 `session/request_permission` with options `overwrite` (allow once), `keep` (allow once: restore the rest) and
 `cancel` (reject once). Its `toolCall` names the files (`locations`) and says what overwriting means;
@@ -148,6 +160,9 @@ A client tells the two apart by `_meta["light-harness"]`: `approval` or `plan`.
 - The client's file system and terminal methods (`fs/*`, `terminal/*`): tools run inside the agent.
 - Session modes, plans, slash commands (`available_commands_update`), `logout`, additional directories, and system
   prompt overrides.
+- A subagent's history on `session/load`: what a parent forwards is not stored in its log, so a loaded session shows
+  its `subagent` calls and their results only. The subagent's own log is `_light-harness/events` of its session (the
+  TUI reads it when such a row is expanded).
 - Renaming a session: the engine has no operation that appends `session.renamed` (it would be
   `EngineSession.rename(title)`), so `_light-harness/rename` is not offered and titles are derived (below).
 - Compaction on request: the engine compacts only when its policy says so and has no operation to ask for one
@@ -183,6 +198,10 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | The files a turn changed | the `workspace.changes` event; for other clients `changedFiles` in `_light-harness/turn` |
 | Diagnostics | the `diagnostic` event; for other clients `_light-harness/diagnostic`, and a `notice` to clients that show them |
 | `--list-sessions` | `session/list` (all pages), with the derived titles |
+| `lh fork [<session>]` (`--through`, `--copy`, `--copy-to`, `--model`, `--effort`, `--title`) | `_light-harness/resolve`, then `_light-harness/fork`; the fork is continued with `--session` |
+| `lh replay [<session>]` (the options of `scripts/replay.ts` but `--data-dir`) | `_light-harness/resolve`, then `_light-harness/replay`; progress from the replay session's events after `_light-harness/replay_started`, the report from the answer; Ctrl-C is `session/cancel` of the replay session |
+| A subagent's question, labelled with its task | `session/request_permission` with `_meta["light-harness"].approval.subagent`; the CLI answers for subagents only where it is attended |
+| A subagent's tool calls, one indented line each | `child.event` in the events |
 | `--models` | `_light-harness/models` |
 | `/approval [ask\|auto\|full]` | `session/set_config_option` `approval`, then `_light-harness/approval` for the mode in force |
 | `/diff` | `_light-harness/diff` for the latest turn |
@@ -194,8 +213,16 @@ message), `_light-harness/unarchive`, `_light-harness/session` (state), `_light-
 
 When `lh acp` dies under a turn, the CLI says so on stderr, names the session to open again, and exits with 1; the
 next open of that session recovers it through the engine's crash recovery. A server that does not answer
-`initialize` within 20 seconds (`LH_ENGINE_START_TIMEOUT_MS`), exits first (its last log line is shown), or does not
-offer `_light-harness/event` is reported in one line, exit code 1.
+`initialize` within 20 seconds (`LH_ENGINE_START_TIMEOUT_MS`), exits first, or does not offer `_light-harness/event` is
+reported in one line, exit code 1. A server that exits first is "the engine could not start: <why> (its process exited
+with code N)", `<why>` being its own last error line or the message of the uncaught error it died of; what it wrote
+besides its log lines before it was ready (a runtime's source excerpt, stack and banner) is not shown.
+
+A CLI killed outright (SIGKILL) leaves its `lh acp` finishing its shutdown on its own, holding its session for up to
+the server's shutdown limit (5 s). When the next `lh --session` or `--continue` finds the session held by such a
+server (an `acp` process whose client is gone: its parent is init or a subreaper, read from `/proc`), it says so and
+waits for it ("the session is still held by the engine of an earlier run that was stopped (pid N); waiting for it to
+finish shutting down…"), then opens the session. A session held by anything else is refused at once, as before.
 
 ## The client library
 
@@ -213,8 +240,15 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   notifications: turn endings, state, usage, taint, notices, in arrival order), `send` (steer or queue), `cancel`,
   `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `close`, and the
   features a server may lack behind `offers(method)` (`rename`, `compact`).
+- `fork(params)` (`_light-harness/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
+  (`_light-harness/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
+  `_light-harness/replay_started` names it, so its `events` are the progress and its `cancel()` ends the replay; the
+  promise resolves with the report, and the replay session's events end with it.
+- `openWhenReleased(open, waiting)` runs an open again while the session is held by a server that is winding down
+  (`windingDown(pid)`), up to `WINDING_DOWN_MS`; `lastWords(lines)` is how a dead server's reason is picked.
 - Permission requests are routed to the session they are about: `approver(ask, signal)` gets the whole approval
-  question (choices with what each remembers, `needs`, `then`, and `subagent` when a request names one), and
+  question (choices with what each remembers, `needs`, `then`, and for a subagent's question `subagent`, the first
+  line of its task, and `subagentSessionId`), and
   `handEdits(ask, signal)` the hand-edit question of an undo. `cancel()` answers a pending question `cancelled`
   once the server has withdrawn it (its interrupt is in the log), and aborts `signal` so the client can close it.
 - Errors are `ClientError`s with the server's `reason` (`auth_required`, `session_in_use`, `session_not_found`,
@@ -224,7 +258,7 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
 ## Extensions
 
 Advertised in `initialize` as `agentCapabilities._meta["light-harness"] = { methods, notifications, promptMeta,
-clientMeta, openMeta }`.
+clientMeta, openMeta, permissionRequests }`.
 
 **Full fidelity: the harness's own events.** A client that renders the harness's events itself (the CLI does) asks
 for them in `initialize`:
@@ -300,6 +334,69 @@ Patches are cut at 32 KiB per file (`truncated`) and 256 KiB in all (later files
 binary has `binary: true` and no patch. `no_snapshots`: nothing around it could change files (a step of reads), or
 snapshots were off. `unavailable`: the snapshot store cannot be read (no git, or the snapshots were pruned).
 
+**`_light-harness/fork`** (request): a new session with the history of another up to a step boundary
+(`Engine.forkSession`). The parent is only read: it may be open on this connection, in another process, or nowhere.
+The fork is let go of once it is made; open it (`session/load` or `session/resume`) to work in it, here or elsewhere.
+It is listed like any session; its title is the parent's with " (fork)" unless one is given.
+
+```ts
+// params
+{
+  sessionId: string,                            // the parent
+  throughSeq?: number,                          // the last event it inherits, a step boundary; default the latest boundary
+  workspace?: "shared" | { copyTo?: string },   // default "shared" (the parent's directory); {}: a copy under <data dir>-work/workspaces/<fork>
+  model?: string, effort?: string | null,       // default the parent's; checked against the account's models
+  title?: string | null
+}
+// result
+{ sessionId, parentSessionId, throughSeq, cwd, copiedFrom: string | null, title: string | null, model, effort: string | null }
+```
+
+A fork point inside a step, or anything else the engine cannot do as asked, is `-32602` with
+`data["light-harness"].reason = "invalid_request"` and the engine's sentence; an unknown parent is `-32002`.
+
+**`_light-harness/replay`** (request): replays a recorded session against a changed baseline (`Engine.replaySession`,
+`docs/replay.md`). The real model is called; every tool call that is on the recording is answered from it. The
+answer comes when the replay is over; meanwhile the replay session is shown on this connection like any session:
+**`_light-harness/replay_started`** (notification) `{ sessionId, sourceSessionId, ref }` names it first, then its
+events (`_light-harness/event` for a client that takes them, standard updates otherwise) follow under its ID, and
+`session/cancel` on it (or `$/cancel_request` of the replay request) ends the replay as `incomplete`. It is let go of
+when the replay ends; it is not listed, and its log stays readable (`_light-harness/events`). Refused when signed out.
+
+```ts
+// params
+{
+  sessionId: string,                                  // the recording
+  policy?: "stop" | "execute-read-only" | "execute",  // default "stop"
+  systemPrompt?: string, toolDescriptions?: Record<string, string>,
+  model?: string, effort?: string | null,             // null: the model's default
+  strict?: boolean, throughSeq?: number,
+  workspace?: string,                                 // where the copy is made, for the policies that run tools
+  ref?: string                                        // echoed in replay_started
+}
+// result
+{ sourceSessionId, sessionId /* the replay session */, policy, workspace: string | null, requests: number,
+  usage: { inputTokens, cachedInputTokens, outputTokens, reasoningTokens } | null,
+  report: ReplayReport,     // status: "identical" | "diverged" | "unsupported" | "incomplete", reason, divergence, ...
+  text: string }            // the report as the harness prints it
+```
+
+**`_light-harness/child`** (notification): one durable event of a subagent of a session open on this connection, as
+the engine forwards it, for a client that does not take the harness's events. A client that does gets the same as
+`child.event` inside `_light-harness/event` (`{ type: "child.event", sessionId, child, spawnId, title, event }`) and
+no `_light-harness/child`. Nothing of it is stored in the parent: the subagent's own log is the record.
+
+```ts
+{
+  sessionId: string,          // the parent
+  childSessionId: string,     // the subagent's own session (also under the name sessionId in approval.subagent)
+  title: string,              // the first line of its task
+  spawnId: string,
+  toolCallId: string | null,  // the parent's subagent call that started it (<message>/<call>), when seen here
+  event: object               // the subagent's stored event, as in its own log
+}
+```
+
 **`_light-harness/withdraw`** (request) `{ sessionId, messageId }` → `{ withdrawn: boolean }`: takes back a message
 that was admitted and not delivered yet (`inbox.cancelled`); `false` when it was delivered or is unknown.
 
@@ -331,7 +428,7 @@ have loosened the user's policy.
 **Errors.** Every error the server answers for a reason a client may act on has
 `data["light-harness"] = { reason, message, holderPid? }`, `message` being the harness's own sentence:
 `auth_required` (`-32000`), `session_in_use` (`-32603`, with the holder's process ID), `session_not_found`
-(`-32002`), `ambiguous_session` and `unknown_model` (`-32602`), `schema_mismatch` (a session written by another
+(`-32002`), `ambiguous_session`, `unknown_model` and `invalid_request` (`-32602`), `schema_mismatch` (a session written by another
 version), `model_list_failed`, `execution_failed` (a failed turn, with `providerError`), `approval_required` (a turn ended
 because a call needed approval and nobody was present), `closed`.
 
