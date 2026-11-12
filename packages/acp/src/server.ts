@@ -1328,9 +1328,8 @@ class SessionView {
   private detached = false
   /**
    * What the engine said changed (`onFeatureChange`: its MCP servers, its
-   * hooks, its language servers) and the client has not been told yet. The
-   * engine calls in the middle of the change, so it is only noted there;
-   * the client is told once the change is made.
+   * hooks, its language servers) and whose state has not been read for the
+   * client yet: a change that comes meanwhile is told with it.
    */
   private readonly changed = new Set<SessionFeature>()
   private unfeature: (() => void) | null = null
@@ -1446,33 +1445,30 @@ class SessionView {
    * The engine's word that what `mcp()`, `hooks()` or `lsp()` returns has
    * changed: a server started, failed, waits for the user's approval or was
    * approved, the configuration a turn read names other hooks or servers.
-   * Noted here, and told to the client (`<prefix>/mcp_changed`,
-   * `<prefix>/hooks_changed`, `<prefix>/lsp_changed`, each with the whole
-   * state) once the change is made: one notification for however many
-   * changes came together.
+   * The client is told (`<prefix>/mcp_changed`, `<prefix>/hooks_changed`,
+   * `<prefix>/lsp_changed`, each with the whole state): one notification
+   * for however many changes came together. It takes its place among the
+   * session's updates here, ahead of what the engine says about the change
+   * in its events (a project's hook that waits is told before the sentence
+   * that it was not run); the state itself is read a moment later, once the
+   * change is made, because the engine calls in the middle of it.
    */
   private featureChanged(feature: SessionFeature): void {
-    if (this.detached) return
-    const first = this.changed.size === 0
+    if (this.detached || this.changed.has(feature)) return
     this.changed.add(feature)
-    if (first) setImmediate(() => this.tellFeatures())
-  }
-
-  private tellFeatures(): void {
-    const changed = [...this.changed]
-    this.changed.clear()
-    if (this.detached) return
-    const tell = (method: string, read: () => Promise<object>) =>
-      this.enqueue(async () => {
-        // A session that closed meanwhile has nothing new to say.
-        const state = this.detached ? null : await read().catch(() => null)
-        if (state !== null) await this.connection.sendExt(method, { ...state })
-      })
-    for (const feature of changed) {
-      if (feature === "mcp") tell(EXT.mcpChanged, () => mcpState(this.session))
-      else if (feature === "hooks") tell(EXT.hooksChanged, () => this.hooks())
-      else tell(EXT.lspChanged, () => lspState(this.session))
-    }
+    const [method, read] =
+      feature === "mcp"
+        ? ([EXT.mcpChanged, (): Promise<object> => mcpState(this.session)] as const)
+        : feature === "hooks"
+          ? ([EXT.hooksChanged, (): Promise<object> => this.hooks()] as const)
+          : ([EXT.lspChanged, (): Promise<object> => lspState(this.session)] as const)
+    this.enqueue(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      this.changed.delete(feature)
+      // A session that closed meanwhile has nothing new to say.
+      const state = this.detached ? null : await read().catch(() => null)
+      if (state !== null) await this.connection.sendExt(method, { ...state })
+    })
   }
 
   detach(): void {
