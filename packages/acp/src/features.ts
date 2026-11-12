@@ -23,7 +23,8 @@ import { describeProblem } from "../../core/src/memory/store.ts"
 import { confirmationRequests } from "../../core/src/memory/trust.ts"
 import { describeState, expiresAt, reviewReport, statesOf } from "../../core/src/memory/hygiene.ts"
 import { MEMORY_KINDS, type MemoryEntry, type MemoryKind, type MemoryScope, formatExpiry, oneLine } from "../../core/src/memory/entry.ts"
-import { describeTrigger } from "../../core/src/wake/record.ts"
+import type { WakeApi } from "../../core/src/engine/wake.ts"
+import { type WakeUp, describeTrigger } from "../../core/src/wake/record.ts"
 import type {
   HookInfo,
   HooksStateResult,
@@ -36,9 +37,13 @@ import type {
   MemoryNote,
   MemoryStateResult,
   SkillsResult,
+  WakeCreateParams,
+  WakeCreateResult,
   WakeInfo,
   WakeListResult,
+  WakeRun,
   WakeSecretResult,
+  WakeTrigger,
 } from "./extensions.ts"
 
 // ---------------------------------------------------------------- MCP
@@ -268,11 +273,8 @@ export function skillsState(session: EngineSession): SkillsResult {
 
 // ---------------------------------------------------------------- wake-ups
 
-export function wakeList(harness: Harness, sessionId: string): WakeListResult {
-  const api = harness.engine.wake()
-  if (api === null) return { sessionId, available: false, running: false, wakeups: [] }
-  const wakes = api.store.list({ sessionId, includeEnded: true })
-  const wakeups: WakeInfo[] = wakes.map((wake) => ({
+function wakeInfo(api: WakeApi, wake: WakeUp): WakeInfo {
+  return {
     id: wake.id,
     trigger: wake.trigger.kind,
     description: describeTrigger(wake.trigger),
@@ -284,8 +286,100 @@ export function wakeList(harness: Harness, sessionId: string): WakeListResult {
     message: wake.message,
     url: wake.trigger.kind === "webhook" ? api.webhookUrl(wake.id) : null,
     lines: api.describe(wake),
-  }))
-  return { sessionId, available: true, running: api.running, wakeups }
+  }
+}
+
+export function wakeList(harness: Harness, sessionId: string): WakeListResult {
+  const api = harness.engine.wake()
+  if (api === null) return { sessionId, available: false, running: false, wakeups: [] }
+  const wakes = api.store.list({ sessionId, includeEnded: true })
+  return { sessionId, available: true, running: api.running, wakeups: wakes.map((wake) => wakeInfo(api, wake)) }
+}
+
+/**
+ * The user creates a wake-up for a session (`Engine.wake().create`): the
+ * engine validates it with the bounds it gives a user, and refuses a session
+ * that cannot have one, each with a sentence. A webhook's secret is in the
+ * answer, for the user: it is in no event and no log.
+ */
+export function wakeCreate(harness: Harness, params: WakeCreateParams): WakeCreateResult {
+  const nothing = (message: string): WakeCreateResult => ({ created: false, message, wake: null, url: null, secret: null, running: false })
+  const api = harness.engine.wake()
+  if (api === null) return nothing("This engine has no wake-ups. Nothing was set up.")
+  const created = api.create({
+    sessionId: params.sessionId,
+    message: params.message,
+    trigger: params.trigger,
+    ...(params.delivery === undefined ? {} : { delivery: params.delivery }),
+    ...(params.maxFirings === undefined ? {} : { maxFirings: params.maxFirings }),
+    ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
+    ...(params.minIntervalMs === undefined ? {} : { minIntervalMs: params.minIntervalMs }),
+    ...(params.run === undefined ? {} : { run: params.run.kind === "sandboxed" ? { kind: "sandboxed", network: params.run.network, writableRoots: [...params.run.writableRoots] } : { kind: "unsandboxed" } }),
+  })
+  if (!created.ok) return { ...nothing(created.error), running: api.running }
+  const wake = created.wake
+  return {
+    created: true,
+    message: `Created wake-up ${wake.id}: ${describeTrigger(wake.trigger)}.`,
+    wake: wakeInfo(api, wake),
+    url: wake.trigger.kind === "webhook" ? api.webhookUrl(wake.id) : null,
+    secret: created.secret,
+    running: api.running,
+  }
+}
+
+const TRIGGER_KINDS = ["at", "after", "every", "cron", "check", "webhook"] as const
+
+/**
+ * The params of `<prefix>/wake_create` as the wire has them, checked for
+ * their shape (the engine checks what they mean: a time that has passed,
+ * an interval that is too short). A sentence for what is not one.
+ */
+export function wakeCreateParams(sessionId: string, raw: Record<string, unknown>): WakeCreateParams | { readonly problem: string } {
+  const object = (value: unknown): Record<string, unknown> | null => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null)
+  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value)
+  if (typeof raw.message !== "string") return { problem: "message must be a string" }
+  const given = object(raw.trigger)
+  const kind = given?.kind
+  if (given === null || typeof kind !== "string" || !(TRIGGER_KINDS as readonly string[]).includes(kind)) return { problem: `trigger.kind must be one of: ${TRIGGER_KINDS.join(", ")}` }
+  let trigger: WakeTrigger
+  if (kind === "at") {
+    if (!number(given.at)) return { problem: "trigger.at must be a time in milliseconds since the epoch" }
+    trigger = { kind, at: given.at as number }
+  } else if (kind === "after") {
+    if (!number(given.delayMs)) return { problem: "trigger.delayMs must be a number of milliseconds" }
+    trigger = { kind, delayMs: given.delayMs as number }
+  } else if (kind === "every") {
+    if (!number(given.intervalMs)) return { problem: "trigger.intervalMs must be a number of milliseconds" }
+    trigger = { kind, intervalMs: given.intervalMs as number }
+  } else if (kind === "cron") {
+    if (typeof given.expression !== "string") return { problem: "trigger.expression must be a cron expression" }
+    trigger = { kind, expression: given.expression, ...(typeof given.timeZone === "string" ? { timeZone: given.timeZone } : {}) }
+  } else if (kind === "check") {
+    if (typeof given.command !== "string" || !number(given.intervalMs)) return { problem: "a check needs trigger.command and trigger.intervalMs" }
+    if (given.fire !== "until" && given.fire !== "on_change") return { problem: 'trigger.fire must be "until" or "on_change"' }
+    trigger = { kind, command: given.command, intervalMs: given.intervalMs as number, fire: given.fire, ...(number(given.timeoutMs) ? { timeoutMs: given.timeoutMs as number } : {}), ...(typeof given.includeOutput === "boolean" ? { includeOutput: given.includeOutput } : {}) }
+  } else trigger = { kind: "webhook", ...(typeof given.includeBody === "boolean" ? { includeBody: given.includeBody } : {}) }
+  if (raw.delivery !== undefined && raw.delivery !== "wake" && raw.delivery !== "queue") return { problem: 'delivery must be "wake" or "queue"' }
+  for (const key of ["maxFirings", "expiresAt", "minIntervalMs"] as const) if (raw[key] !== undefined && !number(raw[key])) return { problem: `${key} must be a number` }
+  const access = raw.run === undefined ? null : object(raw.run)
+  let run: WakeRun | undefined
+  if (raw.run !== undefined) {
+    if (access?.kind === "unsandboxed") run = { kind: "unsandboxed" }
+    else if (access?.kind === "sandboxed" && typeof access.network === "boolean" && Array.isArray(access.writableRoots) && access.writableRoots.every((root) => typeof root === "string"))
+      run = { kind: "sandboxed", network: access.network, writableRoots: access.writableRoots as string[] }
+    else return { problem: 'run must be { kind: "unsandboxed" } or { kind: "sandboxed", network, writableRoots }' }
+  }
+  return {
+    sessionId,
+    message: raw.message,
+    trigger,
+    ...(raw.delivery === undefined ? {} : { delivery: raw.delivery }),
+    ...(raw.maxFirings === undefined ? {} : { maxFirings: raw.maxFirings as number }),
+    ...(raw.expiresAt === undefined ? {} : { expiresAt: raw.expiresAt as number }),
+    ...(raw.minIntervalMs === undefined ? {} : { minIntervalMs: raw.minIntervalMs as number }),
+    ...(run === undefined ? {} : { run }),
+  }
 }
 
 export function wakeCancel(harness: Harness, sessionId: string, id: string): { readonly cancelled: boolean; readonly message: string } {

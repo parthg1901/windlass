@@ -161,6 +161,7 @@ export class ScriptSession implements BackendSession {
   approveLsp?: BackendSession["approveLsp"]
   skills?: BackendSession["skills"]
   wakeups?: BackendSession["wakeups"]
+  createWake?: BackendSession["createWake"]
   cancelWake?: BackendSession["cancelWake"]
   wakeSecret?: BackendSession["wakeSecret"]
   memory?: BackendSession["memory"]

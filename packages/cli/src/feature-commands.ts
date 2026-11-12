@@ -10,7 +10,7 @@
  *
  * The words are `features.ts`'s and `hooks.ts`'s, shared with the TUI.
  */
-import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
+import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult, WakeRun } from "@windlass/acp/extensions"
 import { type EngineEvent, type Session, turnOutcomeOf } from "./engine.ts"
 import {
   type Line,
@@ -25,6 +25,12 @@ import {
   memoryLines,
   rememberArgs,
   skillsLines,
+  WAKE_CHECK_ANSWERS,
+  wakeAddEntry,
+  wakeAddUsageLines,
+  wakeCheckAccess,
+  wakeCheckQuestionLines,
+  wakeCreatedLines,
   wakeLines,
   wakeNotFiringText,
   watchEntry,
@@ -44,6 +50,8 @@ export interface FeatureIo {
   readonly ask: ((question: string, print: () => void) => Promise<string | null>) | null
   /** Whether a turn is running now: what is approved then is there from the next message, and that is said. */
   readonly working?: () => boolean
+  /** Whether a webhook's secret may be printed: the output is a terminal the user reads. Default: it may. */
+  readonly secrets?: boolean
   /** Keeps a note that cannot be saved before the session's first turn; it is saved, and said, once the session has started. */
   readonly keep?: (note: KeptNote) => void
 }
@@ -112,7 +120,8 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
         if (session.wakeups === undefined) return missing("wakeups")
         const words = rest.trim().split(/\s+/).filter((word) => word !== "")
         if (words.length === 0) return out.lines(wakeLines(await session.wakeups()))
-        if (words.length !== 2 || (words[0] !== "cancel" && words[0] !== "secret")) return out.notice("/wakeups takes nothing (the listing), cancel <id> or secret <id>", "warn")
+        if (words[0] === "add") return void (await addWake(rest.trim().slice("add".length), session, io))
+        if (words.length !== 2 || (words[0] !== "cancel" && words[0] !== "secret")) return out.notice("/wakeups takes nothing (the listing), add <what> (/wakeups add shows the forms), cancel <id> or secret <id>", "warn")
         if (words[0] === "cancel") {
           const result = await session.cancelWake!(words[1]!)
           return out.notice(result.message, result.cancelled ? "info" : "warn")
@@ -164,6 +173,38 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
   } catch (error) {
     out.notice(`/${name} failed: ${error instanceof Error ? error.message : String(error)}`, "error")
   }
+}
+
+/**
+ * `/wakeups add ...`: the user sets a wake-up of their own. A check's
+ * command is asked about first, like any command that would run: the
+ * answer is the access it runs with, or that nothing is set up. What the
+ * engine refuses is said in its sentence. A webhook's address and secret
+ * are shown once, where the output is a terminal.
+ */
+async function addWake(rest: string, session: Session, io: FeatureIo): Promise<void> {
+  const out = io.out
+  if (session.createWake === undefined) return out.notice("/wakeups add is not available with this engine", "warn")
+  if (rest.trim() === "") return out.lines(wakeAddUsageLines())
+  const entry = wakeAddEntry(rest, Date.now())
+  if ("problem" in entry) return out.notice(entry.problem, "warn")
+  let run: WakeRun | undefined
+  if (entry.check !== null) {
+    if (io.ask === null) return out.notice("nobody can answer here how the command may run; run this interactively", "warn")
+    const check = entry.check
+    const access = wakeCheckAccess(await io.ask(WAKE_CHECK_ANSWERS, () => out.lines(wakeCheckQuestionLines(check))))
+    if (access === null) return out.notice("not set up: the command is not run")
+    run = access
+  }
+  const result = await session.createWake({ ...entry.request, ...(run === undefined ? {} : { run }) })
+  if (!result.created || result.wake === null) return out.notice(result.message, "warn")
+  out.lines(wakeCreatedLines(result))
+  // A process that fires no wake-ups: said at once, with where this one will fire.
+  if (!result.running) out.notice(wakeNotFiringText({ id: result.wake.id, description: result.wake.description }, session.id), "warn")
+  if (result.secret === null) return
+  // The secret is for the user's eyes, once: on a terminal only.
+  if (io.secrets !== false) return out.lines(webhookSecretLines({ id: result.wake.id, url: result.url, secret: result.secret, message: null }, true))
+  out.notice(`webhook wake-up ${result.wake.id} is at POST ${result.url}; its secret is not printed because this output is not a terminal. /wakeups secret ${result.wake.id} shows it there.`)
 }
 
 /** Puts the question about a project's server, and approves it on a yes. Resolves with whether it was approved. */

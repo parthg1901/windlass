@@ -6,7 +6,7 @@
  */
 import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
 import type { AgentsResult, ClientCommand, CommandsResult, CompactResult } from "@windlass/acp/extensions"
-import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
+import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeCreateParams, WakeCreateResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
 import type { RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 
@@ -158,6 +158,8 @@ export interface BackendSession {
   onLsp?(listener: (state: LspStateResult) => void): () => void
   skills?(): Promise<SkillsResult>
   wakeups?(): Promise<WakeListResult>
+  /** The user creates a wake-up; `created: false` with the engine's sentence when nothing was set up. A webhook's secret is in the answer, for the user's eyes. */
+  createWake?(params: Omit<WakeCreateParams, "sessionId">): Promise<WakeCreateResult>
   cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>
   /** A webhook wake-up's URL and secret: for the user's eyes only. */
   wakeSecret?(id: string): Promise<WakeSecretResult>

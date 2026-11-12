@@ -36,7 +36,7 @@
  */
 import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
-import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, handEditSentences } from "@windlass/acp/extensions"
+import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, type WakeCreateParams, type WakeCreateResult, handEditSentences } from "@windlass/acp/extensions"
 import { type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
@@ -328,6 +328,10 @@ class AcpSession implements BackendSession {
 
   wakeups(): Promise<WakeListResult> {
     return this.feature(EXT.wakeups, () => this.session.wakeups())
+  }
+
+  createWake(params: Omit<WakeCreateParams, "sessionId">): Promise<WakeCreateResult> {
+    return this.feature(EXT.wakeCreate, () => this.session.createWake(params))
   }
 
   cancelWake(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }> {

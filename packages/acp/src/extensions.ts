@@ -90,6 +90,8 @@ export const EXT = {
   skills: `${prefix}/skills`,
   /** Request `{ sessionId }` → `WakeListResult`: the session's wake-ups, pending and ended, in the engine's words. */
   wakeups: `${prefix}/wakeups`,
+  /** Request `WakeCreateParams` → `WakeCreateResult`: the user creates a wake-up for the session; a webhook's secret is in the answer, for the user only. */
+  wakeCreate: `${prefix}/wake_create`,
   /** Request `{ sessionId, id }` → `{ cancelled, message }`: the user cancels a wake-up of the session. */
   wakeCancel: `${prefix}/wake_cancel`,
   /** Request `{ sessionId, id }` → `WakeSecretResult`: a webhook wake-up's URL and secret, for the user only. */
@@ -639,6 +641,54 @@ export interface WakeListResult {
   readonly available: boolean
   readonly running: boolean
   readonly wakeups: readonly WakeInfo[]
+}
+
+/** When a wake-up the user creates fires (`WakeCreateParams.trigger`). Times are milliseconds since the epoch, durations milliseconds. */
+export type WakeTrigger =
+  | { readonly kind: "at"; readonly at: number }
+  | { readonly kind: "after"; readonly delayMs: number }
+  | { readonly kind: "every"; readonly intervalMs: number }
+  | { readonly kind: "cron"; readonly expression: string; readonly timeZone?: string }
+  /** Runs `command` every `intervalMs` without the model: fires the first time it exits 0 (`until`), or each time what it prints or its exit code changes (`on_change`). */
+  | { readonly kind: "check"; readonly command: string; readonly intervalMs: number; readonly fire: "until" | "on_change"; readonly timeoutMs?: number; readonly includeOutput?: boolean }
+  /** A signed HTTP request to the local listener fires it. */
+  | { readonly kind: "webhook"; readonly includeBody?: boolean }
+
+/** How a check's command may run: the most it ever runs with (what the approval layer allows the session's commands when it runs narrows it further). */
+export type WakeRun = { readonly kind: "sandboxed"; readonly network: boolean; readonly writableRoots: readonly string[] } | { readonly kind: "unsandboxed" }
+
+/** Params of `<prefix>/wake_create`: a wake-up the user asks for (`Engine.wake().create`). */
+export interface WakeCreateParams {
+  readonly sessionId: string
+  /** What the session is told when it fires. */
+  readonly message: string
+  readonly trigger: WakeTrigger
+  /** `wake` (default) starts a turn if the session is idle; `queue` waits for the next turn. */
+  readonly delivery?: "wake" | "queue"
+  readonly maxFirings?: number
+  /** When it stops at the latest, in milliseconds since the epoch. */
+  readonly expiresAt?: number
+  readonly minIntervalMs?: number
+  /** For a check: the access the user chose for its command. Default: in the sandbox, without network. */
+  readonly run?: WakeRun
+}
+
+/**
+ * Result of `<prefix>/wake_create`. `created: false`: nothing was set up,
+ * and `message` is the engine's sentence (the request is not valid, the
+ * session cannot have one, it has no room for another). Otherwise `wake`
+ * is the wake-up as `<prefix>/wakeups` lists it, and for a webhook `url`
+ * and `secret`: the secret is for the user and never the model, and it is
+ * in no event, notification or log, only in this answer and
+ * `<prefix>/wake_secret`. `running`: this process fires wake-ups.
+ */
+export interface WakeCreateResult {
+  readonly created: boolean
+  readonly message: string
+  readonly wake: WakeInfo | null
+  readonly url: string | null
+  readonly secret: string | null
+  readonly running: boolean
 }
 
 /** Result of `<prefix>/wake_secret`: `secret` and `url`, or `message` saying why there are none. */

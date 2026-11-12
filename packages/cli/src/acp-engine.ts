@@ -47,6 +47,8 @@ import {
   type MemoryStateResult,
   type ReplayResult,
   type SkillsResult,
+  type WakeCreateParams,
+  type WakeCreateResult,
   type WakeListResult,
   type WakeSecretResult,
   type WatchSetResult,
@@ -386,6 +388,10 @@ class AcpSession implements Session {
 
   wakeups(): Promise<WakeListResult> {
     return this.feature(EXT.wakeups, () => this.session.wakeups())
+  }
+
+  createWake(params: Omit<WakeCreateParams, "sessionId">): Promise<WakeCreateResult> {
+    return this.feature(EXT.wakeCreate, () => this.session.createWake(params))
   }
 
   cancelWake(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }> {

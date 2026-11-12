@@ -21,7 +21,7 @@ import { createAcpEngine } from "../src/acp-engine.ts"
 import type { HooksStateResult, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { Session } from "../src/engine.ts"
 import { FeatureWatch } from "../src/feature-commands.ts"
-import { localTime, mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
+import { localTime, mcpApprovedText, mcpFirstMessageText, mcpNotWaitingText, mcpStateWords, wakeAddEntry, wakeCheckAccess, wakeCheckQuestionLines, wakeMessageSummary, wakeNotFiringText } from "../src/features.ts"
 import { successSummary } from "../src/tools.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -179,6 +179,71 @@ describe("/skills, /wakeups and /memory", () => {
     // Shown once: the listing has the URL and no secret.
     expect(run.screen.match(/whsec_/g)).toHaveLength(1)
     expect(run.screen).toContain(`{ "memory": { "enabled": true } }`)
+  })
+
+  test("/wakeups add: a delay, a time, an interval, a webhook and a check, as typed; what is missing says what to type", () => {
+    const now = new Date(2026, 10, 12, 14, 0, 0).getTime()
+    expect(wakeAddEntry("in 20m look at the deploy again", now)).toEqual({ request: { message: "look at the deploy again", trigger: { kind: "after", delayMs: 20 * 60_000 } }, check: null })
+    expect(wakeAddEntry("in 1h30m x", now)).toMatchObject({ request: { trigger: { kind: "after", delayMs: 90 * 60_000 } } })
+    expect(wakeAddEntry("every 1h check the queue", now)).toEqual({ request: { message: "check the queue", trigger: { kind: "every", intervalMs: 3_600_000 } }, check: null })
+    expect(wakeAddEntry("webhook the deploy finished", now)).toEqual({ request: { message: "the deploy finished", trigger: { kind: "webhook" } }, check: null })
+    // A time on the clock is the next time the clock shows it: today, or tomorrow when it has passed.
+    expect(wakeAddEntry("at 17:30 stand-up", now)).toMatchObject({ request: { message: "stand-up", trigger: { kind: "at", at: new Date(2026, 10, 12, 17, 30).getTime() } } })
+    expect(wakeAddEntry("at 9:00 stand-up", now)).toMatchObject({ request: { trigger: { kind: "at", at: new Date(2026, 10, 13, 9, 0).getTime() } } })
+    expect(wakeAddEntry("at 2026-12-01T08:15 release day", now)).toMatchObject({ request: { trigger: { kind: "at", at: new Date(2026, 11, 1, 8, 15).getTime() } } })
+    // A check's command is in quotes, so where it ends is not a guess; the rest is the message.
+    expect(wakeAddEntry('check 5m "gh run view 123 --exit-status" CI is green, carry on', now)).toEqual({
+      request: { message: "CI is green, carry on", trigger: { kind: "check", command: "gh run view 123 --exit-status", intervalMs: 300_000, fire: "until" } },
+      check: { command: "gh run view 123 --exit-status", every: "5m" },
+    })
+    expect(wakeAddEntry("check 30s ./ready.sh it is ready", now)).toMatchObject({ request: { message: "it is ready", trigger: { command: "./ready.sh" } } })
+    expect(wakeAddEntry("check 5m 'test -f \"a b\"' done", now)).toMatchObject({ request: { message: "done", trigger: { command: 'test -f "a b"' } } })
+    const problem = (rest: string) => (wakeAddEntry(rest, now) as { problem: string }).problem
+    expect(problem("in soon x")).toStartWith('/wakeups add in needs a duration first, such as 90s, 20m, 2h or 1d ("soon" is not one). /wakeups add in <duration> <message>: once, after a delay')
+    expect(problem("in 20m")).toStartWith("/wakeups add in 20m needs the message the agent is told when it fires.")
+    expect(problem("at 25:00 x")).toStartWith('/wakeups add at needs a time first: 17:30, or a date and time such as 2026-11-13T09:00 ("25:00" is neither).')
+    expect(problem('check 5m "gh run view x')).toBe("The command's quote is not closed: put the whole command between two double quotes (or two single quotes), then the message.")
+    expect(problem('check 5m "true"')).toStartWith("/wakeups add check needs the message the agent is told once the command exits 0, after the command.")
+    expect(problem("tomorrow x")).toBe("/wakeups add tomorrow: there is no such kind of wake-up. It takes in, at, every, check or webhook; /wakeups add with nothing after it shows each.")
+    // What each answer to the check's question lets the command do.
+    expect([wakeCheckAccess("s"), wakeCheckAccess("N"), wakeCheckAccess(null), wakeCheckAccess("u"), wakeCheckAccess("w")]).toEqual([{ kind: "sandboxed", network: false, writableRoots: [] }, null, null, { kind: "unsandboxed" }, { kind: "sandboxed", network: true, writableRoots: [] }])
+    expect(wakeCheckQuestionLines({ command: "gh run view 123", every: "5m" }).map((line) => line.text).slice(0, 2)).toEqual(["? Run this command every 5m until it exits 0?", "gh run view 123"])
+  })
+
+  test("/wakeups add at the prompt: each kind is set up and listed, a check's command is asked about first, a webhook's secret is shown once, and the engine's refusal is its sentence", async () => {
+    const cwd = workspace()
+    const provider = new FakeProvider([])
+    const run = await interactive(cwd, provider, async (type, waitFor) => {
+      type("/wakeups add\r")
+      await waitFor("Set a wake-up of your own: the agent is told the message when it fires, as a new turn.")
+      type("/wakeups add in 20m look at the deploy again\r")
+      await waitFor(/Wake-up wk_\w+ set: after 20m \(at /)
+      type("/wakeups add every 5s too often\r")
+      await waitFor("The interval must be from")
+      // A check: the command is put first, and the answer is the access it runs with.
+      type('/wakeups add check 5m "test -f done.txt" the file is there\r')
+      await waitFor("? Run this command every 5m until it exits 0?")
+      await waitFor("[s] sandbox · [w] sandbox with network · [u] no sandbox · [N] cancel ›")
+      type("w\r")
+      await waitFor(/Wake-up wk_\w+ set: run `test -f done\.txt` every 5m until it exits 0/)
+      type('/wakeups add check 5m "rm -rf build" never\r')
+      await waitFor(/rm -rf build[\s\S]*\[s\] sandbox · \[w\] sandbox with network · \[u\] no sandbox · \[N\] cancel ›/)
+      type("N\r")
+      await waitFor("not set up: the command is not run")
+      type("/wakeups add webhook the deploy finished\r")
+      await waitFor("secret  whsec_")
+      type("/wakeups\r")
+      await waitFor("Wake-ups of this session: 3 pending")
+      type("\x04")
+    })
+    expect(run.code).toBe(0)
+    expect(run.screen).toContain("in the sandbox, with network")
+    expect(run.screen).toMatch(/Webhook wake-up created wk_\w+/)
+    // Shown once, when it was created: the listing has the address and no secret.
+    expect(run.screen.match(/whsec_/g)).toHaveLength(1)
+    expect(run.screen).not.toContain("rm -rf build` every")
+    // Nothing of it went to the model.
+    expect(provider.requests.length).toBe(0)
   })
 
   test("with memory on: /remember saves a note, /memory lists it, /forget retracts it", async () => {

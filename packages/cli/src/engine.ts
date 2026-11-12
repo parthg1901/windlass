@@ -33,7 +33,7 @@
  *   that leaves them out has no undo, and the commands say so.
  */
 import type { AgentsResult, CancelCallResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
-import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
+import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeCreateParams, WakeCreateResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
@@ -295,6 +295,8 @@ export interface Session {
   skills?(): Promise<SkillsResult>
   /** `/wakeups`, `/wakeups cancel <id>`, `/wakeups secret <id>`. A secret is for the user's eyes only. */
   wakeups?(): Promise<WakeListResult>
+  /** `/wakeups add`: the user creates a wake-up; `created: false` with the engine's sentence when nothing was set up. A webhook's secret is in the answer, for the user. */
+  createWake?(params: Omit<WakeCreateParams, "sessionId">): Promise<WakeCreateResult>
   cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>
   wakeSecret?(id: string): Promise<WakeSecretResult>
   /**

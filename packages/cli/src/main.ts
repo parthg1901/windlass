@@ -216,7 +216,7 @@ export async function run(io: Io): Promise<number> {
   if (questions !== null) session.setApprover?.(approverAt({ ask: (question) => questions.urgent(question) }, session))
   // What the CLI says about MCP servers and wake-ups unasked. Not in `--json`: that stream is the engine's events only.
   let watching: FeatureWatch | null = null
-  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print), working: () => watching?.working === true, keep: (note) => watching?.keep(note) }
+  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print), working: () => watching?.working === true, keep: (note) => watching?.keep(note), secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) }
   const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
   watching = watch
   watch?.start()

@@ -7,7 +7,7 @@
  */
 import { brand } from "@windlass/core"
 import { isUndone, turnsOf } from "@windlass/acp/turns"
-import { type McpServerInfo, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeListResult, type WakeSecretResult, type WatchesResult, quotedCommand } from "@windlass/acp/extensions"
+import { type McpServerInfo, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeCreateParams, type WakeCreateResult, type WakeListResult, type WakeRun, type WakeSecretResult, type WatchesResult, quotedCommand } from "@windlass/acp/extensions"
 
 export type LineTone = "plain" | "dim" | "warn" | "error" | "ok" | "bold" | "accent"
 
@@ -222,7 +222,7 @@ export function localTimes(text: string, timeZone?: string): string {
 export function wakeLines(result: WakeListResult, timeZone?: string): Line[] {
   if (!result.available) return [line("This engine has no wake-ups.", "dim")]
   if (result.wakeups.length === 0)
-    return [line("This session has no wake-up. Ask the agent for one (\"tell me when CI is green\", \"remind me in an hour\").", "dim")]
+    return [line("This session has no wake-up. Ask the agent for one (\"tell me when CI is green\", \"remind me in an hour\"), or set one yourself: /wakeups add in 1h look at the build again (/wakeups add shows every form).", "dim")]
   const pending = result.wakeups.filter((wake) => wake.state === "pending")
   const ended = result.wakeups.filter((wake) => wake.state !== "pending")
   const lines: Line[] = [line(`Wake-ups of this session: ${pending.length} pending${ended.length === 0 ? "" : `, ${ended.length} ended`}`, "bold")]
@@ -233,8 +233,142 @@ export function wakeLines(result: WakeListResult, timeZone?: string): Line[] {
     lines.push(line(`${wake.id} · ${localTimes(wake.description, timeZone)}`, wake.state === "pending" ? "plain" : "dim", 2))
     for (const text of wake.lines) lines.push(line(localTimes(text, timeZone), "dim", 4))
   }
-  if (pending.length > 0) lines.push(line(`/wakeups cancel <id> stops one${pending.some((wake) => wake.trigger === "webhook") ? "; /wakeups secret <id> shows a webhook's secret" : ""}.`, "dim", 2))
+  if (pending.length > 0) lines.push(line(`/wakeups cancel <id> stops one${pending.some((wake) => wake.trigger === "webhook") ? "; /wakeups secret <id> shows a webhook's secret" : ""}; /wakeups add sets one up.`, "dim", 2))
   return lines
+}
+
+/** How `/wakeups add` is used: one line per kind of wake-up. */
+export const WAKE_ADD_USAGE: readonly string[] = [
+  "/wakeups add in <duration> <message>               once, after a delay: /wakeups add in 20m look at the deploy again",
+  "/wakeups add at <time> <message>                   once, at a time: 17:30 (today, or tomorrow when it has passed) or 2026-11-13T09:00",
+  "/wakeups add every <duration> <message>            again and again: /wakeups add every 1h check the queue",
+  '/wakeups add check <duration> "<command>" <message>  runs the command every <duration> and fires once it exits 0 (you are asked how it may run)',
+  "/wakeups add webhook <message>                     fires when a signed HTTP request arrives; its address and secret are shown once",
+  "A duration is a number and a unit, such as 90s, 20m, 2h or 1d (or several: 1h30m). The message is what the agent is told when it fires.",
+]
+
+const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const
+
+/** `90s`, `20m`, `2h`, `1d`, `1h30m` in milliseconds; `null` for anything else. */
+export function durationMs(text: string): number | null {
+  if (!/^(\d+[smhd])+$/i.test(text)) return null
+  let total = 0
+  for (const part of text.toLowerCase().matchAll(/(\d+)([smhd])/g)) total += Number(part[1]) * UNIT_MS[part[2] as keyof typeof UNIT_MS]
+  return total > 0 ? total : null
+}
+
+/**
+ * `17:30` (the next time the clock shows it: today, or tomorrow when it
+ * has passed) or a date and time as the user's clock has them
+ * (`2026-11-13T09:00`), in milliseconds since the epoch; `null` for
+ * anything else.
+ */
+export function clockTime(text: string, now: number): number | null {
+  const clock = /^(\d{1,2}):(\d{2})$/.exec(text)
+  if (clock !== null) {
+    const [hours, minutes] = [Number(clock[1]), Number(clock[2])]
+    if (hours > 23 || minutes > 59) return null
+    const at = new Date(now)
+    at.setHours(hours, minutes, 0, 0)
+    if (at.getTime() <= now) at.setDate(at.getDate() + 1)
+    return at.getTime()
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(text)) return null
+  const at = new Date(text).getTime()
+  return Number.isNaN(at) ? null : at
+}
+
+/** What was typed after `/wakeups add`: the wake-up to ask the engine for, and for a check its command (the user is asked how it may run). */
+export type WakeAddEntry = { readonly request: Omit<WakeCreateParams, "sessionId" | "run">; readonly check: { readonly command: string; readonly every: string } | null } | { readonly problem: string }
+
+/**
+ * `in <duration> <message>`, `at <time> <message>`, `every <duration>
+ * <message>`, `check <duration> "<command>" <message>` or `webhook
+ * <message>`. The message is everything after, as typed. A check's command
+ * is in double or single quotes (one word needs none), so that where it
+ * ends is not a guess.
+ */
+export function wakeAddEntry(rest: string, now: number): WakeAddEntry {
+  const typed = rest.trim()
+  const [kind = "", ...others] = typed.split(/\s+/)
+  const after = (words: number) => {
+    let left = typed
+    for (let index = 0; index < words; index += 1) left = left.replace(/^\S+\s*/, "")
+    return left
+  }
+  // What is missing, then the form of that kind of wake-up with what it does.
+  const usage = (what: string): WakeAddEntry => ({ problem: `${what} ${WAKE_ADD_USAGE.find((line) => line.startsWith(`/wakeups add ${kind} `))?.replace(/\s{2,}/, ": ") ?? ""}`.trimEnd() })
+  if (kind === "webhook") {
+    const message = after(1)
+    return message === "" ? usage("/wakeups add webhook needs the message the agent is told when a request arrives.") : { request: { message, trigger: { kind: "webhook" } }, check: null }
+  }
+  if (kind === "in" || kind === "every" || kind === "check") {
+    const duration = durationMs(others[0] ?? "")
+    if (duration === null) return usage(`/wakeups add ${kind} needs a duration first, such as 90s, 20m, 2h or 1d${others[0] === undefined ? "" : ` ("${others[0]}" is not one)`}.`)
+    if (kind !== "check") {
+      const message = after(2)
+      if (message === "") return usage(`/wakeups add ${kind} ${others[0]} needs the message the agent is told when it fires.`)
+      return { request: { message, trigger: kind === "in" ? { kind: "after", delayMs: duration } : { kind: "every", intervalMs: duration } }, check: null }
+    }
+    const left = after(2)
+    const quoted = /^(["'])([\s\S]*?)\1(?=\s|$)\s*([\s\S]*)$/.exec(left)
+    const bare = quoted === null && !/^["']/.test(left) ? /^(\S+)\s*([\s\S]*)$/.exec(left) : null
+    const command = quoted?.[2] ?? bare?.[1] ?? ""
+    const message = quoted?.[3] ?? bare?.[2] ?? ""
+    if (/^["']/.test(left) && quoted === null) return { problem: "The command's quote is not closed: put the whole command between two double quotes (or two single quotes), then the message." }
+    if (command.trim() === "") return usage("/wakeups add check needs the command to run, in quotes.")
+    if (message === "") return usage("/wakeups add check needs the message the agent is told once the command exits 0, after the command.")
+    return { request: { message, trigger: { kind: "check", command, intervalMs: duration, fire: "until" } }, check: { command, every: others[0]! } }
+  }
+  if (kind === "at") {
+    const at = clockTime(others[0] ?? "", now)
+    if (at === null) return usage(`/wakeups add at needs a time first: 17:30, or a date and time such as 2026-11-13T09:00${others[0] === undefined ? "" : ` ("${others[0]}" is neither)`}.`)
+    const message = after(2)
+    if (message === "") return usage(`/wakeups add at ${others[0]} needs the message the agent is told then.`)
+    return { request: { message, trigger: { kind: "at", at } }, check: null }
+  }
+  return { problem: `/wakeups add ${kind}: there is no such kind of wake-up. It takes in, at, every, check or webhook; /wakeups add with nothing after it shows each.` }
+}
+
+/** `/wakeups add` with nothing after it: every form, with what it sets up. */
+export function wakeAddUsageLines(): Line[] {
+  return [line("Set a wake-up of your own: the agent is told the message when it fires, as a new turn.", "bold"), ...WAKE_ADD_USAGE.map((text) => line(text, "dim", 2))]
+}
+
+/** The question about a check's command, with what each answer lets the command do: asked like any command the agent would run. */
+export function wakeCheckQuestionLines(check: { readonly command: string; readonly every: string }): Line[] {
+  return [
+    line(`? Run this command every ${check.every} until it exits 0?`, "bold"),
+    commandLine(check.command),
+    line("It runs in this session's directory, without the agent, each time the wake-up checks; when it exits 0 the agent is told and the wake-up is done.", "dim", 2),
+    line("s  run it in the sandbox, without network", "dim", 2),
+    line("w  run it in the sandbox, with network", "dim", 2),
+    line("u  run it outside the sandbox, with your permissions", "dim", 2),
+    line("N  do not set the wake-up up", "dim", 2),
+  ]
+}
+
+/** The answers to that question, as the prompt shows them. */
+export const WAKE_CHECK_ANSWERS = "[s] sandbox · [w] sandbox with network · [u] no sandbox · [N] cancel › "
+
+/** The access an answer to the check question gives the command; `null`: the wake-up is not set up. */
+export function wakeCheckAccess(answer: string | null): WakeRun | null {
+  const word = (answer ?? "").trim().toLowerCase()
+  if (word === "s" || word === "sandbox" || word === "y" || word === "yes") return { kind: "sandboxed", network: false, writableRoots: [] }
+  if (word === "w" || word === "network") return { kind: "sandboxed", network: true, writableRoots: [] }
+  if (word === "u" || word === "unsandboxed") return { kind: "unsandboxed" }
+  return null
+}
+
+/** A wake-up the user created: what it is, in the engine's words, and how to cancel it. */
+export function wakeCreatedLines(result: WakeCreateResult, timeZone?: string): Line[] {
+  const wake = result.wake
+  if (!result.created || wake === null) return [line(result.message, "warn")]
+  return [
+    line(`Wake-up ${wake.id} set: ${localTimes(wake.description, timeZone)}`, "bold"),
+    ...wake.lines.map((text) => line(localTimes(text, timeZone), "dim", 2)),
+    line(`/wakeups lists it; /wakeups cancel ${wake.id} stops it.`, "dim", 2),
+  ]
 }
 
 /**

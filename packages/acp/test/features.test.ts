@@ -19,7 +19,7 @@ import { methods } from "@agentclientprotocol/sdk"
 import { brand } from "@windlass/core"
 import { script } from "@windlass/core/testing"
 import { loadConfig } from "../../core/src/config/load.ts"
-import { EXT, META, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeListResult, type WakeSecretResult } from "../src/extensions.ts"
+import { EXT, META, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeCreateResult, type WakeListResult, type WakeSecretResult } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
 
 const NS = META.capabilities
@@ -149,6 +149,41 @@ describe("skills", () => {
 })
 
 describe("wake-ups", () => {
+  test("the user creates one of each kind for a session; what the engine refuses is its sentence; a webhook's secret is in that answer and nowhere else", async () => {
+    const harness = await start([])
+    const sessionId = await harness.newSession()
+    const create = (params: Record<string, unknown>) => ext<WakeCreateResult>(harness, EXT.wakeCreate, { sessionId, ...params })
+    const now = Date.now()
+    // A delay, a time, an interval: each is the user's, and described in the engine's words.
+    const later = await create({ message: "Look at the build again.", trigger: { kind: "after", delayMs: 20 * 60_000 } })
+    expect(later).toMatchObject({ created: true, running: false, url: null, secret: null, wake: { trigger: "at", author: "user", state: "pending", message: "Look at the build again.", fired: 0, maxFirings: 1 } })
+    expect(later.message).toStartWith(`Created wake-up ${later.wake!.id}: after 20m (at `)
+    expect(Date.parse(later.wake!.nextAt!)).toBeGreaterThanOrEqual(now + 20 * 60_000)
+    const at = await create({ message: "Stand-up.", trigger: { kind: "at", at: now + 3_600_000 } })
+    expect(at.wake).toMatchObject({ trigger: "at", nextAt: new Date(now + 3_600_000).toISOString() })
+    const every = await create({ message: "Check the queue.", trigger: { kind: "every", intervalMs: 3_600_000 }, maxFirings: 5 })
+    expect(every.wake).toMatchObject({ trigger: "every", description: "every 1h", maxFirings: 5 })
+    // A check runs with the access the user chose.
+    const check = await create({ message: "CI is green.", trigger: { kind: "check", command: "test -f done.txt", intervalMs: 300_000, fire: "until" }, run: { kind: "sandboxed", network: true, writableRoots: [] } })
+    expect(check.wake).toMatchObject({ trigger: "check", description: expect.stringContaining("run `test -f done.txt` every 5m until it exits 0") })
+    expect(check.wake!.lines.join("\n")).toContain("with network")
+    // A webhook's secret is the user's: in this answer, and in nothing else on the wire.
+    const hook = await create({ message: "The deploy finished.", trigger: { kind: "webhook" } })
+    expect(hook.secret).toMatch(/^whsec_/)
+    expect(hook.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/w\/wk_/)
+    expect(harness.wire.filter((message) => JSON.stringify(message).includes(hook.secret!))).toEqual([expect.objectContaining({ result: hook })])
+    expect((await ext<WakeListResult>(harness, EXT.wakeups, { sessionId })).wakeups.map((wake) => `${wake.trigger} by ${wake.author}`).sort()).toEqual(["at by user", "at by user", "check by user", "every by user", "webhook by user"])
+
+    // Refused by the engine, in its sentence, with nothing set up.
+    expect(await create({ message: "", trigger: { kind: "after", delayMs: 60_000 } })).toMatchObject({ created: false, wake: null, secret: null, message: "The message is empty: say what should happen when the wake-up fires." })
+    expect(await create({ message: "Too late.", trigger: { kind: "at", at: now - 1000 } })).toMatchObject({ created: false, message: "That time has already passed; give a time in the future." })
+    expect(await create({ message: "No access to choose.", trigger: { kind: "every", intervalMs: 3_600_000 }, run: { kind: "unsandboxed" } })).toMatchObject({ created: false, message: 'Only a check runs a command: a "every" wake-up has no access to choose.' })
+    // A request that is not one is a bad request.
+    await expect(create({ message: "x", trigger: { kind: "sometime" } })).rejects.toMatchObject({ code: -32602 })
+    await expect(create({ message: "x", trigger: { kind: "after" } })).rejects.toMatchObject({ code: -32602 })
+    expect((await ext<WakeListResult>(harness, EXT.wakeups, { sessionId })).wakeups).toHaveLength(5)
+  })
+
   test("lists them in the engine's words; a webhook's secret is only ever the answer to wake_secret; the user cancels one", async () => {
     const harness = await start([[script.toolCall("call_1", "wake_create", { trigger: "webhook", message: "The deploy finished." })], [script.text("Set up.")]])
     const sessionId = await harness.newSession()

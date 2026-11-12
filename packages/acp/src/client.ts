@@ -59,6 +59,8 @@ import {
   type MemoryStateResult,
   META,
   type SkillsResult,
+  type WakeCreateParams,
+  type WakeCreateResult,
   type WakeListResult,
   type WakeSecretResult,
   type WatchSetResult,
@@ -812,6 +814,15 @@ export class ClientSession {
   /** `<prefix>/wakeups`: the session's wake-ups, pending and ended. */
   wakeups(): Promise<WakeListResult> {
     return this.link.request<WakeListResult>(EXT.wakeups, { sessionId: this.id })
+  }
+
+  /**
+   * `<prefix>/wake_create`: the user creates a wake-up for the session. `created: false` with the engine's
+   * sentence when nothing was set up. A webhook's `secret` is for the user's eyes: never log it or put it in an
+   * event stream.
+   */
+  createWake(params: Omit<WakeCreateParams, "sessionId">): Promise<WakeCreateResult> {
+    return this.link.request<WakeCreateResult>(EXT.wakeCreate, { sessionId: this.id, ...params })
   }
 
   cancelWake(id: string): Promise<{ cancelled: boolean; message: string }> {

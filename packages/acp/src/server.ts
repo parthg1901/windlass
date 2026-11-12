@@ -119,7 +119,7 @@ import {
   handEditSentences,
   sessionTitle,
 } from "./extensions.ts"
-import { hookFailure, hooksState, lspState, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
+import { hookFailure, hooksState, lspState, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeCreate, wakeCreateParams, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText, slashEntry } from "./prompt.ts"
@@ -185,7 +185,7 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall, EXT.watch, EXT.unwatch, EXT.watches],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCreate, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall, EXT.watch, EXT.unwatch, EXT.watches],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged, EXT.hooksChanged, EXT.lspChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /**
@@ -256,6 +256,11 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.lspApprove, parseObject, ({ params }) => state.approveLsp(requireString(params, "sessionId"), requireString(params, "name"), optionalString(params, "fingerprint")))
     .onRequest(EXT.skills, parseObject, ({ params }) => skillsState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.wakeups, parseObject, ({ params }) => wakeList(state.harness, state.view(requireString(params, "sessionId")).session.id))
+    .onRequest(EXT.wakeCreate, parseObject, ({ params }) => {
+      const parsed = wakeCreateParams(state.view(requireString(params, "sessionId")).session.id, params)
+      if ("problem" in parsed) throw RequestError.invalidParams(undefined, parsed.problem)
+      return wakeCreate(state.harness, parsed)
+    })
     .onRequest(EXT.wakeCancel, parseObject, ({ params }) => wakeCancel(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
     .onRequest(EXT.wakeSecret, parseObject, ({ params }) => wakeSecret(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
     .onRequest(EXT.agents, parseObject, ({ params }) => state.agents(optionalString(params, "sessionId"), optionalString(params, "cwd")))

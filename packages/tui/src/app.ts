@@ -22,9 +22,9 @@ import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend,
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
-import { COPY_NOTE, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
-import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
+import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult, WakeCreateParams } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
@@ -1360,7 +1360,8 @@ export class App {
         case "wakeups": {
           if (session.wakeups === undefined) return missing()
           if (words.length === 0) return this.showLines(wakeLines(await session.wakeups()))
-          if (words.length !== 2 || (words[0] !== "cancel" && words[0] !== "secret")) return this.say("/wakeups takes nothing (the listing), cancel <id> or secret <id>", "warn")
+          if (words[0] === "add") return await this.addWake(session, rest.trim().slice("add".length))
+          if (words.length !== 2 || (words[0] !== "cancel" && words[0] !== "secret")) return this.say("/wakeups takes nothing (the listing), add <what> (/wakeups add shows the forms), cancel <id> or secret <id>", "warn")
           if (words[0] === "secret") return this.showLines(webhookSecretLines(await session.wakeSecret!(words[1]!), false), "accent", "⏰")
           const result = await session.cancelWake!(words[1]!)
           return this.say(result.message, result.cancelled ? "dim" : "warn")
@@ -1409,6 +1410,49 @@ export class App {
     } catch (error) {
       this.say(`/${name} failed: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
+  }
+
+  /**
+   * `/wakeups add ...`: the user sets a wake-up of their own. A check's
+   * command is asked about first, like any command that would run: the
+   * answer is the access it runs with, or that nothing is set up. What the
+   * engine refuses is said in its sentence; a webhook's address and secret
+   * are shown once.
+   */
+  private async addWake(session: BackendSession, rest: string): Promise<void> {
+    if (session.createWake === undefined) return this.say(`/wakeups add is not available with this engine (${this.options.backend.label})`, "warn")
+    if (rest.trim() === "") return this.showLines(wakeAddUsageLines())
+    const entry = wakeAddEntry(rest, this.now())
+    if ("problem" in entry) return this.say(entry.problem, "warn")
+    let run: WakeCreateParams["run"]
+    if (entry.check !== null) {
+      const answer = await this.dialog.show({
+        title: `Run this command every ${entry.check.every} until it exits 0?`,
+        detail: [
+          [span(entry.check.command, "accent")],
+          [],
+          [span("It runs in this session's directory, without the agent, each time the wake-up checks; when it exits 0 the agent is told and the wake-up is done.", "dim")],
+        ],
+        items: [
+          { id: "sandbox", label: "Run it in the sandbox, without network", key: "s" },
+          { id: "network", label: "Run it in the sandbox, with network", key: "w" },
+          { id: "unsandboxed", label: "Run it outside the sandbox, with your permissions", key: "u" },
+          { id: "cancel", label: "Do not set the wake-up up", key: "n" },
+        ],
+        filterable: false,
+        footer: "↑↓ Enter · keys · Esc cancel",
+        cancel: "cancel",
+      })
+      this.redraw()
+      if (answer !== "sandbox" && answer !== "network" && answer !== "unsandboxed") return this.say("not set up: the command is not run")
+      run = answer === "unsandboxed" ? { kind: "unsandboxed" } : { kind: "sandboxed", network: answer === "network", writableRoots: [] }
+    }
+    const result = await session.createWake({ ...entry.request, ...(run === undefined ? {} : { run }) })
+    if (!result.created || result.wake === null) return this.say(result.message, "warn")
+    this.showLines(wakeCreatedLines(result), "accent", "⏰")
+    // A server that fires no wake-ups: said at once, with where this one will fire.
+    if (!result.running) this.say(wakeNotFiringText({ id: result.wake.id, description: result.wake.description }, session.id), "warn")
+    if (result.secret !== null) this.showLines(webhookSecretLines({ id: result.wake.id, url: result.url, secret: result.secret, message: null }, true), "accent", "⏰")
   }
 
   private async refreshApproval(): Promise<void> {

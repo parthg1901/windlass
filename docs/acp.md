@@ -236,6 +236,7 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | An edit that got diagnostics: how many, from which server | `tool.settled`'s `diagnostics`; for other clients `_meta["windlass/diagnostics"]` on the settled call |
 | `/skills` | `_windlass/skills` |
 | `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_windlass/wakeups`, `_windlass/wake_cancel`, `_windlass/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
+| `/wakeups add in <duration>\|at <time>\|every <duration>\|webhook <message>`, and `check <duration> "<command>" <message>` after the user was asked how the command may run; a webhook's address and secret shown once, on a terminal | `_windlass/wake_create` (the secret is in its answer) |
 | `/watch <command id> [--regex] [--ignore-case] [--times <n>] <text>`, `/watch` (the running commands and their watches), `/watch remove <watch id>`; a firing drawn as the watch's message, not the user's | `_windlass/watch`, `_windlass/watches`, `_windlass/unwatch`; the `watch.started`, `watch.fired` and `watch.ended` events (the firing's message is the `inbox.enqueued` before it, with `origin: "background_watch"`) |
 | `/memory`, `/remember`, `/forget`; a note written before the first message, kept and saved once the session has started | `_windlass/memory`, `_windlass/memory_change` (`deferred`), the `baseline.set` event |
 | A question about a project's hook, language server or MCP server put before a message is sent | `_windlass/hooks`, `_windlass/lsp`, `_windlass/mcp` read before `_windlass/steer`; the message goes after the answers |
@@ -277,7 +278,7 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
 - A `ClientSession` has `events` (typed harness events with `replay`) or `items` (the events and the session's
   notifications: turn endings, state, usage, taint, notices, MCP changes, in arrival order), `send` (steer or queue), `cancel`,
   `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `mcp`, `approveMcp`,
-  `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `agents`, `setAgent`, `rename`,
+  `skills`, `wakeups`, `createWake`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `agents`, `setAgent`, `rename`,
   `compact`, `commands`, `expandCommand`, `sendCommand`, `cancelCall`, `watchOutput`, `unwatchOutput`, `watches`, `close`. `offers(method)` says whether a server (of another version) has a method.
 - `fork(params)` (`_windlass/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
   (`_windlass/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
@@ -773,6 +774,34 @@ the session's directory as the model would be given them now. `scope` is `projec
 pending and ended. Each is `{ id, trigger, description, state, nextAt, fired, maxFirings, author, message, url, lines
 }`: `lines` are the engine's listing lines (state, limits, who created it, the message), `url` a webhook's address.
 `running`: this process fires wake-ups.
+
+**`_windlass/wake_create`** (request) → `{ created, message, wake, url, secret, running }`: the user creates a
+wake-up for the session (`Engine.wake().create`, author `user`), with the bounds the engine gives a user.
+
+```ts
+// params
+{
+  sessionId: string,
+  message: string,                  // what the session is told when it fires
+  trigger:                          // times in ms since the epoch, durations in ms
+    | { kind: "at", at: number } | { kind: "after", delayMs: number } | { kind: "every", intervalMs: number }
+    | { kind: "cron", expression: string, timeZone?: string }
+    | { kind: "check", command: string, intervalMs: number, fire: "until" | "on_change", timeoutMs?: number, includeOutput?: boolean }
+    | { kind: "webhook", includeBody?: boolean },
+  delivery?: "wake" | "queue",      // default wake: starts a turn if the session is idle
+  maxFirings?: number, expiresAt?: number, minIntervalMs?: number,
+  run?: { kind: "sandboxed", network: boolean, writableRoots: string[] } | { kind: "unsandboxed" }
+}                                   // run: a check only: the access the user chose for its command (default: in the
+                                    //   sandbox, without network); it is the most the command ever runs with
+```
+
+`created: false`: nothing was set up, and `message` is the engine's sentence (the request is not valid, the session
+is a subagent or a replay or has wake-ups turned off, it has no room for another). Otherwise `wake` is the wake-up as
+`_windlass/wakeups` lists it and `running` says whether this process fires wake-ups. For a webhook, `url` and
+`secret` are its address and the secret that signs its requests: the secret is for the user and never the model, and
+is in no event, notification or log, only in this answer and in `_windlass/wake_secret`. A client asks the user
+about a check's command before it sends the request, as it would be asked about a command the agent runs, and shows
+a secret once, where its output is a terminal. Params that are not a wake-up at all are `-32602`.
 
 **`_windlass/wake_cancel`** (request) `{ sessionId, id }` → `{ cancelled, message }`: the user cancels one.
 
