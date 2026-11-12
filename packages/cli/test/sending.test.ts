@@ -47,3 +47,20 @@ describe("typed while the prompt is on its way", () => {
     expect(JSON.stringify(provider.requests[1]!.input)).toContain("second message")
   })
 })
+
+describe("a prompt given with -i", () => {
+  const { workspace, engineFor, interactive } = typedSessions(`${brand.binary}-cli-first-`)
+
+  test("is shown as one typed at the prompt would be, once", async () => {
+    const cwd = workspace()
+    const provider = new FakeProvider([[script.text("Hello back.")]])
+    const run = await interactive(["--cwd", cwd, "-i", "hello there"], engineFor(provider, cwd), async (type, waitFor) => {
+      await waitFor("Hello back.")
+      await waitFor(/✓ done[\s\S]*›/)
+      type("\x04")
+    })
+    expect(run.code).toBe(0)
+    expect(run.screen.split("› hello there")).toHaveLength(2)
+    expect(run.screen.indexOf("› hello there")).toBeLessThan(run.screen.indexOf("Hello back."))
+  })
+})

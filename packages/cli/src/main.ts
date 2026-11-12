@@ -608,7 +608,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
       if (entry === null) break
       if (entry.text.trim() === "") continue
       renderer.prompt(entry.text)
-    }
+      // The prompt given on the command line (`-i`) is shown as one typed here would be.
+    } else renderer.prompt(entry.text)
     screen.show("› ", STEER_HINT)
     // The events ended under a running turn: the engine went away. Leaving is the only thing left to do.
     if ((await context.turn(entry)) === "closed") return 1
