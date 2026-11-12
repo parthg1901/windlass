@@ -490,8 +490,15 @@ export function watchFiredText(fired: { readonly watchId: string; readonly spawn
 }
 
 /** A watch that ended before it had fired as often as it may (`watch.ended`), for the transcript. */
-export function watchEndedText(ended: { readonly watchId: string; readonly spawnId: string; readonly reason: "removed" | "command_ended" | "lost" }): string {
-  const why = ended.reason === "removed" ? "removed" : ended.reason === "command_ended" ? `ended with its command (background ${ended.spawnId})` : `lost: background ${ended.spawnId} did not survive a restart`
+export function watchEndedText(ended: { readonly watchId: string; readonly spawnId: string; readonly reason: "removed" | "command_ended" | "lost" | "too_slow" }): string {
+  const why =
+    ended.reason === "removed"
+      ? "removed"
+      : ended.reason === "command_ended"
+        ? `ended with its command (background ${ended.spawnId})`
+        : ended.reason === "too_slow"
+          ? "ended: its pattern took too long to match a line"
+          : `lost: background ${ended.spawnId} did not survive a restart`
   return `watch ${ended.watchId} ${why}`
 }
 

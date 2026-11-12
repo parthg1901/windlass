@@ -392,20 +392,26 @@ describe("command files, run (docs/commands.md)", () => {
     expect(ghost.flat).not.toContain("Never.")
   }, 60_000)
 
-  test("a one-prompt run sends a mistyped name, an unusable file, a built-in's name and a doubled slash as typed (Not yet)", async () => {
-    // The page says so under "Not yet". When a one-prompt run refuses these as the prompt of an interactive session
-    // does, this fails and the page is corrected.
+  test("a one-prompt run sends nothing for a mistyped name, an unusable file and a built-in's name, and a doubled slash sends one", async () => {
     const page = text["docs/commands.md"]
-    expect(page).toContain("**A one-prompt run does not catch a mistyped name.**")
     expect(page).toContain("**No command of the program's own from a one-prompt run.**")
     const at = project()
-    for (const typed of ["/relese-notes 1.4", "/broken", "/undo", "//etc is odd"]) {
-      const run = await at.run(["--json", typed], [say("Answered.")])
-      expect(run.code, typed).toBe(0)
-      expect(sent(run.out), typed).toEqual([{ type: "text", text: typed }] as never)
-      expect(events(run.out).some((event) => event.type === "command.expanded"), typed).toBe(false)
+    // The same sentences as at the prompt of an interactive session, on standard error, and the run exits with 2.
+    const refused: readonly (readonly [string, string])[] = [
+      ["/relese-notes 1.4", "/relese-notes is not a command, so nothing was sent; did you mean /release-notes? (/help lists them). To send a message that starts with a slash, begin it with two: //relese-notes"],
+      ["/broken", '/broken cannot be used, so nothing was sent: line 3 of the front matter is not `key: value`: "no colon here".'],
+      ["/undo", "/undo is a command of the interactive prompt, so nothing was sent;"],
+    ]
+    for (const [typed, sentence] of refused) {
+      const run = await at.run(["--json", typed], [say("Never.")])
+      expect(run.code, typed).toBe(2)
+      expect(run.err, typed).toContain(sentence)
+      expect(run.out, typed).toBe("")
     }
-    // At the prompt of an interactive session each is caught: the sentences the page quotes are the clients'.
+    const doubled = await at.run(["--json", "//etc is odd"], [say("Answered.")])
+    expect(doubled.code).toBe(0)
+    expect(sent(doubled.out)).toEqual([{ type: "text", text: "/etc is odd" }] as never)
+    expect(events(doubled.out).some((event) => event.type === "command.expanded")).toBe(false)
     expect(page).toContain("**An argument the text does not use is not reported.**")
     const extra = await at.run(["/release-notes 1.4 1.3 extra"], [say("Drafted.")])
     expect(extra.flat).not.toMatch(/extra was|unused|not used/)
@@ -599,14 +605,14 @@ describe("what the other pages say a run prints", () => {
     // The example at the top of the page, and the refusal's row.
     const reviewer = await at.run(["--agent", "reviewer", "review math.ts"], [edit, say("I could not edit.")])
     expect(reviewer.flat).toContain("⇄ working as the agent reviewer (read only) Only tools that read (effects: read).")
-    expect(reviewer.flat).toContain("▸ edit math.ts ⊘ refused by the reviewer agent: it may not change files")
+    expect(reviewer.flat).toContain('▸ edit math.ts ⊘ refused by the reviewer agent The agent "reviewer" may use only tools that read. "edit" changes files.')
     expect(reviewer.flat).toContain(`⚠ agents: Not followed: agents.default "docs" in the project's configuration (only the user's own configuration chooses the default agent).`)
     expect(readFileSync(join(at.work, "math.ts"), "utf8")).toContain("a - b")
     // A tool that does not exist here, said at the start of a one-prompt run; a tool its list leaves out.
     const docs = await at.run(["--agent", "docs", "list the files"], [call("c1", "shell", { command: "ls" }), say("I could not.")])
     expect(docs.flat).toContain('⚠ agents: The agent "docs" (')
     expect(docs.flat).toContain(") names a tool that does not exist here, which therefore restricts nothing: Bash.")
-    expect(docs.flat).toContain("⊘ refused by the docs agent: it may use only read, grep, glob, edit, write, Bash, not shell")
+    expect(docs.flat).toContain('⊘ refused by the docs agent The agent "docs" may use only these tools: read, grep, glob, edit, write, Bash. "shell" is not one of them.')
     // Leaving the agent that set the model keeps the model, and says so.
     const left = await at.run(["-c", "--agent", "none", "carry on"], [say("Carrying on.")])
     expect(left.flat).toContain("⇄ no agent: the instructions and restrictions of docs no longer apply")
@@ -616,7 +622,7 @@ describe("what the other pages say a run prints", () => {
     const parent = await at.run(["--approval", "full", "--agent", "none", "have a reviewer look"], [call("c1", "subagent", { task: "Review math.ts.", agent: "reviewer" }), edit, say("The subtraction is wrong."), say("Reviewed.")])
     expect(parent.code, parent.err).toBe(0)
     expect(parent.flat).toMatch(/▸ subagent ses_[0-9a-f]+ started as the agent reviewer/)
-    expect(parent.flat).toContain("refused by the reviewer agent: it")
+    expect(parent.flat).toContain('refused by the reviewer agent The agent "reviewer" may use only tools that read.')
     const unknown = await at.run(["--agent", "reviwer", "x"], [say("Never.")])
     expect(unknown.code).toBe(2)
     expect(unknown.err).toContain(`${BIN}: There is no agent named "reviwer". Did you mean "reviewer"? Agents: docs, reviewer.`)

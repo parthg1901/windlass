@@ -320,10 +320,11 @@ describe("quoted program messages", () => {
     // agents
     { page: "docs/agents.md", quote: "⇄ working as the agent reviewer (read only)", pieces: ["working as the agent ", "read only"] },
     { page: "docs/agents.md", quote: "Only tools that read (effects: read).", pieces: ["Only tools that ", "(effects: "] },
-    { page: "docs/agents.md", quote: "⊘ refused by the reviewer agent: it may not change files", pieces: ["refused by ", " may not change files"] },
-    { page: "docs/agents.md", quote: "⊘ edit math.ts · refused by the reviewer agent: it may not change files", pieces: ["refused by ", " may not change files"] },
-    { page: "docs/agents.md", quote: "it may use only read, grep, glob, edit, write, not shell", pieces: [" may use only ", ", not "] },
-    { page: "docs/agents.md", quote: "it may not use edit", pieces: [" may not use "] },
+    { page: "docs/agents.md", quote: "⊘ refused by the reviewer agent", pieces: ["refused by the ", " agent"] },
+    { page: "docs/agents.md", quote: "⊘ edit math.ts · refused by the reviewer agent", pieces: ["refused by the ", " agent"] },
+    { page: "docs/agents.md", quote: 'The agent "reviewer" may use only tools that read. "edit" changes files.', pieces: ["The agent ", " may use only tools that ", "changes files"] },
+    { page: "docs/agents.md", quote: 'The agent "docs" may use only these tools: read, grep, glob, edit, write. "shell" is not one of them.', pieces: ["The agent ", " may use only these tools: ", " is not one of them."] },
+    { page: "docs/agents.md", quote: 'The agent "careful" may not use the tool "background_stop".', pieces: ["The agent ", " may not use the tool "] },
     {
       page: "docs/agents.md",
       quote: '⚠ agents: The agent "docs" (<path>) names a tool that does not exist here, which therefore restricts nothing: Bash.',

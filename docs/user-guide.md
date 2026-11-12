@@ -112,8 +112,9 @@ windlass --agent reviewer "review the last commit"
 - The session line names the agent (`new session ses_… · agent reviewer`), the full-screen panel has an `agent`
   field, and a switch is a line in the conversation (`⇄ agent reviewer → docs (restricted)`), also in a session
   opened again.
-- A call the agent may not make is not run, and its row says who refused it and the rule:
-  `⊘ refused by the reviewer agent: it may not change files`. An agent can only take away: it never lets a call
+- A call the agent may not make is not run, and its row says who refused it, with the rule under it:
+  `⊘ refused by the reviewer agent`, then `The agent "reviewer" may use only tools that read. "edit" changes files.`
+  An agent can only take away: it never lets a call
   run that your approval mode would ask about.
 
 ## The task list
@@ -289,6 +290,8 @@ is sent as typed. Commands of your own are files: [commands.md](commands.md).
 | `/wakeups [cancel\|secret <id>]` | the session's wake-ups; cancels one, shows a webhook's secret | yes |
 | `/memory [confirm\|reject\|renew\|forget <id>]` | the notes later sessions are given, and the ones waiting for you | yes |
 | `/remember [--me] <text>`, `/forget <id>` | save a note, retract one (memory is off unless turned on) | yes |
+| `/stop [<number>]` | stops one tool call that is running and lets the turn go on; without a number, lists the running calls | yes |
+| `/watch [<id> <text>\|remove <id>]` | tells the agent when a background command prints a line with that text; lists and removes watches | yes |
 | `/queue <message>` | yes | yes (or Ctrl-T) |
 | `/exit`, `/quit` | yes | yes |
 | `/fork [<turn>] [copy]` | `windlass fork` instead | yes |

@@ -34,7 +34,8 @@ The first lines say what the session runs as, and a call the agent may not make 
 ⇄ working as the agent reviewer (read only)
   Only tools that read (effects: read).
 ▸ edit math.ts
-  ⊘ refused by the reviewer agent: it may not change files
+  ⊘ refused by the reviewer agent
+    The agent "reviewer" may use only tools that read. "edit" changes files.
 ```
 
 Asked to change a line under this agent, the real model did not try the edit: it read the file and answered that
@@ -90,11 +91,12 @@ Not run: you are working as the agent "docs", which may use only these tools: re
 Not run: you are working as the agent "careful", which may not use the tool "background_stop". Carry on without it, or tell the user what you would need and why.
 ```
 
-You see who refused the call, and the agent's rule, on the call's row:
-`⊘ refused by the reviewer agent: it may not change files` in `windlass`,
-`⊘ edit math.ts · refused by the reviewer agent: it may not change files` in `windlass tui`. A tool the agent's
-`tools` leave out reads `it may use only read, grep, glob, edit, write, not shell`, and one its `disallowed-tools`
-name `it may not use edit`. In `--json` it is an `approval.denied` event with `agent` set.
+You see who refused the call on the call's row, `⊘ refused by the reviewer agent` in `windlass` and
+`⊘ edit math.ts · refused by the reviewer agent` in `windlass tui`, and the agent's rule under it:
+`The agent "reviewer" may use only tools that read. "edit" changes files.` A tool the agent's `tools` leave out
+reads `The agent "docs" may use only these tools: read, grep, glob, edit, write. "shell" is not one of them.`, and
+one its `disallowed-tools` name `The agent "careful" may not use the tool "background_stop".` In `--json` it is an
+`approval.denied` event with `agent` set and the sentence in `refusal.text`.
 
 - **A call the agent allows still goes through your approval mode**, exactly as without an agent.
 - **`approval` can only tighten.** With `approval: ask` in a session in `auto`, an edit asks (and in a one-shot

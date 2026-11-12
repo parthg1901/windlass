@@ -164,13 +164,14 @@ sent to the model:
 `//etc is odd` sends the message `/etc is odd`. A first word that cannot be a command's name, such as a path
 (`/usr/bin/env is missing`), is sent as typed.
 
+A one-prompt run follows the same rule: `windlass "/relese-notes 1.4"` prints the sentence on standard error, sends
+nothing and exits with 2.
+
 ## Not yet
 
-- **A one-prompt run does not catch a mistyped name.** `windlass "/relese-notes 1.4"` sends those words to the model
-  as they are, and so does a command file that cannot be used; only a name that is a usable command file is
-  expanded there. `//` is not needed in a one-prompt run, and is not removed.
-- **No command of the program's own from a one-prompt run.** `windlass "/undo"` sends the text `/undo`; the program's
-  commands exist at the prompt of an interactive session.
+- **No command of the program's own from a one-prompt run.** `windlass "/undo"` sends nothing, says that `/undo`
+  is a command of the interactive prompt, and exits with 2; the program's commands exist at the prompt of an
+  interactive session.
 - **An argument the text does not use is not reported.** `/release-notes 1.4 1.3 extra` sends the text without
   `extra` and says nothing.
 - **Running commands and reading files** from a command file, as described above, is deliberately left out and is
