@@ -124,7 +124,9 @@ describe("the real engine", () => {
     const refused = await engine.open(open(workspace, "gpt-6-lunar")).catch((error: unknown) => error)
     expect(refused).toBeInstanceOf(EngineUnavailable)
     expect(refused).not.toBeInstanceOf(EngineError)
-    expect((refused as Error).message).toBe("model gpt-6-lunar is not available; choose one of: gpt-6-luna, gpt-6.1-sol")
+    expect((refused as Error).message).toBe("model gpt-6-lunar is not available; did you mean gpt-6-luna? The models: gpt-6-luna, gpt-6.1-sol")
+    // Nothing near it: the list alone.
+    expect((await engine.open(open(workspace, "claude")).catch((error: unknown) => error) as Error).message).toBe("model claude is not available; choose one of: gpt-6-luna, gpt-6.1-sol")
     // A valid one opens, and without --model nothing is asked of the listing.
     const session = await engine.open(open(workspace, "gpt-6-luna"))
     await session.close()

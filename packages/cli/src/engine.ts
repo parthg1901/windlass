@@ -37,6 +37,7 @@ import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpState
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
+import { nearest } from "./text.ts"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
 export type EngineEvent = StoredEvent | EphemeralEvent
@@ -411,9 +412,17 @@ export class EngineUnavailable extends Error {
     message: string,
     readonly kind: "usage" | "auth" | null = null,
   ) {
-    super(message)
+    super(kind === "usage" ? withNearestModel(message) : message)
     this.name = "EngineUnavailable"
   }
+}
+
+/** The engine's sentence about a model it does not offer, with the nearest one it does named first, as for an unknown option. */
+export function withNearestModel(message: string): string {
+  const said = /^model (\S+) is not available; choose one of: (.+)$/.exec(message)
+  if (said === null) return message
+  const meant = nearest(said[1]!, said[2]!.split(", "))
+  return meant === null ? message : `model ${said[1]} is not available; did you mean ${meant}? The models: ${said[2]}`
 }
 
 /** The exit code for a refusal: 2 when the arguments were wrong, 1 otherwise. */
