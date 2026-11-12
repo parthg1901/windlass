@@ -48,6 +48,12 @@ export interface PrettyOptions {
 
 type Block = "prompt" | "text" | "reasoning" | "info" | "summary"
 
+/** The two ways on after a run stopped for an approval nobody could give (`--unattended stop`), in the user guide's words. */
+export const STOPPED_FOR_APPROVAL = `To go on, run it interactively (\`${brand.binary} -i "<prompt>"\`, or \`${brand.binary}\` with no prompt) and answer the question when it comes, or choose what such a call becomes when nobody can answer: --unattended deny (the call is refused, the agent is told and carries on) or another --approval mode.`
+
+/** The rows of a subagent's answer shown under its call; the agent reads all of it. */
+const SUBAGENT_ANSWER_ROWS = 3
+
 /** A prompt echoed in more rows than this is shown as its first `PROMPT_HEAD` rows and a count. */
 const PROMPT_ROWS = 12
 const PROMPT_HEAD = 6
@@ -500,6 +506,14 @@ export class PrettyRenderer implements Sink {
       }
       case "execution.failed": {
         const turn = this.endTurn()
+        // Not a failure of the work: a call needed an approval nobody could give, and the run was not to go on without it.
+        if (event.data.cause === "approval") {
+          const time = turn === null ? null : formatDuration(event.time - turn.start)
+          const head = [seg(`${SYMBOL.stop} `, "yellow"), seg("stopped for your approval", ["yellow", "bold"]), seg(suffix([turn === null ? null : plural(turn.steps, "step"), time]), "dim")]
+          const why = wrap(`A tool call needed your approval and nobody was here to give it (--unattended stop). ${STOPPED_FOR_APPROVAL}`, this.width - 2)
+          this.summary(head, turn, why.map((line) => [seg(`  ${line}`, "dim")]))
+          return
+        }
         const kind = turn?.lastError
         const head = [seg(`${SYMBOL.fail} `, "red"), seg(kind === null || kind === undefined ? "failed" : `failed (${kind})`, ["red", "bold"])]
         const message = flatten(event.data.message)
@@ -688,6 +702,14 @@ export class PrettyRenderer implements Sink {
     const adjacent = call.after === this.lines && this.open.size === 1 && this.open.has(id)
     this.open.delete(id)
     const duration = call.startedAt === null ? null : formatDuration(time - call.startedAt)
+    // A subagent's answer is prose, said in a few whole lines under its row; its task was said when it started.
+    if (call.name === "subagent" && data.outcome === "success" && data.output.trim() !== "") {
+      this.line("info", [seg("  "), seg(`${SYMBOL.ok} `, "green"), seg("subagent", "bold"), seg(" answered", undefined), seg(suffix([duration]), "dim")])
+      // The reference line the harness adds for the model (`[subagent ses_…: finished after …]`) repeats the line above.
+      const answer = data.output.replace(/\n*\[subagent [^\]\n]*\]\s*$/, "")
+      for (const line of excerpt(answer, this.width - 4, SUBAGENT_ANSWER_ROWS)) this.line("info", [seg(`    ${line}`, "dim")])
+      return
+    }
     const described = describeOutcome(call.name, data)
     // On a narrow terminal the loop-decided outcomes drop their explanation before the call's argument is cut short.
     const room = this.width - displayWidth(`  ✓ ${call.name} · ${described.text}${suffix([duration])}`)
@@ -1045,8 +1067,30 @@ export class PrettyRenderer implements Sink {
   }
 }
 
-/** Every event as one JSON line, and nothing else on stdout. */
+/**
+ * The CLI's own line after a turn's ending event in `--json` mode: what the
+ * pretty output's last lines say (steps, time, tokens, the cached share), so a
+ * script need not add the events up. Not an engine event: its type is the
+ * CLI's (`cli.summary`), and it is never stored.
+ */
+export interface JsonSummary {
+  readonly type: "cli.summary"
+  readonly sessionId: string
+  readonly executionId: string
+  /** `stopped`: a call needed an approval nobody could give (`--unattended stop`, exit code 4). */
+  readonly outcome: "succeeded" | "unresolved" | "failed" | "stopped" | "interrupted"
+  /** Model calls the turn made (steps that started). */
+  readonly steps: number
+  readonly durationMs: number
+  readonly usage: Usage | null
+  /** `cachedInputTokens / inputTokens`, 0 to 1; `null` without usage. */
+  readonly cachedShare: number | null
+}
+
+/** Every event as one JSON line, then a `cli.summary` line after each turn, and nothing else on stdout. */
 export class JsonSink implements Sink {
+  private turn: { start: number; steps: number; usage: Usage | null } | null = null
+
   constructor(
     private readonly write: (text: string) => void,
     private readonly writeError: (text: string) => void,
@@ -1054,6 +1098,66 @@ export class JsonSink implements Sink {
 
   event(event: EngineEvent): void {
     this.write(`${JSON.stringify(event)}\n`)
+    this.tally(event)
+  }
+
+  private tally(event: EngineEvent): void {
+    switch (event.type) {
+      case "execution.started":
+        this.turn = { start: event.time, steps: 0, usage: null }
+        return
+      case "execution.resumed":
+        this.turn ??= { start: event.time, steps: 0, usage: null }
+        return
+      case "step.started":
+        if (this.turn !== null) this.turn.steps += 1
+        return
+      case "step.ended":
+      case "step.failed":
+      case "step.refused":
+      case "compaction.ended":
+        return this.add(event.data.usage)
+      case "execution.succeeded":
+      case "execution.failed":
+      case "execution.interrupted": {
+        const turn = this.turn
+        this.turn = null
+        const outcome =
+          event.type === "execution.succeeded"
+            ? event.data.verification.status === "unresolved"
+              ? "unresolved"
+              : "succeeded"
+            : event.type === "execution.failed"
+              ? event.data.cause === "approval"
+                ? "stopped"
+                : "failed"
+              : "interrupted"
+        const usage = turn?.usage ?? null
+        const summary: JsonSummary = {
+          type: "cli.summary",
+          sessionId: event.sessionId,
+          executionId: event.data.executionId,
+          outcome,
+          steps: turn?.steps ?? 0,
+          durationMs: turn === null ? 0 : Math.max(0, event.time - turn.start),
+          usage,
+          cachedShare: usage === null || usage.inputTokens === 0 ? null : Math.round((usage.cachedInputTokens / usage.inputTokens) * 1000) / 1000,
+        }
+        this.write(`${JSON.stringify(summary)}\n`)
+        return
+      }
+    }
+  }
+
+  private add(usage: Usage | null): void {
+    if (usage === null || this.turn === null) return
+    const sum = this.turn.usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }
+    this.turn.usage = {
+      inputTokens: sum.inputTokens + usage.inputTokens,
+      cachedInputTokens: sum.cachedInputTokens + usage.cachedInputTokens,
+      outputTokens: sum.outputTokens + usage.outputTokens,
+      reasoningTokens: sum.reasoningTokens + usage.reasoningTokens,
+    }
   }
 
   notice(text: string): void {
@@ -1108,6 +1212,10 @@ export class QuietSink implements Sink {
         this.requestId = event.data.error.requestId
         return
       case "execution.failed": {
+        if (event.data.cause === "approval") {
+          this.writeError(`${brand.binary}: stopped for your approval: a tool call needed it and nobody was here to give it (--unattended stop). ${STOPPED_FOR_APPROVAL}\n`)
+          return
+        }
         const requestId = this.requestId === null ? "" : ` (request ${this.requestId})`
         this.writeError(`${brand.binary}: failed: ${event.data.message}${requestId}\n`)
         return
@@ -1164,6 +1272,20 @@ function describeOutcome(name: string, data: EventData<"tool.settled">): { symbo
     case "effect_unknown":
       return { symbol: SYMBOL.unknown, tone: "yellow", text: "outcome unknown · it may have taken effect", short: "outcome unknown" }
   }
+}
+
+/**
+ * Prose shortened to at most `rows` rows of `width`: wrapped at words, and
+ * when there is more, the last row ends with `…` after a whole word.
+ */
+export function excerpt(text: string, width: number, rows: number): string[] {
+  const wrapped = wrap(flatten(text.trim()).replace(/( ⏎ )+/g, " "), width)
+  if (wrapped.length <= rows) return wrapped
+  const shown = wrapped.slice(0, rows)
+  let last = shown[rows - 1]!
+  while (displayWidth(`${last} …`) > width && last.includes(" ")) last = last.slice(0, last.lastIndexOf(" "))
+  shown[rows - 1] = `${last} …`
+  return shown
 }
 
 /** In the compact form the summary follows the symbol directly; with no summary the duration does. */

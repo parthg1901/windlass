@@ -18,6 +18,10 @@ lh --session ses_9acf "and run it"
 
 - `lh --list-sessions` lists the sessions of the current directory, newest first: ID, last use, model, title.
   `--json` prints one JSON object per line.
+- A run with `--json` writes every event as one JSON line, and after each turn's last event one line of its own,
+  `{"type":"cli.summary", "outcome", "steps", "durationMs", "usage", "cachedShare", ...}`: what the end of the
+  human-readable output says. `outcome` is `succeeded`, `unresolved`, `failed`, `stopped` (exit code 4) or
+  `interrupted`.
 - `-c` (`--continue`) resumes the most recent session in this directory; `--session <id>` resumes one by its ID, or
   by the start of one if it is unique. Both work with a prompt (one-shot) and without one (interactive).
 - `--cwd <dir>` works in another directory without changing to it.
@@ -55,7 +59,9 @@ Before every tool call the program decides whether it runs, runs in a sandbox, a
 - Choose with `--approval <mode>`, or `/approval ask|auto|full` while working. A project's own configuration can make
   the policy stricter, never looser.
 - When nobody can answer (a one-shot run, `--json`, a pipe), a call that would ask is refused and the agent is told
-  (`--unattended deny`, the default), or the run stops with exit code 4 (`--unattended stop`).
+  (`--unattended deny`, the default), or the run stops with exit code 4 (`--unattended stop`). A stopped run ends
+  with `■ stopped for your approval` and the two ways on: run it interactively (`lh -i "<prompt>"`) and answer the
+  question, or choose what such a call becomes (`--unattended deny`, or another `--approval` mode).
 - In the interactive mode a question shows the command and the choices: `a` allow once, `s` for this session, `p`
   in this project, `n` no; words after the letter go to the agent as your note.
 - A command that ran in the sandbox is marked `⊡`.
@@ -141,7 +147,7 @@ the checks whose `when` patterns match run before the turn ends, in the sandbox.
 - `✓ done · checks passed`: they ran and passed. Exit code 0.
 - `✓ done · no checks configured` or `✓ done · nothing to check` (nothing changed that a check covers). Exit code 0.
 - `✗ stopped with failing checks: <names>`: they still fail, and the agent reported that it cannot fix them, ran
-  out of rounds (`verify.maxRounds`), or `verify.mode` is `report`. Exit code 3; with `--json` the last event is
+  out of rounds (`verify.maxRounds`), or `verify.mode` is `report`. Exit code 3; with `--json` the turn's last event is
   `execution.succeeded` with `data.verification.status` `"unresolved"`.
 
 With `gate` (the default) a failing check is shown to the agent (`↻ the agent is shown the failing checks and

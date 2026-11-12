@@ -221,7 +221,7 @@ describe("the server dies under a turn", () => {
     const failed = events.find((item) => item.type === "step.failed")
     expect((failed?.data.error as { kind?: string } | undefined)?.kind).toBe("crashed")
     expect(events.findIndex((item) => item.type === "step.failed")).toBeLessThan(events.findIndex((item) => item.type === "inbox.enqueued"))
-    expect(events.at(-1)?.type).toBe("execution.succeeded")
+    expect(events.map((item) => item.type).slice(-2)).toEqual(["execution.succeeded", "cli.summary"])
   })
 })
 

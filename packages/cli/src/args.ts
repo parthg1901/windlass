@@ -200,7 +200,9 @@ Options:
                            deny  the call is refused, the agent is told and goes on
                            stop  the call is refused and the run ends, exit code 4
   --cwd <dir>            working directory (default: the current one)
-  --json                 write every event as one JSON line, nothing else on stdout
+  --json                 write every event as one JSON line, nothing else on stdout; after
+                         each turn a "cli.summary" line: outcome, steps, time, tokens,
+                         cached share
   -q, --quiet            print only the final answer
   --show-reasoning       show the model's reasoning instead of a one-line summary
   -i, --interactive      stay interactive after a prompt given as arguments
@@ -260,7 +262,7 @@ Exit codes:
   2    usage error: an unknown option, a wrong value, an unknown model or session ID
   3    done, but the project's checks still fail and were left unresolved (the model
        reported that it cannot fix them, ran out of rounds, or checks only report).
-       With --json the last event is execution.succeeded, and its
+       With --json the turn's last event is execution.succeeded, and its
        data.verification.status is "unresolved" (with the reason and the failing checks)
   4    stopped: a tool call needed your approval and nobody was there to give it
        (--unattended stop)

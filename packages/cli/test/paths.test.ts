@@ -206,7 +206,9 @@ describe("one prompt, every path", () => {
     expect(types[0]).toBe("session.created")
     expect(types).toContain("text.delta")
     expect(types).toContain("workspace.changes")
-    expect(types.at(-1)).toBe("execution.succeeded")
+    expect(types.slice(-2)).toEqual(["execution.succeeded", "cli.summary"])
+    // The CLI's own last line: what the pretty output's ending says, added up.
+    expect(JSON.parse(lines.at(-1)!)).toEqual({ type: "cli.summary", sessionId: "<ses>", executionId: "<exe>", outcome: "succeeded", steps: 2, durationMs: expect.any(Number), usage: { inputTokens: 1200, cachedInputTokens: 1000, outputTokens: 40, reasoningTokens: 0 }, cachedShare: 0.833 })
   })
 
   test("--quiet prints only the answer", async () => {
@@ -257,7 +259,7 @@ describe("one prompt, every path", () => {
         const at = place(path, WRITE_THEN_ANSWER, { "notes.md": "# Notes\n", ...files })
         const run = await cli(at, ["add a line"])
         const json = await cli(at, ["--json", "--continue", "again"])
-        shown[name] = { code: run.code, out: run.out, err: run.err, last: json.out.trim().split("\n").at(-1) }
+        shown[name] = { code: run.code, out: run.out, err: run.err, last: json.out.trim().split("\n").at(-2) }
       }
       return shown
     })
@@ -285,7 +287,7 @@ describe("stopping, every path", () => {
       return { code: run.code, types: types.slice(types.indexOf("execution.interrupt_requested")), err: run.err, quick: Date.now() - started < 15_000 }
     })
     expect(results.acp.code).toBe(130)
-    expect(results.acp.types.at(-1)).toBe("execution.interrupted")
+    expect(results.acp.types.slice(-2)).toEqual(["execution.interrupted", "cli.summary"])
     expect(results.acp.quick).toBe(true)
   })
 

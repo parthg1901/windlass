@@ -16,7 +16,10 @@ describe("--json", () => {
       const events = lines.map((line) => JSON.parse(line) as { type: string; v?: number; data?: unknown; seq?: number })
       expect(events.map((item) => JSON.stringify(item))).toEqual(lines)
 
-      const durable = events.filter((item) => !EPHEMERAL.includes(item.type))
+      // After each turn's ending event the CLI's own summary line, which is not an engine event.
+      const summaries = events.filter((item) => item.type === "cli.summary")
+      expect(summaries.length).toBe(events.filter((item) => /^execution\.(succeeded|failed|interrupted)$/.test(item.type)).length)
+      const durable = events.filter((item) => !EPHEMERAL.includes(item.type) && item.type !== "cli.summary")
       for (const item of durable) expect(validateEvent({ type: item.type, v: item.v!, data: item.data })).toEqual({ type: item.type, v: item.v, data: item.data } as never)
       expect(durable.map((item) => item.seq)).toEqual(durable.map((_, index) => index + 1))
       expect(events.some((item) => EPHEMERAL.includes(item.type))).toBe(true)
@@ -74,7 +77,7 @@ describe("--json for a live reader", () => {
       expect(buffer).toBe("")
       const types = arrivals.map((item) => (JSON.parse(item.line) as { type: string }).type)
       expect(types).toContain("execution.interrupt_requested")
-      expect(types.at(-1)).toBe("execution.interrupted")
+      expect(types.slice(-2)).toEqual(["execution.interrupted", "cli.summary"])
       // Lines came in over the run, not in one burst at the end.
       const spread = arrivals.at(-1)!.at - arrivals[0]!.at
       expect(spread).toBeGreaterThan(1000)

@@ -3,6 +3,7 @@
  * and what an unattended run says and exits with. The run tests start the
  * real CLI, which starts the real `acp` server, with a scripted model.
  */
+import { brand } from "@light-harness/core"
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -121,7 +122,21 @@ describe("an unattended run", () => {
     expect(result.code).toBe(EXIT_APPROVAL_REQUIRED)
     const events = result.out.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { type: string; data: Record<string, unknown> })
     expect(events.find((item) => item.type === "approval.denied")?.data).toMatchObject({ reason: "unattended", stop: true, needs: [{ kind: "sandbox-network" }] })
-    expect(events.at(-1)).toMatchObject({ type: "execution.failed", data: { cause: "approval" } })
+    expect(events.at(-2)).toMatchObject({ type: "execution.failed", data: { cause: "approval" } })
+    expect(events.at(-1)).toMatchObject({ type: "cli.summary", outcome: "stopped" })
+  }, 60_000)
+
+  test("a run stopped for an approval says it stopped, why, and the two ways on, not that it failed", async () => {
+    const result = await run([fetch], ["--unattended", "stop", "Fetch the page."])
+    expect(result.code).toBe(EXIT_APPROVAL_REQUIRED)
+    const flat = result.out.replace(/\n\s+/g, " ")
+    expect(flat).toContain("■ stopped for your approval · 1 step")
+    expect(flat).toContain("A tool call needed your approval and nobody was here to give it (--unattended stop).")
+    expect(flat).toContain(`To go on, run it interactively (\`${brand.binary} -i "<prompt>"\`, or \`${brand.binary}\` with no prompt) and answer the question when it comes`)
+    expect(flat).toContain("--unattended deny (the call is refused, the agent is told and carries on) or another --approval mode.")
+    expect(result.out).not.toContain("✗ failed")
+    const quiet = await run([fetch], ["-q", "--unattended", "stop", "Fetch the page."])
+    expect(quiet.err).toContain(`${brand.binary}: stopped for your approval: a tool call needed it and nobody was here to give it (--unattended stop). To go on,`)
   }, 60_000)
 
   test("-q says on stderr what was refused, and the answer alone on stdout", async () => {

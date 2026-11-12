@@ -81,4 +81,7 @@ test("a subagent's question is asked at the prompt with its label, the answer re
   expect(text).toMatch(new RegExp(`    ↳ subagent ${label} ✓ write ${note.replaceAll(".", "\\.")} · created`))
   expect(text).toMatch(new RegExp(`✓ subagent ${label} finished · 2 steps, 2 tool calls`))
   expect(text).toContain("The subagent wrote it.")
+  // Its answer under the call, whole words, without the reference line the parent's model gets.
+  expect(text).toMatch(/  ✓ subagent answered · \S+\n    Written\.\n/)
+  expect(text).not.toContain("[subagent ses_")
 })

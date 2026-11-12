@@ -4,7 +4,7 @@ import { c, m, opening, stepStarted, synthetic } from "@light-harness/core/testi
 import { demoScenarios } from "../src/demo/scenarios.ts"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { displayWidth, stripAnsi } from "../src/text.ts"
-import { PrettyRenderer } from "../src/renderer.ts"
+import { PrettyRenderer, excerpt } from "../src/renderer.ts"
 import { render, runCli, stored, withoutDurations } from "./helpers.ts"
 
 const SESSION = "ses_test" as SessionId
@@ -612,5 +612,15 @@ describe("preformatted text is never reflowed", () => {
     expect(rows.length).toBe(7)
     expect(rows[0]).toStartWith("› line 0 ")
     expect(rows.at(-1)).toBe(`  … 2,000 lines, ${(new TextEncoder().encode(paste).length / 1024).toFixed(1)} KB in all; the agent gets all of it`)
+  })
+})
+
+describe("excerpts of prose", () => {
+  test("are cut after a whole word, with … when there is more", () => {
+    const text = "The first line of a.txt is hello, and the file has exactly one line in it with nothing else at all."
+    expect(excerpt(text, 30, 5)).toEqual(["The first line of a.txt is", "hello, and the file has", "exactly one line in it with", "nothing else at all."])
+    const cut = excerpt(text, 30, 2)
+    expect(cut).toEqual(["The first line of a.txt is", "hello, and the file has …"])
+    expect(cut.every((row) => displayWidth(row) <= 30)).toBe(true)
   })
 })
