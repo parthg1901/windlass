@@ -115,7 +115,14 @@ describe("hooks", () => {
     const approved = await ext<{ approved: boolean; hooks: HooksStateResult["hooks"] }>(harness, EXT.hookApprove, { sessionId, fingerprint: waiting.fingerprint })
     expect(approved.approved).toBe(true)
     expect(approved.hooks).toEqual([expect.objectContaining({ name: "no-secrets", state: "in_force", question: null })])
-    await until(() => notes<HooksStateResult>(harness, EXT.hooksChanged).some((state) => state.hooks[0]?.state === "in_force"), 5000, "the approval to be announced")
+    // The engine says that the hooks changed, so the client is told before the approval is answered: nothing waits for a timer.
+    const told = harness.wire.findIndex((message) => message.method === EXT.hooksChanged && (message.params as unknown as HooksStateResult).hooks[0]?.state === "in_force")
+    const answered = harness.wire.findIndex((message) => (message.result as { approved?: boolean } | undefined)?.approved === true)
+    expect(told).toBeGreaterThan(-1)
+    expect(told).toBeLessThan(answered)
+    // And told once: the same state is not announced again while nothing changes.
+    await Bun.sleep(700)
+    expect(notes<HooksStateResult>(harness, EXT.hooksChanged).filter((state) => state.hooks[0]?.state === "in_force")).toHaveLength(1)
 
     // The same hook with another command is another hook: the next turn reads it and it waits again.
     projectConfig(harness.workspace, hook("exit 2"))

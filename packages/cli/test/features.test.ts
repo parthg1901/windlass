@@ -115,6 +115,8 @@ describe("MCP servers", () => {
         if (running || tries > 30) break
       }
       await waitFor("theirs · running · 1 tool")
+      // Ctrl-D leaves at the prompt only: the turn, which the question did not hold up, has ended by then.
+      await waitFor("✓ done")
       type("\x04")
     })
     expect(run.code).toBe(0)
@@ -128,7 +130,9 @@ describe("MCP servers", () => {
     const provider = new FakeProvider([[script.text("Hello.")]])
     const run = await interactive(cwd, provider, async (type, waitFor) => {
       type("hello\r")
+      // Said as soon as the engine says the server failed, which may be while the turn still runs.
       await waitFor('MCP server "broken" could not start')
+      await waitFor("✓ done")
       type("\x04")
     })
     expect(run.screen).toContain("TRACKER_TOKEN is not valid")

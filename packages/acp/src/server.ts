@@ -64,6 +64,7 @@ import {
   type RevertOptions,
   type RevertPlan,
   type RevertResult,
+  type SessionFeature,
   type SessionId,
   type SessionSettings,
   type SessionSummary,
@@ -112,7 +113,7 @@ import {
   type StateNotification,
   sessionTitle,
 } from "./extensions.ts"
-import { NO_HOOKS_KEY, NO_LSP_KEY, hookFailure, hooksKey, hooksState, lspKey, lspState, mcpKey, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
+import { hookFailure, hooksState, lspState, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText, slashEntry } from "./prompt.ts"
@@ -130,8 +131,6 @@ const NO_AGENT_VALUE = "none"
 const UNATTENDED = ["deny", "stop"] as const
 const DEFAULT_EFFORT_VALUE = "default"
 const LIST_PAGE = 100
-/** How often a session's MCP servers, hooks and language servers are looked at for their `_changed` notifications. */
-const MCP_POLL_MS = 500
 /** How many of the latest turns a `session/load` replays the changed files of. */
 const REPLAYED_TURN_CHANGES = 50
 /** How long the answer to a compaction asked for while idle waits for the execution that made it to end. */
@@ -381,7 +380,10 @@ class ConnectionState {
     if (this.fidelity.events) for (const item of session.readEvents()) view.queueEvent(item, false)
     await view.flushed()
     // After the answer: a client learns the session's ID from it, and the commands are about that session.
-    setTimeout(() => view.advertiseCommands(), 0)
+    setTimeout(() => {
+      view.advertiseCommands()
+      view.lookAtFeatures()
+    }, 0)
     return { sessionId: session.id, configOptions: await this.configOptions(view.settings, view.session) }
   }
 
@@ -446,6 +448,8 @@ class ConnectionState {
     if (asked.model !== null || asked.effort !== null || (meta?.agent ?? null) !== null) await view.drained()
     view.advertiseCommands()
     await view.flushed()
+    // After the answer, as for a new session: what the configuration names is told once the session is open.
+    setTimeout(() => view.lookAtFeatures(), 0)
     return { configOptions: await this.configOptions(view.settings, view.session) }
   }
 
@@ -1139,7 +1143,8 @@ class ConnectionState {
   async approveMcp(sessionId: string, name: string, fingerprint: string | undefined) {
     const view = this.requireView(sessionId)
     const approved = view.session.approveMcpServer(name, fingerprint)
-    view.watchMcp(true)
+    // What changed with it (`<prefix>/mcp_changed`, told by the engine) reaches the client before the answer.
+    await view.drained()
     return { approved, servers: (await mcpState(view.session)).servers }
   }
 
@@ -1147,7 +1152,7 @@ class ConnectionState {
   async approveHook(sessionId: string, fingerprint: string) {
     const view = this.requireView(sessionId)
     const approved = view.session.approveHook(fingerprint)
-    view.watchFeatures(true)
+    await view.drained()
     return { approved, hooks: (await view.hooks()).hooks }
   }
 
@@ -1155,7 +1160,7 @@ class ConnectionState {
   async approveLsp(sessionId: string, name: string, fingerprint: string | undefined) {
     const view = this.requireView(sessionId)
     const approved = view.session.approveLspServer(name, fingerprint)
-    view.watchFeatures(true)
+    await view.drained()
     return { approved, servers: (await lspState(view.session)).servers }
   }
 
@@ -1224,17 +1229,14 @@ class SessionView {
   private outbox: Promise<void> = Promise.resolve()
   private unlisten: (() => void) | null = null
   private detached = false
-  /** The MCP servers as last told to the client (`mcpKey`), and the timer that looks again. */
-  private mcpSeen: string | null = null
-  private mcpTimer: ReturnType<typeof setInterval> | null = null
   /**
-   * The hooks and the language servers as last told to the client
-   * (`hooksKey`, `lspKey`). A session is taken to have none until it is
-   * first looked at, a moment after it was opened: what it has then is told.
+   * What the engine said changed (`onFeatureChange`: its MCP servers, its
+   * hooks, its language servers) and the client has not been told yet. The
+   * engine calls in the middle of the change, so it is only noted there;
+   * the client is told once the change is made.
    */
-  private hooksSeen = NO_HOOKS_KEY
-  private lspSeen = NO_LSP_KEY
-  private featureTimer: ReturnType<typeof setInterval> | null = null
+  private readonly changed = new Set<SessionFeature>()
+  private unfeature: (() => void) | null = null
   /** Why each hook could not answer the last time it ran in this session, by fingerprint (`hook.ran`). */
   private readonly hookFailures = new Map<string, string>()
 
@@ -1271,8 +1273,8 @@ class SessionView {
     // Handled after whatever produced the event has returned, in order: a prompt's sender registers what it
     // waits for before its own `inbox.enqueued` is looked at here.
     this.unlisten = this.session.subscribe((item) => queueMicrotask(() => this.onEvent(item)))
-    this.watchMcp()
-    this.watchFeatures()
+    // The engine says when its MCP servers, hooks or language servers changed: nothing is looked at on a timer.
+    this.unfeature = this.session.onFeatureChange((feature) => this.featureChanged(feature))
   }
 
   /** The commands as last advertised (`available_commands_update`). */
@@ -1318,93 +1320,69 @@ class SessionView {
     if (item.type !== "hook.ran") return
     const failure = hookFailure(item.data)
     if (failure === undefined) return
+    const before = this.hookFailures.get(item.data.fingerprint) ?? null
     if (failure === null) this.hookFailures.delete(item.data.fingerprint)
     else this.hookFailures.set(item.data.fingerprint, failure)
+    // Whether a hook can answer is this connection's own knowledge (the engine's hooks did not change): told from here.
+    if (before !== failure && this.unlisten !== null) this.featureChanged("hooks")
   }
 
   /**
-   * Looks at the session's hooks and language servers every `MCP_POLL_MS`
-   * and sends `<prefix>/hooks_changed` and `<prefix>/lsp_changed` when what
-   * a client shows changed: the configuration was read and names some, one
-   * waits for the user's approval or was approved, a hook could not answer,
-   * a server started or failed (with why). Nothing is looked at while the
-   * session is being opened: reading the hooks reads the configuration, and
-   * what the engine says about it then belongs after the answer that opens
-   * the session.
+   * The session's hooks and language servers, looked at once, a moment after
+   * it was opened: reading them reads the configuration, and the engine says
+   * through its listener what it names (a project's hook or server that
+   * waits for the user's approval), so a client has the question before the
+   * first message. Not while the session is being opened: what the engine
+   * says about the configuration belongs after the answer that opens it.
    */
-  watchFeatures(now = false): void {
+  lookAtFeatures(): void {
     if (this.detached) return
-    if (this.featureTimer === null) {
-      this.featureTimer = setInterval(() => this.checkFeatures(), MCP_POLL_MS)
-      this.featureTimer.unref?.()
-    }
-    if (now) this.checkFeatures()
-  }
-
-  private checkFeatures(): void {
-    if (this.detached) return
-    let hooks: string | null = null
-    let lsp: string | null = null
     try {
-      hooks = hooksKey(this.session, this.hookFailures)
-      lsp = lspKey(this.session)
+      this.session.hooks()
+      this.session.lsp()
     } catch {
       // A session that is closing has nothing new to say.
-      return
-    }
-    if (hooks !== null && hooks !== this.hooksSeen) {
-      this.hooksSeen = hooks
-      this.enqueue(async () => this.connection.sendExt(EXT.hooksChanged, { ...(await this.hooks()) }))
-    }
-    // No registry (`null`) is the state of a session whose servers neither started nor wait.
-    const servers = lsp ?? NO_LSP_KEY
-    if (servers !== this.lspSeen) {
-      this.lspSeen = servers
-      this.enqueue(async () => this.connection.sendExt(EXT.lspChanged, { ...(await lspState(this.session)) }))
     }
   }
 
   /**
-   * Looks at the session's MCP servers every `MCP_POLL_MS` and sends
-   * `<prefix>/mcp_changed` when what a client shows changed: a server
-   * started, failed (with why), waits for the user's approval, or was
-   * approved. The engine has no listener for that; its state is cheap to read.
+   * The engine's word that what `mcp()`, `hooks()` or `lsp()` returns has
+   * changed: a server started, failed, waits for the user's approval or was
+   * approved, the configuration a turn read names other hooks or servers.
+   * Noted here, and told to the client (`<prefix>/mcp_changed`,
+   * `<prefix>/hooks_changed`, `<prefix>/lsp_changed`, each with the whole
+   * state) once the change is made: one notification for however many
+   * changes came together.
    */
-  watchMcp(now = false): void {
+  private featureChanged(feature: SessionFeature): void {
     if (this.detached) return
-    if (this.mcpTimer === null) {
-      this.mcpSeen = this.mcpKeyNow()
-      if (this.mcpSeen === null) return
-      this.mcpTimer = setInterval(() => this.checkMcp(), MCP_POLL_MS)
-      this.mcpTimer.unref?.()
-    }
-    if (now) this.checkMcp()
+    const first = this.changed.size === 0
+    this.changed.add(feature)
+    if (first) setImmediate(() => this.tellFeatures())
   }
 
-  private mcpKeyNow(): string | null {
-    try {
-      return mcpKey(this.session)
-    } catch {
-      return null
-    }
-  }
-
-  private checkMcp(): void {
+  private tellFeatures(): void {
+    const changed = [...this.changed]
+    this.changed.clear()
     if (this.detached) return
-    const key = this.mcpKeyNow()
-    if (key === null || key === this.mcpSeen) return
-    this.mcpSeen = key
-    this.enqueue(async () => this.connection.sendExt(EXT.mcpChanged, { ...(await mcpState(this.session)) }))
+    const tell = (method: string, read: () => Promise<object>) =>
+      this.enqueue(async () => {
+        // A session that closed meanwhile has nothing new to say.
+        const state = this.detached ? null : await read().catch(() => null)
+        if (state !== null) await this.connection.sendExt(method, { ...state })
+      })
+    for (const feature of changed) {
+      if (feature === "mcp") tell(EXT.mcpChanged, () => mcpState(this.session))
+      else if (feature === "hooks") tell(EXT.hooksChanged, () => this.hooks())
+      else tell(EXT.lspChanged, () => lspState(this.session))
+    }
   }
 
   detach(): void {
     if (this.detached) return
     this.detached = true
     this.unlisten?.()
-    if (this.mcpTimer !== null) clearInterval(this.mcpTimer)
-    this.mcpTimer = null
-    if (this.featureTimer !== null) clearInterval(this.featureTimer)
-    this.featureTimer = null
+    this.unfeature?.()
     this.connection.forget(this)
     const error = new RequestError(-32800, "the session was closed")
     for (const pending of this.pending.splice(0)) pending.reject(error)

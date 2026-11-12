@@ -145,13 +145,6 @@ export async function mcpState(session: EngineSession): Promise<McpStateResult> 
   return { sessionId: session.id, available: true, servers }
 }
 
-/** What changes about the servers that a client shows: not the countdown to the next retry, nor a process ID. */
-export function mcpKey(session: EngineSession): string | null {
-  const state = session.mcp()
-  if (state === null) return null
-  return JSON.stringify([state.servers.map((server) => [server.name, server.state, server.tools, server.error]), state.awaiting.map((question) => [question.name, question.fingerprint])])
-}
-
 // ---------------------------------------------------------------- hooks
 
 /**
@@ -188,17 +181,6 @@ export async function hooksState(session: EngineSession, failures: ReadonlyMap<s
   })
   return { sessionId: session.id, available: true, hooks, maxStopRounds: state.config.maxStopRounds, ignored: [...state.config.ignored] }
 }
-
-/** What changes about the hooks that a client shows: which exist, which wait, and which could not answer. `null`: the engine runs none. */
-export function hooksKey(session: EngineSession, failures: ReadonlyMap<string, string>): string | null {
-  const state = session.hooks()
-  if (state === null) return null
-  const all = HOOK_POINTS.flatMap((point) => state.config[point])
-  return JSON.stringify([all.map((hook) => [hook.id, hook.fingerprint, failures.get(hook.fingerprint) ?? null]), state.awaiting.map((question) => question.fingerprint)])
-}
-
-/** The key of a session with no hooks: what a session is taken to have until it is first looked at. */
-export const NO_HOOKS_KEY = JSON.stringify([[], []])
 
 /**
  * What a `hook.ran` record says about whether the hook can answer: why it
@@ -243,8 +225,8 @@ export async function lspState(session: EngineSession): Promise<LspStateResult> 
         : config.waitMs === 0
           ? `Diagnostics are off: "lsp": { "waitMs": 0 } in the configuration lets an edit wait no time for them. No server is started.`
           : null
-  // The engine holds nothing although the files name servers that could run: it offers no diagnostics.
-  const available = state !== null || plan === null || off !== null || !plan.servers.some((server) => server.config.enabled)
+  // The engine has no state only where it offers no diagnostics; one whose configuration names no server says `configured: false`.
+  const available = state !== null
   const waiting = new Map((state?.awaiting ?? []).map((question) => [question.name, question]))
   const servers: LspServerInfo[] = (plan?.servers ?? []).map((server) => {
     const name = server.config.name
@@ -268,16 +250,6 @@ export async function lspState(session: EngineSession): Promise<LspStateResult> 
   })
   return { sessionId: session.id, available, off, waitMs: config?.waitMs ?? null, servers }
 }
-
-/** What changes about the language servers that a client shows: not a process ID or a count of open files. `null`: none could give diagnostics. */
-export function lspKey(session: EngineSession): string | null {
-  const state = session.lsp()
-  if (state === null) return null
-  return JSON.stringify([state.servers.map((server) => [server.server, server.root, server.state, server.error]), state.awaiting.map((question) => [question.name, question.fingerprint])])
-}
-
-/** The key of a session whose language servers have not started and do not wait. */
-export const NO_LSP_KEY = JSON.stringify([[], []])
 
 // ---------------------------------------------------------------- skills
 

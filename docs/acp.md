@@ -591,8 +591,9 @@ they say is in the engine's own words where it has them.
 
 **`_windlass/mcp`** (request) → `{ sessionId, available, servers }`, and **`_windlass/mcp_changed`**
 (notification, the same object) whenever what a client shows changed: a server started, failed, waits for the user's
-approval, or was approved (the server looks every half second; a retry's countdown is not a change). `available:
-false`: the engine offers no MCP servers.
+approval, or was approved (the engine tells the server when it changes: nothing is polled; a retry's countdown is not
+a change). An approval's `_changed` notification is sent before the answer to the approval. `available: false`: the
+engine offers no MCP servers.
 
 ```ts
 servers: {
@@ -626,8 +627,8 @@ changed: ask again).
 **`_windlass/hooks`** (request) → `{ sessionId, available, hooks, maxStopRounds, ignored }`, and
 **`_windlass/hooks_changed`** (notification, the same object) whenever what a client shows changed: the
 configuration was read and names hooks, a project's hook waits for the user's approval or was approved, a hook could
-not answer or answers again. The server looks every half second, the first time a moment after the session was
-opened, so a client has the question before the first message. `available: false`: the engine runs no hooks.
+not answer or answers again. The engine tells the server when they change; the server reads them once, a moment
+after the session was opened, so a client has the question before the first message. `available: false`: the engine runs no hooks.
 `maxStopRounds` is how often per turn stop hooks may send the agent back; `ignored` is what the project's file asked
 for beyond what the user's allows.
 
@@ -661,7 +662,7 @@ again. `approved: false` when no such hook waits.
 
 **`_windlass/lsp`** (request) → `{ sessionId, available, off, waitMs, servers }`, and **`_windlass/lsp_changed`**
 (notification, the same object) whenever what a client shows changed: a server started, failed, waits for the user's
-approval, or was approved (looked at every half second, like the hooks). `available: false`: the engine offers no
+approval, or was approved (told by the engine, like the hooks). `available: false`: the engine offers no
 diagnostics. `off`: a sentence when servers are configured and no edit gets diagnostics (`lsp.enabled: false`,
 `lsp.waitMs: 0`), else `null`. `waitMs`: how long an edit's result may wait; `null` when nothing is configured.
 
