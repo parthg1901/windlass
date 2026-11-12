@@ -248,7 +248,8 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   (`windingDown(pid)`), up to `WINDING_DOWN_MS`; `lastWords(lines)` is how a dead server's reason is picked.
 - Permission requests are routed to the session they are about: `approver(ask, signal)` gets the whole approval
   question (choices with what each remembers, `needs`, `then`, and for a subagent's question `subagent`, the first
-  line of its task, and `subagentSessionId`), and
+  line of its task, and `subagentSessionId`), one at a time per session (several subagents may ask at once; the rest
+  wait their turn, and one that is withdrawn meanwhile is answered `cancelled` without being put), and
   `handEdits(ask, signal)` the hand-edit question of an undo. `cancel()` answers a pending question `cancelled`
   once the server has withdrawn it (its interrupt is in the log), and aborts `signal` so the client can close it.
 - Errors are `ClientError`s with the server's `reason` (`auth_required`, `session_in_use`, `session_not_found`,

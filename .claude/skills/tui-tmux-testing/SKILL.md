@@ -46,6 +46,12 @@ until $T capture-pane -p -t tui | grep -q "↑↓ Enter · a s"; do sleep 0.1; d
 $T send-keys -t tui -l "m"; $T send-keys -t tui -l "keep it in the workspace"; $T send-keys -t tui Enter
 ```
 
+## Subagents, fork and replay
+
+- A subagent shares the scripted model with its parent: one `responses` list, consumed in call order. A foreground child's calls come between the parent's call that starts it and the parent's next step: `[[parent: subagent call], [child: tool calls], [child: answer], [parent: answer]]`. The child asks like the parent does (a `write` outside the workspace); the dock then says `subagent: <first line of the task>` and the status line `? waiting for your answer · subagent <task>`.
+- The `subagent` row: collapsed, one `↳` line (`starting`, `now: <tool> <arg>`, `it asks you something: answer below`, `finished after N steps, M tool calls`); selected (Alt-Up until `▌` is on it) and expanded (Ctrl-O), the child's own rows framed by `│ `, a second Ctrl-O shows all of them. A running subagent is in the panel (`agents ⋯ <task>`, `?` when it asks, `◌` in the background) and, in the background or after the turn, in the status line (`· 1 subagent at work: <task>`).
+- `/fork` (or `/fork copy`) switches to the new session: the `⑂ forked from …` note first, then the history. `lh fork` and `lh replay` are one-off CLI subcommands; test them headless (`packages/cli/test/fork-replay.test.ts`), not in tmux.
+
 ## Send keys
 
 ```sh
@@ -111,6 +117,7 @@ bun test packages/tui                       # everything: about 75 tests, 45 s o
 bun test packages/tui/test/e2e.test.ts      # tmux only: demo turn, steer, Ctrl-C once and twice, crash, resize, undo, sessions, killed server, server stderr,
                                             #   approval approved / declined with a note / cancelled by Ctrl-C, typing kept, taint and /clear-taint, /diff
 bun test packages/tui/test/approval.test.ts # component tests of the dock, the safety rows, the mode picker and the diff view at fixed sizes
+bun test packages/tui/test/subagent.test.ts # a subagent's question in the dock, its row collapsed and expanded, the panel, a reloaded subagent (real engine events)
 bun test packages/acp/test/client.test.ts   # the shared protocol client the TUI and the CLI use
 bun test packages/tui/test/frames.test.ts --update-snapshots   # after an intended change to the showcase frames
 ```
@@ -164,6 +171,16 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **The live model may skip the failure.** Asked to fetch a URL it often asks for `sandbox: { network: true }` up front (the question appears in the first step); told "exactly this, no extra arguments" it reported the sandbox's DNS failure instead of asking. Steering ("ask for network access and run it again") then asked.
 - **Engine work in progress breaks unrelated suites.** Another agent edits `packages/core` in this checkout; once every engine-backed test failed with `this.concludeReplay is not a function` from `engine.ts`. Not the TUI: retry a few minutes later, and run the component tests (no engine) meanwhile.
 - **The live model's second call often reads 0% from cache** (seen in the panel's per-call bars: 89%, 0%, 90%, 83%). That is the provider's lag on quick follow-ups described in the harness-testing skill, not the TUI.
+
+- **Parallel subagents race for the script.** Two `subagent` calls in one response start at once, and their children's model calls take scripted responses in whatever order they arrive: a child may get the other's script. With `LH_ACP_SCRIPT` keep one subagent per step; in-process tests give `FakeProvider` a function response that picks by the task in `request.input` (`packages/acp/test/client.test.ts`, "two subagents asking at once").
+- **Two questions at once used to cancel each other.** The dock (and the CLI's prompt) answered a pending question `null` when the next arrived, which refused the first subagent's call (the CLI even interrupted the turn). The shared client now puts one approval question to a front end at a time and queues the rest.
+- **The dock ignores letters for 0.4 s after it takes the focus by itself.** A component test that advanced the clock past `QUIET_MS` only, then pressed `a`, waited forever for the answer. Advance it by `ARMING_MS` too (both are exported from `src/approval.ts`).
+- **A note added before a session opens stands above its history**, but a wait for the note returns before the history is there: `/fork`'s test waits for the note, a line of the inherited history and `● ready` together.
+- **Forwarded subagent events are not stored.** A session opened again (`--session`, a fork, the picker) shows its `subagent` rows without activity (`↳ finished · expand to read its work`); expanding one reads the subagent's own log over `_light-harness/events`. A test of the live view must feed `child.event`s; a test of a reload must give the backend `storedEvents`.
+- **The subagent's task carries the harness's note to it** ("(You are a subagent. …)"). The TUI drops it from the expanded view; the stored message keeps it, so `--json` and the child's log show it.
+- **Paths are cut inside an expanded subagent at 100 columns** (the frame and the panel take room): match `✓ write \S+ · created`, not the whole path.
+- **A server that died at start showed Bun's banner as the reason** (`… before it was ready: Bun v1.4.0 (Linux arm64)`), after the runtime's source excerpt on stderr. The shared client now holds the server's raw output until it is ready and names the uncaught error's message. Inject it with a fixture that throws at the top level as the server command.
+- **A CLI killed with SIGKILL leaves its `lh acp` shutting down for up to 5 s**, holding the session. A command with `trap '' TERM` in the scripted turn keeps that window open long enough to test; the next `--continue` now waits for the orphaned server (its parent is init or the systemd user manager) and says so.
 
 ## Measured (two-core aarch64, 2026-11-12)
 
