@@ -157,6 +157,14 @@ In the environment: `WINDLASS_HOOK_POINT`, `WINDLASS_HOOK_NAME` and `WINDLASS_HO
 names, one per line); after a call `WINDLASS_HOOK_STATUS`; at the end of a turn `WINDLASS_HOOK_ROUND` and
 `WINDLASS_HOOK_MAX_ROUNDS`.
 
+**A before hook is asked only about a call it can be shown whole.** A variable holds at most 16 KiB and the
+event's `arguments` at most 24 KiB. A call with a longer command or list of files, or with larger arguments (a
+long command line, a `write` of a large file, a large call to an MCP server's tool), is not put to a before hook
+that applies to it: the hook is not run and the call is refused as when the hook fails (below), with
+`the call is too large to show to the hook, so it was not asked (its command is 16,407 bytes and a hook is given at most 16,384)`
+as the reason. An after hook is still run: its variable is not set, and the event has `"arguments": null` with
+their size in `argumentsBytes`.
+
 ## Where hooks run
 
 In the sandbox, like the agent's own commands: the working directory is writable, the rest of the file system is
@@ -171,8 +179,8 @@ talk to.
 
 ## When a hook fails or is too slow
 
-A hook fails when it exits with a code other than 0 or 2, or does not answer within its `timeoutSeconds`. You are
-told each time:
+A hook fails when it exits with a code other than 0 or 2, or does not answer within its `timeoutSeconds`; a
+before hook also when the call is too large to show to it (above). You are told each time:
 
 ```text
 ⚠ hook: The hook "<name>" (before a tool call) could not answer: it exited with code 1; a hook answers with 0 or 2. A call it must allow is refused while it fails, unless the hook says `onError: "allow"`.

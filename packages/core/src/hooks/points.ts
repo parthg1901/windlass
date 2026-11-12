@@ -12,7 +12,7 @@ import type { SandboxRun, ToolResult } from "../tool/tool.ts"
 import { ANSWER_LIMITS, type HookAnswer, type HookFailure, type HookProcessResult, parseAnswer } from "./answer.ts"
 import type { Hook, HookOrigin, HookPoint } from "./config.ts"
 import { type AppliedNotes, type BeforeDecision, type HookVerdict, type StopDecision, applyAfterNotes, beforeVerdict, decideStop } from "./decide.ts"
-import { type HookEvent, hookEvent } from "./event.ts"
+import { type HookEvent, hookEvent, tooLargeDetail } from "./event.ts"
 import { type CallTarget, hooksFor, relativePaths } from "./match.ts"
 import type { HookRunner } from "./run.ts"
 import { type HookTrustContext, hookTaints, planHookRun } from "./trust.ts"
@@ -64,13 +64,18 @@ export interface ToolCallInput {
 /**
  * The before point. Call it after the arguments were accepted and before the approval decision: a refusal
  * then settles the call without a question. `allow` is no objection, never an approval.
+ *
+ * A hook is asked only about a call its event carries whole. When a value is over a limit of the event
+ * (`HookEvent.omitted`: a long command, long arguments, a long list of paths) the hook is not run and its answer
+ * is `failed`, so the call is refused unless the hook says `onError: "allow"`: an exit 0 from a hook that was
+ * shown an empty variable is not "no objection".
  */
 export async function runBeforeHooks(context: HookPointContext, hooks: readonly Hook[], call: ToolCallInput): Promise<{ readonly decision: BeforeDecision; readonly records: readonly HookRecord[] }> {
   const target = targetOf(context, call)
   const records: HookRecord[] = []
   for (const hook of hooksFor(hooks, target)) {
     const event = hookEvent({ point: "beforeTool", sessionId: context.sessionId, cwd: context.cwd, hook, tool: factsOf(call, target) })
-    const { answer, record } = await runOne(context, hook, event, ANSWER_LIMITS.beforeTool)
+    const { answer, record } = await runOne(context, hook, event, ANSWER_LIMITS.beforeTool, tooLargeDetail(event))
     const decision = beforeVerdict({ hook, answer })
     const toModel = decision.kind === "refuse" ? (answer.kind === "no" ? answer.text : null) : null
     records.push(finish(context, hook, record, toModel))
@@ -130,7 +135,8 @@ export async function runStopHooks(
 
 // ---------------------------------------------------------------------------------------------------------------
 
-async function runOne(context: HookPointContext, hook: Hook, event: HookEvent, limit: number): Promise<{ readonly answer: HookAnswer; readonly record: Omit<HookRecord, "toModel" | "taint"> }> {
+/** `unasked`: why the hook must not be asked with this event (the before point, a call too large to show), or `null`. */
+async function runOne(context: HookPointContext, hook: Hook, event: HookEvent, limit: number, unasked: string | null = null): Promise<{ readonly answer: HookAnswer; readonly record: Omit<HookRecord, "toModel" | "taint"> }> {
   const base = { point: hook.point, hookId: hook.id, name: hook.name, origin: hook.origin, fingerprint: hook.fingerprint }
   const plan = planHookRun(hook, context.trust)
   if (plan.kind === "skip")
@@ -142,7 +148,11 @@ async function runOne(context: HookPointContext, hook: Hook, event: HookEvent, l
   const result: HookProcessResult =
     plan.kind === "cannot_run"
       ? { kind: "cannot_run", message: plan.message }
-      : await context.runner({ hook, event, cwd: context.cwd, sessionId: context.sessionId, sandbox: plan.sandbox, signal: context.signal })
+      : unasked !== null
+        ? context.signal.aborted
+          ? { kind: "interrupted" }
+          : { kind: "cannot_run", message: unasked }
+        : await context.runner({ hook, event, cwd: context.cwd, sessionId: context.sessionId, sandbox: plan.sandbox, signal: context.signal })
   const answer = parseAnswer(result, limit)
   const exited = result.kind === "exited" ? result : null
   const forUser = [exited !== null && exited.exitCode === 0 ? exited.stdout.trim() : "", "stderr" in result ? result.stderr : ""].filter((text) => text !== "").join("\n")

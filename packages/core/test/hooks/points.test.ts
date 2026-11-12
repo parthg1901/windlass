@@ -1,5 +1,6 @@
 /** The three points put together, with a scripted runner: what runs, in what order, what the model sees and what is recorded. */
 import { describe, expect, test } from "bun:test"
+import { EVENT_LIMITS } from "../../src/hooks/event.ts"
 import { runAfterHooks, runBeforeHooks, runStopHooks } from "../../src/hooks/points.ts"
 import type { Json } from "../../src/json.ts"
 import type { ToolResult } from "../../src/tool/tool.ts"
@@ -71,6 +72,101 @@ describe("before", () => {
     expect(requests).toEqual([])
     expect(decision).toMatchObject({ kind: "refuse", because: "failed" })
     expect(records[0]).toMatchObject({ run: { kind: "cannot_run" }, failure: "cannot_run" })
+  })
+
+  describe("a call too large to show to the hook", () => {
+    const guard = hooks({ user: { beforeTool: [{ name: "guard", command: "true" }, { name: "later", command: "true" }] } })
+    const long = `git push origin main # ${"x".repeat(EVENT_LIMITS.envValue)}`
+
+    test("a command over the environment limit is refused as a failed hook refuses, and the hook is not run", async () => {
+      const { runner, requests } = scriptedRunner({ guard: exited(0), later: exited(0) })
+      const { decision, records } = await runBeforeHooks(pointContext(runner), guard.beforeTool, shellCall(long))
+      // Asking it would be asking about an empty variable: its exit 0 would not be an answer about this call.
+      expect(requests).toEqual([])
+      expect(decision).toMatchObject({ kind: "refuse", because: "failed" })
+      const bytes = (long.length).toLocaleString("en")
+      const detail = `the call is too large to show to the hook, so it was not asked (its command is ${bytes} bytes and a hook is given at most ${EVENT_LIMITS.envValue.toLocaleString("en")})`
+      expect(decision.kind === "refuse" ? decision.output : "").toBe(
+        `This call was not run: the hook "guard" (from the user's configuration) must allow it and could not answer: ${detail}. Do not try to work around the hook; tell the user it is failing.`,
+      )
+      expect(records).toEqual([expect.objectContaining({ name: "guard", run: { kind: "cannot_run" }, answer: "failed", failure: "cannot_run", detail, exitCode: null, toModel: null, taint: null })])
+    })
+
+    test("a command at the limit is shown whole and the hook decides", async () => {
+      const { runner, requests } = scriptedRunner({ guard: exited(0), later: exited(0) })
+      const { decision } = await runBeforeHooks(pointContext(runner), guard.beforeTool, shellCall("x".repeat(EVENT_LIMITS.envValue)))
+      expect(requests.map((request) => request.hook.name)).toEqual(["guard", "later"])
+      expect(decision).toEqual({ kind: "allow" })
+    })
+
+    test('`onError: "allow"` applies as for any failure: the call goes on, the failure is recorded, and the next hook decides for itself', async () => {
+      const watching = hooks({ user: { beforeTool: [{ name: "watch", command: "true", onError: "allow" }, { name: "guard", command: "true" }] } })
+      const { runner, requests } = scriptedRunner({ watch: exited(0), guard: exited(0) })
+      const outcome = await runBeforeHooks(pointContext(runner), watching.beforeTool, shellCall(long))
+      expect(requests).toEqual([])
+      expect(outcome.records.map((record) => [record.name, record.answer, record.failure])).toEqual([
+        ["watch", "failed", "cannot_run"],
+        ["guard", "failed", "cannot_run"],
+      ])
+      expect(outcome.decision).toMatchObject({ kind: "refuse", because: "failed", hook: { name: "guard" } })
+      const alone = await runBeforeHooks(pointContext(runner), watching.beforeTool.slice(0, 1), shellCall(long))
+      expect(alone.decision).toEqual({ kind: "allow" })
+      expect(alone.records[0]).toMatchObject({ name: "watch", answer: "failed", failure: "cannot_run" })
+    })
+
+    test("a file tool's content over the arguments limit is refused, although the paths were shown", async () => {
+      const { runner, requests } = scriptedRunner({ guard: exited(0), later: exited(0) })
+      const call = { tool: "write", callId: "call_1", arguments: { path: "/work/src/a.ts", content: "x".repeat(EVENT_LIMITS.arguments) } as Json, paths: ["/work/src/a.ts"] }
+      const { decision, records } = await runBeforeHooks(pointContext(runner), guard.beforeTool, call)
+      expect(requests).toEqual([])
+      expect(decision).toMatchObject({ kind: "refuse", because: "failed" })
+      expect(records[0]!.detail).toContain(`its arguments are ${(EVENT_LIMITS.arguments + '{"path":"/work/src/a.ts","content":""}'.length).toLocaleString("en")} bytes and a hook is given at most ${EVENT_LIMITS.arguments.toLocaleString("en")}`)
+    })
+
+    test("the arguments of a call to another server's tool over the limit are refused the same way", async () => {
+      const { runner, requests } = scriptedRunner({ guard: exited(0), later: exited(0) })
+      const call = { tool: "mcp__tracker__create_issue", callId: "call_1", arguments: { title: "EXAMPLE_VALUE_123", body: "x".repeat(EVENT_LIMITS.arguments) } as Json, paths: null }
+      const { decision, records } = await runBeforeHooks(pointContext(runner), guard.beforeTool, call)
+      expect(requests).toEqual([])
+      expect(decision).toMatchObject({ kind: "refuse", because: "failed" })
+      expect(records[0]).toMatchObject({ failure: "cannot_run", run: { kind: "cannot_run" } })
+    })
+
+    test("a list of paths over the environment limit is refused", async () => {
+      const { runner, requests } = scriptedRunner({ guard: exited(0), later: exited(0) })
+      const paths = Array.from({ length: EVENT_LIMITS.envValue / 8 + 1 }, (_, index) => `/work/src/${String(index).padStart(4, "0")}`)
+      const { decision, records } = await runBeforeHooks(pointContext(runner), guard.beforeTool, { tool: "search", callId: "call_1", arguments: {} as Json, paths })
+      expect(requests).toEqual([])
+      expect(decision).toMatchObject({ kind: "refuse", because: "failed" })
+      expect(records[0]!.detail).toContain("the list of its paths is ")
+    })
+
+    test("a hook that does not apply to the call, or a project's hook the user has not approved, is still not there", async () => {
+      const mixed = hooks({ user: { beforeTool: [{ name: "edits-only", tools: ["edit"], command: "true" }] }, project: { beforeTool: [{ name: "repo-guard", command: "true" }] } })
+      const { runner, requests } = scriptedRunner({})
+      const { decision, records } = await runBeforeHooks(pointContext(runner), mixed.beforeTool, shellCall(long))
+      expect(requests).toEqual([])
+      expect(decision).toEqual({ kind: "allow" })
+      expect(records).toEqual([expect.objectContaining({ name: "repo-guard", run: { kind: "skipped", reason: "not_approved" }, answer: "skipped" })])
+    })
+
+    test("an interrupt that is already there means the call is not started, not refused", async () => {
+      const { runner } = scriptedRunner({})
+      const stopped = new AbortController()
+      stopped.abort()
+      const { decision } = await runBeforeHooks(pointContext(runner, { signal: stopped.signal }), guard.beforeTool, shellCall(long))
+      expect(decision).toEqual({ kind: "interrupted" })
+    })
+
+    test("an after hook is still run: it can only add a note, and its event says what was cut", async () => {
+      const after = hooks({ user: { afterTool: [{ name: "note", command: "true" }] } })
+      const { runner, requests } = scriptedRunner({ note: exited(2, "Seen.") })
+      const result: ToolResult = { status: "success", output: "ok", truncation: null, attachments: [], display: null }
+      const outcome = await runAfterHooks(pointContext(runner), after.afterTool, shellCall(long), result)
+      expect(requests.map((request) => request.hook.name)).toEqual(["note"])
+      expect(requests[0]!.event.omitted.map((value) => value.what)).toEqual(["command"])
+      expect(outcome.records[0]).toMatchObject({ answer: "no", toModel: "Seen." })
+    })
   })
 
   test("an interrupt during a hook means the call is not started", async () => {

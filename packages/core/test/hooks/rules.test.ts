@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { ANSWER_LIMITS, parseAnswer } from "../../src/hooks/answer.ts"
 import type { Hook, HookEntry } from "../../src/hooks/config.ts"
 import { MAX_NOTES_CHARS, STOP_HOOK_ORIGIN, applyAfterNotes, decideBefore, decideStop, stopRoundsSent } from "../../src/hooks/decide.ts"
-import { EVENT_LIMITS, HOOK_ENV_PREFIX, hookEvent } from "../../src/hooks/event.ts"
+import { EVENT_LIMITS, HOOK_ENV_PREFIX, hookEvent, tooLargeDetail } from "../../src/hooks/event.ts"
 import { hookApplies, hooksFor, relativePaths, toolMatches } from "../../src/hooks/match.ts"
 import { approvalQuestion, hookTaints, pendingHookApprovals, planHookRun } from "../../src/hooks/trust.ts"
 import { brand } from "../../src/brand.ts"
@@ -320,6 +320,34 @@ describe("the event", () => {
     const event = hookEvent({ ...common, point: "beforeTool", tool: { name: "shell", callId: "c1", arguments: { command }, paths: null } })
     expect(JSON.parse(event.stdin).tool).toMatchObject({ arguments: null, argumentsBytes: EVENT_LIMITS.arguments + 15 })
     expect(event.env[`${P}COMMAND`]).toBeUndefined()
+    // Neither omission is silent: the event names both, with the size and the limit each is over.
+    expect(event.omitted).toEqual([
+      { what: "command", bytes: EVENT_LIMITS.arguments + 1, limit: EVENT_LIMITS.envValue },
+      { what: "arguments", bytes: EVENT_LIMITS.arguments + 15, limit: EVENT_LIMITS.arguments },
+    ])
+    expect(tooLargeDetail(event)).toBe(
+      `the call is too large to show to the hook, so it was not asked (its command is ${(EVENT_LIMITS.arguments + 1).toLocaleString("en")} bytes and a hook is given at most ${EVENT_LIMITS.envValue.toLocaleString("en")}; its arguments are ${(EVENT_LIMITS.arguments + 15).toLocaleString("en")} bytes and a hook is given at most ${EVENT_LIMITS.arguments.toLocaleString("en")})`,
+    )
+  })
+
+  test("a call at the limits is carried whole; one byte more of a command, a path list or the arguments is named as omitted", () => {
+    const event = (args: Record<string, string>, paths: readonly string[] | null) => hookEvent({ ...common, point: "beforeTool", tool: { name: "write", callId: "c1", arguments: args, paths } })
+    const atLimit = event({ command: "x".repeat(EVENT_LIMITS.envValue) }, ["p".repeat(EVENT_LIMITS.envValue)])
+    expect(atLimit.omitted).toEqual([])
+    expect(tooLargeDetail(atLimit)).toBeNull()
+    expect(event({ command: "x".repeat(EVENT_LIMITS.envValue + 1) }, null).omitted.map((value) => value.what)).toEqual(["command"])
+    // Bytes, not characters: half as many two-byte characters are already over.
+    expect(event({ command: "é".repeat(EVENT_LIMITS.envValue / 2 + 1) }, null).omitted.map((value) => value.what)).toEqual(["command"])
+    const many = Array.from({ length: EVENT_LIMITS.envValue / 8 + 1 }, (_, index) => `src/${String(index).padStart(4, "0")}`)
+    const paths = event({}, many)
+    expect(paths.omitted).toEqual([{ what: "paths", bytes: many.join("\n").length, limit: EVENT_LIMITS.envValue }])
+    expect(paths.env[`${P}PATHS`]).toBeUndefined()
+    // A file tool's content: the paths are there, the arguments on standard input are not.
+    const content = event({ path: "a.ts", content: "x".repeat(EVENT_LIMITS.arguments) }, ["a.ts"])
+    expect(content.env[`${P}PATHS`]).toBe("a.ts")
+    expect(content.omitted.map((value) => value.what)).toEqual(["arguments"])
+    // The stop point has nothing of a call to omit; its long text is cut and says so in the event itself.
+    expect(hookEvent({ ...common, point: "stop", round: 1, maxRounds: 3, lastText: "a".repeat(EVENT_LIMITS.lastText + 1) }).omitted).toEqual([])
   })
 
   test("stop: the round, the bound and the end of the model's last text", () => {

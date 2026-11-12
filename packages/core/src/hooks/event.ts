@@ -20,6 +20,11 @@
  *   <P>_HOOK_PATHS (before, after: the call's paths relative to the working directory, one per line),
  *   <P>_HOOK_STATUS (after), <P>_HOOK_ROUND and <P>_HOOK_MAX_ROUNDS (stop).
  * A value over `EVENT_LIMITS.envValue` is not set; the stdin event still has it (or says it was cut).
+ *
+ * `HookEvent.omitted` names every value of the call that is not in the event whole: the `COMMAND` or `PATHS`
+ * variable that was not set, the arguments that were left out. A before hook asked with such an event would
+ * answer about a call it was not shown, and its exit 0 would read as "no objection": `runBeforeHooks` does not
+ * ask it and answers for it as failed (`tooLargeDetail`).
  */
 import { brand } from "../brand.ts"
 import type { Json } from "../json.ts"
@@ -58,11 +63,20 @@ export type HookEventInput =
   | (Common & { readonly point: "afterTool"; readonly tool: ToolCallFacts; readonly result: { readonly status: "success" | "error"; readonly output: string } })
   | (Common & { readonly point: "stop"; readonly round: number; readonly maxRounds: number; readonly lastText: string })
 
+/** A value of the call that the event does not carry whole, with its size and the limit it is over. */
+export interface OmittedValue {
+  readonly what: "command" | "paths" | "arguments"
+  readonly bytes: number
+  readonly limit: number
+}
+
 export interface HookEvent {
   readonly point: HookPoint
   /** One line of JSON, no newline in it. */
   readonly stdin: string
   readonly env: Readonly<Record<string, string>>
+  /** What of the call is missing from `env` or `stdin` because it is over a limit. Empty at the stop point. */
+  readonly omitted: readonly OmittedValue[]
 }
 
 const encoder = new TextEncoder()
@@ -70,8 +84,11 @@ const decoder = new TextDecoder()
 
 export function hookEvent(input: HookEventInput): HookEvent {
   const env: Record<string, string> = {}
-  const set = (name: string, value: string) => {
-    if (encoder.encode(value).length <= EVENT_LIMITS.envValue) env[`${HOOK_ENV_PREFIX}${name}`] = value
+  const omitted: OmittedValue[] = []
+  const set = (name: string, value: string, what?: OmittedValue["what"]) => {
+    const bytes = encoder.encode(value).length
+    if (bytes <= EVENT_LIMITS.envValue) env[`${HOOK_ENV_PREFIX}${name}`] = value
+    else if (what !== undefined) omitted.push({ what, bytes, limit: EVENT_LIMITS.envValue })
   }
   set("POINT", input.point)
   set("NAME", input.hook.name)
@@ -96,15 +113,28 @@ export function hookEvent(input: HookEventInput): HookEvent {
     body = { ...base, tool }
     set("TOOL", input.tool.name)
     const command = commandOf(input.tool.arguments)
-    if (command !== null) set("COMMAND", command)
-    if (input.tool.paths !== null) set("PATHS", input.tool.paths.join("\n"))
+    if (command !== null) set("COMMAND", command, "command")
+    if (input.tool.paths !== null) set("PATHS", input.tool.paths.join("\n"), "paths")
+    if (argumentsBytes > EVENT_LIMITS.arguments) omitted.push({ what: "arguments", bytes: argumentsBytes, limit: EVENT_LIMITS.arguments })
     if (input.point === "afterTool") {
       const head = headOf(input.result.output, EVENT_LIMITS.output)
       body = { ...body, result: { status: input.result.status, output: head.text, outputBytes: head.bytes, outputCut: head.cut } }
       set("STATUS", input.result.status)
     }
   }
-  return { point: input.point, stdin: JSON.stringify(body), env }
+  return { point: input.point, stdin: JSON.stringify(body), env, omitted }
+}
+
+const OMITTED_WORDS: Record<OmittedValue["what"], string> = { command: "its command", paths: "the list of its paths", arguments: "its arguments" }
+
+/**
+ * Why a hook cannot be asked about a call its event does not carry whole, as the detail of a failed answer
+ * (it follows "could not answer: "), or `null` when the event has all of the call.
+ */
+export function tooLargeDetail(event: HookEvent): string | null {
+  if (event.omitted.length === 0) return null
+  const sizes = event.omitted.map((value) => `${OMITTED_WORDS[value.what]} ${value.what === "arguments" ? "are" : "is"} ${value.bytes.toLocaleString("en")} bytes and a hook is given at most ${value.limit.toLocaleString("en")}`)
+  return `the call is too large to show to the hook, so it was not asked (${sizes.join("; ")})`
 }
 
 function commandOf(args: Json): string | null {

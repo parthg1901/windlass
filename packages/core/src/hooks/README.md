@@ -102,6 +102,12 @@ In the **environment** (the prefix is the product's environment prefix, `brand.e
 `_PATHS` (the call's paths, relative to the working directory, one per line); for after `_STATUS`; for stop `_ROUND`
 and `_MAX_ROUNDS`. A value over 16 KiB is not set.
 
+Neither omission is silent: `HookEvent.omitted` names each value of the call the event does not carry whole (the
+command, the list of paths, the arguments), with its size and the limit. `runBeforeHooks` does not ask a hook
+about such a call (an exit 0 from a hook that was shown an empty variable is not "no objection"): the hook is
+not run, its answer is `failed` (`cannot_run`, with `tooLargeDetail(event)` as the detail), and the call is
+refused unless the hook says `onError: "allow"`. After hooks are still run with the event as it is.
+
 The event is a copy. Nothing a hook does with it changes the call, its result or the log.
 
 ### How a hook answers
