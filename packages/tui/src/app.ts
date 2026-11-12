@@ -1673,7 +1673,7 @@ export class App {
         }
         return { lines, marks }
       },
-      footer: `↑↓ PgUp PgDn scroll · n p next/previous file · ${this.diffTurn === null ? "" : "r review and comment · "}Esc close`,
+      footer: this.diffTurn === null ? "↑↓ PgUp PgDn scroll · n p next/previous file · Esc close" : "↑↓ PgUp PgDn scroll · n p file · r review and comment · Esc close",
     })
     this.redraw()
   }

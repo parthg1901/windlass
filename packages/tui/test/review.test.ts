@@ -476,7 +476,7 @@ describe("/review in the app", () => {
     const { backend, asked, app } = await opened({ ...DIFF, executionId: "exe_before" }, running)
     await command("/diff")
     expect(app.pager.open).toBe(true)
-    expect(await mounted!.frame()).toContain("n p next/previous file · r review and comment · Esc close")
+    expect(await mounted!.frame()).toContain("↑↓ PgUp PgDn scroll · n p file · r review and comment · Esc close")
     keys().pressKey("r")
     await mounted!.settle()
     expect(app.pager.open).toBe(false)

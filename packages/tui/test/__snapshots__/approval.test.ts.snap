@@ -53,5 +53,5 @@ exports[`commands /diff: the per-file diff view, file by file, binary files flag
      @@ -0,0 +1,2 @@
      +one
      +two
-↑↓ PgUp PgDn scroll · n p next/previous file · r review and comment · Esc close"
+↑↓ PgUp PgDn scroll · n p file · r review and comment · Esc close"
 `;

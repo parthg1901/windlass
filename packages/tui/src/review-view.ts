@@ -136,7 +136,8 @@ export class ReviewView extends Renderable {
       return { say: null, message: null }
     }
     const written = review.count === 0 ? "its overall note is" : review.count === 1 ? "its comment is" : `its ${review.count} comments are`
-    const again = request.latest ? "/review opens it again (once a later turn has ended: with this turn's ending row selected)" : "/review with this turn's ending row selected opens it again"
+    // Once a later turn has ended, the view itself says where the kept comments are (the notice above).
+    const again = request.latest ? "/review opens it again" : "/review with this turn's ending row selected (Alt-Up) opens it again"
     return { say: { text: `the review of ${what} was closed without sending: ${written} kept until this session is closed · ${again}`, tone: "dim" }, message: null }
   }
 
