@@ -1,12 +1,14 @@
 /** Delivery: the block at session start, its determinism, and the update path during a session. */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type DeliveryPlan, MEMORY_KEY, heldFingerprint, planMemoryDelivery, renderNote } from "../../src/memory/deliver.ts"
 import { DELIVERY_LIMITS } from "../../src/memory/hygiene.ts"
 import type { MemoryStore } from "../../src/memory/store.ts"
 import type { DeliveredRecord } from "../../src/memory/usage.ts"
-import { fixture, modelProvenance, save, userProvenance } from "./helpers.ts"
+import { cleanup, fixture, modelProvenance, save, userProvenance } from "./helpers.ts"
+
+afterEach(cleanup)
 
 /** What the engine does at a step boundary: plan, record, then (here) remember the fingerprint the appended message carries. */
 function boundary(store: MemoryStore, session: string, known: string | null, now: Date, limits = DELIVERY_LIMITS): DeliveryPlan | null {

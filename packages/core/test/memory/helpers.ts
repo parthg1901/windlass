@@ -1,5 +1,4 @@
 /** Shared fixtures for the memory tests: real temporary directories, a fixed clock, a tool context. */
-import { afterEach } from "bun:test"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,13 +8,13 @@ import { type MemoryStore, memoryPaths, openMemoryStore } from "../../src/memory
 import { noBlobStore, type ToolContext } from "../../src/tool/tool.ts"
 
 const dirs: string[] = []
-const removeAll = () => {
+/**
+ * Removes every directory `tempDir` made. Each test file registers it itself (`afterEach(cleanup)`): a hook
+ * registered in this module would run only for the first file that imports it in a run.
+ */
+export const cleanup = () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 }
-afterEach(removeAll)
-// A hook registered here runs only for the first test file that imports this module in a run; the directories of
-// the other files are removed when the process ends.
-process.on("exit", removeAll)
 
 export function tempDir(prefix = "lh-memory-") {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)))

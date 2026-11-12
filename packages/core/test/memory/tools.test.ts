@@ -1,5 +1,5 @@
 /** The memory tools through the real tool runtime: fixed specs, validation with reasons, the trust flow, search and its read records. */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { createInterrupt } from "../../src/interrupt.ts"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
@@ -11,7 +11,9 @@ import { MEMORY_RETRACT_TOOL, MEMORY_SAVE_TOOL, MEMORY_SEARCH_TOOL, memoryTools 
 import { applyDecision, confirmationRequests, renderConfirmationRequests } from "../../src/memory/trust.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore, specOf } from "../../src/tool/tool.ts"
-import { fixture, save, tempDir, userProvenance } from "./helpers.ts"
+import { cleanup, fixture, save, tempDir, userProvenance } from "./helpers.ts"
+
+afterEach(cleanup)
 
 /** A session as the tools see it: its user messages and whether untrusted content has come in. */
 function harness(store: MemoryStore, now: () => Date) {

@@ -1,10 +1,12 @@
 /** Outcome scoring from usage records. (The A/B comparison on evaluation results is `evals/memory-compare.ts`.) */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { planMemoryDelivery } from "../../src/memory/deliver.ts"
 import { reviewReport } from "../../src/memory/hygiene.ts"
 import { checkedPassRate, formatStats, memoryStats, usageForReview } from "../../src/memory/score.ts"
 import { outcomeOfVerification } from "../../src/memory/usage.ts"
-import { fixture, save } from "./helpers.ts"
+import { cleanup, fixture, save } from "./helpers.ts"
+
+afterEach(cleanup)
 
 describe("scoring", () => {
   test("outcomes are attributed to the notes held or read when the turn ended; corrections to the notes they name", () => {

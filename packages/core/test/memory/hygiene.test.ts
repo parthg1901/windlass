@@ -1,10 +1,12 @@
 /** Hygiene over the store with an injected clock: expiry, duplicates on write, supersession, the budget rule and the review report. */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type MemoryEntry, parseExpiry } from "../../src/memory/entry.ts"
 import { DELIVERY_LIMITS, budgetRank, expiresAt, reviewReport, selectForDelivery, similarity, statesOf } from "../../src/memory/hygiene.ts"
-import { fixture, modelProvenance, save, userProvenance } from "./helpers.ts"
+import { cleanup, fixture, modelProvenance, save, userProvenance } from "./helpers.ts"
+
+afterEach(cleanup)
 
 const stateOf = (entries: readonly MemoryEntry[], id: string, now: Date) => statesOf(entries, now).get(id)
 

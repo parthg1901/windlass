@@ -1,11 +1,13 @@
 /** The file store on real temporary directories: every operation, the file format, hand edits, corruption, and several processes at once. */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import { type MemoryEntry, parseEntryFile, renderEntryFile } from "../../src/memory/entry.ts"
 import { defaultDataDir, memoryPaths, openMemoryStore, projectKey } from "../../src/memory/store.ts"
-import { fixture, modelProvenance, save, tempDir, userProvenance } from "./helpers.ts"
+import { cleanup, fixture, modelProvenance, save, tempDir, userProvenance } from "./helpers.ts"
+
+afterEach(cleanup)
 
 describe("layout", () => {
   test("user notes, project notes keyed by the project's real path, and usage live under the data directory", () => {
