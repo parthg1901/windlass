@@ -156,7 +156,6 @@ Reading a result:
 - A compaction's ending carries `calls`, the summary calls it took: count them with `bun evals/dogfood/events.ts <id> --type compaction.ended`. Model requests of a turn are its steps plus those calls.
 - A turn that did its work and then got two empty answers ends as done, with a `no_closing_answer` notice; with no work done it still fails.
 - A subagent's ending says `left_to_parent` for verification, not `not_configured`.
-- `evals/gate.test.ts` fails until the baseline is re-recorded on all 27 tasks.
 - Under load 15 or more, type-check a commit in a copy (`git archive <sha> | tar -x -C <dir>`) so edits can continue meanwhile.
 
 ## Hooks and language-server diagnostics (wired 2026-11-12)
