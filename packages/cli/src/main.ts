@@ -17,6 +17,7 @@ import { resolve } from "node:path"
 import { brand, versionLine, versionString } from "@light-harness/core"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
+import { type FeatureCommand, type FeatureIo, FeatureWatch, runFeatureCommand } from "./feature-commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
 import {
   type ApprovalRequest,
@@ -191,8 +192,13 @@ export async function run(io: Io): Promise<number> {
 
   // `/undo` and `/redo` act on this session, when its engine can revert.
   screen?.attach(revertable(session))
+  const questions = screen === null ? null : new Questions(screen)
   // A tool call that needs approval asks at the prompt, the way `/undo` asks about hand edits.
-  if (screen !== null) session.setApprover?.(approverAt(screen, session))
+  if (questions !== null) session.setApprover?.(approverAt({ ask: (question) => questions.urgent(question) }, session))
+  // What the CLI says about MCP servers and wake-ups unasked. Not in `--json`: that stream is the engine's events only.
+  const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print) }
+  const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
+  watch?.start()
   const terminal = screen === null ? null : new TerminalMode(io, screen)
   const leaving = new Deferred<number>()
   const control = { running: false, lastInterrupt: 0, leaving: false }
@@ -219,7 +225,7 @@ export async function run(io: Io): Promise<number> {
     sink.interruptRequested()
   }
 
-  const turns = new TurnWatcher(session, sink)
+  const turns = new TurnWatcher(session, sink, watch)
   const turn = async (text: string): Promise<TurnOutcome | "closed"> => {
     control.running = true
     const done = turns.next()
@@ -245,13 +251,16 @@ export async function run(io: Io): Promise<number> {
       // Not a failure of the work: the run was not allowed to go on (`--unattended stop`).
       return turns.stoppedForApproval ? EXIT_APPROVAL_REQUIRED : exitCodeOf(outcome)
     }
-    return interactiveLoop({ terminal, renderer: sink as PrettyRenderer, session, turn, control, onCtrlC, leave, first: prompt })
+    return interactiveLoop({ terminal, renderer: sink as PrettyRenderer, session, turn, control, onCtrlC, leave, first: prompt, features: features! })
   }
   try {
     return await Promise.race([flow(), leaving.promise])
   } finally {
     // From here a Ctrl-C or SIGTERM leaves at once instead of waiting for the engine.
     control.leaving = true
+    // What was started for the user (a secret fetched, a server's state said) is finished first, briefly.
+    if (watch !== null) await within(CLOSE_TIMEOUT_MS, watch.finish())
+    watch?.stop()
     const closed = await within(CLOSE_TIMEOUT_MS, Promise.all([session.close(), turns.ended]))
     for (const off of unsubscribe) off?.()
     sink.close()
@@ -334,6 +343,7 @@ interface Interactive {
   readonly onCtrlC: () => void
   readonly leave: (code: number) => void
   readonly first: string | null
+  readonly features: FeatureIo
 }
 
 /**
@@ -387,6 +397,13 @@ async function interactiveLoop(context: Interactive): Promise<number> {
             return void approvalMode(session, renderer, found.rest)
           case "diff":
             return void showDiff(session, renderer)
+          case "mcp":
+          case "skills":
+          case "wakeups":
+          case "memory":
+          case "remember":
+          case "forget":
+            return void runFeatureCommand(name as FeatureCommand, found.rest, session, context.features)
           case "queue":
             if (found.rest === "") return renderer.notice("/queue needs a message, e.g. /queue then update the changelog", "warn")
             // With nothing running there is nothing to queue behind: a queued message is a prompt.
@@ -510,6 +527,51 @@ async function showDiff(session: Session, renderer: PrettyRenderer): Promise<voi
   }
 }
 
+/**
+ * The questions put at the prompt, one at a time. A tool call's approval is
+ * urgent: the turn waits for it, so it is put at once, and a patient question
+ * that was showing (a project's MCP server) steps aside and is put again,
+ * printed afresh, once no urgent one is left.
+ */
+export class Questions {
+  private urgentCount = 0
+  private patientUp = false
+  private displaced = false
+  private idle: Promise<void> = Promise.resolve()
+  private release: (() => void) | null = null
+
+  constructor(private readonly screen: Pick<Screen, "ask">) {}
+
+  async urgent(question: string): Promise<string | null> {
+    if (this.patientUp) this.displaced = true
+    if (this.urgentCount++ === 0) this.idle = new Promise((resolve) => (this.release = resolve))
+    try {
+      return await this.screen.ask(question)
+    } finally {
+      if (--this.urgentCount === 0) this.release?.()
+    }
+  }
+
+  async patient(question: string, print: () => void): Promise<string | null> {
+    for (;;) {
+      await this.idle
+      print()
+      this.patientUp = true
+      this.displaced = false
+      const answer = await this.screen.ask(question)
+      this.patientUp = false
+      if (answer === null && this.displaced) continue
+      return answer
+    }
+  }
+}
+
+/** Where the feature commands print: the renderer's own lines, or plain notices for a sink without them. */
+function featureOutput(sink: Sink): FeatureIo["out"] {
+  if (sink instanceof PrettyRenderer) return { lines: (lines) => sink.printLines(lines), notice: (text, tone) => sink.notice(text, tone) }
+  return { lines: (lines) => lines.forEach((line) => sink.notice(`${" ".repeat(line.indent ?? 0)}${line.text}`)), notice: (text, tone) => sink.notice(text, tone) }
+}
+
 /** The terminal while the interactive input is open: raw mode, bracketed paste, and the footer. */
 class TerminalMode {
   private stop: (() => void) | null = null
@@ -545,7 +607,11 @@ class TurnWatcher {
   /** Whether the latest turn was ended because a call needed approval that nobody could give. */
   stoppedForApproval = false
 
-  constructor(session: Session, sink: Sink) {
+  constructor(
+    session: Session,
+    sink: Sink,
+    private readonly watch: FeatureWatch | null = null,
+  ) {
     this.ended = (async () => {
       for await (const item of session.events) this.observe(item, sink)
       this.done = true
@@ -562,6 +628,7 @@ class TurnWatcher {
 
   private observe(item: EngineEvent, sink: Sink): void {
     sink.event(item)
+    this.watch?.event(item)
     const outcome = turnOutcomeOf(item)
     if (outcome !== null) {
       this.stoppedForApproval = endedForApproval(item)

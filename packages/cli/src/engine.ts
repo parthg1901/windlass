@@ -32,7 +32,7 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { DiffResult, ForkResult, ReplayParams, ReplayResult } from "@light-harness/acp/extensions"
+import type { DiffResult, ForkResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@light-harness/acp/extensions"
 import type { TurnEvent } from "@light-harness/acp/turns"
 import { brand } from "@light-harness/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
@@ -236,6 +236,21 @@ export interface Session {
   approvalMode?(mode?: string): Promise<{ readonly mode: string | null; readonly tainted: boolean; readonly taint: string | null }>
   /** `/diff`: the files the latest turn changed, with bounded per-file patches. */
   diff?(): Promise<DiffResult>
+  /** `/mcp`: the session's MCP servers. */
+  mcp?(): Promise<McpStateResult>
+  /** The user starts a server the project's configuration names (exactly that definition). */
+  approveMcp?(name: string, fingerprint: string): Promise<boolean>
+  /** Called whenever the session's MCP servers change (one started, failed, waits for approval). Returns the unsubscribe function. */
+  onMcp?(listener: (state: McpStateResult) => void): () => void
+  /** `/skills`. */
+  skills?(): Promise<SkillsResult>
+  /** `/wakeups`, `/wakeups cancel <id>`, `/wakeups secret <id>`. A secret is for the user's eyes only. */
+  wakeups?(): Promise<WakeListResult>
+  cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>
+  wakeSecret?(id: string): Promise<WakeSecretResult>
+  /** `/memory`, and the user's own changes to notes (`/remember`, `/forget`, `/memory confirm|reject|renew`). */
+  memory?(): Promise<MemoryStateResult>
+  memoryChange?(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult>
   /** What the interactive mode says when it opens the session: its title and its turns (`/undo` keeps their count, marked undone). */
   describe?(): Promise<SessionDescription>
   /** Stops anything still running (as a shutdown) and ends `events`. */

@@ -28,6 +28,14 @@ export function callArgument(name: string, input: string): string {
     }
     case "shell":
       return str("command") ?? ""
+    // An MCP call is named by the server's tool, as the approval question and the catalogue name it.
+    case "mcp_call": {
+      const server = str("server")
+      const tool = str("tool")
+      return server === null && tool === null ? "" : `${server ?? "?"}/${tool ?? "?"}`
+    }
+    case "mcp_search":
+      return str("query") ?? ""
     // A subagent is named by the first line of its task, as everywhere else.
     case "subagent":
       return (str("task") ?? "").trim().split("\n")[0] ?? ""
@@ -50,6 +58,13 @@ export function successSummary(name: string, settled: Settled): string {
   const num = (key: string) => (display !== null && typeof display[key] === "number" ? (display[key] as number) : null)
   switch (name) {
     case "read": {
+      // An image is attached for the model to see: its type, size and dimensions, not a line count.
+      const image = display !== null ? asObject(display.image ?? null) : null
+      if (image !== null) {
+        const bytes = typeof image.bytes === "number" ? formatBytes(image.bytes) : null
+        const size = typeof image.width === "number" && typeof image.height === "number" ? `${image.width}×${image.height}` : null
+        return ["image", typeof image.mediaType === "string" ? image.mediaType : null, size, bytes].filter((part) => part !== null).join(" · ")
+      }
       const lines = num("lines")
       const total = num("totalLines")
       if (lines === null) return plural(countLines(settled.output), "line")
@@ -202,6 +217,19 @@ export function unresolvedReason(verification: Extract<VerificationOutcome, { st
     case "report_mode":
       return "verify.mode is report: failures are recorded and the agent is not sent back"
   }
+}
+
+/**
+ * The arguments of an MCP call, as they will be sent: what leaves the
+ * machine, for the approval question. One line of JSON, cut at `limit`
+ * characters with how much more there is.
+ */
+export function mcpArguments(input: string, limit = 600): string | null {
+  const args = parseObject(input)
+  if (args === null) return null
+  const sent = args.arguments === undefined ? {} : args.arguments
+  const text = JSON.stringify(sent)
+  return text.length <= limit ? text : `${text.slice(0, limit)}… (${text.length - limit} more characters)`
 }
 
 /** The first `limit` paths, then how many more there are. */

@@ -31,7 +31,20 @@
  *   after it; a server in use is never stopped by a listing.
  */
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@light-harness/acp/client"
-import { type DiffResult, EXT, type ForkResult, type ReplayResult, titleFromEvents } from "@light-harness/acp/extensions"
+import {
+  type DiffResult,
+  EXT,
+  type ForkResult,
+  type McpStateResult,
+  type MemoryChangeParams,
+  type MemoryChangeResult,
+  type MemoryStateResult,
+  type ReplayResult,
+  type SkillsResult,
+  type WakeListResult,
+  type WakeSecretResult,
+  titleFromEvents,
+} from "@light-harness/acp/extensions"
 import { forkPointOfTurn, isUndone, turnsOf } from "@light-harness/acp/turns"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
 import { selfCommand } from "./self.ts"
@@ -278,6 +291,54 @@ class AcpSession implements Session {
     if (!this.session.offers(EXT.diff)) return { available: false, reason: "unavailable", message: "this server does not send per-file diffs" }
     try {
       return await this.session.diff()
+    } catch (error) {
+      throw new Error(unavailable(error).message)
+    }
+  }
+
+  async mcp(): Promise<McpStateResult> {
+    return this.feature(EXT.mcp, () => this.session.mcp())
+  }
+
+  async approveMcp(name: string, fingerprint: string): Promise<boolean> {
+    return (await this.feature(EXT.mcpApprove, () => this.session.approveMcp(name, fingerprint))).approved
+  }
+
+  onMcp(listener: (state: McpStateResult) => void): () => void {
+    return this.session.onSignal((signal) => {
+      if (signal.kind === "mcp") listener(signal.mcp)
+    })
+  }
+
+  skills(): Promise<SkillsResult> {
+    return this.feature(EXT.skills, () => this.session.skills())
+  }
+
+  wakeups(): Promise<WakeListResult> {
+    return this.feature(EXT.wakeups, () => this.session.wakeups())
+  }
+
+  cancelWake(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }> {
+    return this.feature(EXT.wakeCancel, () => this.session.cancelWake(id))
+  }
+
+  wakeSecret(id: string): Promise<WakeSecretResult> {
+    return this.feature(EXT.wakeSecret, () => this.session.wakeSecret(id))
+  }
+
+  memory(): Promise<MemoryStateResult> {
+    return this.feature(EXT.memory, () => this.session.memory())
+  }
+
+  memoryChange(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult> {
+    return this.feature(EXT.memoryChange, () => this.session.memoryChange(params))
+  }
+
+  /** A feature request, refused in one sentence by a server that does not offer it. */
+  private async feature<T>(method: string, work: () => Promise<T>): Promise<T> {
+    if (!this.session.offers(method)) throw new Error(`this engine does not offer ${method.replace(/^.*\//, "/")} (it may be another version)`)
+    try {
+      return await work()
     } catch (error) {
       throw new Error(unavailable(error).message)
     }

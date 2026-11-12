@@ -9,9 +9,10 @@
  */
 import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
+import { type Line, type LineTone, wakeMessageSummary } from "./features.ts"
 import type { DiffFile } from "@light-harness/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
-import { callArgument, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
+import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
 
 export interface Sink {
@@ -49,6 +50,8 @@ export interface PrettyOptions {
 
 type Block = "prompt" | "text" | "reasoning" | "info" | "summary"
 
+const LINE_TONES: Record<LineTone, Tone | readonly Tone[] | undefined> = { plain: undefined, dim: "dim", warn: "yellow", error: "red", ok: "green", bold: "bold", accent: "cyan" }
+
 /** The two ways on after a run stopped for an approval nobody could give (`--unattended stop`), in the user guide's words. */
 export const STOPPED_FOR_APPROVAL = `To go on, run it interactively (\`${brand.binary} -i "<prompt>"\`, or \`${brand.binary}\` with no prompt) and answer the question when it comes, or choose what such a call becomes when nobody can answer: --unattended deny (the call is refused, the agent is told and carries on) or another --approval mode.`
 
@@ -62,6 +65,8 @@ const PROMPT_HEAD = 6
 interface Call {
   readonly name: string
   readonly arg: string
+  /** The call's arguments as the model wrote them (for an MCP call's question: what leaves the machine). */
+  readonly input?: string
   startedAt: number | null
   /** The line count right after this call's start line; equal at settle time means nothing came in between. */
   after: number
@@ -187,6 +192,18 @@ export class PrettyRenderer implements Sink {
     const [first = "", ...rest] = wrap(text, this.width)
     this.line("info", [seg(first, color)])
     for (const line of wrap(rest.join(" "), this.width - lead.length - 2)) this.line("info", [seg(`${lead}  ${line}`, color)])
+    this.drawStatus()
+  }
+
+  /** Lines a command prints (`/mcp`, `/skills`, ...): never cut; a line that does not fit wraps under its own indentation. */
+  printLines(lines: readonly Line[]): void {
+    for (const item of lines) {
+      const indent = " ".repeat(item.indent ?? 0)
+      const tone = LINE_TONES[item.tone]
+      // A path or a command is one word that may be longer than the line: it is broken, never cut.
+      for (const text of wrap(flatten(item.text), Math.max(10, this.width - indent.length)).flatMap((part) => hardWrap(part, Math.max(10, this.width - indent.length))))
+        this.line("info", [seg(`${indent}${text}`, tone)])
+    }
     this.drawStatus()
   }
 
@@ -330,7 +347,11 @@ export class PrettyRenderer implements Sink {
         const question = event.data.question
         this.asking = key(event.data.messageId, event.data.callId)
         this.line("info", [seg("? ", ["yellow", "bold"]), seg(flatten(question.title), "bold")])
-        for (const part of question.subject.split("\n")) for (const line of hardWrap(sanitize(part), this.width - 4)) this.line("info", [seg(`    ${line}`)])
+        // An MCP call's title names the server's tool already; what the user decides on is what would be sent.
+        const call = this.calls.get(this.asking)
+        const sent = call?.name === "mcp_call" && call.input !== undefined ? mcpArguments(call.input) : null
+        const subject = sent === null ? question.subject : `arguments sent: ${sent}`
+        for (const part of subject.split("\n")) for (const line of hardWrap(sanitize(part), this.width - 4)) this.line("info", [seg(`    ${line}`)])
         for (const detail of question.details) for (const line of wrap(flatten(detail), this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
         for (const choice of question.choices)
           if (choice.remembers !== null) for (const line of wrap(`${choice.label} remembers ${flatten(choice.remembers)}`, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
@@ -716,7 +737,7 @@ export class PrettyRenderer implements Sink {
 
   private toolCalled(data: EventData<"tool.called">): void {
     const arg = flatten(callArgument(data.name, data.input))
-    const call: Call = { name: data.name, arg, startedAt: null, after: -1 }
+    const call: Call = { name: data.name, arg, input: data.input, startedAt: null, after: -1 }
     this.calls.set(key(data.messageId, data.callId), call)
     this.open.add(key(data.messageId, data.callId))
     this.lineWithArg("info", [seg(`${SYMBOL.call} `, "cyan"), seg(data.name, "bold"), seg(arg === "" ? "" : " ")], arg, [])
@@ -895,6 +916,15 @@ export class PrettyRenderer implements Sink {
     // The end of spawned work was just said on its own line; what the model is sent about it is that line's detail.
     if (data.origin === "background_command" || data.origin === "subagent_result" || data.origin === "spawn_lost") {
       this.line("info", [seg(`  ${SYMBOL.inbox} `, "magenta"), seg(midTurn ? "its result is sent to the agent after the current step" : "its result is sent to the agent, which carries on", "dim")])
+      return
+    }
+    // A wake-up's message is not something the user typed: it says which wake-up, why, and the message it was set up with.
+    if (data.origin === "wake" || data.origin === "wake_webhook") {
+      const summary = wakeMessageSummary(text, data.origin)
+      this.endLine()
+      this.gap("prompt")
+      this.lineWrapped([seg("⏰ ", "magenta"), seg(summary.head, "magenta")])
+      if (summary.message !== null) for (const line of wrap(flatten(summary.message), this.width - 4)) this.line("info", [seg(`  ${line}`, "bold")])
       return
     }
     if (data.origin !== null) {

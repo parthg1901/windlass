@@ -52,7 +52,7 @@ function userConfig(value: unknown): void {
   writeFileSync(join(configHome, brand.directory, "config.json"), JSON.stringify(value))
 }
 
-async function start(responses: Parameters<typeof startHarness>[0]["responses"], before?: (workspace: string) => void) {
+async function start(responses: NonNullable<Parameters<typeof startHarness>[0]>["responses"], before?: (workspace: string) => void) {
   const harness = await startHarness({
     responses,
     clientCapabilities: { _meta: { [NS]: { events: true } } },
