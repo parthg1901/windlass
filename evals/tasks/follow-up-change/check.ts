@@ -1,8 +1,9 @@
 // Graded after the last turn: the function must do what both messages asked, and the existing helpers still work.
-import { errorLine, fail, importFrom, pass, requireUnchanged, run, workspaceArg } from "../../grader.ts"
+import { errorLine, fail, importFrom, pass, run, workspaceArg } from "../../grader.ts"
 
 const workspace = workspaceArg()
-await requireUnchanged(import.meta.dir, workspace, ["src/text.test.ts"])
+// Adding slugify tests to the existing test file is reasonable, so the file may change.
+// The existing helpers are checked directly below, and the suite must still pass.
 const text = await importFrom<{ slugify?: unknown; titleCase: (text: string) => string; excerpt: (text: string, max: number) => string }>(workspace, "src/text.ts")
 if (typeof text.slugify !== "function") fail("src/text.ts exports no slugify function")
 const slugify = text.slugify as (title: string) => string
