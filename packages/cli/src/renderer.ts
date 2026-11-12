@@ -478,7 +478,8 @@ export class PrettyRenderer implements Sink {
           this.agentRefusals.set(key(event.data.messageId, event.data.callId), agentRefused(event.data.agent, event.data.refusal))
           return
         }
-        if (event.data.reason === "unattended" && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
+        // Counted for the ending of a run that carried on without the call (`--unattended deny`); a stopped run's ending says why itself.
+        if (event.data.reason === "unattended" && event.data.stop !== true && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
         const why =
           event.data.reason === "unattended"
             ? `needs approval for ${needs.join(", ")}; nobody is here to give it, so it was refused${event.data.stop ? " and the run ends (--unattended stop)" : " (--unattended deny)"}`

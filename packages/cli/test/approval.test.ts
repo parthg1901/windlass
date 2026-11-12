@@ -135,6 +135,8 @@ describe("an unattended run", () => {
     expect(flat).toContain(`To go on, run it interactively (\`${brand.binary} -i "<prompt>"\`, or \`${brand.binary}\` with no prompt) and answer the question when it comes`)
     expect(flat).toContain("--unattended deny (the call is refused, the agent is told and carries on) or another --approval mode.")
     expect(result.out).not.toContain("✗ failed")
+    // Not the trailer of a run that carried on without the call: it would say to use --unattended stop.
+    expect(flat).not.toContain("refused: it needed your approval")
     const quiet = await run([fetch], ["-q", "--unattended", "stop", "Fetch the page."])
     expect(quiet.err).toContain(`${brand.binary}: stopped for your approval: a tool call needed it and nobody was here to give it (--unattended stop). To go on,`)
   }, 60_000)
