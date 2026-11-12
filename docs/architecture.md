@@ -35,7 +35,7 @@ packages/core/src
   instructions/   sources, the baseline, discovery of AGENTS.md files, change detection
   provider/       provider.ts (stream events), error.ts (error taxonomy), usage.ts, openai-responses*.ts
   tool/           tool.ts (Tool, ToolContext, ToolResult), runtime.ts (one call to its terminal outcome), cap.ts
-  tools/          the standard tools: read, write, edit, ls, glob, grep, shell
+  tools/          the standard tools: read, write, edit, ls, glob, grep, shell, todo
   context/        conversations that outgrow the context window, without I/O: estimate.ts (the size of the next
                   request), policy.ts (when to compact and how hard), tail.ts (what is kept word for word),
                   summary.ts (the summary request, its check, its bounds), checkpoint.ts (the frozen text that
@@ -45,8 +45,8 @@ packages/core/src
                   revert), history.ts (the history tools as the loop offers them),
                   recovery.ts (start-up recovery), replay.ts (what a replay may change, its changed baseline),
                   spawn.ts (the subagent and background tools, what is read off a child's log),
-                  worktree.ts (a subagent's git worktree and the merge back), skills.ts, mcp.ts, wake.ts and memory.ts
-                  (those four modules as the loop offers them), state.ts (what the loop reads off the projection),
+                  worktree.ts (a subagent's git worktree and the merge back), skills.ts, mcp.ts, wake.ts, memory.ts
+                  and agents.ts (those five modules as the loop offers them), state.ts (what the loop reads off the projection),
                   workspace.ts (what it reads off the log about snapshots), constants.ts (limits and frozen texts),
                   channel.ts (the event stream), clock.ts
   snapshot/       the working tree as git tree objects in a private git directory: take, diff, restore, prune
@@ -70,6 +70,8 @@ packages/core/src
                   webhook listener, the tools, the `wake` configuration section
   memory/         notes across sessions: the files, expiry and budget, trust, delivery, the tools, usage and scores,
                   the `memory` configuration section
+  agents/         agents (modes): definitions as files, discovery, restrictions, the list for the model, what using
+                  one means, the `agents` configuration section
 ```
 
 Naming: a lowercase export such as `message` or `usage` is a validator; the PascalCase export of the same name is its
@@ -96,16 +98,16 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Group | Events |
 | --- | --- |
 | Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
-| Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists) |
+| Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
 | Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded`, `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
 | Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.settled` |
-| Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
-| Spawned work | `spawn.started` (a subagent's child session, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge) |
+| Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run; `agent` when the policy that refused it is the restrictions of the agent the session runs as), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
+| Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge) |
 | Replay | `replay.call` (per call: matched, normalised, dropped, diverged or off the recording; whether the tool ran for real), `replay.diverged` (the copy the replay carries on in, and the snapshot it was restored from), `replay.ended` (the outcome, the reason, the report) |
-| Compaction | `compaction.started` (the trigger, the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after), `compaction.failed` |
+| Compaction | `compaction.started` (the trigger: `auto`, `overflow`, or `manual` when the user asked; the mode, the cut, the frozen prompt, the size it started from), `compaction.repair_requested` (the rejected answer and the follow-up prompt), `compaction.ended` (the frozen checkpoint, where its summary came from, the size after), `compaction.failed` |
 | Workspace | `snapshot.taken` (ID, the point it was taken at, the step it belongs to), `snapshot.unavailable`, `snapshot.coverage` (files and nested repositories snapshots leave out) |
 | Verification | `checks.started`, `checks.finished` (the evidence), `checks.failed`; the gate's outcome is on `execution.succeeded` |
 | History ranges | `revert.started`, `history.reverted` (with the record of the restore), `revert.undo_started`, `history.restored`, `revert.failed` |
@@ -136,9 +138,10 @@ is a new version with a decoder for the old one.
   differs between the `delivery` snapshot before its input and the turn's last snapshot; the snapshot current when
   a message was sent is the `delivery` snapshot right before its `inbox.delivered`. The IDs belong to the private
   git directory of the session's working directory (`session.created.cwd`).
-- `execution.succeeded` says what "done" rests on: `passed` with the evidence, `not_needed` (nothing the checks
-  cover changed), `not_configured`, or `unresolved` with the failing checks, the reason (`acknowledged`,
-  `max_rounds`, `report_mode`) and the evidence. A client shows these as different endings.
+- `execution.succeeded` says what "done" rests on: `passed` with the evidence, `not_needed` (the turn changed no
+  file, or nothing the checks cover changed; with `unverified` when files the checks cover did change outside the
+  turn and were therefore not checked), `not_configured`, or `unresolved` with the failing checks, the reason
+  (`acknowledged`, `max_rounds`, `report_mode`) and the evidence. A client shows these as different endings.
 
 **Reducer and projection** (`message/`)
 - `reduce(state, event)` is pure and is the only code that turns events into state. The store runs it inside the
@@ -187,6 +190,10 @@ is a new version with a decoder for the old one.
   - *Replay.* `replay.call`, `replay.diverged` and `replay.ended` are accepted only in a replay session; a matched
     call names the recorded call it matched and only a matched call does; a replay leaves its recording once, never
     under the `stop` policy, and ends once.
+  - *Agents.* `agent.switched` names the agent the session ran as before. Without a message it is accepted only
+    while no baseline is set (the first baseline then carries the agent's instructions); with one, only right
+    after that message, which must be an instruction message of source `agent`, under a running claim. A call is
+    refused in an agent's name only by the agent the session runs as.
   - *Reverts.* A revert and its undo happen only while no execution holds the claim. One that restores files is
     announced first (`revert.started`), nothing starts while it is open, and its record must be of the announced
     restore. Only the latest revert can be undone, until an execution starts; the undo puts back exactly the
@@ -196,7 +203,9 @@ is a new version with a decoder for the old one.
   the copy it carries on in and how it ended (`replay`).
 - The session state also holds what the loop decides from: the latest snapshot and what snapshots leave out; the
   workspace state checks are selected against (`verification.verified`: the first snapshot, then the state at each
-  verification that passed) and the latest run of checks; and the reverts that can still be undone.
+  verification that passed or found nothing to check; it does not move when a turn ends with unverified changes
+  left outside it) and the latest run of checks; the reverts that can still be undone; and the agent the session
+  runs as (`agent`), which a fork inherits.
 - `selectModelHistory` defines what the model sees: non-excluded messages, starting at the latest completed
   compaction that is not excluded (its checkpoint first, then the messages it kept, which may be the last steps of
   the turn in progress), together with the settings and the root session ID the
@@ -252,14 +261,15 @@ is a new version with a decoder for the old one.
 
 **Instructions** (`instructions/`)
 - The baseline is the base system prompt followed by one section per source (AGENTS.md files, the environment, the
-  date). `baseline.set` records, next to the text, the fingerprint of each source's value.
+  date, and last the instructions of the agent the session runs as, when it runs as one). `baseline.set` records,
+  next to the text, the fingerprint of each source's value.
 - A source that changes later is appended as an `instruction.appended` message with its new text and fingerprint
   (`null` when the source is gone). It is appended under a running execution: a change noticed while the session is
   idle is written when the next execution starts.
 - What the model currently has per source is a fold over those fingerprints in the model's view of the log. Nothing
   reads rendered text back, so a reverted, refused or compacted-away message is detected again by itself.
-- Three sources are never part of the baseline: the skill index (`skills`), the MCP catalogue (`mcp`) and memory
-  (`memory`). What they say depends on things outside the session (a file is edited, a server connects), so each
+- Four sources are never part of the baseline: the skill index (`skills`), the MCP catalogue (`mcp`), memory
+  (`memory`) and the list of agents (`agent-index`). What they say depends on things outside the session (a file is edited, a server connects), so each
   reaches the model only as appended messages: once when it first has something to say, again when its fingerprint
   changes, and as a one-line withdrawal with fingerprint `null`. Their modules write the texts; `AppendedSource` and
   `detectAppendedChanges` (`instructions/state.ts`) route the keys through the same fold. A baseline set after a
@@ -336,9 +346,12 @@ is a new version with a decoder for the old one.
   takes its own "before" snapshot, never deletes an ignored file, and reports what it left alone.
 - `loadConfig` reads the user and project files with strict validation: an unknown key is an error. The
   `approval` section is the one key that is not merged: each file's section is handed on as written, and
-  `resolveApprovalConfig` lets the project's only tighten the user's. The sections `mcp`, `skills`, `wake` and
-  `memory` are validated by the modules that own them, and `LoadedConfig.files` hands on both files apart, because
-  for each of them it matters who wrote a value (see "Skills, MCP servers, wake-ups and memory").
+  `resolveApprovalConfig` lets the project's only tighten the user's. The sections `mcp`, `skills`, `wake`,
+  `memory` and `agents` are validated by the modules that own them, and `LoadedConfig.files` hands on both files
+  apart, because for each of them it matters who wrote a value (see "Skills, MCP servers, wake-ups, memory and
+  agents"). `loadConfigSync` is the same loader without a turn of the event loop, for the two things that cannot
+  wait for an execution to read the files: how a session's calls are decided, asked before its first turn, and
+  the agent a new session starts as.
 - `decideGate` is pure: finish, run these checks, report and continue, or finish unresolved. `renderReport` is the
   deterministic text the model is shown; `acknowledgeTool` is the tool (`report_check_failure`) with which the model
   says it cannot fix a failing check. An acknowledgement is that tool call, never parsed prose; a check may be
@@ -352,15 +365,22 @@ is a new version with a decoder for the old one.
 - A session offers `send` (steer or queue), `admit` (input from a harness component under a message ID it is
   given: a reused ID is a duplicate and writes nothing), `start`, `interrupt`, `setSettings` (model and effort, at the next step
   boundary), `withdraw` (a prompt that was not delivered yet), `readEvents` (its stored log, for a client that
-  replays history), `revert`, `undoRevert`, an event stream and `close`. Closing a session closes that session:
+  replays history), `revert`, `undoRevert`, `rename` (`session.renamed`, at any time), `compact` (a compaction
+  the user asks for, see "Compaction"), `setAgent`, `agent` and `agents` (see "Agents"), an event stream and
+  `close`. Closing a session closes that session:
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
   other sessions carry on.
 - The engine offers `forkSession` (see "Forks"), `replaySession` (see "Replay" and `docs/replay.md`),
   `createSession`, `openSession`, `listSessions` (by directory, without archived ones and without the harness's own sessions, subagents and replays, unless
   asked), `latestSession`, `getSession`, `resolveSession` (an ID or a unique prefix), `readEvents` (of any session,
   open or not, held here or elsewhere), `archiveSession` and `unarchiveSession` (through the session's log, holding
-  it only for that append), and `validateSettings`, which rejects a model the provider does not offer, naming the
-  ones it does. Listing and reading open nothing and close nothing. Opening a session another process holds fails
+  it only for that append), `turnChanges` (the files each ended turn of a stored session changed, from its
+  snapshots, one entry per `turn.ended` or terminal event), `listAgents`, and `validateSettings`, which rejects a
+  model the provider does not offer, naming the ones it does, and a reasoning effort the model does not offer,
+  naming the ones it accepts. The listing it fetched is kept: `createSession` and `setSettings` refuse the same
+  settings from it without a request, and before a step is sent the loop checks the effort once more (fetching
+  the listing if nobody has), so an effort a model lacks ends the execution with the sentence instead of costing
+  a request and an HTTP 400. Listing and reading open nothing and close nothing. Opening a session another process holds fails
   with `EngineError` `session_in_use`, which carries the holder's process ID and a message that says what to do.
 - One step is one model call. Before every step the loop re-reads the projection and decides from stored state alone;
   it keeps no conversation state in memory. Events that are decided together are appended in one transaction.
@@ -400,14 +420,32 @@ is a new version with a decoder for the old one.
   snapshots leave out (`snapshot.coverage`) is recorded when it changes. A snapshot that cannot be taken never
   stops the work: `snapshot.unavailable` is written once per change and the session carries on without undo.
 - *The verification gate.* The configuration is read when an execution starts, so a change takes effect at the next
-  turn. When the execution would otherwise succeed, the loop snapshots the workspace, diffs it against the state at
-  the last verification that passed, selects the checks whose `when` patterns match, and runs them
-  (`checks.started` is durable first; an interrupt stops them like tools). The results and the decision are one
-  append: `checks.finished` with the terminal event, or with the report that sends the model back. The turn ends
-  unresolved when the model acknowledges the failure with the tool, after `maxRounds` reports, or in `report` mode,
-  where the model is shown the failure and not sent back. Without snapshots nobody knows which files changed, so
-  every check runs after a turn in which a side-effecting call ran. A configuration that cannot be loaded fails the
-  execution before anything is sent.
+  turn. When the execution would otherwise succeed, the loop snapshots the workspace and asks first whether this
+  turn changed it: whether it differs from the `delivery` snapshot taken when the turn's input entered history. A
+  turn that changed nothing runs no check and ends as `not_needed`, whatever happened before it. That is the rule
+  that keeps a question from running the whole suite after the user edited a file by hand or undid a turn: the
+  user is not shown "checks passed" for a turn that did nothing, and a hand edit that breaks a test does not send
+  the model off to fix work it was not asked about. When the turn did change files, the loop diffs the workspace
+  against the state at the last verification that passed, selects the checks whose `when` patterns match, and runs
+  them (`checks.started` is durable first; an interrupt stops them like tools). Which checks run is decided from
+  everything that is unverified, the turn's own changes or not: a check reads the whole workspace and cannot tell
+  whose change it is looking at. The results and the decision are one append: `checks.finished` with the terminal
+  event, or with the report that sends the model back. The turn ends unresolved when the model acknowledges the
+  failure with the tool, after `maxRounds` reports, or in `report` mode, where the model is shown the failure and
+  not sent back. A configuration that cannot be loaded fails the execution before anything is sent.
+- *What "this turn" is, and what stays unverified.* A turn begins with the first input delivered under an
+  execution, and again with every queued message; a steer redirects the turn it arrives in and begins none, so
+  what the turn changed before it still counts. A subagent's changes are its parent's turn's: they happen while a
+  call of the parent runs, or, for a background subagent, before the turn can end. A change someone else made
+  during the turn (the user, by hand) counts as the turn's too: the two cannot be told apart, and in doubt the
+  checks run. A turn that was told that spawned work ended (a background command exited, a background subagent
+  finished or was lost) is checked for everything since the last verification: that work runs outside the steps,
+  also between two turns, and its exit is the first moment anyone can verify it. A turn that changes a file and
+  puts it back changed nothing. When a turn changed nothing while files the checks cover differ from the verified
+  state (a hand edit, an undo, an earlier turn that ended unresolved), its `not_needed` says `unverified`, and
+  `verification.verified` does not move: those changes are checked, with everything else, at the end of the next
+  turn that changes a file. Without snapshots the stand-in for "the turn changed files" is whether a call that
+  can change them ran in the turn, and then every check applies.
 - *The gate and a queued message.* A queued message means "after this turn", and a turn is over when the gate says
   so. The gate therefore runs before a queued message is delivered, exactly as before the execution ends: failing
   checks send the model back while the message keeps waiting. When the turn may end (passed, nothing to check,
@@ -495,6 +533,20 @@ is a new version with a decoder for the old one.
   the whole log, and frozen in `compaction.ended`: the summary, an index of exact identifiers (files with lines,
   commands with the outcome of each run, errors, commits, failing tests), the user's messages verbatim up to a
   budget, and the pointer to the history tools. It is never rendered again, whatever the checkpoint code becomes.
+- *On request.* `EngineSession.compact()` makes the same compaction because the user asks (`trigger: manual`): the
+  same summary request, repair, fallback and events. It keeps word for word what the next request has to answer
+  and, where the window is known, the short tail an aggressive compaction keeps. It happens at a step boundary
+  under a claim: while a turn runs, at the boundary after the step in progress, and the turn carries on from the
+  checkpoint; while idle, under an execution of its own that ends right after `compaction.ended` with no step and
+  no check (there was no turn, so the gate finds nothing of a turn's to verify), the baseline being set again when
+  the next turn is about to send a step. It resolves with the sizes before and after, or with `nothing` and the
+  reason, and writes nothing, when there is nothing worth compacting: no conversation yet, only what the next
+  request needs in view, or fewer than `manualCompactionMinTokens` (2,000) tokens to take out, which a checkpoint
+  would not undercut. A request that never reaches a boundary because the turn failed or was stopped first is
+  answered with `failed`, never made later behind the user's back.
+- *The task list.* The model's task list is the `display` of its latest successful `todo` call (`tools/todo.ts`;
+  nothing is stored outside the log). When a compaction removes that call from the model's view, the checkpoint
+  carries the list as the call left it, after the summary.
 - *After a compaction* the baseline is set again (instruction updates are folded in, the tool list is the same), and
   the next request is the checkpoint and the kept messages, which render exactly as before. The request after that
   extends it. The anti-thrash rules are the policy's: a compaction that freed less than a quarter blocks the next
@@ -534,15 +586,15 @@ and reported to the model when they end. `engine/spawn.ts` has the tools and the
 writes. `createHarness` switches them on (`EngineOptions.spawn`); an engine built without the option offers none.
 
 **The tools.** Three are in a session's frozen tool list from its first baseline, with fixed specs: `subagent`
-(`task`, and optionally `session`, `background`, `worktree`), `background_output` and `background_stop` (`id`). The
-shell tool has a `background` argument.
+(`task`, and optionally `session`, `background`, `worktree`, `agent`), `background_output` and `background_stop`
+(`id`). The shell tool has a `background` argument.
 
 **What a subagent is.** A real session (`lineage.kind = "spawn"`: its parent, the spawned work that started it, its
 depth, its worktree). It starts with a fresh conversation: its own baseline (the same base prompt, the project's
 instruction files discovered for its working directory, the environment, the date) and its task as its first user
 message, with one line saying who reads its answer. It sees nothing of its parent's history. It runs the same loop
-with the same tools, the parent's model settings, the parent's approval settings and, by default, the parent's
-workspace. It has a cache key of its own. Its conversation stays: a follow-up by reference (`subagent` with
+with the same tools, the parent's model settings (or its agent's, when it runs as one that names them), the
+parent's approval settings and, by default, the parent's workspace. It has a cache key of its own. Its conversation stays: a follow-up by reference (`subagent` with
 `session`) is delivered to it while it runs, and starts a new piece of work (a new `spawnId`) once it has ended.
 
 **Decisions.**
@@ -617,15 +669,15 @@ that already holds the child's change merges to itself.
 `<data dir>-work` (`EngineOptions.workDir`): beside the data directory, never inside it. The sandbox hides the data
 directory from commands, and commands must run in these.
 
-## Skills, MCP servers, wake-ups and memory
+## Skills, MCP servers, wake-ups, memory and agents
 
-Four modules that were built apart (`skills/`, `mcp/`, `wake/`, `memory/`; each has a README) and are wired into
-the loop by one file each in `engine/`. They have one rule in common, which is the reason they exist in this form:
+Five modules that were built apart (`skills/`, `mcp/`, `wake/`, `memory/`, `agents/`; each has a README) and are
+wired into the loop by one file each in `engine/`. They have one rule in common, which is the reason they exist in this form:
 **nothing they bring changes a session's frozen prefix.** Their tools have constant specs and are in the tool list
 from the first baseline or never; what changes during a session (which skills exist, which servers are connected
-and what they offer, which notes apply) is appended as a message with its text stored. `EngineOptions.skills`,
-`mcp`, `wake` and `memory` switch each on; `createHarness` passes all four, and an engine built without one offers
-nothing of it.
+and what they offer, which notes apply, which agents exist and which one the session runs as) is appended as a
+message with its text stored. `EngineOptions.skills`, `mcp`, `wake`, `memory` and `agents` switch each on;
+`createHarness` passes all five, and an engine built without one offers nothing of it.
 
 | Feature | Tools in the frozen list | When | Appended source |
 | --- | --- | --- | --- |
@@ -633,18 +685,25 @@ nothing of it.
 | MCP | `mcp_search`, `mcp_call` | every session, whether or not a server is configured | `mcp`: the catalogue |
 | Wake-ups | `wake_create`, `wake_list`, `wake_cancel` | a session a person started, while `wake.enabled` (default on) | none: firings arrive through the inbox |
 | Memory | `memory_save`, `memory_retract`, `memory_search` | a session a person started, while `memory.enabled` (default **off**) | `memory`: the notes |
+| Agents | none of its own: `subagent` has an optional `agent` argument in every session | every session | `agent-index`: the list of agents, for a session whose list has `subagent`; `agent`: a switch |
 
 "When" is decided once, as the first baseline is set, like the acknowledgement tool: the list keeps the tools or
 lacks them from then on, also across a compaction and whatever the configuration says later. Skills and MCP are
 unconditional so that every session of a build has the same list and a skill or a server that appears later needs
 no change of it. A feature acts only for a session whose list has its tools: an index, a catalogue or notes are
-never given to a model that has no tool to act on them. The tool list of a session of the real harness has 19
-tools with verification on and memory off (seven file and shell tools, two history tools, three for spawned work,
-the acknowledgement tool, and the six of skills, MCP and wake-ups); memory adds three.
+never given to a model that has no tool to act on them. The tool list of a session of the real harness has 20
+tools with verification on and memory off (the seven file and shell tools and `todo`, two history tools, three for
+spawned work, the acknowledgement tool, and the six of skills, MCP and wake-ups); memory adds three. It is about
+3,300 tokens of every request by the harness's estimate (`bun scripts/tool-block.ts` prints it per tool). The list
+is meant to be final: `wake_create` is described in under 400 tokens, with each trigger's reference in the answer
+to a call that is not valid instead of in every request.
 
 **Skills** (`engine/skills.ts`). At every step boundary the skills of the session's working directory are
 discovered (a few `readdir` and `stat` calls and one read per skill file) and the index is appended when its
-fingerprint differs from what the model has: editing a description, adding or removing a skill appends; editing a
+fingerprint differs from what the model has. Nothing is cached: measured on a loaded two-core machine, discovery
+takes 0.2 ms with no skill, 1.7 ms with 20 and 9 ms with 100 (agents cost the same), against a step that is a
+model call of seconds; a cache keyed on sizes and modification times would still read every directory and stat
+every file, and would miss an edit on a file system with coarse timestamps. So: editing a description, adding or removing a skill appends; editing a
 body does not, and the next `skill` call returns the new body. What discovery could not load goes to the user as a
 `diagnostic` of kind `skills`, once, never to the model; `EngineSession.skills()` gives a client the skills and the
 problems. `skills.paths` is read from the user's own file only (a repository carries its skills in itself and
@@ -690,9 +749,15 @@ client opened it meanwhile.
 
 - *Which processes fire.* Every process that offers the tools can create, list and cancel: wake-ups are records
   in a store all processes of a data directory share. The scheduler and the webhook listener run only in a
-  process that asks for them (`EngineOptions.wake.run`), which is for the long-lived ones, the ACP server. A
-  one-prompt run does not: it would fire other sessions' wake-ups, start turns in them and cut them off when it
-  exits, and it must not open a port. What it sets up fires in the next process that runs the scheduler.
+  process that asks for them (`EngineOptions.wake.run`): the `acp` stdio server does (`packages/acp/src/stdio.ts`),
+  from its start and not from its first session, unless its environment says `<BINARY>_WAKE=off`. It is the
+  long-lived process: an editor, the terminal interface and an interactive command line keep it for as long as
+  they run. Several may run at once: each firing is delivered by exactly one of them (the store's leases), the
+  listener's port belongs to whichever bound it first, and the others carry on (`test/engine/wake-servers.test.ts`
+  runs two). An engine used directly, and the in-process transport, do not fire. A client that starts the server
+  for one prompt should set the variable to `off`: its server would otherwise start other sessions' wake-up turns
+  and cut them short when it exits (they stay resumable, and resume when their session is next opened). What a
+  process that does not fire sets up fires in the next one that does.
 - *Shutdown.* `Engine.close()` stops the listener and the scheduler first, then the sessions, then the MCP
   servers, then closes the wake store.
 - *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so it is
@@ -716,6 +781,37 @@ subagent is not offered memory. `EngineSession.memory()` gives a client the stor
 whether memory stays reads evaluation results and lives in `evals/memory-compare.ts`; core imports nothing from
 `evals/`.
 
+**Agents** (`engine/agents.ts`; `agents/README.md` has the format and the texts). An agent is a role kept as a
+Markdown file: instructions, and optionally a model, an effort and restrictions.
+
+- *What never changes.* The tool list and the system prompt. Every tool stays offered whatever the agent allows.
+- *Starting as one.* `createSession({ agent })`: a name, `"none"`, or nothing, which means the default of the
+  user's own configuration (`agents.default`; a project's file cannot choose it). The definition is read once,
+  then: `agent.switched` follows `session.created` in the same append with the record (the instructions, the
+  restrictions in force, the fingerprint of the file, its model and effort), the session's settings are the
+  agent's where it names them, and the first baseline carries the agent's instructions as its last section
+  (source `agent`). An agent that cannot be found, or names a model the provider's listing lacks, creates
+  nothing. The session never reads the file again: otherwise it could widen its own restrictions with `write`.
+- *Switching.* `setAgent(name | "none")` reads the definition and, once a baseline is frozen, waits for the next
+  step boundary under a claim: there the loop appends an instruction message of source `agent` (the new
+  instructions, saying what they replace; a one-line withdrawal with fingerprint `null` for "none") and
+  `agent.switched` naming that message, in one append, and then `settings.changed` when the agent names another
+  model or effort. A switch to an agent on the session's own settings keeps the whole cached prefix. After a
+  compaction the new baseline carries the agent in force, from the record.
+- *Restrictions.* Before a call is decided (after the calls the loop itself refuses, and with or without the
+  approval layer) `checkAgentCall` looks at the tool's name, effect class and origin. A call the agent may not
+  make is settled as an error with the sentence the model reads, and recorded as `approval.denied` with `agent`
+  set; anything else goes on to the approval layer unchanged, so a definition can only take away. The approval
+  mode in force is the user's or the agent's, whichever is stricter. The acknowledgement tool is exempt.
+- *Subagents.* `subagent` takes `agent`; the name is looked up when the call runs (a miss is an error result
+  with close names and starts nothing). The child is created as the agent, with its restrictions combined with
+  its parent's; a child started without `agent` by a parent that runs as an agent runs as the parent's.
+- *The list.* A session whose tool list has `subagent` is given the agents that exist as an appended message
+  (source `agent-index`), again when the list changes, and a withdrawal when none is left.
+- *For clients.* `Engine.listAgents(cwd)`, `EngineSession.agents()`, `agent()` and `setAgent()`. Problems
+  (a definition that was skipped or shadowed, a restriction that names a tool that does not exist, a model that
+  is not offered, a project's `agents.default`) are `diagnostic` events of kind `agents`.
+
 ## Replay
 
 `Engine.replaySession` creates a replay session (`lineage.kind = "replay"`) and runs it; `docs/replay.md` is the
@@ -727,7 +823,11 @@ recording the loop takes no snapshot, runs no check, asks nobody, adds none of i
 the notes) and never compacts. Under `stop` a call that is not on the recording settles as not started and the
 execution ends, without an answer, as `execution.failed` with `cause: "replay"`. Under the policies that run
 tools, the first such call restores the recorded snapshot into the copy (`replay.diverged`) and from there the
-ordinary loop finishes the turn in the copy, with the approval layer forced to `auto` and nobody present. A replay
+ordinary loop finishes the turn in the copy, with the approval layer forced to `auto` and nobody present. The
+step in which that happens is bracketed like any step that can change files: its `step_start` snapshot is taken
+as the replay goes live (the copy as restored, before the first tool runs for real) and its `step_end` after its
+tools, so the replay's log says what that step changed. A replay that never leaves its recording ran nothing:
+the directory that was made for its copy is removed again (only when the replay made it, and only if it is empty). A replay
 session takes no prompts and is not reverted or forked. One whose process stopped is closed as after any crash and
 ended as `incomplete`; it is never taken up again.
 
@@ -761,8 +861,19 @@ These are the shapes the scenarios spell out event by event.
 - **A background command.** `tool.called` · `tool.started` · `spawn.started` · `tool.settled` with the handle;
   when it exits, in one append, `spawn.ended` and `inbox.enqueued` (`background_command`); if idle, `execution.started`.
 - **A source that is never in the baseline.** At a boundary, after the baseline when one is set there:
-  `instruction.appended` with source `skills`, `mcp` or `memory` (the first text, a replacement, or a withdrawal
-  with fingerprint `null`) · the delivery of waiting input · `step.started`.
+  `instruction.appended` with source `skills`, `mcp`, `memory` or `agent-index` (the first text, a replacement, or
+  a withdrawal with fingerprint `null`) · the delivery of waiting input · `step.started`.
+- **A session that starts as an agent.** `session.created` (with the agent's model and effort) · `agent.switched`
+  (no message) · later `baseline.set`, whose last source is `agent`. A call the agent may not make:
+  `tool.called` · `approval.denied` (`agent`) · `tool.settled` (`error`, the sentence), in one append.
+- **A switch of agent.** At the top of a boundary: `instruction.appended` (source `agent`) · `agent.switched`
+  (that message) · `settings.changed` when the agent names another model or effort · the delivery of waiting input.
+- **A compaction on request.** While idle: `execution.started` · `compaction.started` (`manual`) ·
+  `compaction.ended` · `execution.succeeded` (`not_needed`); the `baseline.set` comes with the next turn. While a
+  turn runs: the same two compaction events at the boundary after the step in progress, then `baseline.set` and
+  the next step.
+- **A turn that changed nothing.** The answer · `snapshot.taken checks_start` · `execution.succeeded` with
+  `not_needed` (and `unverified` when files the checks cover changed outside the turn). No `checks.started`.
 - **An MCP call.** `tool.called` · the approval layer's decision (a question by the server's tool, or a refusal) ·
   `tool.started` (`network`, origin `mcp`) · `tool.settled` (`display.mcp`: server, tool, untrusted, outcome) ·
   `taint.noticed` the first time such a result is untrusted.
