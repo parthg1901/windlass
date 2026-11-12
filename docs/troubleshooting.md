@@ -123,10 +123,10 @@ carries ChatGPT's own wording.* It is not retried. Wait until the limit resets, 
 `lh` and `lh tui` start `lh acp` as a child process. If it dies before it is ready:
 
 ```
-lh: the engine process exited with code 1 before it was ready: <its last line of output>
+lh: the engine could not start: <what it said> (its process exited with code 1)
 ```
 
-Its own error is printed above that line (on standard error). If it does not answer in time:
+When the process said nothing: `lh: the engine process exited with code 1 before it was ready`. If it does not answer in time:
 
 ```
 lh: the engine process did not start within <n> s; giving up

@@ -181,6 +181,12 @@ Everything here was hit while building and testing the TUI (2026-11-12).
 - **Paths are cut inside an expanded subagent at 100 columns** (the frame and the panel take room): match `✓ write \S+ · created`, not the whole path.
 - **A server that died at start showed Bun's banner as the reason** (`… before it was ready: Bun v1.4.0 (Linux arm64)`), after the runtime's source excerpt on stderr. The shared client now holds the server's raw output until it is ready and names the uncaught error's message. Inject it with a fixture that throws at the top level as the server command.
 - **A CLI killed with SIGKILL leaves its `lh acp` shutting down for up to 5 s**, holding the session. A command with `trap '' TERM` in the scripted turn keeps that window open long enough to test; the next `--continue` now waits for the orphaned server (its parent is init or the systemd user manager) and says so.
+- **A second TUI on an open session exits 0.** `tui -c` on a session another TUI holds shows `✗ could not open the session … /reconnect`; Ctrl-D then exits with status 0.
+- **With no sign-in** (a throwaway `XDG_DATA_HOME`) the status line says `✗ not signed in` and the panel `state not signed in`; a sent message gives `! not connected: /reconnect first, or /quit`. There is no way to sign in from inside.
+- **After `/undo` the panel's `context` figure is stale** until the next model call.
+- **The steer row is cut even at 80 columns** with the panel hidden (`↳ steered into the t…`): wait for `↳ steered`.
+- **`tui -c` replays an undone turn as it first appeared**; the only sign of the undo is the replayed `↶ went back` row.
+- **Ctrl-C at an idle, empty prompt draws nothing**: do not wait for a frame change after it.
 
 ## Measured (two-core aarch64, 2026-11-12)
 

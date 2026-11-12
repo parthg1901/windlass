@@ -86,3 +86,11 @@ Reading a result:
 - At low and medium effort every unchanged replay leaves its recording within four steps (20 of 20 at low effort), so never read divergence counts. Read which files changed and the grade.
 - Byte-for-byte file comparisons differ for equivalent work (reordered YAML entries, an equivalent formula, prose notes): 12 of 20 unchanged replays differed in bytes while 0 of 20 changed other files.
 - A replay that answered without running a tool leaves an empty `<data dir>-work/replays/<id>` behind; nothing removes it yet.
+
+## Scripted model (`LH_ACP_SCRIPT`) gotchas
+
+- The script is shared by a parent and its subagents and consumed in call order. Keep one subagent per step; parallel children race for the responses.
+- Each process plays its script from the start: the `fork` subcommand needs no responses, the `replay` subcommand needs the recording's responses again.
+- With a throwaway `XDG_DATA_HOME` there is no sign-in, and every subcommand that starts the server needs either the sign-in or `LH_ACP_SCRIPT`, `fork` included although it calls no model.
+- To reproduce "session in use" after a kill: put a command with `trap '' TERM` in the scripted turn, `kill -9` the CLI, then run `--continue` within 5 s.
+- In a git worktree, set `PREFIXLENS_DIR=/home/ubuntu/projects/prefixlens`: the prefix gate and the eval classifier look for prefixlens beside the repository and skip silently when it is not there.
