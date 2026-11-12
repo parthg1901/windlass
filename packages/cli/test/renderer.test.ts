@@ -93,6 +93,18 @@ describe("tool calls", () => {
     expect(out).toBe("▸ read src/a.ts\n  ✓ 40 lines of 120 · 100ms\n")
   })
 
+  test("a call that was not allowed is not drawn as a failure, and its refusal is not repeated", () => {
+    const denied = event("approval.denied", { messageId: m("a1"), callId: c("c1"), mode: "auto", paths: [], escalation: null, reason: "unattended", needs: [{ kind: "sandbox-network" }], stop: false })
+    const refusal = "This call was not run: it needs approval for network access, and nobody is here to give it."
+    const unattended = render(stored([stepStarted("a1"), call("a1", "c1", "shell", { command: "curl example.com" }), denied, settle("a1", "c1", "error", refusal)]), { columns: () => 200 })
+    expect(unattended).toContain("▸ shell curl example.com\n○ not run: needs approval for network access for this command; nobody is here to give it, so it was refused (--unattended deny)\n  ○ shell curl example.com · not run\n")
+    expect(unattended).not.toContain("failed")
+    expect(unattended).not.toContain(refusal)
+    const answered = event("approval.answered", { messageId: m("a1"), callId: c("c1"), choice: "deny", approve: false, note: null, grants: [] })
+    const no = render(stored([stepStarted("a1"), call("a1", "c1", "shell", { command: "curl example.com" }), answered, settle("a1", "c1", "error", "The user did not allow this call.")]))
+    expect(no).toBe("▸ shell curl example.com\n○ not allowed\n  ○ shell curl example.com · not run\n")
+  })
+
   test("interleaved parallel calls each name themselves on their outcome line", () => {
     const out = render(
       stored([

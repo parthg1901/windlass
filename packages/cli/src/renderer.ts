@@ -204,6 +204,8 @@ export class PrettyRenderer implements Sink {
   private turns = new TurnTracker()
   /** Calls the agent's restrictions refused, with why in the engine's sentence: said on the call's own line when it settles. */
   private readonly agentRefusals = new Map<string, { readonly head: string; readonly reason: string }>()
+  /** Calls that were not allowed (the user said no, or nobody was here to ask): the line that said so is the reason, and the call's row says only that it did not run. */
+  private readonly declined = new Set<string>()
   /** The hooks that applied to a call that has not settled yet (`hook.ran` comes before its result), by call. */
   private readonly hookRuns = new Map<string, HookRecord[]>()
   /** The stop hooks that objected when the turn last tried to end: said when the agent is sent back, or on the ending. */
@@ -466,7 +468,10 @@ export class PrettyRenderer implements Sink {
         const note = event.data.note === null ? "" : ` · your note: ${flatten(event.data.note)}`
         const kept = event.data.grants.length === 0 ? "" : event.data.choice === "project" ? ", remembered for this project" : ", remembered for this session"
         if (event.data.approve) this.line("info", [seg(`${SYMBOL.ok} `, "green"), seg(`allowed${event.data.choice === "once" ? " once" : kept}${note}`, "dim")])
-        else this.line("info", [seg(`${SYMBOL.notRun} `, "yellow"), seg(`not allowed${note}`, "dim")])
+        else {
+          this.declined.add(key(event.data.messageId, event.data.callId))
+          this.line("info", [seg(`${SYMBOL.notRun} `, "yellow"), seg(`not allowed${note}`, "dim")])
+        }
         this.drawStatus()
         return
       }
@@ -479,6 +484,7 @@ export class PrettyRenderer implements Sink {
           return
         }
         // Counted for the ending of a run that carried on without the call (`--unattended deny`); a stopped run's ending says why itself.
+        this.declined.add(key(event.data.messageId, event.data.callId))
         if (event.data.reason === "unattended" && event.data.stop !== true && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
         const why =
           event.data.reason === "unattended"
@@ -1035,6 +1041,13 @@ export class PrettyRenderer implements Sink {
       for (const line of wrap(flatten(refusal.reason), this.width - 4)) this.line("info", [seg(`    ${line}`)])
       return
     }
+    // Not allowed: the line above said why, and nothing ran. Not a failure, and the text the model got is not repeated.
+    if (this.declined.delete(id) && data.outcome !== "success") {
+      if (adjacent) this.line("info", [seg(`  ${SYMBOL.notRun} `, "yellow"), seg("not run", "yellow")])
+      else this.lineWithArg("info", [seg(`  ${SYMBOL.notRun} `, "yellow"), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · not run", "yellow")])
+      this.hookLines(hooks, false)
+      return
+    }
     // A subagent's answer is prose, said in a few whole lines under its row; its task was said when it started.
     if (call.name === "subagent" && data.outcome === "success" && data.output.trim() !== "") {
       this.line("info", [seg("  "), seg(`${SYMBOL.ok} `, "green"), seg("subagent", "bold"), seg(" answered", undefined), seg(suffix([duration]), "dim")])
@@ -1344,6 +1357,7 @@ export class PrettyRenderer implements Sink {
     this.checking = null
     this.sentBack = 0
     this.hookRuns.clear()
+    this.declined.clear()
     return turn
   }
 
