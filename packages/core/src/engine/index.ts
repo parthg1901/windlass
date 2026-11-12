@@ -15,3 +15,4 @@ export { type ChildResult, type SpawnSettings, type SubagentInput, BACKGROUND_OU
 export { type MergeOutcome } from "./worktree.ts"
 export { type McpServerPlan, type McpServerQuestion, type McpSetup, type McpState, MCP_START_WAIT_MS } from "./mcp.ts"
 export { type SkillsSetup } from "./skills.ts"
+export { type WakeApi, type WakeSetup } from "./wake.ts"

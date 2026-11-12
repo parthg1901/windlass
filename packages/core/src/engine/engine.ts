@@ -81,6 +81,7 @@ import {
   type SessionSettings,
   type SnapshotPoint,
   type StoredEvent,
+  type UntrustedInput,
   type VerificationOutcome,
   HARNESS_ORIGIN,
   KEPT_LIMIT,
@@ -137,6 +138,10 @@ import {
 } from "./constants.ts"
 import { historyTools } from "./history.ts"
 import { McpHub, type McpServerPlan, type McpSetup, type McpState, type SessionServers, catalogueAppended, engineMcpTools, planServers, serverGrant, serverQuestion, sessionServers } from "./mcp.ts"
+import { type WakeApi, WakeRuntime, type WakeSetup, engineWakeTools, readUserWakeSection, runAllowedNow, sessionWakeConfig } from "./wake.ts"
+import type { WakeConfig, WakeConfigSection } from "../wake/config.ts"
+import type { Firing } from "../wake/record.ts"
+import type { DeliverResult } from "../wake/scheduler.ts"
 import { type SkillPlaces, type SkillsSetup, describeSkillProblem, engineSkillTool, findSkills, skillPlaces, skillsSource } from "./skills.ts"
 import { recover } from "./recovery.ts"
 import { DEFAULT_NORMALISERS, REPLAY_TEXT, type ReplayOutcome, type ReplayRequest, type ReplayRun, changedBaseline, snapshotAtDivergence } from "./replay.ts"
@@ -430,6 +435,14 @@ export interface EngineOptions {
    * server. `createHarness` switches it on.
    */
   readonly mcp?: McpSetup | null
+  /**
+   * Wake-ups: `wake_create`, `wake_list` and `wake_cancel` in the tool list
+   * of every new session a person starts while wake-ups are enabled, and,
+   * with `run`, the scheduler and the webhook listener in this process
+   * (`engine/wake.ts`). Without it (or `null`) the engine offers none of it.
+   * `createHarness` switches the tools on; a long-lived process asks for `run`.
+   */
+  readonly wake?: WakeSetup | null
 }
 
 /** How a session is forked. */
@@ -539,6 +552,28 @@ export type ResumeMode =
   /** Leave a suspended claim suspended until `start()` or `send()`. */
   | "wait"
 
+/** Input a harness component admits into a session's inbox under an ID of its own choosing (`EngineSession.admit`). */
+export interface Admission {
+  /**
+   * The ID the message will have. It is the admission's idempotency key: an
+   * ID this session's log has already admitted (delivered, waiting or
+   * withdrawn) is a duplicate and nothing is written.
+   */
+  readonly messageId: MessageId
+  /** The harness component it comes from (`HARNESS_ORIGIN.wake`, ...). The model sees it in an envelope that names it. */
+  readonly origin: string
+  /** The message, frozen: it is stored as given and never rendered again. */
+  readonly text: string
+  /**
+   * Whether it starts work when the session is idle. Either way it waits
+   * behind the turn in progress (inbox delivery `queue`): a harness
+   * component never steers a turn.
+   */
+  readonly start: boolean
+  /** Set when the text carries content from outside the harness: a taint source, recorded with the admission. */
+  readonly untrusted?: UntrustedInput
+}
+
 export interface SendOptions {
   /** `steer` (the default) is delivered at the next step boundary; `queue` once the session would otherwise go idle. */
   readonly delivery?: "steer" | "queue"
@@ -575,6 +610,15 @@ export interface EngineSession {
   readonly interrupt: () => void
   /** Changes the model or the reasoning effort. Takes effect at the next step boundary. */
   readonly setSettings: (settings: SessionSettings) => void
+  /**
+   * Admits input from a harness component (a wake-up's firing) under the
+   * message ID it is given. `duplicate`: the session's log already has that
+   * ID as an admitted input, so this is a redelivery and nothing was
+   * written. Otherwise the input waits in the inbox as a queued item, with
+   * its origin, and with `start` work begins if the session is idle (or a
+   * suspended execution resumes), unattended unless a client said it attends.
+   */
+  readonly admit: (input: Admission) => "admitted" | "duplicate"
   /**
    * Withdraws a prompt that was admitted and not delivered yet
    * (`inbox.cancelled`): it never reaches the model. Returns whether it was
@@ -726,6 +770,13 @@ export interface Engine {
    */
   readonly validateSettings: (settings: SessionSettings) => Promise<void>
   /**
+   * The wake-ups of this data directory, for a client that lists, creates
+   * and cancels them and shows a webhook's secret (never to the model).
+   * `null` when the engine offers no wake-ups. Opens the shared store on
+   * first use.
+   */
+  readonly wake: () => WakeApi | null
+  /**
    * The hook a process calls before it exits, for whatever reason it controls
    * (a normal end, SIGINT, SIGTERM, an uncaught error): every session is
    * closed as a shutdown, which stops every tool and waits for it. Safe to
@@ -788,6 +839,12 @@ interface Core {
   readonly mcp: { readonly tools: readonly AnyTool[]; readonly hub: McpHub } | null
   /** Where the approvals remembered for a project are kept, also with the approval layer off. */
   readonly grantsDir: string
+  /**
+   * Wake-ups: the tools, the user's own settings, and the process's store
+   * (with its scheduler and listener when this process fires wake-ups),
+   * opened on first use. `null` when the build offers none.
+   */
+  readonly wake: { readonly tools: readonly AnyTool[]; readonly user: WakeConfigSection | undefined; readonly runtime: () => WakeRuntime } | null
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -809,7 +866,45 @@ export function createEngine(options: EngineOptions): Engine {
   const skillsDir = options.skills?.configDir ?? configDirectory()
   const skill = engineSkillTool((context) => core.sessions.get(context.sessionId)?.skillPlaces() ?? { configDir: skillsDir, extraPaths: [], disabled: [] }) as unknown as AnyTool
   const bridge = engineMcpTools((context) => core.sessions.get(context.sessionId)?.mcpServers() ?? null)
-  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool])
+  // Wake-ups: one store per process, opened when something first needs it; the user's own file configures it.
+  const wakeUser = options.wake == null ? undefined : (options.wake.config ?? (options.loadConfig === undefined ? readUserWakeSection(configDirectory()).section : undefined))
+  let wakeRuntime: WakeRuntime | null = null
+  const wakeOf = (): WakeRuntime => {
+    if (wakeRuntime !== null) return wakeRuntime
+    if (options.wake == null) throw new Error("this engine offers no wake-ups")
+    wakeRuntime = new WakeRuntime({
+      dataDir: options.dataDir,
+      setup: options.wake,
+      config: sessionWakeConfig(null, wakeUser),
+      sandbox: core.approvals === null ? null : core.approvals.sandbox,
+      secrets: () => core.approvals?.secrets ?? [],
+      deliver: (firing) => deliverFiring(firing),
+      currentRun: (wake) => {
+        if (core.approvals === null) return null
+        const live = core.sessions.get(wake.sessionId as SessionId)
+        if (live !== undefined) return runAllowedNow(wake, live.commandsNow())
+        // Not open here: what its log says about untrusted content, under the user's own mode.
+        try {
+          const history = new TaintHistory()
+          for (const item of core.stores.read(wake.sessionId as SessionId, (store) => store.readEvents(wake.sessionId as SessionId))) history.add(item)
+          const policy = effectivePolicy({ file: null, process: core.approvals.user, session: null, project: null }).policy
+          return runAllowedNow(wake, { mode: policy.mode, tainted: policy.taint === "enforce" && deriveTaint(history.entries, { untrustedPaths: policy.untrustedPaths }).tainted })
+        } catch (error) {
+          return { refused: `its session could not be read: ${describe(error)}` }
+        }
+      },
+      warn: (message) => core.report({ kind: "wake", sessionId: null, message }),
+    })
+    return wakeRuntime
+  }
+  const wakeToolset = engineWakeTools({
+    runtime: wakeOf,
+    now: () => (options.wake?.clock ?? { now: Date.now }).now(),
+    tainted: (context) => core.sessions.get(context.sessionId)?.commandsNow()?.tainted ?? false,
+    seqOf: (context) => core.sessions.get(context.sessionId)?.projection().lastSeq ?? null,
+    configOf: (context) => core.sessions.get(context.sessionId)?.wakeConfig() ?? null,
+  })
+  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset])
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
   const core: Core = {
     stores,
@@ -873,6 +968,7 @@ export function createEngine(options: EngineOptions): Engine {
             hub: new McpHub(options.mcp, (server, message) => core.report({ kind: "mcp", sessionId: null, message: `${server}: ${message}` })),
           },
     grantsDir: options.approval?.grantsDir ?? join(options.dataDir, "approvals"),
+    wake: options.wake == null ? null : { tools: wakeToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), user: wakeUser, runtime: wakeOf },
   }
   let closing: Promise<void> | null = null
   const assertOpen = () => {
@@ -895,6 +991,64 @@ export function createEngine(options: EngineOptions): Engine {
     }
   }
 
+  /** Opens a session that is not open here, repairing what a dead process left (see `recover`). */
+  const open = (id: SessionId, resume: ResumeMode): LiveSession => {
+    const store = storeErrors(() => core.stores.open(id))
+    const session = new LiveSession(core, id, store)
+    core.sessions.set(id, session)
+    try {
+      session.recover(resume)
+    } catch (error) {
+      core.sessions.delete(id)
+      store.close()
+      throw error
+    }
+    return session
+  }
+
+  /**
+   * Hands a wake-up's firing to its session (`wake/README.md`, "The deliver
+   * callback"): the session is opened if it is not open here, the message
+   * is admitted under the firing's key, and with delivery `wake` a turn
+   * starts. A session this opens only for that is let go of again once it
+   * is idle, unless a client took it in the meantime.
+   */
+  const deliverFiring = async (firing: Firing): Promise<DeliverResult> => {
+    if (closing !== null) return { kind: "retry", reason: "this process is shutting down" }
+    const id = firing.sessionId as SessionId
+    let session = core.sessions.get(id)
+    const borrowed = session === undefined
+    if (session === undefined) {
+      const summary = core.stores.get(id)
+      if (summary === null) return { kind: "rejected", reason: "its session no longer exists" }
+      if (summary.session.archived) return { kind: "rejected", reason: "its session is archived" }
+      try {
+        // Nothing of the session's own is started by opening it: only the firing starts work, if it is to.
+        session = open(id, "wait")
+      } catch (error) {
+        if (error instanceof EngineError && error.code === "session_in_use") return { kind: "retry", reason: error.message }
+        if (error instanceof EngineError && error.code === "session_not_found") return { kind: "rejected", reason: "its session no longer exists" }
+        throw error
+      }
+    }
+    try {
+      if (session.projection().session.replay !== undefined) return { kind: "rejected", reason: "its session is a replay, which takes no input" }
+      const webhook = firing.source === "webhook"
+      const outcome = session.admit({
+        messageId: firing.key as MessageId,
+        origin: webhook ? HARNESS_ORIGIN.wakeWebhook : HARNESS_ORIGIN.wake,
+        text: firing.text,
+        start: firing.delivery === "wake",
+        ...(firing.untrusted ? { untrusted: { kind: "wake" as const, wakeId: firing.wakeId, carries: webhook ? ("webhook_body" as const) : ("check_output" as const) } } : {}),
+      })
+      return { kind: outcome }
+    } finally {
+      if (borrowed) session.letGoWhenIdle()
+    }
+  }
+  // A process that fires wake-ups starts doing so now, not when a session first asks for a tool.
+  if (options.wake?.run === true) wakeOf()
+
   return {
     createSession: (input) => {
       assertOpen()
@@ -910,21 +1064,12 @@ export function createEngine(options: EngineOptions): Engine {
       core.sessions.set(id, session)
       return session
     },
-    openSession: (id, open = {}) => {
+    openSession: (id, options$ = {}) => {
       assertOpen()
       const live = core.sessions.get(id)
-      if (live !== undefined) return live
-      const store = storeErrors(() => core.stores.open(id))
-      const session = new LiveSession(core, id, store)
-      core.sessions.set(id, session)
-      try {
-        session.recover(open.resume ?? "start")
-      } catch (error) {
-        core.sessions.delete(id)
-        store.close()
-        throw error
-      }
-      return session
+      // A session the scheduler opened to deliver a firing is the caller's from here on.
+      if (live !== undefined) return live.keep()
+      return open(id, options$.resume ?? "start")
     },
     forkSession: async (id, fork = {}) => {
       assertOpen()
@@ -947,11 +1092,16 @@ export function createEngine(options: EngineOptions): Engine {
       if (models === null || models.length === 0 || models.includes(settings.model)) return
       throw new EngineError("unknown_model", `model ${settings.model} is not available; choose one of: ${models.join(", ")}`)
     },
+    wake: () => (core.wake === null ? null : core.wake.runtime()),
     close: () => {
-      closing ??= Promise.all([...core.sessions.values()].map((session) => session.close()))
+      closing ??= (async () => {
+        // First nothing new arrives: no firing is delivered, no check runs, the listener is gone.
+        await wakeRuntime?.quiesce().catch(() => {})
+        await Promise.all([...core.sessions.values()].map((session) => session.close()))
         // Every server the sessions had started is stopped once no session can call one any more.
-        .then(() => core.mcp?.hub.stop())
-        .then(() => {})
+        await core.mcp?.hub.stop()
+        wakeRuntime?.close()
+      })()
       return closing
     },
   }
@@ -1198,6 +1348,51 @@ class LiveSession implements EngineSession {
   }
 
   queue = (value: string, options: Omit<SendOptions, "delivery"> = {}) => this.send(value, { ...options, delivery: "queue" })
+
+  admit = (input: Admission): "admitted" | "duplicate" => {
+    this.assertOpen()
+    if (this.projection().session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
+    if (this.admitted(input.messageId)) {
+      // A redelivery. If the process before this one died between the admission and the start it was to make, the
+      // message still waits and the work is started now; `start` does nothing when it is under way or nothing waits.
+      if (input.start && this.projection().inbox.some((item) => item.messageId === input.messageId)) this.start()
+      return "duplicate"
+    }
+    // The fact that makes it untrusted is a field of the admission itself: one event, so never one without the other.
+    this.write([event("inbox.enqueued", { messageId: input.messageId, origin: input.origin, delivery: "queue", content: text(input.text), ...(input.untrusted === undefined ? {} : { untrusted: input.untrusted }) })])
+    // Untrusted content is in the session from here on: the user is told now, and the turn it starts is decided under it.
+    if (input.untrusted !== undefined) this.noticeTaint()
+    if (input.start) this.start()
+    return "admitted"
+  }
+
+  /**
+   * Whether the log has admitted input under this ID: as a message, as an
+   * item that waits, or as one that was withdrawn (which the projection
+   * forgets, and a redelivery must still not bring back).
+   */
+  private admitted(messageId: MessageId): boolean {
+    const projection = this.projection()
+    if (projection.messages.some((message) => message.id === messageId) || projection.inbox.some((item) => item.messageId === messageId)) return true
+    return this.store.readEvents(this.id).some((item) => item.type === "inbox.enqueued" && item.data.messageId === messageId)
+  }
+
+  /** Whether the session was opened here only to hand it a wake-up's firing, and nobody else has taken it since. */
+  private borrowed = false
+
+  /** A client asked for this session: it stays open until the client closes it. */
+  keep(): this {
+    this.borrowed = false
+    return this
+  }
+
+  /** Opened only for a firing: the session is let go of once its work is done, so that any process can open it again. */
+  letGoWhenIdle(): void {
+    this.borrowed = true
+    void this.settled().then(() => {
+      if (this.borrowed && this.run === null && this.closing === null) void this.close()
+    })
+  }
 
   start = (): void => {
     this.assertOpen()
@@ -3393,9 +3588,16 @@ class LiveSession implements EngineSession {
     // on, and their specs never change. Skills and MCP are offered to every session, whether or not a skill or a
     // server exists yet, so that one appearing later needs no change of the list.
     const kept = (tools: readonly AnyTool[], first: boolean) => (baseline !== null ? tools.filter((tool) => baseline.tools.some((known) => known.name === tool.name)) : first ? tools : [])
-    const features = [...kept(this.core.skills === null ? [] : [this.core.skills.tool], true), ...kept(this.core.mcp?.tools ?? [], true)]
+    // Wake-ups are offered to a session a person started while they are enabled: a subagent has nobody to wake for.
+    const features = [
+      ...kept(this.core.skills === null ? [] : [this.core.skills.tool], true),
+      ...kept(this.core.mcp?.tools ?? [], true),
+      ...kept(this.core.wake?.tools ?? [], depth === 0 && (this.wakeConfig()?.enabled ?? false)),
+    ]
     // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
-    const own = new Set([this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? [])].map((tool) => tool.name))
+    const own = new Set(
+      [this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? []), ...(this.core.wake?.tools ?? [])].map((tool) => tool.name),
+    )
     const tools = [...this.core.tools.filter((tool) => !own.has(tool.name)), ...this.core.history, ...spawning, ...features]
     return offered ? [...tools, this.core.acknowledge] : tools
   }
@@ -3443,6 +3645,20 @@ class LiveSession implements EngineSession {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
+  }
+
+  // ---- wake-ups ----
+
+  /** This session's wake-up settings: the user's, tightened by the project's file. `null` when the engine offers no wake-ups. */
+  wakeConfig(): WakeConfig | null {
+    return this.core.wake === null ? null : sessionWakeConfig(this.files(), this.core.wake.user)
+  }
+
+  /** What the approval layer lets this session's commands have right now: the mode, and whether untrusted content is in the conversation. `null` when the layer is off. */
+  commandsNow(): { readonly mode: ApprovalPolicy["mode"]; readonly tainted: boolean } | null {
+    if (this.core.approvals === null) return null
+    const policy = this.policy().policy
+    return { mode: policy.mode, tainted: policy.taint === "enforce" && this.taint(policy).tainted }
   }
 
   // ---- MCP servers ----

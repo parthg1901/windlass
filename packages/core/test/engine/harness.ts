@@ -22,6 +22,7 @@ import type { EngineLimits } from "../../src/engine/constants.ts"
 import type { McpSetup } from "../../src/engine/mcp.ts"
 import type { SkillsSetup } from "../../src/engine/skills.ts"
 import type { SpawnSettings } from "../../src/engine/spawn.ts"
+import type { WakeSetup } from "../../src/engine/wake.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
 import type { ScriptedResponse } from "../../src/testing/fake-provider.ts"
 import {
@@ -350,6 +351,8 @@ export interface HarnessOptions {
   readonly skills?: SkillsSetup
   /** MCP servers. Without it the engine offers none and starts none. */
   readonly mcp?: McpSetup
+  /** Wake-ups. Without it the engine offers none; with `run` the engine fires them itself. */
+  readonly wake?: WakeSetup
   /** The user's own configuration file, apart from the project's (`config`): what the engine's features read from each. */
   readonly userConfig?: ConfigFile
   /** The directory the sessions work in. Default `/repo`, which does not exist: a test about real files names a real one. */
@@ -454,6 +457,7 @@ export class Harness {
       ...(this.options.spawn === undefined ? {} : { spawn: this.options.spawn }),
       ...(this.options.skills === undefined ? {} : { skills: this.options.skills }),
       ...(this.options.mcp === undefined ? {} : { mcp: this.options.mcp }),
+      ...(this.options.wake === undefined ? {} : { wake: this.options.wake }),
       ...(this.options.exportSnapshot === undefined ? {} : { exportSnapshot: this.options.exportSnapshot }),
       ...(this.options.refreshAuth === undefined ? {} : { refreshAuth: this.options.refreshAuth }),
       hooks: { probe: (point) => [...this.probes].forEach((probe) => probe(point)) },
