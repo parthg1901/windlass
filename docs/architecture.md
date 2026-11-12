@@ -938,7 +938,11 @@ appended later. The first step of an execution alone gives servers that have nev
   and the ones that wait, with the words of the question and the command as an argument list (`argv`, one string
   per argument as the definition has them; `null` for a server reached at an address), so a client shows it with
   `quotedCommand` and never reads the configuration file again to find where an argument ends;
-  `approveMcpServer(name, fingerprint)` records the approval and starts the server. The notice the engine
+  `approveMcpServer(name, fingerprint)` records the approval and starts the server. Both work before a session's
+  first message, like `hooks()` and `lsp()`: asked before an execution has read the configuration, `mcp()` reads
+  the files as they are now (`loadConfigSync`), so the servers that may start are starting and a project's server
+  can be approved before the first request is built; the tool list is the same either way, and the catalogue
+  still arrives as an appended message. The notice the engine
   itself says about a server that waits shows the same: the whole command, each argument quoted, never cut. The question is not tied to a tool call, so it is not an `approval.requested`
   event: the session's log does not change when a server starts, only when its catalogue is appended. Until a
   client puts the question, the user is told by a `diagnostic` of kind `mcp`, and a call that names the server is
@@ -1119,7 +1123,7 @@ would return has changed, so a client does not look again on a timer. The regist
 moved (`McpRegistry.onStatus`, `LspRegistryOptions.onStatus`), the session says when it read a configuration or
 recorded an approval, and the session compares what the getter returns with what the listeners last heard, so a
 turn that reads the same configuration again says nothing. The countdown to an MCP server's next attempt is not
-a change. Until a session's configuration is read it is taken to have no hooks and no language servers.
+a change. Until a session's configuration is read it is taken to have no servers, no hooks and no language servers.
 
 ## Slash commands and live telemetry
 

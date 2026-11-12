@@ -378,6 +378,64 @@ describe("a server the project's file names", () => {
     }
   })
 
+  test("can be approved before the session's first message: it is starting before the first request is built, and the tool list is the same", async () => {
+    const files = project()
+    const config = { mcp: { servers: { theirs: fixtureServer(["--only", "echo", "--pid-file", files.pidFile]) } } }
+    const plain = new Harness({ cwd: project().cwd, mcp: QUICK, userConfig: {} })
+    const h = new Harness({ cwd: files.cwd, mcp: { ...QUICK, startWaitMs: 8000 }, userConfig: {}, config })
+    try {
+      const heard: string[] = []
+      h.create().onFeatureChange((feature) => heard.push(feature))
+      // Nothing was sent yet: the files are read as they are now, and the server waits for the user.
+      const state = h.session.mcp()!
+      expect(state.servers).toEqual([])
+      expect(state.awaiting.map((question) => question.name)).toEqual(["theirs"])
+      expect(heard).toEqual(["mcp"])
+      expect(h.diagnostics.filter((diagnostic) => diagnostic.kind === "mcp")).toHaveLength(1)
+      expect(existsSync(files.pidFile)).toBe(false)
+      // Approved before the first message, it starts at once: no turn is needed for it.
+      expect(h.session.approveMcpServer("theirs", state.awaiting[0]!.fingerprint)).toBe(true)
+      expect(h.session.mcp()!.awaiting).toEqual([])
+      expect(h.session.mcp()!.servers.map((server) => server.name)).toEqual(["theirs"])
+      expect(h.log().map((item) => item.type)).toEqual(["session.created"])
+
+      h.provider.enqueue(answer("It is there."))
+      h.session.send("Which MCP tools are there?")
+      await h.settled()
+      // The first request has the catalogue, as an appended message; nothing was asked in the middle of the turn.
+      expect(h.provider.requests).toHaveLength(1)
+      expect(developer(h.provider.requests[0]!)).toHaveLength(1)
+      expect(developer(h.provider.requests[0]!)[0]).toContain("theirs (1 tool):\n- echo: Echo the text back.")
+      expect(catalogues(h)).toHaveLength(1)
+      expect(h.diagnostics.filter((diagnostic) => diagnostic.kind === "mcp")).toHaveLength(1)
+      expect(h.provider.prefixBreaks()).toEqual([])
+      h.verify()
+
+      // The frozen tool list and the instructions are those of a session with no server at all.
+      plain.provider.enqueue(answer("None."))
+      plain.create().send("Which MCP tools are there?")
+      await plain.settled()
+      expect(h.provider.requests[0]!.tools).toEqual(plain.provider.requests[0]!.tools)
+      expect(h.provider.requests[0]!.instructions).toBe(plain.provider.requests[0]!.instructions)
+    } finally {
+      await h.dispose()
+      await plain.dispose()
+    }
+  })
+
+  test("a server of the user's own file is starting as soon as a client asks, before the first message", async () => {
+    const files = project()
+    await withHarness({ cwd: files.cwd, userConfig: { mcp: { servers: { fx: fixtureServer(["--only", "echo"]) } } } }, async (h) => {
+      expect(h.create().mcp()!.servers.map((server) => server.name)).toEqual(["fx"])
+      await waitFor(() => ready(h, "fx"), 10_000, "the server to connect")
+      h.provider.enqueue(answer("Hello."))
+      h.session.send("Hi.")
+      await h.settled()
+      expect(developer(h.provider.requests[0]!)[0]).toContain("fx (1 tool):")
+      expect(h.provider.prefixBreaks()).toEqual([])
+    })
+  })
+
   test("a server of the user's own file that the project's file changes waits too; one it leaves alone starts", async () => {
     const files = project()
     await withHarness(

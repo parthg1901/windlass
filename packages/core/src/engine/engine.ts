@@ -1975,6 +1975,8 @@ class LiveSession implements EngineSession {
   private mcpPlan: readonly McpServerPlan[] = []
   /** The session's servers as its bridge tools and its catalogue read them. Rebuilt when the held servers change. */
   private mcpBackend: SessionServers | null = null
+  /** Whether the servers were read from a configuration in this process: an execution's, or the files as they were when a client first asked. */
+  private mcpRead = false
   /** The hooks the configuration of the latest execution names: the user's, then the project's. */
   private hookConfig: HooksConfig = NO_HOOKS
   /** The fingerprints of the project's hooks the user approved, as the remembered approvals had them when the configuration was read. */
@@ -5216,6 +5218,14 @@ class LiveSession implements EngineSession {
 
   mcp = (): McpState | null => {
     if (this.core.mcp === null) return null
+    // Before the first turn of this process the files are read here, as they are now: a project's server can be
+    // approved, and the user's own are starting, before the first request is built. (A replay names no servers.)
+    if (!this.mcpRead && this.director === null && this.projection().session.replay === undefined) this.attachMcp()
+    return this.mcpNow()
+  }
+
+  /** The servers as the configuration that was read last has them: none before one was read. */
+  private mcpNow(): McpState {
     return { servers: this.mcpServers().status(), awaiting: this.mcpPlan.filter((plan) => plan.config.enabled && !plan.approved).map(serverQuestion) }
   }
 
@@ -5234,13 +5244,13 @@ class LiveSession implements EngineSession {
   /**
    * What `mcp()`, `hooks()` or `lsp()` would return, as a string to compare,
    * without reading a configuration that was not read yet (a session is
-   * taken to have no hooks and no language servers until then), and without
+   * taken to have no servers and no hooks until then), and without
    * the countdown to a server's next attempt.
    */
   private featureKey(feature: SessionFeature): string {
     switch (feature) {
       case "mcp": {
-        const state = this.mcp()
+        const state = this.core.mcp === null ? null : this.mcpNow()
         return JSON.stringify(state === null ? null : { servers: state.servers.map(({ retryInMs: _countdown, ...server }) => server), awaiting: state.awaiting })
       }
       case "hooks":
@@ -5267,7 +5277,8 @@ class LiveSession implements EngineSession {
 
   approveMcpServer = (name: string, fingerprint?: string): boolean => {
     this.assertOpen()
-    if (this.core.mcp === null) return false
+    // What waits is what `mcp()` says waits: before the first turn that reads the files as they are now.
+    if (this.mcp() === null) return false
     const plan = this.mcpPlan.find((item) => item.config.name === name && !item.approved && item.config.enabled && (fingerprint === undefined || item.fingerprint === fingerprint))
     if (plan === undefined) return false
     const now = this.core.clock.now()
@@ -5285,6 +5296,7 @@ class LiveSession implements EngineSession {
   private attachMcp(): void {
     const mcp = this.core.mcp
     if (mcp === null || this.closing !== null) return
+    this.mcpRead = true
     const cwd = this.projection().session.cwd
     let plans: McpServerPlan[]
     try {
