@@ -155,7 +155,8 @@ describe("how a turn ended", () => {
       ["succeeded", "end_turn", null, [], true],
       ["interrupted", "cancelled", "user", [], true],
     ])
-  })
+    // A load also reads each turn's snapshots: on two loaded cores this took over the default 10 s.
+  }, 30_000)
 
   test("the step limit: _meta maxSteps on the prompt ends the turn at max_turn_requests", async () => {
     const harness = await start({ responses: [[script.toolCall("call_1", "ls", {})], [script.text("Stopping.")]] })
