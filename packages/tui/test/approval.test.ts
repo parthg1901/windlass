@@ -171,7 +171,7 @@ describe("the approval dock", () => {
 
   test("a subagent that asks is named; none, nothing", async () => {
     await asked({ subagent: "test-fixer" })
-    expect(await mounted!.frame()).toContain("asked by subagent test-fixer")
+    expect(await mounted!.frame()).toContain("subagent: test-fixer")
   })
 
   test("the dock goes away when the call is settled without it (the answer came, the turn ended)", async () => {

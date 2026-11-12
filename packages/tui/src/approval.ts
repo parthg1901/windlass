@@ -121,7 +121,8 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
   const ask = state.ask
   const question = ask.question
   const inner = Math.max(10, columns - 2)
-  const who = ask.subagent === null ? "" : ` asked by subagent ${ask.subagent} `
+  // A subagent's question says which one asks: the first line of its task.
+  const who = ask.subagent === null ? "" : ` subagent: ${truncate(sanitize(ask.subagent), Math.max(12, Math.floor(columns / 3)))} `
   const title = truncate(sanitize(question.title), Math.max(10, columns - 6 - textWidth(who)))
   const rule = Math.max(0, columns - 4 - textWidth(title) - textWidth(who))
   const head: Span[] = [span("─ ", "warn"), span("? ", "warn", { bold: true }), span(title, undefined, { bold: true }), span(` ${"─".repeat(Math.max(0, rule - 1))}`, "warn"), span(who, "accent", { bold: true })]

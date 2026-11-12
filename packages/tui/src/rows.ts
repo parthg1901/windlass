@@ -14,12 +14,14 @@ import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } fr
 import { markdown } from "./markdown.ts"
 import type { DiffFile } from "@light-harness/acp/extensions"
 import { type Line, type Role, type Span, span } from "./theme.ts"
-import { type NoticeRow, type OutcomeRow, type PendingItem, type ReasoningRow, type Row, type TextRow, type ToolRow, type UserRow, asObject } from "./transcript.ts"
+import { type NoticeRow, type OutcomeRow, type PendingItem, type ReasoningRow, type Row, type SubagentView, type TextRow, type ToolRow, type UserRow, asObject } from "./transcript.ts"
 
 /** Lines of output an expanded call shows before it says how many more there are. */
 export const EXPANDED_OUTPUT_LINES = 24
 /** Lines of output a fully expanded call shows at most. More than that is in the tool's spill file, or truncated. */
 export const FULL_OUTPUT_LINES = 2000
+/** Lines of a subagent's own work an expanded `subagent` row shows (its latest), before a second expansion shows all of it. */
+export const SUBAGENT_LINES = 40
 
 export interface LayoutContext {
   /** The local clock, for the live duration of a running call. */
@@ -110,6 +112,7 @@ function reasoningLines(row: ReasoningRow, columns: number): Span[][] {
 function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[][] {
   const head = toolHead(row, columns, context)
   const lines: Span[][] = [head]
+  if (row.subagent !== null) return [head, ...subagentLines(row, row.subagent, columns, context)]
   if (row.expand === 0) {
     if (row.phase === "running" && row.progress !== null) {
       const last = row.progress.split("\n").filter((line) => line.trim() !== "").at(-1)
@@ -127,6 +130,52 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
   lines.push(...runLines(row, columns))
   lines.push(...outputLines(row, columns))
   return lines
+}
+
+/**
+ * A `subagent` call. Collapsed: one line of what its subagent is doing (or
+ * that it asks you something, or how it ended). Expanded: its own
+ * conversation, from its forwarded events, laid out as any session's rows
+ * are, under a rule: its task, its steps and tool calls, its answer; the
+ * latest `SUBAGENT_LINES` of it, all of it on a second expansion.
+ */
+function subagentLines(row: ToolRow, view: SubagentView, columns: number, context: LayoutContext): Span[][] {
+  const rows = view.transcript.rows
+  const tools = rows.filter((candidate): candidate is ToolRow => candidate.kind === "tool")
+  const steps = view.steps
+  const counted = `${plural(steps, "step")}, ${plural(tools.length, "tool call")}`
+  const where = view.background ? "in the background · " : ""
+  const status = (): Span[] => {
+    if (view.asking) return [span(`${INDENT}↳ `, "warn"), span("it asks you something: answer below", "warn")]
+    switch (view.state) {
+      case "running": {
+        const current = tools.findLast((candidate) => candidate.phase !== "settled") ?? tools.at(-1)
+        const now = current === undefined ? "starting" : `${current.phase === "settled" ? "last" : "now"}: ${current.name} ${current.arg}`.trim()
+        return [span(`${INDENT}↳ ${where}${counted} · ${now}`, "dim")]
+      }
+      case "completed":
+        return [span(`${INDENT}↳ ${where}finished after ${counted}`, "dim")]
+      default:
+        return [span(`${INDENT}↳ ${where}${view.state} after ${counted}${view.detail === null ? "" : ` · ${view.detail}`}`, "warn")]
+    }
+  }
+  if (row.expand === 0) return wrapLine(status(), columns, [span(INDENT + "  ")]).slice(0, 2)
+  const inner = Math.max(20, columns - 4)
+  const bar = [span("  │ ", "dim")]
+  const body: Span[][] = []
+  let previous: Row | null = null
+  for (const child of rows) {
+    const laid = layoutRow(child, inner, context)
+    if (laid.length === 0) continue
+    if (gapBefore(child, previous)) body.push([])
+    body.push(...laid)
+    previous = child
+  }
+  const limit = row.expand === 2 ? FULL_OUTPUT_LINES : SUBAGENT_LINES
+  const shown = body.length > limit ? [[span(`… ${plural(body.length - limit, "earlier line")}${row.expand === 2 ? "" : " (expand again for all)"}`, "dim")], ...body.slice(-limit)] : body
+  const framed = shown.map((line) => [...bar, ...line])
+  if (framed.length === 0) framed.push([...bar, span("nothing yet", "dim")])
+  return [...framed, ...wrapLine(status(), columns, [span(INDENT + "  ")]).slice(0, 2)]
 }
 
 /** Expanded: how the call ran, and the question it was asked under. */

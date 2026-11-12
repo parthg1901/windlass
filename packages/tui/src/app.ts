@@ -765,7 +765,8 @@ export class App {
    */
   private approve(ask: ApprovalAsk, signal: AbortSignal): Promise<ApprovalAnswer | null> {
     this.dock?.answer(null)
-    const row = this.transcript.toolRowOf(ask.messageId, ask.callId)
+    // A subagent's question is about a call in the subagent's own conversation.
+    const row = this.transcript.toolRowFor(ask)
     const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
     return new Promise((resolve) => {
       const state = new DockState(ask, row === null ? null : { name: row.name, arg: row.arg }, { focused: quiet, now: this.now() })
@@ -796,7 +797,7 @@ export class App {
   private settleDock(): void {
     const dock = this.dock
     if (dock === null) return
-    const row = this.transcript.toolRowOf(dock.state.ask.messageId, dock.state.ask.callId)
+    const row = this.transcript.toolRowFor(dock.state.ask)
     const stillAsked = row === null || (row.phase !== "settled" && (row.approval === null || (row.approval.state === "asked" && row.approval.live)))
     if (!stillAsked || !this.transcript.activity.executing) this.closeDock()
   }
@@ -1079,6 +1080,10 @@ export class App {
     if (this.connection !== "connected") parts.push(span(this.connection === "starting" ? "⋯ starting the engine" : `✗ ${this.connection}`, this.connection === "starting" ? "dim" : "error"))
     else if (activity.executing) parts.push(...this.activityText(now))
     else parts.push(span("● ready", "dim"))
+    // Work that goes on while the session's own turn waits or is over: a subagent in the background.
+    const subagents = this.transcript.runningSubagents()
+    if (this.connection === "connected" && subagents.length > 0 && (!activity.executing || subagents.some((view) => view.background)))
+      parts.push(span(` · ${plural(subagents.length, "subagent")} at work${subagents.length === 1 ? `: ${truncate(subagents[0]!.title ?? "", 30)}` : ""}`, "accent"))
     if (this.conversation.scrolledAway) {
       const below = this.conversation.newBelow
       parts.push(span(`   ↑ scrolled${below > 0 ? ` · ${plural(below, "new line")} below` : ""} · Esc follows`, "warn"))
@@ -1160,6 +1165,7 @@ export class App {
         connection: this.connection === "connected" ? "connected" : this.connection,
         home: this.options.home,
         approval: this.approvalInfo === null || !this.approvalInfo.enabled ? null : { mode: this.approvalInfo.mode, sandbox: this.approvalInfo.sandboxUnavailable === null },
+        subagents: this.transcript.runningSubagents().map((view) => ({ title: view.title ?? view.sessionId, background: view.background, asking: view.asking })),
       },
       columns,
       rows,

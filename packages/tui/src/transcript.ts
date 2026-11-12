@@ -76,6 +76,26 @@ export interface ToolRow extends RowBase {
   sandbox: { readonly network: boolean; readonly writableRoots: readonly string[] } | null | undefined
   /** The call's approval: asked (and how it was answered), or refused without a question. */
   approval: ToolApproval | null
+  /** A `subagent` call's subagent, once it started: its activity, from the events its parent forwards. */
+  subagent: SubagentView | null
+}
+
+/** A subagent as its parent's tool row shows it. */
+export interface SubagentView {
+  readonly sessionId: string
+  readonly spawnId: string
+  readonly background: boolean
+  /** The first line of its task. */
+  title: string | null
+  /** Its own conversation: its steps, tool rows and answer, folded from its forwarded events like any session's. */
+  readonly transcript: Transcript
+  state: "running" | "completed" | "failed" | "stopped" | "lost"
+  /** Why it ended, when it did not simply finish. */
+  detail: string | null
+  /** A question of its own waits for the user. */
+  asking: boolean
+  /** Its steps (model calls) that ended, whatever they reported. */
+  steps: number
 }
 
 export type ToolApproval =
@@ -216,6 +236,8 @@ export class Transcript {
   private readonly openText = new Map<string, TextRow>()
   private readonly openReasoning = new Map<string, ReasoningRow>()
   private readonly tools = new Map<string, ToolRow>()
+  /** The rows of the `subagent` calls whose subagent started, by the subagent's session. */
+  private readonly children = new Map<string, ToolRow>()
   private readonly checks = new Map<number, { row: NoticeRow; startedAt: number }>()
   private readonly compactions = new Map<string, { row: NoticeRow; tokensBefore: number; model: string | null }>()
   private readonly inboxText = new Map<string, { text: string; delivery: "steer" | "queue"; midTurn: boolean }>()
@@ -253,7 +275,7 @@ export class Transcript {
     this.calls.length = 0
     Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, taint: null })
     Object.assign(this.activity, blankActivity())
-    for (const map of [this.openText, this.openReasoning, this.tools, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
+    for (const map of [this.openText, this.openReasoning, this.tools, this.children, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
     this.diagnosticsForNext = []
     this.turn = null
     this.cutOff = null
@@ -286,6 +308,22 @@ export class Transcript {
     return this.tools.get(key(messageId, callId)) ?? null
   }
 
+  /** The row of the call a question is about: one of this session's, or one in a subagent's own transcript. */
+  toolRowFor(ask: { readonly messageId: string; readonly callId: string; readonly subagentSessionId?: string | null }): ToolRow | null {
+    if (ask.subagentSessionId == null) return this.toolRowOf(ask.messageId, ask.callId)
+    return this.children.get(ask.subagentSessionId)?.subagent?.transcript.toolRowOf(ask.messageId, ask.callId) ?? null
+  }
+
+  /** The `subagent` row of a subagent's session, if it started here. */
+  subagentRow(sessionId: string): ToolRow | null {
+    return this.children.get(sessionId) ?? null
+  }
+
+  /** The subagents still at work, oldest first: in the foreground or the background. */
+  runningSubagents(): SubagentView[] {
+    return [...this.children.values()].flatMap((row) => (row.subagent !== null && row.subagent.state === "running" ? [row.subagent] : []))
+  }
+
   private handle(event: EngineEvent, replay: boolean): void {
     switch (event.type) {
       case "text.delta":
@@ -313,6 +351,44 @@ export class Transcript {
         const call = this.activity.call
         if (event.kind !== "prefix_violation" && call !== null) this.callDiagnostics.set(call.messageId, [...(this.callDiagnostics.get(call.messageId) ?? []), event.kind])
         else this.diagnosticsForNext.push(event.kind)
+        return
+      }
+      case "spawn.started": {
+        const work = event.data.work
+        if (work.kind !== "subagent") return
+        const row = this.tools.get(key(event.data.messageId, event.data.callId)) ?? this.toolRow(event.data.messageId, event.data.callId, "subagent", "", replay)
+        const view: SubagentView = { sessionId: work.sessionId, spawnId: event.data.spawnId, background: event.data.background, title: null, transcript: new Transcript(this.now), state: "running", detail: null, asking: false, steps: 0 }
+        this.touch(row, () => (row.subagent = view))
+        this.children.set(work.sessionId, row)
+        return
+      }
+      case "spawn.ended": {
+        const row = [...this.children.values()].find((candidate) => candidate.subagent?.spawnId === event.data.spawnId)
+        if (row === undefined || row.subagent === null) return
+        const view = row.subagent
+        this.touch(row, () => {
+          view.state = event.data.outcome
+          view.detail = event.data.outcome === "completed" ? null : sanitize(event.data.detail)
+          view.asking = false
+        })
+        if (this.activity.waiting?.key === row.key) this.activity.waiting = null
+        return
+      }
+      case "child.event": {
+        const row = this.children.get(event.child)
+        if (row === undefined || row.subagent === null) return
+        const view = row.subagent
+        const inner = event.event
+        this.touch(row, () => {
+          view.title ??= sanitize(event.title)
+          view.transcript.apply(inner, replay)
+          if (inner.type === "step.ended" || inner.type === "step.failed" || inner.type === "step.refused") view.steps += 1
+          if (inner.type === "approval.requested") view.asking = !replay
+          if (inner.type === "approval.answered" || inner.type === "approval.denied" || inner.type === "execution.interrupt_requested") view.asking = false
+        })
+        // The subagent's question waits for this user: the status line says so, as for one of the session's own.
+        if (inner.type === "approval.requested" && !replay) this.activity.waiting = { key: row.key, since: this.now() }
+        if ((inner.type === "approval.answered" || inner.type === "approval.denied" || inner.type === "execution.interrupt_requested") && this.activity.waiting?.key === row.key) this.activity.waiting = null
         return
       }
       case "session.created":
@@ -747,6 +823,7 @@ export class Transcript {
         expand: 0,
         sandbox: undefined,
         approval: null,
+        subagent: null,
       },
       replay,
     )

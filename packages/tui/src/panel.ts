@@ -49,6 +49,8 @@ export interface PanelInput {
   readonly home: string | null
   /** The approval mode, and whether commands can be sandboxed here; `null` when the server runs without the approval layer. */
   readonly approval?: { readonly mode: string | null; readonly sandbox: boolean } | null
+  /** The session's subagents at work, in the foreground or the background. */
+  readonly subagents?: readonly { readonly title: string; readonly background: boolean; readonly asking: boolean }[]
 }
 
 export const PANEL_WIDTH = 36
@@ -66,6 +68,9 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   field("model", session.model ?? "—")
   field("effort", session.effort ?? "default")
   field("state", stateText(input))
+  // Every subagent at work, one line each: what it was asked, and whether it waits for you or works in the background.
+  for (const [index, agent] of (input.subagents ?? []).entries())
+    field(index === 0 ? "agents" : "", `${agent.asking ? "? " : agent.background ? "◌ " : "⋯ "}${shorten(agent.title, inner - 9)}`, agent.asking ? "warn" : undefined)
   // Cut at a word where it can, without a stray full stop before the ellipsis.
   if (session.title !== null && session.title !== "") field("title", shorten(session.title, inner - 7))
   const approval = input.approval ?? null
