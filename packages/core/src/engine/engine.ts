@@ -62,7 +62,7 @@ import type { CallMatch, Divergence } from "../replay/match.ts"
 import { type Replay, type ReplayWorkspace, createReplay } from "../replay/replay.ts"
 import { type Tape, tapeFromEvents } from "../replay/tape.ts"
 import { type CallRun, type ChoiceId, TaintHistory } from "../approval/record.ts"
-import { redact } from "../approval/redact.ts"
+import { redact, unfinishedSecret } from "../approval/redact.ts"
 import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
 import { brand } from "../brand.ts"
@@ -2908,7 +2908,17 @@ class LiveSession implements EngineSession {
       ])
     const place = this.tempContext()
     // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it too.
-    const extras = approvals === null ? {} : { ...place, ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }), redact: redactor(approvals.secrets) }
+    // A credential's value that has only begun to arrive is held back until the rest is there (a value with a line
+    // break in it arrives in parts), so a command's progress never shows the first half of one.
+    const extras =
+      approvals === null
+        ? {}
+        : {
+            ...place,
+            ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }),
+            redact: redactor(approvals.secrets),
+            unfinishedSecret: (text: string) => unfinishedSecret(text, approvals.secrets),
+          }
     const request = (call: ToolCallPart): ToolCall => ({
       name: call.name,
       argumentsText: call.input,

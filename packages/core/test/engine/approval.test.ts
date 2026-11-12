@@ -17,6 +17,8 @@ import type { StoredEvent } from "../../src/event/durable.ts"
 import type { CallId, MessageId } from "../../src/id.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { redactPieces } from "../../src/approval/redact.ts"
+import { redactingStream } from "../../src/tool/redact-stream.ts"
 import type { SandboxRun, ToolContext } from "../../src/tool/tool.ts"
 import { CHECKS_CONFIG } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, type HarnessOptions, ScriptedTools, failed, removeHarnessDirectories, untilAbort } from "./harness.ts"
@@ -660,3 +662,46 @@ test("a command that is still running when the user interrupts is stopped as bef
       ["call_2", "not_started", TOOL_TEXT.notStarted],
     ])
   }))
+
+describe("a credential's value that arrives in parts", () => {
+  /** A value with a line break in it, as a private key or a multi-line token in an environment variable has. */
+  const TWO_LINES = "first-line-of-the-secret-value\nsecond-line-of-the-secret-value"
+
+  test("a tool is handed the check for an unfinished value, so output that is cut between its lines never shows the first half", () =>
+    withHarness(
+      async (h) => {
+        const emitted: string[] = []
+        h.provider.enqueue([shell("print-secret")], [script.text("Done.")])
+        h.tools.on("shell", (_, context: ToolContext) => {
+          expect(context.unfinishedSecret).toBeDefined()
+          // Where the first line of the value begins: from there the text is held back until more has arrived.
+          const arrived = `token: ${TWO_LINES.slice(0, 31)}`
+          expect(context.unfinishedSecret!(arrived)).toBe("token: ".length)
+          expect(context.unfinishedSecret!("nothing secret here\n")).toBe("nothing secret here\n".length)
+          // As the shell tool redacts a running command's output with what the loop hands it.
+          const stream = redactingStream({ redact: context.redact!, unfinishedSecret: context.unfinishedSecret! }, (bytes) => emitted.push(new TextDecoder().decode(bytes)))
+          const encoder = new TextEncoder()
+          stream.write(encoder.encode(arrived))
+          stream.write(encoder.encode(`${TWO_LINES.slice(31)}\nafter\n`))
+          stream.end()
+          return emitted.join("")
+        })
+        h.create().send("Print it.")
+        await h.settled()
+        expect(emitted.join("")).toBe("token: [REDACTED:env]\nafter\n")
+        for (const piece of emitted) expect(piece).not.toContain("first-line-of-the-secret")
+        expect(settled(h)[0]![2]).toBe("token: [REDACTED:env]\nafter\n")
+      },
+      { approval: setup({ secrets: [TWO_LINES] }) },
+    ))
+
+  test("without the check the same output would have shown the first line: it is what closes the gap", () => {
+    const emitted: string[] = []
+    const stream = redactingStream({ redact: (text) => redactPieces(text, [TWO_LINES]) }, (bytes) => emitted.push(new TextDecoder().decode(bytes)))
+    const encoder = new TextEncoder()
+    stream.write(encoder.encode(`token: ${TWO_LINES.slice(0, 31)}`))
+    stream.write(encoder.encode(`${TWO_LINES.slice(31)}\nafter\n`))
+    stream.end()
+    expect(emitted.join("")).toContain("first-line-of-the-secret-value")
+  })
+})
