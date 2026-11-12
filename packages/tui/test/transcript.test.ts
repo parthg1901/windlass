@@ -3,7 +3,7 @@ import { event, type NewEvent } from "@windlass/core"
 import { c, executionSucceeded, m, opening, say, stepStarted } from "@windlass/core/testing/scenarios"
 import { findScenario } from "../src/cli.ts"
 import { summarize } from "../src/panel.ts"
-import { Transcript } from "../src/transcript.ts"
+import { Transcript, instructionStart } from "../src/transcript.ts"
 import { layoutRow } from "../src/rows.ts"
 import { CLOCK_START, stamp } from "./helpers.ts"
 
@@ -245,5 +245,29 @@ describe("a steered message", () => {
     expect(at(120)).toEqual([`› ${text}  ↳ steered into the turn`])
     expect(at(78)).toEqual([`› ${text}`, "  ↳ steered into the turn"])
     expect(at(78).every((line) => Bun.stringWidth(line) <= 78)).toBe(true)
+  })
+})
+
+describe("an instruction update", () => {
+  const INDEX = [
+    "Agents you can run a subagent as:",
+    '<agents lines="3">',
+    "An agent is a role kept as a file: instructions, and sometimes a model and restrictions.",
+    "",
+    "- reviewer (read only): Reads the code and reports problems; changes nothing",
+    "</agents>",
+  ].join("\n")
+
+  test("is one row: how it begins, how much more the model was given, and the command that lists the same", () => {
+    const transcript = play([event("instruction.appended", { messageId: m("n1"), source: "agent-index", text: INDEX, fingerprint: "aaa" })])
+    const row = transcript.rows.find((candidate) => candidate.kind === "notice")!
+    const lines = layoutRow(row, 120, { now: CLOCK_START, debug: false, color: false }).map((line) => line.map((part) => part.text).join(""))
+    expect(lines).toEqual(["· instructions updated (agent-index): Agents you can run a subagent as: … · 4 more lines · /agent lists them"])
+    expect(lines.join("")).not.toContain("<agents")
+  })
+
+  test("a one-line update is said whole, and a source with no command of its own names none", () => {
+    expect(instructionStart("agent-index", "3 agents: reviewer, docs, tester")).toBe("3 agents: reviewer, docs, tester")
+    expect(instructionStart("agents:src/AGENTS.md", "Use tabs.\nNo semicolons.")).toBe("Use tabs. … · 1 more line")
   })
 })

@@ -791,7 +791,7 @@ export class Transcript {
         if (this.instructionsShown.has(event.data.source) && this.instructionsShown.get(event.data.source) === event.data.fingerprint) return
         this.instructionsShown.set(event.data.source, event.data.fingerprint)
         if (event.data.fingerprint === null) this.notice(SYMBOL.note, "dim", [span(`instructions removed: ${source}`, "dim")], [], replay, "work")
-        else this.notice(SYMBOL.note, "dim", [span(`instructions updated (${source}): `, "dim"), span(oneLine(event.data.text), "dim")], [], replay, "work")
+        else this.notice(SYMBOL.note, "dim", [span(`instructions updated (${source}): `, "dim"), span(instructionStart(event.data.source, event.data.text), "dim")], [], replay, "work")
         return
       }
       case "baseline.set": {
@@ -1406,6 +1406,21 @@ function pathArgument(input: string): string | null {
   } catch {
     return null
   }
+}
+
+/** Where the user reads what an instruction source told the model. */
+const INSTRUCTION_LISTED: Record<string, string> = { "agent-index": "/agent", skills: "/skills", mcp: "/mcp", memory: "/memory" }
+
+/**
+ * An instruction update on one row: how it begins, and how much more there is. The rest is the model's to
+ * read (a section in its own markup); the command that lists the same for the user is named where there is one.
+ */
+export function instructionStart(source: string, text: string): string {
+  const lines = sanitize(text).split("\n").map((line) => line.trim()).filter((line) => line !== "")
+  const first = lines[0] ?? ""
+  if (lines.length <= 1) return first
+  const listed = INSTRUCTION_LISTED[source]
+  return `${first} … · ${plural(lines.length - 1, "more line")}${listed === undefined ? "" : ` · ${listed} lists them`}`
 }
 
 function sourceLabel(source: string): string {
