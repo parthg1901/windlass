@@ -94,19 +94,42 @@ export function array<T>(item: Validator<T>): Validator<readonly T[]> {
 
 type Shape = Record<string, Validator<unknown>>
 
-/** A strict object: every key in `shape` is required and no other key is allowed. */
-export function object<S extends Shape>(shape: S): Validator<{ readonly [K in keyof S]: Infer<S[K]> }> {
+const OPTIONAL: unique symbol = Symbol("optional")
+
+/** A validator for a key that may be absent from an `object`. An absent key stays absent in the result. */
+export type Optional<T> = Validator<T> & { readonly [OPTIONAL]: true }
+
+/**
+ * Marks a key of an `object` as one that may be left out. For a field added
+ * to a stored shape after values of that shape were written: the old values
+ * still decode, and a value written without the key round-trips unchanged.
+ */
+export function optional<T>(inner: Validator<T>): Optional<T> {
+  const validator = (input: unknown, path: string) => inner(input, path)
+  return Object.assign(validator, { [OPTIONAL]: true as const })
+}
+
+type RequiredKeys<S> = { [K in keyof S]: S[K] extends Optional<unknown> ? never : K }[keyof S]
+type OptionalKeys<S> = { [K in keyof S]: S[K] extends Optional<unknown> ? K : never }[keyof S]
+type ObjectOf<S> = { readonly [K in RequiredKeys<S>]: Infer<S[K]> } & { readonly [K in OptionalKeys<S>]?: Infer<S[K]> } extends infer O ? { readonly [K in keyof O]: O[K] } : never
+
+/** A strict object: every key in `shape` is required unless it is `optional`, and no other key is allowed. */
+export function object<S extends Shape>(shape: S): Validator<ObjectOf<S>> {
   const keys = Object.keys(shape)
   return (input, path) => {
     if (!isPlainObject(input)) throw new DecodeError(path, "object", input)
     const unknown = Object.keys(input).find((key) => !Object.hasOwn(shape, key))
     if (unknown !== undefined) throw new DecodeError(join(path, unknown), "no such key", input[unknown])
     return Object.fromEntries(
-      keys.map((key) => {
-        if (!Object.hasOwn(input, key)) throw new DecodeError(join(path, key), "a value", undefined)
-        return [key, shape[key]!(input[key], join(path, key))]
+      keys.flatMap((key) => {
+        const validator = shape[key]!
+        if (!Object.hasOwn(input, key) || (input[key] === undefined && OPTIONAL in validator)) {
+          if (OPTIONAL in validator) return []
+          throw new DecodeError(join(path, key), "a value", undefined)
+        }
+        return [[key, validator(input[key], join(path, key))]]
       }),
-    ) as { readonly [K in keyof S]: Infer<S[K]> }
+    ) as ObjectOf<S>
   }
 }
 

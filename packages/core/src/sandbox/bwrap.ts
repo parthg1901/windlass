@@ -56,6 +56,11 @@ export function bwrapArgv(policy: SandboxPolicy, command: readonly string[], cwd
       const real = existingRealpath(root)
       return real ? ["--bind", real, real] : []
     }),
+    // After the writable roots, so they are read-only inside them. A file is bound too: replacing it by rename then fails.
+    ...(policy.readOnlyPaths ?? []).flatMap((path) => {
+      const real = existingRealpath(path)
+      return real ? ["--ro-bind", real, real] : []
+    }),
     // Last, so they cover anything above, including paths inside writable roots.
     ...outermost(policy.hiddenPaths.map(existingRealpath).filter((path) => path !== null)).flatMap((path) => hideArgs(path, options)),
     "--chdir",

@@ -9,7 +9,10 @@
  *   2. unknown tool             -> `refused`, error     (onStart is not called)
  *   3. arguments not JSON       -> `refused`, error     (onStart is not called)
  *   4. arguments fail schema    -> `refused`, error     (onStart is not called)
- *   5. onStart(), then execute:
+ *   5. authorize(), when the caller gave one (the approval decision):
+ *      refused                  -> `denied`, error     (onStart is not called)
+ *      aborted meanwhile        -> `not_started`       (onStart is not called)
+ *   6. onStart(), then execute:
  *      returned                 -> `completed`, the tool's status, output capped once
  *      threw                    -> `crashed`, error for `read` tools, effect_unknown otherwise
  */
@@ -19,7 +22,7 @@ import { interruptReasonOf } from "../interrupt.ts"
 import { excerpt, parseArguments } from "./args.ts"
 import { OUTPUT_LIMITS, type OutputLimits, capOutput } from "./cap.ts"
 import { type SchemaCheck, compileSchema } from "./schema.ts"
-import type { AnyTool, PutBlob, ToolContext, ToolResult, Truncation } from "./tool.ts"
+import type { AnyTool, PutBlob, SandboxRun, ToolContext, ToolResult, Truncation } from "./tool.ts"
 
 /** Exactly the fields of the `tool.settled` event besides `messageId` and `callId`. */
 export interface Settlement<Outcome extends "success" | "error" | "not_started" | "effect_unknown"> {
@@ -44,6 +47,8 @@ export type ToolCallOutcome =
       readonly reason: "unknown_tool" | "malformed_arguments" | "invalid_arguments"
       readonly settlement: Settlement<"error">
     }
+  /** The caller's `authorize` refused the call (the policy, or the user who was asked). It never started. */
+  | { readonly kind: "denied"; readonly settlement: Settlement<"error"> }
   | { readonly kind: "completed"; readonly settlement: Settlement<"success" | "error"> }
   | {
       /** The tool threw (a bug in the tool). `error` is for logs only. */
@@ -62,7 +67,22 @@ export interface ToolCall {
   readonly context: ToolCallContext
 }
 
+/** What `authorize` decided for a call whose arguments were accepted. */
+export type Authorization =
+  /** Run it. `sandbox`: how a command runs (see `ToolContext.sandbox`). `note`: text put before the tool's output. */
+  | { readonly kind: "run"; readonly sandbox?: SandboxRun | null; readonly note?: string }
+  /** Do not run it. `output` is the error result the model sees. */
+  | { readonly kind: "refuse"; readonly output: string }
+
 export interface RunHooks {
+  /**
+   * Called after the input was accepted and before `onStart`, with the tool
+   * and its validated input: the place to decide whether the call runs, runs
+   * sandboxed or is refused, and to wait for an answer when someone must be
+   * asked. If the abort signal fires while it waits, the call is `not_started`
+   * whatever it resolves with. If it rejects, the call's promise rejects.
+   */
+  readonly authorize?: (tool: AnyTool, input: Json) => Authorization | Promise<Authorization>
   /**
    * Called synchronously right before `execute`, after the input was accepted.
    * The step loop writes `tool.started` here. If it throws, the tool does not
@@ -113,9 +133,15 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       )
     const input = acceptInput(entry.tool.name, entry.check, call.argumentsText)
     if (!input.ok) return input.outcome
+    const decided = hooks.authorize === undefined ? null : await hooks.authorize(entry.tool, input.value)
+    const stopped = interruptReasonOf(call.context.signal)
+    if (stopped !== null) return notStarted(stopped)
+    if (decided?.kind === "refuse") return { kind: "denied", settlement: { outcome: "error", output: decided.output, truncation: null, attachments: [], display: null } }
     hooks.onStart?.()
-    const result = await execute(entry.tool, input.value, { ...call.context, putBlob: options.putBlob })
-    if (!result.ok) return crashed(entry.tool, result.error)
+    const context = { ...call.context, putBlob: options.putBlob, ...(decided?.sandbox === undefined ? {} : { sandbox: decided.sandbox }) }
+    const ran = await execute(entry.tool, input.value, context)
+    if (!ran.ok) return crashed(entry.tool, ran.error)
+    const result = decided?.note === undefined ? ran : { ok: true as const, value: { ...ran.value, output: `${decided.note}\n\n${ran.value.output}` } }
     if (result.value.truncation !== null)
       return { kind: "completed", settlement: { ...settlementOf(result.value), outcome: result.value.status } }
     const capped = await capOutput(result.value.output, options.spillDir, limits)

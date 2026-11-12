@@ -28,6 +28,7 @@ export {
   applies,
   grant,
   grantRule,
+  grantScope,
   isCovered,
   isOutbound,
   rememberableScopes,
@@ -46,5 +47,6 @@ export {
   sandboxHint,
 } from "./escalation.ts"
 export { type CallFacts, type Choice, type Decision, type DecisionInput, type Question, type RunDecision, type SandboxState, decide } from "./decide.ts"
-export { MIN_SECRET_LENGTH, type Redaction, type RedactionKind, redact, redactionKinds } from "./redact.ts"
+export { MIN_SECRET_LENGTH, type RedactedPiece, type Redaction, type RedactionKind, redact, redactPieces, redactionKinds } from "./redact.ts"
+export { type CallRun, type ChoiceId, type SandboxRunRecord, TaintHistory, callRun, choiceId, sandboxRun, storedChoice, storedEscalation, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "./record.ts"
 export { approvedNote, declinedMessage, deniedMessage, describeNeed, unattendedMessage } from "./texts.ts"

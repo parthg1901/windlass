@@ -83,43 +83,101 @@ function marker(kind: RedactionKind) {
 }
 
 /**
+ * One piece of a redacted text. A piece with a `kind` is a marker that stands
+ * for `original`, the text that was removed; any other piece is text that was
+ * left as it is (`text === original`), which includes text that already was a
+ * marker. The pieces' `original`s joined give the input back, and their
+ * `text`s joined give the redacted text.
+ */
+export interface RedactedPiece {
+  readonly text: string
+  readonly original: string
+  readonly kind: RedactionKind | null
+}
+
+/**
  * Redacts `text`. `secrets` are values to remove wherever they occur (longest
  * first, so a value that contains another is removed whole).
  */
 export function redact(text: string, secrets: readonly string[] = []): Redaction {
-  const values = [...new Set(secrets)].filter((value) => value.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length || (a < b ? -1 : 1))
-  const found = new Set<RedactionKind>()
-  const pass = (input: string) =>
-    input
-      .split(MARKER)
-      .map((part, index) => (index % 2 === 1 ? part : redactPart(part, values, found)))
-      .join("")
-  let current = text
-  for (let next = pass(current); next !== current; next = pass(current)) current = next
-  return { text: current, kinds: redactionKinds.filter((kind) => found.has(kind)) }
+  const pieces = redactPieces(text, secrets)
+  const found = new Set(pieces.flatMap((piece) => (piece.kind === null ? [] : [piece.kind])))
+  return { text: pieces.map((piece) => piece.text).join(""), kinds: redactionKinds.filter((kind) => found.has(kind)) }
 }
 
-/** One part of the text that contains no marker. Replacements are markers, so later rules cannot see into them. */
-function redactPart(part: string, values: readonly string[], found: Set<RedactionKind>): string {
-  const afterValues = values.reduce((text, value) => {
-    if (!text.includes(value)) return text
-    found.add("env")
-    return text.split(value).join(marker("env"))
-  }, part)
-  return RULES.reduce(
-    (text, rule) =>
-      text
-        .split(MARKER)
-        .map((piece, index) =>
-          index % 2 === 1
-            ? piece
-            : piece.replace(rule.pattern, (match, ...groups) => {
-                found.add(rule.kind)
-                const kept = rule.keep === undefined ? "" : String(groups[rule.keep - 1] ?? "")
-                return `${kept}${marker(rule.kind)}`
-              }),
-        )
-        .join(""),
+/**
+ * `redact`, keeping for every marker the text it replaced, so that a caller
+ * holding the original (a file about to be edited) can tell which part of it
+ * a redacted excerpt stands for. `redact` is this function's result joined.
+ */
+export function redactPieces(text: string, secrets: readonly string[] = []): RedactedPiece[] {
+  const values = [...new Set(secrets)].filter((value) => value.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length || (a < b ? -1 : 1))
+  let current = literals(text)
+  // The replacements run until nothing changes. A marker made in one pass is never looked into again.
+  for (;;) {
+    const next = merge(current.flatMap((piece) => (piece.kind !== null || piece.fixed ? [piece] : redactPart(piece.text, values))))
+    if (same(next, current)) break
+    current = next
+  }
+  return current.map((piece) => ({ text: piece.text, original: piece.original, kind: piece.kind }))
+}
+
+/** A piece while it is worked on. `fixed`: text that already is a marker, left alone. */
+interface Piece extends RedactedPiece {
+  readonly fixed: boolean
+}
+
+const literal = (text: string, fixed = false): Piece => ({ text, original: text, kind: null, fixed })
+const replaced = (kind: RedactionKind, original: string): Piece => ({ text: marker(kind), original, kind, fixed: false })
+
+/** Splits text into what may be redacted and the markers already in it. */
+function literals(text: string): Piece[] {
+  return text
+    .split(MARKER)
+    .map((part, index) => literal(part, index % 2 === 1))
+    .filter((piece) => piece.text !== "")
+}
+
+/** Joins neighbouring pieces of plain text, so a later rule sees them as the one run of text they are. */
+function merge(pieces: readonly Piece[]): Piece[] {
+  const out: Piece[] = []
+  for (const piece of pieces) {
+    const last = out[out.length - 1]
+    if (piece.text === "" && piece.kind === null) continue
+    if (last !== undefined && last.kind === null && !last.fixed && piece.kind === null && !piece.fixed) out[out.length - 1] = literal(last.text + piece.text)
+    else out.push(piece)
+  }
+  return out
+}
+
+function same(a: readonly Piece[], b: readonly Piece[]): boolean {
+  return a.length === b.length && a.every((piece, index) => piece.text === b[index]!.text && piece.kind === b[index]!.kind && piece.original === b[index]!.original)
+}
+
+/** One run of text that contains no marker. Replacements are markers, so later rules cannot see into them. */
+function redactPart(part: string, values: readonly string[]): Piece[] {
+  const plain = (pieces: readonly Piece[], change: (text: string) => Piece[]) => merge(pieces.flatMap((piece) => (piece.kind !== null || piece.fixed ? [piece] : change(piece.text))))
+  const afterValues = values.reduce<Piece[]>(
+    (pieces, value) =>
+      plain(pieces, (text) =>
+        text.includes(value) ? text.split(value).flatMap((between, index) => (index === 0 ? [literal(between)] : [replaced("env", value), literal(between)])) : [literal(text)],
+      ),
+    [literal(part)],
+  )
+  return RULES.reduce<Piece[]>(
+    (pieces, rule) =>
+      plain(pieces, (text) => {
+        const out: Piece[] = []
+        let from = 0
+        // A fresh expression per run of text: the shared one carries `lastIndex`.
+        for (const match of text.matchAll(new RegExp(rule.pattern.source, rule.pattern.flags))) {
+          const kept = rule.keep === undefined ? "" : String(match[rule.keep] ?? "")
+          out.push(literal(text.slice(from, match.index) + kept), replaced(rule.kind, match[0].slice(kept.length)))
+          from = match.index + match[0].length
+        }
+        out.push(literal(text.slice(from)))
+        return out
+      }),
     afterValues,
   )
 }

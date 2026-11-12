@@ -10,7 +10,7 @@
  */
 import { basename, dirname, join } from "node:path"
 import type { Tool } from "../tool/tool.ts"
-import { SKIPPED_DIRECTORIES, cutLine, displayPath, errorCode, failure, looksBinary, resolvePath, success, walkFiles, statPath, placeName } from "./common.ts"
+import { SKIPPED_DIRECTORIES, cutLine, shownPath, errorCode, failure, looksBinary, toolPath, success, walkFiles, statPath, placeName } from "./common.ts"
 
 export interface GrepInput {
   readonly pattern: string
@@ -70,8 +70,8 @@ export function grepTool(options: GrepOptions = {}): Tool<GrepInput> {
     effect: "read",
     touches: (input) => [input.path ?? "."],
     execute: async (input, context) => {
-      const target = resolvePath(context.cwd, input.path ?? ".")
-      const shown = displayPath(context.cwd, target)
+      const target = toolPath(context, input.path ?? ".")
+      const shown = shownPath(context, target)
       const info = await statPath(target)
       if (info instanceof Error) {
         if (errorCode(info) === "ENOENT") return failure(`Path not found: ${shown}`)
@@ -88,7 +88,7 @@ export function grepTool(options: GrepOptions = {}): Tool<GrepInput> {
       const collector = createCollector()
       const outcome = ripgrep === null ? await searchPure(search, collector.add, context.signal) : await searchRipgrep(ripgrep, search, collector.add, context.signal)
       if (!outcome.ok) return failure(outcome.error)
-      const lines = format(collector.records, search.context, (path) => displayPath(context.cwd, join(search.root, path)))
+      const lines = format(collector.records, search.context, (path) => shownPath(context, join(search.root, path)))
       const display = { matches: collector.matches, files: collector.files, engine: ripgrep === null ? "pure" : "ripgrep" }
       if (context.signal.aborted) return failure(`${lines === "" ? "" : `${lines}\n\n`}[Search interrupted; results are incomplete.]`, display)
       if (collector.matches === 0) return success(`No matches for ${JSON.stringify(input.pattern)} in ${placeName(shown)}.`, display)

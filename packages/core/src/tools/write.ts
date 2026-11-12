@@ -1,7 +1,7 @@
 import { mkdir, stat } from "node:fs/promises"
 import { dirname } from "node:path"
 import type { Tool } from "../tool/tool.ts"
-import { displayPath, failure, resolvePath, success } from "./common.ts"
+import { shownPath, failure, toolPath, success } from "./common.ts"
 
 export interface WriteInput {
   readonly path: string
@@ -25,8 +25,8 @@ export function writeTool(): Tool<WriteInput> {
     effect: "write",
     touches: (input) => [input.path],
     execute: async (input, context) => {
-      const path = resolvePath(context.cwd, input.path)
-      const shown = displayPath(context.cwd, path)
+      const path = toolPath(context, input.path)
+      const shown = shownPath(context, path)
       const before = await stat(path).catch(() => null)
       if (before?.isDirectory()) return failure(`${shown} is a directory; give a file path.`)
       const parent = await mkdir(dirname(path), { recursive: true }).then(

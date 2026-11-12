@@ -38,6 +38,13 @@ export interface SandboxPolicy {
   readonly readRest: boolean
   /** With `readRest: false`, extra absolute paths that stay readable (system directories always are). */
   readonly readableRoots?: readonly string[]
+  /**
+   * Absolute paths the command may read and not write, also inside a writable
+   * root: what would otherwise run later outside the sandbox (`.git/hooks`,
+   * `.git/config`) or steer the harness (its project directory). Paths that do
+   * not exist are skipped. Hidden paths still win over them.
+   */
+  readonly readOnlyPaths?: readonly string[]
   /** Absolute paths the command cannot read or write at all. They win over every other rule. */
   readonly hiddenPaths: readonly string[]
   readonly network: NetworkPolicy
@@ -201,7 +208,7 @@ export function filterEnv(env: Readonly<Record<string, string | undefined>>, pol
 
 /** Throws on a policy no backend can apply correctly (relative paths). */
 export function assertValidPolicy(policy: SandboxPolicy) {
-  const paths = [...policy.writableRoots, ...policy.hiddenPaths, ...(policy.readableRoots ?? []), ...(policy.tempRoot ? [policy.tempRoot] : [])]
+  const paths = [...policy.writableRoots, ...policy.hiddenPaths, ...(policy.readableRoots ?? []), ...(policy.readOnlyPaths ?? []), ...(policy.tempRoot ? [policy.tempRoot] : [])]
   const relative = paths.filter((path) => !isAbsolute(path))
   if (relative.length > 0) throw new TypeError(`Sandbox policy paths must be absolute: ${relative.join(", ")}`)
 }

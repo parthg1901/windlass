@@ -4,7 +4,7 @@ import { readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { Json } from "../json.ts"
-import type { ToolResult } from "../tool/tool.ts"
+import type { ToolContext, ToolResult } from "../tool/tool.ts"
 
 /** Options shared by every standard tool. */
 export interface ToolOptions {
@@ -17,6 +17,33 @@ export function resolvePath(cwd: string, path: string): string {
   if (path === "~") return homedir()
   if (path.startsWith("~/")) return join(homedir(), path.slice(2))
   return resolve(cwd, path)
+}
+
+/**
+ * `resolvePath` for a tool call: a path under the alias of the session's
+ * temp directory (`/tmp` where sandboxed commands see that directory there)
+ * is the file a command would mean by it.
+ */
+export function toolPath(context: Pick<ToolContext, "cwd" | "temp">, path: string): string {
+  return resolvePath(context.cwd, tempPath(context.temp, path))
+}
+
+/** A path under the temp directory's alias, as the path of the same file on the host; any other path unchanged. */
+export function tempPath(temp: ToolContext["temp"], path: string): string {
+  const alias = temp?.alias ?? null
+  if (temp === undefined || alias === null) return path
+  if (path === alias) return temp.dir
+  return path.startsWith(`${alias}/`) ? join(temp.dir, path.slice(alias.length + 1)) : path
+}
+
+/** `displayPath` for a tool call: a file in the session's temp directory is shown under its alias, as the model names it. */
+export function shownPath(context: Pick<ToolContext, "cwd" | "temp">, absolute: string): string {
+  const temp = context.temp
+  if (temp !== undefined && temp.alias !== null) {
+    if (absolute === temp.dir) return temp.alias
+    if (absolute.startsWith(`${temp.dir}/`)) return `${temp.alias}/${absolute.slice(temp.dir.length + 1)}`
+  }
+  return displayPath(context.cwd, absolute)
 }
 
 /** How a path is shown to the model: relative to the working directory when inside it, absolute otherwise. */

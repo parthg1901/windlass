@@ -13,7 +13,9 @@
  */
 import { mkdir, unlink } from "node:fs/promises"
 import { join } from "node:path"
+import { escalationSchema } from "../approval/escalation.ts"
 import { interruptReasonOf } from "../interrupt.ts"
+import type { CommandSandbox } from "../sandbox/command.ts"
 import { OUTPUT_LIMITS, type OutputLimits, fitsLimits, renderCapped } from "../tool/cap.ts"
 import type { Tool, ToolContext, ToolResult } from "../tool/tool.ts"
 import type { ToolOptions } from "./common.ts"
@@ -21,6 +23,12 @@ import type { ToolOptions } from "./common.ts"
 export interface ShellInput {
   readonly command: string
   readonly timeout?: number
+  /**
+   * The model's explicit request for more access than the sandbox gives. The
+   * tool does not act on it: the step loop decides from it (and asks the
+   * user), and tells the tool how to run through `ToolContext.sandbox`.
+   */
+  readonly sandbox?: { readonly network?: boolean; readonly write?: readonly string[] }
 }
 
 export interface ShellOptions extends ToolOptions {
@@ -30,6 +38,12 @@ export interface ShellOptions extends ToolOptions {
   readonly graceMs?: number
   /** The spill file stops growing at this size; the head and tail in memory still see everything. Default 1 GiB. */
   readonly spillLimitBytes?: number
+  /**
+   * Wraps a command the step loop decided to run sandboxed. Without it such
+   * a command is refused: the tool never runs unsandboxed what it was told
+   * to sandbox.
+   */
+  readonly sandbox?: CommandSandbox
 }
 
 export const DEFAULT_TIMEOUT_SECONDS = 120
@@ -42,7 +56,7 @@ const PROGRESS_LINES = 20
 /** How long to wait for the pipes to close after the process group is gone (a process that left the group may hold them). */
 const DRAIN_MS = 1000
 /** The output keeps room for the status line, so the whole result stays within the runtime's limits. */
-const BODY_LIMITS: OutputLimits = { maxBytes: OUTPUT_LIMITS.maxBytes - 512, maxLines: OUTPUT_LIMITS.maxLines - 3 }
+const BODY_LIMITS: OutputLimits = { maxBytes: OUTPUT_LIMITS.maxBytes - 1024, maxLines: OUTPUT_LIMITS.maxLines - 6 }
 
 type StopReason = "timeout" | "user" | "shutdown"
 
@@ -53,36 +67,42 @@ export function shellTool(options: ShellOptions): Tool<ShellInput> {
   return {
     name: "shell",
     description:
-      "Run a shell command in the working directory and return its combined stdout and stderr. stdin is empty. The command is stopped after `timeout` seconds (default 120). Background processes it starts are stopped when it finishes. Long output keeps its beginning and end, and the full output is saved to a file whose path is given.",
+      "Run a shell command in the working directory and return its combined stdout and stderr. stdin is empty. The command is stopped after `timeout` seconds (default 120). Background processes it starts are stopped when it finishes. Long output keeps its beginning and end, and the full output is saved to a file whose path is given (read it with the read or grep tool). Commands normally run in a sandbox: no network, and writes only inside the working directory and the temp directory ($TMPDIR, which is /tmp on Linux; it is private to this session and the file tools see the same files there). When a command needs more, pass `sandbox`.",
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string", minLength: 1, description: "The command line, run with `-c`." },
         timeout: { type: "integer", minimum: 1, maximum: MAX_TIMEOUT_SECONDS, description: "Seconds before the command is stopped. Default 120." },
+        sandbox: escalationSchema,
       },
       required: ["command"],
       additionalProperties: false,
     },
     effect: "exec",
-    execute: (input, context) => runShell(input, context, { shell, graceMs, spillLimit, spillDir: options.spillDir }),
+    execute: (input, context) => runShell(input, context, { shell, graceMs, spillLimit, spillDir: options.spillDir, sandbox: options.sandbox ?? null }),
   }
 }
 
 async function runShell(
   input: ShellInput,
   context: ToolContext,
-  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string },
+  options: { shell: string; graceMs: number; spillLimit: number; spillDir: string; sandbox: CommandSandbox | null },
 ): Promise<ToolResult> {
   const startedAt = performance.now()
   const timeoutSeconds = input.timeout ?? DEFAULT_TIMEOUT_SECONDS
   const early = interruptReasonOf(context.signal)
   if (early !== null) return finish({ buffer: null, stopReason: early, exitCode: null, signalCode: null, timeoutSeconds, startedAt, spill: null })
 
+  // Decided before anything is created: a command that must run sandboxed runs sandboxed or not at all.
+  const wrapped = context.sandbox === undefined || context.sandbox === null ? null : sandboxed(input.command, context, options)
+  if (wrapped !== null && "refused" in wrapped)
+    return { status: "error", output: `Could not start the command: ${wrapped.refused}`, truncation: null, attachments: [], display: { exitCode: null, signal: null, timedOut: false, interrupted: null } }
+
   await mkdir(options.spillDir, { recursive: true })
   const spillPath = join(options.spillDir, `shell-${safeName(context.messageId)}-${safeName(context.callId)}.log`)
   const buffer = createOutputBuffer(Bun.file(spillPath).writer(), options.spillLimit, context)
 
-  const spawned = spawn(options.shell, input.command, context.cwd)
+  const spawned = spawn(wrapped ?? { argv: [options.shell, "-c", input.command], env: process.env, cwd: context.cwd })
   if (spawned instanceof Error) {
     await buffer.close()
     await unlink(spillPath).catch(() => {})
@@ -139,15 +159,24 @@ async function runShell(
   })
 }
 
-function spawn(shell: string, command: string, cwd: string) {
+/** What to spawn for a command that runs in the sandbox, or why it cannot. */
+function sandboxed(command: string, context: ToolContext, options: { shell: string; sandbox: CommandSandbox | null }) {
+  if (options.sandbox === null) return { refused: "it must run in the sandbox, and this build has none" }
+  const plan = options.sandbox.plan({ sessionId: context.sessionId, cwd: context.cwd, run: context.sandbox!, command, shellPath: options.shell })
+  if (plan.kind !== "ready") return { refused: `it must run in the sandbox, which is unavailable: ${plan.reason}` }
+  return { argv: plan.argv, env: plan.env, cwd: plan.cwd }
+}
+
+function spawn(plan: { readonly argv: readonly string[]; readonly env: Readonly<Record<string, string | undefined>>; readonly cwd: string }) {
   try {
-    return Bun.spawn([shell, "-c", command], {
-      cwd,
+    return Bun.spawn([...plan.argv], {
+      cwd: plan.cwd,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      // Its own process group. The sandbox wrapper relies on it too: the kill sequence below reaches everything inside.
       detached: true,
-      env: { ...process.env, PAGER: "cat", GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0" },
+      env: { ...plan.env, PAGER: "cat", GIT_PAGER: "cat", GIT_TERMINAL_PROMPT: "0" },
     })
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error))

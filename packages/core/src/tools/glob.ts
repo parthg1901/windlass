@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path"
 import type { Tool } from "../tool/tool.ts"
-import { SKIPPED_DIRECTORIES, displayPath, errorCode, failure, resolvePath, success, walkFiles, statPath, placeName } from "./common.ts"
+import { SKIPPED_DIRECTORIES, shownPath, errorCode, failure, toolPath, success, walkFiles, statPath, placeName } from "./common.ts"
 
 export interface GlobInput {
   readonly pattern: string
@@ -27,8 +27,8 @@ export function globTool(): Tool<GlobInput> {
     touches: (input) => [input.path ?? "."],
     execute: async (input, context) => {
       if (isAbsolute(input.pattern)) return failure("pattern must be relative; put the directory to search in `path`.")
-      const root = resolvePath(context.cwd, input.path ?? ".")
-      const shown = displayPath(context.cwd, root)
+      const root = toolPath(context, input.path ?? ".")
+      const shown = shownPath(context, root)
       const info = await statPath(root)
       if (info instanceof Error) {
         if (errorCode(info) === "ENOENT") return failure(`Directory not found: ${shown}`)
@@ -46,7 +46,7 @@ export function globTool(): Tool<GlobInput> {
         (rel) => {
           if (!glob.match(rel)) return true
           total += 1
-          if (matches.length < MAX_RESULTS) matches.push(displayPath(context.cwd, join(root, rel)))
+          if (matches.length < MAX_RESULTS) matches.push(shownPath(context, join(root, rel)))
           return true
         },
       )

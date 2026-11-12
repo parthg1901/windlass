@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises"
 import type { Tool } from "../tool/tool.ts"
-import { byCodeUnits, displayPath, errorCode, failure, resolvePath, success, statPath } from "./common.ts"
+import { byCodeUnits, shownPath, errorCode, failure, toolPath, success, statPath } from "./common.ts"
 
 export interface LsInput {
   readonly path?: string
@@ -23,8 +23,8 @@ export function lsTool(): Tool<LsInput> {
     effect: "read",
     touches: (input) => [input.path ?? "."],
     execute: async (input, context) => {
-      const path = resolvePath(context.cwd, input.path ?? ".")
-      const shown = displayPath(context.cwd, path)
+      const path = toolPath(context, input.path ?? ".")
+      const shown = shownPath(context, path)
       const info = await statPath(path)
       if (info instanceof Error) {
         if (errorCode(info) === "ENOENT") return failure(`Directory not found: ${shown}`)

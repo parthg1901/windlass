@@ -96,6 +96,8 @@ export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
     : `(allow file-read*\n  (literal "/")\n  ${[...SYSTEM_READ, ...(policy.readableRoots ?? [])].map((path) => param("READABLE", path)).join("\n  ")})`
   const writableRoots = [...policy.writableRoots, ...(policy.tempRoot ? [policy.tempRoot] : [])]
   const writes = writableRoots.length > 0 ? `(allow file-read* file-write*\n  ${writableRoots.map((path) => param("WRITABLE", path)).join("\n  ")})` : "; no writable roots"
+  const readOnly =
+    (policy.readOnlyPaths ?? []).length > 0 ? `(deny file-write*\n  ${(policy.readOnlyPaths ?? []).map((path) => param("READONLY", path)).join("\n  ")})` : "; no read-only paths"
   const hidden =
     policy.hiddenPaths.length > 0
       ? `(deny file-read* file-write*\n  ${policy.hiddenPaths.map((path) => param("HIDDEN", path)).join("\n  ")})`
@@ -110,6 +112,9 @@ export function seatbeltProfile(policy: SandboxPolicy): SeatbeltProfile {
     "",
     "; writes",
     writes,
+    "",
+    "; read-only inside the writable roots: after the writes, so they win over them",
+    readOnly,
     network,
     "; hidden paths: last, so they win over every allow above",
     hidden,

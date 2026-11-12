@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises"
 import { basename, dirname } from "node:path"
 import { OUTPUT_LIMITS } from "../tool/cap.ts"
 import type { Tool } from "../tool/tool.ts"
-import { byCodeUnits, cutLine, displayPath, errorCode, failure, looksBinary, resolvePath, success, statPath } from "./common.ts"
+import { byCodeUnits, cutLine, shownPath, errorCode, failure, looksBinary, toolPath, success, statPath } from "./common.ts"
 
 export interface ReadInput {
   readonly path: string
@@ -35,8 +35,8 @@ export function readTool(): Tool<ReadInput> {
     effect: "read",
     touches: (input) => [input.path],
     execute: async (input, context) => {
-      const path = resolvePath(context.cwd, input.path)
-      const shown = displayPath(context.cwd, path)
+      const path = toolPath(context, input.path)
+      const shown = shownPath(context, path)
       const info = await statPath(path)
       if (info instanceof Error) {
         if (errorCode(info) === "ENOENT") return failure(`File not found: ${shown}${await suggestions(path)}`)

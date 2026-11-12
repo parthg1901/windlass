@@ -20,7 +20,8 @@ import { callId, messageId, sessionId } from "../id.ts"
 import { type InterruptReason, interruptReason, interruptReasonOf } from "../interrupt.ts"
 import type { Json } from "../json.ts"
 import { type CapSource, countLines } from "../tool/cap.ts"
-import { type ToolResult, noBlobStore } from "../tool/tool.ts"
+import type { CommandSandbox } from "../sandbox/command.ts"
+import { type SandboxRun, type ToolResult, noBlobStore } from "../tool/tool.ts"
 import { shellTool } from "../tools/shell.ts"
 import { boolean, integer, nullable, object, safeDecode, string, type Infer } from "../validate.ts"
 import type { CheckStatus } from "./status.ts"
@@ -65,6 +66,13 @@ export interface RunCheckOptions {
   readonly shell?: string
   readonly graceMs?: number
   readonly spillLimitBytes?: number
+  /**
+   * Run every check in the sandbox, with this access, for this session (its
+   * temp directory). The checks come from a configuration file the
+   * repository controls, so the step loop sandboxes them wherever it
+   * sandboxes the model's own commands.
+   */
+  readonly sandbox?: { readonly sandbox: CommandSandbox; readonly run: SandboxRun; readonly sessionId: string }
   /** Ephemeral progress (the tail of the running check's output), for display only. */
   readonly progress?: (check: string, text: string) => void
 }
@@ -82,11 +90,18 @@ export async function runCheck(check: CheckConfig, options: RunCheckOptions): Pr
   const early = interruptReasonOf(options.signal)
   if (early !== null) return { ...notStarted(check), status: "interrupted", interruptedBy: early }
 
-  const tool = shellTool({ spillDir: options.spillDir, shell: options.shell, graceMs: options.graceMs, spillLimitBytes: options.spillLimitBytes })
+  const tool = shellTool({
+    spillDir: options.spillDir,
+    shell: options.shell,
+    graceMs: options.graceMs,
+    spillLimitBytes: options.spillLimitBytes,
+    ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox.sandbox }),
+  })
   const result = await tool.execute(
     { command: check.command, timeout: check.timeoutSeconds },
     {
-      sessionId: sessionId("verify", ""),
+      sessionId: options.sandbox === undefined ? sessionId("verify", "") : sessionId(options.sandbox.sessionId, ""),
+      ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox.run }),
       messageId: messageId("verify", ""),
       // Fixes the shell's working spill file name per check; it is renamed by content below.
       callId: callId(`check-${check.name}`, ""),

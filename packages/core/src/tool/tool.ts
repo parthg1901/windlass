@@ -46,6 +46,37 @@ export interface ToolProgress {
   readonly text: string
 }
 
+/**
+ * How the approval layer decided a command runs: inside the OS sandbox, with
+ * the network when `network`, and with `writableRoots` writable besides the
+ * workspace and the temp directory.
+ */
+export interface SandboxRun {
+  readonly network: boolean
+  readonly writableRoots: readonly string[]
+}
+
+/**
+ * One piece of a text as the harness redacts it: a marker (`kind` is set) that
+ * stands for `original`, or text left as it is. The `original`s joined are the
+ * input; the `text`s joined are what the model is shown.
+ */
+export interface RedactedText {
+  readonly text: string
+  readonly original: string
+  readonly kind: string | null
+}
+
+/**
+ * The session's private temp directory. Sandboxed commands may write it; on
+ * Linux they see it as `alias` (`/tmp`), and the file tools read a path under
+ * `alias` as the same file, so a command and a tool mean one place by one name.
+ */
+export interface TempDirectory {
+  readonly dir: string
+  readonly alias: string | null
+}
+
 /** Everything a tool is given besides its input. */
 export interface ToolContext {
   readonly sessionId: SessionId
@@ -72,6 +103,20 @@ export interface ToolContext {
    * runtime supplies it from its options, so a tool never sees the store.
    */
   readonly putBlob: PutBlob
+  /**
+   * For a tool that runs processes. Absent or `null`: run the command as it
+   * is. Otherwise run it in the sandbox with this access, or, where that
+   * cannot be done, not at all: a tool never falls back to running unsandboxed.
+   */
+  readonly sandbox?: SandboxRun | null
+  /** The session's temp directory, when it has one. */
+  readonly temp?: TempDirectory
+  /**
+   * The harness's redaction of tool output, for a tool that changes a file
+   * the model was shown redacted: it finds what a placeholder in the model's
+   * arguments stands for instead of writing the placeholder into the file.
+   */
+  readonly redact?: (text: string) => readonly RedactedText[]
 }
 
 /** Stores bytes under their SHA-256 and returns the reference. The signature of `Store.putBlob`. */
