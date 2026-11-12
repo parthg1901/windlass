@@ -7,6 +7,7 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { redact } from "../../src/approval/redact.ts"
 import { createCheckRunner } from "../../src/wake/check.ts"
 
 const directories: string[] = []
@@ -27,6 +28,12 @@ async function outputOf(content: string, options: { readonly secrets?: readonly 
   return outcome.output
 }
 
+/**
+ * The output as the runner keeps it: the value is replaced as the output arrives, before anything is counted or
+ * cut, so "bytes left out" counts the kept text, not what the command printed.
+ */
+const kept = (content: string) => redact(content, [VALUE]).text
+
 /** The number in the line that says how much is left out. */
 function leftOut(output: string): number {
   const match = /\[… (\d+) bytes left out …\]/.exec(output)
@@ -43,14 +50,14 @@ test("a credential value that straddles the cut of a long check output is not sh
   expect(output).not.toContain(VALUE.slice(0, 20))
 })
 
-test("in one long line the head is cut before the placeholder, not through it, and the count left out is of printed bytes", async () => {
+test("in one long line the head is cut before the placeholder, not through it, and the count left out is of the kept output", async () => {
   const content = `${"y".repeat(2040)}${VALUE}${"w".repeat(10_000)}`
   const output = await outputOf(content)
   expect(output).not.toContain(VALUE.slice(0, 8))
   expect(output).not.toContain("[REDACTED:")
   expect(output.startsWith("y".repeat(2040) + "\n[…")).toBe(true)
   // The head shows 2040 bytes, the tail 2048 of the 10,000 after the value: what is between is left out.
-  expect(leftOut(output)).toBe(content.length - 2040 - 2048)
+  expect(leftOut(output)).toBe(kept(content).length - 2040 - 2048)
 })
 
 test("a placeholder that fits before the cut is shown whole", async () => {
@@ -79,7 +86,7 @@ test("a value across the cut of output that the runner kept whole (not much over
   const content = `${"y".repeat(500 - 6)}${VALUE}${"w".repeat(600)}`
   const output = await outputOf(content, { shownBytes: 1000 })
   expect(output).not.toContain(VALUE.slice(0, 6))
-  expect(leftOut(output)).toBe(content.length - (500 - 6) - 500)
+  expect(leftOut(output)).toBe(kept(content).length - (500 - 6) - 500)
 })
 
 test("a tail cut that would fall inside a placeholder moves past it", async () => {
