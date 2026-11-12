@@ -107,7 +107,9 @@ session is idle and at the next step boundary while a turn runs; its record is t
 A call the agent's restrictions refuse fails like any refused call; for a client that takes the events it is
 `approval.denied` with `reason: "policy"` and `agent: <name>`, which a client words as the agent's rule ("the
 reviewer agent may not change files") rather than as the approval policy. Definitions that could not be used are
-in `_windlass/agents` (`problems`) and arrive as `diagnostic`s of kind `agents`.
+in `_windlass/agents` (`problems`) and arrive as `diagnostic`s of kind `agents`. What the engine says about agents
+while it creates the session (an agent that names a tool that does not exist, a project's `agents.default` that
+was not followed) is kept for the session's first listener, so a client that subscribes after `session/new` gets it.
 
 **The task list.** The model keeps a task list with the `todo` tool; each call replaces the list. The call's
 `rawOutput.display.todo` is `{ items: { text, status }[], counts }` (`status`: `pending`, `in_progress`, `done`),
@@ -429,6 +431,14 @@ It is listed like any session; its title is the parent's with " (fork)" unless o
 A fork point inside a step, or anything else the engine cannot do as asked, is `-32602` with
 `data["windlass"].reason = "invalid_request"` and the engine's sentence; an unknown parent is `-32002`.
 
+A fork can be the parent. With a `throughSeq` in the part it inherited, the new session is recorded as a fork of
+the session that event belongs to: its `session.created` lineage, and `forkedFrom` in `session/list`, name that
+session, while `parentSessionId` in this result is the session the request named. A fork whose inherited history
+cannot be read (its parent's file was deleted or moved) still loads and runs: `session/load` replays its own
+events, and its first listener gets one `diagnostic` of kind `history` naming the missing file. Reading its whole
+log (`_windlass/events`), forking it, or replaying it is refused as `invalid_request` with the sentence
+(`session <id> cannot be forked: the history inherited from session <id> cannot be read: <file> is missing`).
+
 **`_windlass/replay`** (request): replays a recorded session against a changed baseline (`Engine.replaySession`,
 `docs/replay.md`). The real model is called; every tool call that is on the recording is answered from it. The
 answer comes when the replay is over; meanwhile the replay session is shown on this connection like any session:
@@ -491,8 +501,11 @@ does everything that only reads or copies sessions (`session/list`, `_windlass/e
 
 **`_windlass/diagnostic`** (notification) `{ sessionId, kind, message }`: something the engine noticed that is
 not part of the log (`prefix_violation`, `internal_error`, `tool_crashed`, `listener_failed`), or about what it
-could not use as configured (`skills`, `mcp`, `wake`, `memory`, `agents`: an agent definition that was skipped or
-is hidden by another, an agent that asks for a looser approval mode than the user's), or about a hook or a language
+could not use as configured (`skills`, `mcp`, `wake`, `memory`, `telemetry`: export that is on and cannot be
+started, or stopped for the session; `agents`: an agent definition that was skipped or is hidden by another, an
+agent that names a tool that does not exist or asks for a looser approval mode than the user's, a project's
+default agent that was not followed, a model the session keeps when it leaves the agent that set it), or about
+a session's own history (`history`: a fork whose parent's file is missing, said once), or about a hook or a language
 server (`hooks`: a project's hook that is skipped until the user approves it, a hook that could not answer and what
 that means for the call, a turn that ended with a stop hook unsatisfied; `lsp`: a project's server that is not
 started until approved, and why an edit got no diagnostics, said once per server and reason). The last two kinds are
@@ -735,7 +748,7 @@ has started (its `baseline.set` event), so a note is never dropped; both interfa
 ### Slash commands
 
 A slash command is a Markdown file of the user's or the project's whose text, with what was typed after its name put
-in, is sent as the user's message (`packages/core/src/commands/README.md` has the format and where the files live).
+in, is sent as the user's message ([commands.md](commands.md) has the format and where the files live).
 Nothing in a file is run or read when it is used. The server offers them three ways.
 
 **The protocol's own way.** After `session/new` (right after its answer) and `session/load`, and again before a
