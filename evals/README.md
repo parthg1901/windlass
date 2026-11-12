@@ -257,3 +257,99 @@ its prompt as a careful engineer would, list the reasonable ways to satisfy it, 
 
 Every workspace is synthetic and hand-written for this purpose: a few small files, no code copied from real
 projects or other repositories, no secrets or real personal data, no dependencies beyond Bun's built-ins.
+
+## The nightly run
+
+`nightly.ts` is the one command a scheduled job runs, and a person can run it by hand:
+
+```
+bun evals/nightly.ts                                   # the real run: about 350 live requests, about 20 minutes
+bun evals/nightly.ts --dry-run                         # the same flow without the model: the stand-in and the oracle
+bun evals/nightly.ts --dry-run --tasks answer-question --repeat 1 --root /tmp/nightly-try
+```
+
+In order it records the commit (and refuses a tree with uncommitted changes unless `--allow-dirty`); runs the task
+suite (`run-agent.ts`) on every task with `--repeat 3`, the repeats the gate's statistics need (`RULES.minRepeats`),
+with the model and effort the baseline was recorded with (`--model`, `--effort` to override), each run's cache misses
+classified as usual; runs the gate against `baseline.json` (`--baseline` for another file); runs the recall tracker
+(`recall/track.ts --live`, strategy `engine` by default, `--recall-strategies`) and then its `--check` (margin 2,
+`--recall-margin`); and writes one summary directory.
+
+Where it writes: a root outside the repository, by default `$XDG_DATA_HOME/<brand>-nightly/` (or
+`~/.local/share/<brand>-nightly/`), `--root` for another. Each run is a directory named by its UTC start time,
+`<root>/2026-11-13T030000Z/`, and `<root>/latest` points at the newest:
+
+```
+summary.md          a page to read in a minute: the verdict and exit code, the commit, pass rate per task against the
+                    baseline, regressions by name, cached share and avoidable misses, recall against the previous row,
+                    model requests and tokens, how long each phase took
+summary.json        the same as data (`NightlySummary` in nightly.ts)
+gate.txt, gate.json the gate's findings
+recall.log          what the tracker printed, both runs
+tasks/              run-agent's results.json and runs/ (streams, stderr, exported traces)
+```
+
+The directory is written aside (`<root>/.staging-<stamp>/`) and renamed into place when complete, so a dated
+directory always holds a whole summary. A run that is killed leaves its staging directory (and the runner's
+temporary workspaces under the system temp directory); the next run removes the staging directory. A lock,
+`<root>/nightly.lock` with the process ID, keeps two runs from overlapping; a second run exits 5 at once, and a lock
+whose process is gone is taken over.
+
+The recall rows go to the nightly's own history, `<root>/recall-history.jsonl`, started from a copy of the committed
+`recall/history.jsonl` on the first run, so a scheduled run never changes the repository. Commit a row to
+`recall/history.jsonl` by hand when it should become the reference. A dry run keeps its oracle rows apart, in
+`<root>/recall-history.dry-run.jsonl`.
+
+| exit | meaning |
+| --- | --- |
+| 0 | the gate passed and recall did not drop |
+| 1 | the gate failed: a hard failure or a regression |
+| 2 | recall dropped by more than the margin |
+| 3 | both |
+| 4 | inconclusive: nothing failed, but the gate lacked data (repeats, configuration, classification) or the recall rows were not comparable |
+| 5 | another nightly run holds the lock |
+| 6 | the run could not be completed: a dirty tree, or a step that threw (the summary's `errors` says which) |
+| 64 | usage error |
+
+Until the baseline holds three repeats of every task, a real run ends in 4. `--dry-run` uses the stand-in agent in
+`scripted` mode (set `STAND_IN_MODE` for another) with its sessions in a data directory inside the summary, so the
+trace export and the classification run for real; its tasks are graded as failed because nothing solved them, and
+it is compared with the committed baseline only as "not comparable". `nightly.test.ts` runs the whole flow this way.
+
+### Scheduling it
+
+Nothing is installed by the repository. To run it every night at 03:00 with cron (`crontab -e`), from a checkout
+that is kept on `main` and signed in:
+
+```
+0 3 * * * cd /path/to/checkout && PREFIXLENS_DIR=/path/to/prefixlens /path/to/bun evals/nightly.ts >> "$HOME/.local/share/<brand>-nightly/cron.log" 2>&1
+```
+
+Or with a systemd user timer, two files under `~/.config/systemd/user/`:
+
+```ini
+# nightly-evals.service
+[Unit]
+Description=Nightly evals
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/checkout
+Environment=PREFIXLENS_DIR=/path/to/prefixlens
+ExecStart=/path/to/bun evals/nightly.ts
+```
+
+```ini
+# nightly-evals.timer
+[Unit]
+Description=Nightly evals at 03:00
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+then `systemctl --user daemon-reload && systemctl --user enable --now nightly-evals.timer`, and
+`journalctl --user -u nightly-evals` for its output. The job's exit code is the table above; a wrapper that alerts on
+anything but 0 and 4 catches failures without crying wolf while the baseline is thin. Each run spends about 350 live
+requests of the plan's allowance.
