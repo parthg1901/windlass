@@ -6,7 +6,7 @@
  */
 import { afterEach, expect, test } from "bun:test"
 import type { RevertPlan } from "@windlass/core"
-import { handEditLines } from "../src/features.ts"
+import { handEditLines, handEditTitle } from "../src/features.ts"
 import { flat } from "./builders.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
 
@@ -29,6 +29,11 @@ test("the question says which files changed while a command ran, apart from thos
   expect(lines).toEqual(["1 file changed since the turn by you or another program: README.md", "2 files changed while a command ran (or the checks), which may be the command's own work or yours: notes.md, out/report.txt"])
   expect(handEditLines([{ path: "notes.md", handEdited: true, editedBy: { kind: "unknown" } }], "since the /undo")).toEqual(["1 file changed while a command ran (or the checks), which may be the command's own work or yours: notes.md"])
   expect(handEditLines([{ path: "src/a.ts", handEdited: false }], "since the turn")).toEqual([])
+  // The title says the same when that is all the question is about; otherwise the server's stands.
+  const server = "Undo: 2 files changed outside this session since the turn"
+  expect(handEditTitle([{ path: "a", handEdited: true, editedBy: { kind: "unknown" } }, { path: "b", handEdited: true, editedBy: { kind: "unknown" } }, { path: "c", handEdited: false }], true, server)).toBe("Undo: 2 files changed while a command ran")
+  expect(handEditTitle([{ path: "a", handEdited: true, editedBy: { kind: "unknown" } }], false, server)).toBe("Redo: 1 file changed while a command ran")
+  expect(handEditTitle([{ path: "a", handEdited: true, editedBy: { kind: "unknown" } }, { path: "b", handEdited: true, editedBy: { kind: "outside" } }], true, server)).toBe(server)
 })
 
 test("/undo shows the plan with such a file marked as changed while a command ran", async () => {

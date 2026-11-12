@@ -172,9 +172,12 @@ describe("against windlass acp with a scripted model", () => {
     const question = await term.waitFor("Undo: 1 file changed outside this session since the turn")
     // Who changed it, as far as the engine can tell: nothing of any session ran when it changed.
     expect(question.replace(/\s+/g, " ")).toContain("1 file changed since the turn by you or another program: notes.md")
-    // Each choice says what it does to the file: keep leaves the agent's change in it too.
-    expect(question).toContain("[y] Overwrite: it goes back to before the turn")
-    expect(question).toContain("[2] Keep: it stays exactly as now")
+    // What each choice does to the file is said whole above the choices: keep leaves the agent's change in it too.
+    const dialog = question.split("\n").map((line) => /│(.*)│/.exec(line)?.[1] ?? "").join(" ").replace(/\s+/g, " ")
+    expect(dialog).toContain("Overwrite: it goes back to before the turn and those changes are lost (/redo brings them back)")
+    expect(dialog).toContain("Keep: it stays exactly as now, those changes and the agent's in it both; the other files go back")
+    expect(question).toContain("[y] Overwrite")
+    expect(question).toContain("[2] Keep")
     expect(question).toContain("[n] Change nothing")
     term.keys("y")
     await term.waitFor("↶ undone: turn 1")

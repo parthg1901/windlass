@@ -37,7 +37,7 @@
 import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@windlass/acp/client"
 import { type ClientCommand, type CommandsResult, EXT, type MemoryChangeParams, type MemoryChangeResult, type WakeCreateParams, type WakeCreateResult } from "@windlass/acp/extensions"
-import { handEditLines } from "./features.ts"
+import { handEditLines, handEditTitle } from "./features.ts"
 import { type RevertResult, brand } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 import {
@@ -205,12 +205,13 @@ class AcpSession implements BackendSession {
       const them = ask.handEdited.length === 1 ? "it" : "them"
       const [overwrite, keep] = handEditChoices(undo, them).map((line) => line.replace(/^\s+[yk]\s+\w+: /, ""))
       const answer = await backend.onQuestion({
-        title: ask.title,
-        // Who changed them, as far as the engine can tell, with the files.
-        detail: [...handEditLines(ask.plan.changes, undo ? "since the turn" : "since the /undo"), ""],
+        title: handEditTitle(ask.plan.changes, undo, ask.title),
+        // Who changed them, as far as the engine can tell, with the files; then what each answer does, whole (a
+        // choice's own row is one line and would cut it).
+        detail: [...handEditLines(ask.plan.changes, undo ? "since the turn" : "since the /undo"), "", `Overwrite: ${overwrite}`, `Keep: ${keep}`],
         options: [
-          { id: "overwrite", label: `Overwrite: ${overwrite}`, kind: "allow" },
-          { id: "keep", label: `Keep: ${keep}`, kind: "allow" },
+          { id: "overwrite", label: "Overwrite", kind: "allow" },
+          { id: "keep", label: "Keep", kind: "allow" },
           { id: "cancel", label: "Change nothing", kind: "reject" },
         ],
       })

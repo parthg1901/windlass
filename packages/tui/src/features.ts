@@ -174,3 +174,15 @@ export function handEditLines(changes: readonly PlannedChange[], since: string):
   if (during.length === 0) return known
   return [...known, `${during.length === 1 ? "1 file" : `${during.length} files`} ${CHANGED_DURING_COMMAND} (or the checks), which may be the command's own work or yours: ${during.map((change) => change.path).join(", ")}`]
 }
+
+/**
+ * The title of the question an undo or a redo asks. When every file it asks
+ * about changed while a command or the checks of this session ran, it says
+ * that; otherwise the server's own title stands (the files changed outside
+ * the session, or some did).
+ */
+export function handEditTitle(changes: readonly PlannedChange[], undo: boolean, title: string): string {
+  const asked = changes.filter((change) => change.handEdited)
+  if (asked.length === 0 || asked.some((change) => (change.editedBy ?? { kind: "unknown" }).kind !== "unknown")) return title
+  return `${undo ? "Undo" : "Redo"}: ${asked.length === 1 ? "1 file" : `${asked.length} files`} ${CHANGED_DURING_COMMAND}`
+}
