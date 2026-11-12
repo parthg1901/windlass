@@ -422,8 +422,17 @@ class SessionIndex {
 
   reset(): void {
     this.close()
-    this.unusable = false
-    for (const suffix of ["", "-wal", "-shm"]) rmSync(`${this.path}${suffix}`, { force: true })
+    this.unusable = !this.remove()
+  }
+
+  /** Deletes the cache's files. `false` when they cannot be deleted: then there is no cache to use. */
+  private remove(): boolean {
+    try {
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(`${this.path}${suffix}`, { force: true })
+      return true
+    } catch {
+      return false
+    }
   }
 
   close(): void {
@@ -466,8 +475,7 @@ class SessionIndex {
         } catch {}
         // Busy means another process is using a healthy cache: do without it this once.
         if (isBusy(error)) return null
-        if (attempt === 2) break
-        for (const suffix of ["", "-wal", "-shm"]) rmSync(`${this.path}${suffix}`, { force: true })
+        if (attempt === 2 || !this.remove()) break
       }
     }
     this.unusable = true

@@ -176,7 +176,7 @@ function fakeBlock(kind: BlockHash["kind"], name: string): BlockHash {
 }
 
 /** One complete prompt-and-answer turn, from enqueue to execution.succeeded. */
-function exchange(d: Driver, n: string, prompt: string, answer: string) {
+export function exchange(d: Driver, n: string, prompt: string, answer: string) {
   d.add(
     enqueue(`u${n}`, prompt),
     executionStarted(`exe_${n}`),

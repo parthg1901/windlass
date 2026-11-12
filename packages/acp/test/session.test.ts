@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { script } from "@light-harness/core/testing"
 import { SIGN_IN_HINT } from "../src/server.ts"
-import { EXT } from "../src/extensions.ts"
+import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
 
 const harnesses: Harness[] = []
@@ -121,4 +121,27 @@ test("a failed turn answers the prompt with an error that says why; signed out m
   const signedOut = harness.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "again" }] })
   await expect(signedOut).rejects.toMatchObject({ code: -32000 })
   expect(((await signedOut.catch((caught: unknown) => caught)) as { message: string }).message).toContain("Signed out")
+})
+
+test("a session another process works in is listed and refused, with the process named; once it is closed there it loads", async () => {
+  const first = await start({ responses: [[script.text("Hello.")]] })
+  const sessionId = await first.newSession()
+  await first.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "hi" }] })
+  // A second server on the same data directory: another editor window, or a terminal next to the editor.
+  const second = await start({ dataDir: first.dataDir, responses: [[script.text("Hello again.")]] })
+  expect((await second.connection.agent.request(methods.agent.session.list, {})).sessions.map((session) => session.sessionId)).toEqual([sessionId])
+  const load = () => second.connection.agent.request(methods.agent.session.load, { sessionId, cwd: first.workspace, mcpServers: [] })
+  const refused = await load().catch((error: unknown) => error)
+  expect(refused).toMatchObject({ code: -32603, data: { [META.capabilities]: { reason: "session_in_use", holderPid: process.pid } } })
+  expect((refused as Error).message).toContain(`session ${sessionId} is in use`)
+  // Closing it in the first server closes that session only: the first server still makes new ones.
+  await first.connection.agent.request(methods.agent.session.close, { sessionId })
+  const other = await first.newSession()
+  expect(other).not.toBe(sessionId)
+  await load()
+  // The second server replayed the stored log and now works in it.
+  expect(second.of(sessionId, "agent_message_chunk").length).toBeGreaterThan(0)
+  expect((await second.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "again" }] })).stopReason).toBe("end_turn")
+  // And now the first is the one that is refused.
+  await expect(first.connection.agent.request(methods.agent.session.load, { sessionId, cwd: first.workspace, mcpServers: [] })).rejects.toMatchObject({ code: -32603 })
 })

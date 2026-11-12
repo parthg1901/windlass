@@ -9,8 +9,13 @@ import type { MessageId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import type { Snapshot, SnapshotUnavailable, Snapshots } from "../snapshot/index.ts"
 
-/** The part of the snapshot module the loop uses. A test hands the engine a scripted one. Without `prune` nothing is ever dropped. */
-export type WorkspaceSnapshots = Pick<Snapshots, "workspace" | "take" | "changedFiles" | "restore"> & Partial<Pick<Snapshots, "prune">>
+/**
+ * The part of the snapshot module the loop uses. A test hands the engine a
+ * scripted one. Without `prune` nothing is ever dropped; without `list`
+ * nobody can tell whether another session works in the same directory, and
+ * the session is taken to be alone in it.
+ */
+export type WorkspaceSnapshots = Pick<Snapshots, "workspace" | "take" | "changedFiles" | "restore"> & Partial<Pick<Snapshots, "prune" | "list">>
 
 /** Opens the snapshots of a working directory, or says why there are none. */
 export type OpenSnapshots = (cwd: string) => Promise<WorkspaceSnapshots | SnapshotUnavailable>
@@ -60,17 +65,39 @@ export function isHarnessWork(point: SnapshotPoint): boolean {
 }
 
 /**
+ * Whose a stretch of the session's own work is, when another session was at
+ * work in the same directory: the paths its tools themselves wrote. Any
+ * other path that changed in that stretch may be the other session's.
+ */
+export type OwnPaths = (from: Pick<SnapshotMark, "id" | "point"> & Partial<Pick<SnapshotMark, "messageId">>) => ReadonlySet<string>
+
+/**
  * The paths that changed outside the harness's own work along `timeline` and
  * from its last snapshot to `now`: between turns, between steps, after the
- * last turn. Nothing but a person (or a process they started) changes files
- * there, so a restore that would overwrite one of them must say so first.
+ * last turn. Nothing but a person (or a process they started, or another
+ * session) changes files there, so a restore that would overwrite one of
+ * them must say so first.
+ *
+ * Inside the session's own work (a step's tools, a run of checks, a
+ * restore) every change is the session's, as long as it is alone in the
+ * directory. When it is not, `own` is given: of the changes in such a
+ * stretch only the paths it names are the session's own, and the rest count
+ * as edited by someone else.
  */
-export async function handEditedPaths(store: Pick<WorkspaceSnapshots, "changedFiles">, timeline: readonly Pick<SnapshotMark, "id" | "point">[], now: string): Promise<string[]> {
+export async function handEditedPaths(
+  store: Pick<WorkspaceSnapshots, "changedFiles">,
+  timeline: readonly (Pick<SnapshotMark, "id" | "point"> & Partial<Pick<SnapshotMark, "messageId">>)[],
+  now: string,
+  own?: OwnPaths,
+): Promise<string[]> {
   const paths = new Set<string>()
   for (const [index, from] of timeline.entries()) {
     const to = timeline[index + 1]?.id ?? now
-    if (from.id === to || isHarnessWork(from.point)) continue
-    for (const path of await store.changedFiles(from.id as never, to as never)) paths.add(path)
+    if (from.id === to) continue
+    const work = isHarnessWork(from.point)
+    if (work && own === undefined) continue
+    const mine = work ? own!(from) : null
+    for (const path of await store.changedFiles(from.id as never, to as never)) if (mine === null || !mine.has(path)) paths.add(path)
   }
   return [...paths].sort()
 }

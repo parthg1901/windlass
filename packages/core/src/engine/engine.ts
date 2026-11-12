@@ -119,7 +119,17 @@ import {
   turnStartSeq,
   wouldGoIdle,
 } from "./state.ts"
-import { type OpenSnapshots, type WorkspaceSnapshots, coverageOf, firstDelivery, handEditedPaths, neededSnapshots, snapshotsAfter, snapshotsSinceDelivery } from "./workspace.ts"
+import {
+  type OpenSnapshots,
+  type OwnPaths,
+  type WorkspaceSnapshots,
+  coverageOf,
+  firstDelivery,
+  handEditedPaths,
+  neededSnapshots,
+  snapshotsAfter,
+  snapshotsSinceDelivery,
+} from "./workspace.ts"
 
 // ---------------------------------------------------------------- options
 
@@ -2049,7 +2059,7 @@ class LiveSession implements EngineSession {
       return refused("compacted", "that message is behind the latest compaction, and a revert cannot reach back past it")
     const since = snapshotsSinceDelivery(this.store.readEvents(this.id), target.seq)
     const messages = projection.messages.filter((message) => message.seq >= target.seq && message.excluded === null).length
-    return this.restoreTo({ kind: "revert", fromSeq: target.seq, messageId: target.id, messages }, since.target, since.timeline, options)
+    return this.restoreTo({ kind: "revert", fromSeq: target.seq, messageId: target.id, messages }, since.target, since.timeline, options, since.timeline[0]?.seq ?? target.seq)
   }
 
   private async undoLatestRevert(options: Omit<RevertOptions, "messageId">): Promise<RevertResult> {
@@ -2057,7 +2067,7 @@ class LiveSession implements EngineSession {
     if (last === undefined) return { kind: "refused", reason: "nothing_to_revert", message: "there is no revert to undo" }
     // Whatever changed since that revert's restore was changed by hand: nothing else ran.
     const timeline = last.after === null ? [] : [{ id: last.after, point: "restore_end" as const }, ...snapshotsAfter(this.store.readEvents(this.id, { afterSeq: last.seq }), last.seq)]
-    return this.restoreTo({ kind: "undo", revertSeq: last.seq, fromSeq: last.fromSeq, messages: last.excluded.length }, last.before, timeline, options)
+    return this.restoreTo({ kind: "undo", revertSeq: last.seq, fromSeq: last.fromSeq, messages: last.excluded.length }, last.before, timeline, options, last.seq)
   }
 
   /**
@@ -2070,8 +2080,10 @@ class LiveSession implements EngineSession {
   private async restoreTo(
     request: RestoreRequest,
     target: string | null,
-    timeline: readonly { readonly id: string; readonly point: SnapshotPoint }[],
+    timeline: readonly { readonly id: string; readonly point: SnapshotPoint; readonly messageId?: MessageId | null }[],
     options: Omit<RevertOptions, "messageId">,
+    /** The `seq` the timeline starts at: since then another session may have worked in the same directory. */
+    sinceSeq: number,
   ): Promise<RevertResult> {
     const base = { fromSeq: request.fromSeq, messageId: request.kind === "revert" ? request.messageId : null, messages: request.messages }
     const store = target === null ? null : await this.snapshots()
@@ -2097,10 +2109,12 @@ class LiveSession implements EngineSession {
     const dry = await store.restore(target as SnapshotId, { session: this.id, dryRun: true }).catch((error: unknown) => describe(error))
     if (typeof dry === "string") return { kind: "failed", plan: null, message: `the workspace cannot be restored: ${dry}` }
     // When the snapshots in between cannot be compared any more, every file counts as possibly edited by hand.
-    const edited = await handEditedPaths(store, timeline, dry.before).then(
-      (paths) => new Set(paths),
-      () => null,
-    )
+    const edited = await this.ownPathsSince(store, sinceSeq)
+      .then((own) => handEditedPaths(store, timeline, dry.before, own))
+      .then(
+        (paths) => new Set(paths),
+        () => null,
+      )
     const changes = dry.changes.map((change) => ({ path: change.path, status: change.status, handEdited: edited === null || edited.has(change.path) }))
     const plan: RevertPlan = { ...base, target, unrestorable: null, changes, kept: dry.kept }
     if (dry.kind === "blocked") return { kind: "failed", plan, message: dry.message ?? "git refused the restore" }
@@ -2119,6 +2133,48 @@ class LiveSession implements EngineSession {
     ])
     this.probe("revert.started")
     return this.completeRestore(plan)
+  }
+
+  /**
+   * Whether another session recorded the same working directory since the
+   * event at `sinceSeq`, and if so, which paths each stretch of this
+   * session's own work wrote itself. Two sessions may work in one directory
+   * (that is the user's choice), and then a file that changed while this
+   * session's tools ran is not necessarily this session's: only what its
+   * calls say they wrote is. A step that ran a command, a run of checks and
+   * a restore name no paths, so everything they span counts as possibly the
+   * other session's, and the restore asks. `undefined` when this session is
+   * alone in the directory: then its own work is all its own, as always.
+   */
+  private async ownPathsSince(store: WorkspaceSnapshots, sinceSeq: number): Promise<OwnPaths | undefined> {
+    if (store.list === undefined) return undefined
+    const since = this.store.readEvents(this.id, { afterSeq: sinceSeq - 1, limit: 1 })[0]?.time ?? 0
+    // A little before: the two clocks are the same one, read a moment apart.
+    const others = (await store.list()).some((ref) => ref.session !== this.id && ref.takenAt >= since - 1000)
+    if (!others) return undefined
+    const projection = this.projection()
+    const cwd = projection.session.cwd
+    return (from) => {
+      const none = new Set<string>()
+      if (from.point !== "step_start" || from.messageId === null || from.messageId === undefined) return none
+      const message = projection.messages.findLast((candidate) => candidate.id === from.messageId)
+      if (message?.kind !== "assistant") return none
+      const own = new Set<string>()
+      for (const part of message.parts) {
+        if (part.type !== "tool_call" || part.state.status === "pending" || (part.state.status === "settled" && part.state.outcome === "not_started")) continue
+        const effect = part.state.status === "running" ? part.state.effect : this.core.effects.get(part.name)
+        if (effect === "read") continue
+        const touches = this.core.touches.get(part.name)
+        // A call that can change anything (a command), or that does not say what it writes: nothing in this step is surely its own.
+        if (effect !== "write" || touches === undefined) return none
+        try {
+          for (const path of touches(JSON.parse(part.input))) own.add(relative(cwd, resolvePath(cwd, path)).split(sep).join("/"))
+        } catch {
+          return none
+        }
+      }
+      return own
+    }
   }
 
   /**

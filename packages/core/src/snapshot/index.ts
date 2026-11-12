@@ -289,14 +289,35 @@ function createSnapshots(context: GitContext, workspace: string, given: string, 
         kept.add(key)
         return false
       })
-      if (removed.length > 0) await git(["update-ref", "--stdin", "-z"], { stdin: removed.map((ref) => `delete ${ref.ref}\0\0`).join("") })
+      if (removed.length > 0) await deleteRefs(removed)
       const grace = options.graceSeconds ?? 3600
       const expire = `--prune=${grace <= 0 ? "now" : `${Math.ceil(grace)}.seconds.ago`}`
       // `--auto` must not leave a detached git behind: whoever called may be about to exit or remove the directory.
-      await git(options.gc === "auto" ? ["-c", "gc.autoDetach=false", "gc", "--auto", "--quiet", expire] : ["gc", "--quiet", expire])
+      const collected = await git(options.gc === "auto" ? ["-c", "gc.autoDetach=false", "gc", "--auto", "--quiet", expire] : ["gc", "--quiet", expire], { okCodes: [0, 128] })
+      // Another process is collecting this directory right now (sessions share it): its run does the work, and
+      // what this prune unreferenced is collected by the next one.
+      // (Git says so in two ways: it finds the other gc's lock, or it loses the race to write its own.)
+      if (collected.exitCode !== 0 && !/gc is already running|gc\.pid\.lock/.test(collected.stderr))
+        throw new SnapshotError(`git gc failed (exit ${collected.exitCode}): ${collected.stderr.trim().split("\n").slice(-3).join(" / ")}`, { exitCode: collected.exitCode, stderr: collected.stderr })
       await removeStaleIndexes()
       return { removed, remaining: refs.length - removed.length }
     },
+  }
+
+  /**
+   * Deletes refs in one transaction. Another process of the same workspace
+   * may hold the lock on the packed refs for a moment (its own prune, or
+   * git's gc packing them), so a refusal for a lock is tried again a few times.
+   */
+  async function deleteRefs(refs: readonly SnapshotRef[]) {
+    const stdin = refs.map((ref) => `delete ${ref.ref}\0\0`).join("")
+    for (let attempt = 1; ; attempt += 1) {
+      const result = await git(["update-ref", "--stdin", "-z"], { stdin, okCodes: [0, 128] })
+      if (result.exitCode === 0) return
+      const locked = /\.lock'|Unable to create|cannot lock ref/.test(result.stderr)
+      if (!locked || attempt === 5) throw new SnapshotError(`git update-ref failed (exit ${result.exitCode}): ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`, { exitCode: result.exitCode, stderr: result.stderr })
+      await new Promise((resolve) => setTimeout(resolve, 40 * attempt))
+    }
   }
 
   async function list(options: { readonly session?: string } = {}): Promise<SnapshotRef[]> {
