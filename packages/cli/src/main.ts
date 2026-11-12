@@ -224,7 +224,16 @@ export async function run(io: Io): Promise<number> {
   const notices = sink instanceof JsonSink ? new JsonNotices(session, (notice) => sink.line(notice)) : null
   const terminal = early
   const leaving = new Deferred<number>()
-  const control = { running: false, lastInterrupt: 0, leaving: false }
+  /**
+   * `sending`: what was typed after a prompt's Enter waits until the prompt itself has reached the engine (the
+   * project's hooks and servers are read, and may be asked about, first): sent ahead of it, it would start the turn.
+   */
+  const control = { running: false, lastInterrupt: 0, leaving: false, sending: null as (() => void)[] | null }
+  const sent = () => {
+    const waiting = control.sending ?? []
+    control.sending = null
+    for (const send of waiting) send()
+  }
   /** Leaves through the common door: close the engine (bounded), tidy up, exit with `code`. A second request leaves at once. */
   const leave = (code: number) => {
     if (control.leaving) return leaveNow(code)
@@ -257,17 +266,22 @@ export async function run(io: Io): Promise<number> {
   })
   const turn = async (entry: Entry): Promise<TurnOutcome | "closed" | "not_sent"> => {
     control.running = true
+    control.sending = []
     // What the project's configuration asks for and the user has not answered yet is asked before the message goes.
-    await watch?.beforeMessage()
+    await watch?.beforeMessage().catch((error: unknown) => {
+      sent()
+      throw error
+    })
     const done = turns.next()
     const command = entry.command
-    if (command === undefined) await session.send(entry.text)
+    if (command === undefined) await session.send(entry.text).finally(sent)
     else {
       // A command file that cannot be sent after all (the agent it names is gone) starts no turn: said, and nothing waits.
       const refused = await session.sendCommand!(command.name, command.args).then(
         () => null,
         (error: unknown) => (error instanceof Error ? error.message : String(error)),
       )
+      sent()
       if (refused !== null) {
         turns.forget()
         control.running = false
@@ -448,7 +462,7 @@ interface Interactive {
   readonly renderer: PrettyRenderer
   readonly session: Session
   readonly turn: (entry: Entry) => Promise<TurnOutcome | "closed" | "not_sent">
-  readonly control: { running: boolean }
+  readonly control: { running: boolean; sending: (() => void)[] | null }
   readonly onCtrlC: () => void
   readonly leave: (code: number) => void
   readonly first: string | null
@@ -467,6 +481,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
   let waiting: ((entry: Entry | null) => void) | null = null
 
   const steer = (message: string, queued: boolean, command?: Entry["command"]) => {
+    // The turn's own message has not reached the engine yet: this goes right after it.
+    if (control.sending !== null) return void control.sending.push(() => steer(message, queued, command))
     const delivery = queued ? "queue" : "steer"
     const sent = command === undefined ? session.send(message, { delivery }) : session.sendCommand!(command.name, command.args, { delivery })
     sent.then(
