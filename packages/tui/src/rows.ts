@@ -12,6 +12,7 @@
 import { detailLines, diffStat, errorSummary, fileList, formatBytes, formatDuration, successSummary, unresolvedReason, usageText } from "./cli.ts"
 import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } from "./layout.ts"
 import { markdown } from "./markdown.ts"
+import type { DiffFile } from "@light-harness/acp/extensions"
 import { type Line, type Role, type Span, span } from "./theme.ts"
 import { type NoticeRow, type OutcomeRow, type PendingItem, type ReasoningRow, type Row, type TextRow, type ToolRow, type UserRow, asObject } from "./transcript.ts"
 
@@ -114,11 +115,34 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
       const last = row.progress.split("\n").filter((line) => line.trim() !== "").at(-1)
       if (last !== undefined) lines.push([span(`${INDENT}${truncate(last, columns - INDENT.length)}`, "dim")])
     }
-    if (row.phase === "settled" && row.outcome === "error") for (const detail of detailLines(row.name, settledData(row)).slice(-3)) lines.push([span(`${INDENT}${truncate(detail, columns - INDENT.length)}`, "dim")])
+    const approval = row.approval
+    if (approval?.state === "denied" && approval.reason === "unattended")
+      lines.push(...wrapLine([span(`${INDENT}it needs ${approval.needs.join(", ")}${approval.stop ? "; the run ends here" : ""}`, "warn")], columns, [span(INDENT)]))
+    else if (row.phase === "settled" && row.outcome === "error") for (const detail of detailLines(row.name, settledData(row)).slice(-3)) lines.push([span(`${INDENT}${truncate(detail, columns - INDENT.length)}`, "dim")])
     return lines
   }
   lines.push(...argumentLines(row, columns))
+  lines.push(...runLines(row, columns))
   lines.push(...outputLines(row, columns))
+  return lines
+}
+
+/** Expanded: how the call ran, and the question it was asked under. */
+function runLines(row: ToolRow, columns: number): Span[][] {
+  const lines: Span[][] = []
+  const sandbox = row.sandbox
+  if (sandbox !== undefined)
+    lines.push(
+      ...wrapLine(
+        sandbox === null
+          ? [span(`${INDENT}ran without the sandbox`, "warn")]
+          : [span(`${INDENT}ran in the sandbox ${SANDBOX_MARK}`, "dim"), span(sandbox.network ? " · with network access" : " · no network", sandbox.network ? "warn" : "dim"), span(sandbox.writableRoots.length === 0 ? "" : ` · could also write ${sandbox.writableRoots.join(", ")}`, "warn")],
+        columns,
+        [span(INDENT + "  ")],
+      ),
+    )
+  const approval = row.approval
+  if (approval !== null && approval.state !== "denied" && approval.title !== "") lines.push(...wrapLine([span(`${INDENT}asked: ${approval.title}`, "dim")], columns, [span(INDENT + "  ")]))
   return lines
 }
 
@@ -133,22 +157,50 @@ function toolHead(row: ToolRow, columns: number, context: LayoutContext): Span[]
     case "writing":
       return [span("▸ ", "accent"), name, span(` · writing arguments… ${plural(row.input.length, "character")}`, "dim")]
     case "called":
+      if (row.approval?.state === "asked" && row.approval.live) return fit([span("? ", "warn", { bold: true }), name, span(row.arg === "" ? "" : " ")], [span(" · waiting for your approval", "warn")])
       return fit([span("▸ ", "accent"), name, span(row.arg === "" ? "" : " ")], [span(" · waiting to run", "dim")])
     case "running": {
       const elapsed = row.runningSince === null ? "" : ` · ${formatDuration(Math.max(0, context.now - row.runningSince))}`
-      return fit([span("⋯ ", "accent"), name, span(row.arg === "" ? "" : " ")], [span(` · running${elapsed}`, "dim")])
+      return fit([span("⋯ ", "accent"), name, span(row.arg === "" ? "" : " ")], [...sandboxMark(row), span(` · running${elapsed}`, "dim")])
     }
     case "settled": {
       const outcome = describeOutcome(row)
       const took = row.startedAt === null || row.settledAt === null ? "" : ` · ${formatDuration(row.settledAt - row.startedAt)}`
-      const tail = [span(outcome.text === "" ? "" : ` · ${outcome.text}`, outcome.role === "ok" ? undefined : outcome.role), span(took, "dim")]
+      const tail = [...sandboxMark(row), span(outcome.text === "" ? "" : ` · ${outcome.text}`, outcome.role === "ok" ? undefined : outcome.role), ...approvalMark(row), span(took, "dim")]
       return fit([span(`${outcome.symbol} `, outcome.role), name, span(row.arg === "" ? "" : " ")], tail)
     }
   }
 }
 
+/** The glyph a sandboxed command carries on its row. */
+export const SANDBOX_MARK = "⊡"
+
+/**
+ * How a command ran, kept small: `⊡` in the sandbox, with the extra access
+ * spelled out when it had any (`⊡ +network`, `⊡ +write /opt/cache`); a
+ * command that ran without the sandbox says so in words.
+ */
+function sandboxMark(row: ToolRow): Span[] {
+  const sandbox = row.sandbox
+  if (sandbox === undefined) return []
+  if (sandbox === null) return row.name === "shell" ? [span(" · no sandbox", "warn")] : []
+  const extra = [sandbox.network ? "+network" : null, ...sandbox.writableRoots.map((root) => `+write ${root}`)].filter((part) => part !== null)
+  return [span(` ${SANDBOX_MARK}${extra.length === 0 ? "" : ` ${extra.join(" ")}`}`, extra.length === 0 ? "dim" : "warn")]
+}
+
+/** How the call's approval question was answered, when it was asked. */
+function approvalMark(row: ToolRow): Span[] {
+  const approval = row.approval
+  if (approval?.state !== "allowed") return []
+  const how = approval.choice === "session" ? "allowed for the session" : approval.choice === "project" ? "allowed in this project" : "allowed once"
+  return [span(` · ${how}`, "dim"), ...(approval.note === null ? [] : [span(` · your note: ${approval.note}`, "dim")])]
+}
+
 function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: string } {
   const data = settledData(row)
+  const approval = row.approval
+  if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: `not allowed by you${approval.note === null ? "" : ` · your note: ${approval.note}`}` }
+  if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }
   switch (row.outcome) {
     case "success":
       return { symbol: "✓", role: "ok", text: successSummary(row.name, data) }
@@ -287,18 +339,43 @@ function outcomeLines(row: OutcomeRow, columns: number): Span[][] {
 function changedLines(row: OutcomeRow, columns: number): Span[][] {
   const known = row.changedFiles
   const edited = [...new Set([...row.diffs.keys(), ...row.written])]
-  const paths = known ?? edited
+  const server = row.serverDiff !== null && row.serverDiff !== "loading" && row.serverDiff.available ? row.serverDiff : null
+  const paths = server?.files.map((file) => file.path) ?? known ?? edited
   if (paths.length === 0) return []
-  const source = known === null ? "edited" : "changed"
-  const hint = `${known === null ? " (from its tool calls)" : ""}${row.expanded ? "" : " · Ctrl-O for diffs"}`
+  const source = server === null && known === null ? "edited" : "changed"
+  const hint = `${server === null && known === null ? " (from its tool calls)" : ""}${row.expanded ? "" : " · Ctrl-O for diffs"}`
   const lines = wrapLine([span(`  ${source} ${plural(paths.length, "file")}: `, "dim"), span(fileList(paths, row.expanded ? paths.length : 6)), span(hint, "dim")], columns, [span("    ")])
   if (!row.expanded) return lines
+  if (row.serverDiff === "loading") lines.push([span(`${INDENT}loading the per-file diffs…`, "dim")])
+  else if (row.serverDiff !== null && !row.serverDiff.available) lines.push(...wrapLine([span(`${INDENT}per-file diffs are not available: ${row.serverDiff.message}`, "dim")], columns, [span(INDENT)]))
+  if (server !== null) {
+    for (const file of server.files) lines.push(...fileDiffLines(file, FULL_OUTPUT_LINES, columns))
+    return lines
+  }
   for (const path of paths) {
     const diffs = row.diffs.get(path)
     lines.push([span(`  ${path}`, undefined, { bold: true })])
     if (diffs !== undefined) for (const diff of diffs) lines.push(...diffLines(diff, FULL_OUTPUT_LINES, columns))
     else if (row.written.has(path)) lines.push([span(`${INDENT}written whole by the write tool; no diff was reported`, "dim")])
-    else lines.push([span(`${INDENT}no diff: changed by a command, or the server does not send per-file diffs for a turn`, "dim")])
+    else lines.push([span(`${INDENT}no diff from its tool calls: changed by a command`, "dim")])
+  }
+  return lines
+}
+
+/** One file of a server diff: its path and status, then its patch, or why there is none. */
+export function fileDiffLines(file: DiffFile, limit: number, columns: number): Span[][] {
+  const status = file.status === "added" ? "new file" : file.status === "deleted" ? "deleted" : file.status === "modified" ? "" : file.status.replace(/_/g, " ")
+  const stat = file.binary || file.patch === null ? "" : `+${file.added} -${file.removed}`
+  const about = [status, stat].filter((part) => part !== "").join(" · ")
+  const lines: Span[][] = [[span(`  ${file.path}`, undefined, { bold: true }), span(about === "" ? "" : ` · ${about}`, "dim")]]
+  if (file.binary) lines.push([span(`${INDENT}binary file: no diff shown`, "dim")])
+  else if (file.omitted) lines.push([span(`${INDENT}not shown: the diff of this turn is too large (the patch budget ran out before this file)`, "dim")])
+  else if (file.patch === null) lines.push([span(`${INDENT}no patch`, "dim")])
+  else {
+    // The `diff --git` and index headers say nothing the line above does not.
+    const body = file.patch.replace(/\n+$/, "").split("\n").filter((line) => !/^(diff --git |index |new file mode |deleted file mode |old mode |new mode |similarity |rename )/.test(line))
+    lines.push(...diffLines(body.join("\n"), limit, columns))
+    if (file.truncated) lines.push([span(`${INDENT}… cut: the change to this file is larger than the per-file limit`, "dim")])
   }
   return lines
 }

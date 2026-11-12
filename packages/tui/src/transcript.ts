@@ -8,7 +8,8 @@
  * live or replayed, and never touches a terminal. The wording follows the
  * line-based CLI's renderer, so both clients say the same things.
  */
-import type { EventData, Json, ProviderError, StepError, Usage, VerificationOutcome } from "@light-harness/core"
+import { type DiffResult, type TurnNotification, deriveTitle } from "@light-harness/acp/extensions"
+import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@light-harness/core"
 import { type EngineEvent, callArgument, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
@@ -67,7 +68,23 @@ export interface ToolRow extends RowBase {
   runningSince: number | null
   /** 0 collapsed, 1 expanded, 2 expanded without the output cap. */
   expand: 0 | 1 | 2
+  /**
+   * How a command ran (`tool.started`'s `run`): in the sandbox with what
+   * extra access, `null` without the sandbox, `undefined` when not recorded
+   * (no approval layer, or not started).
+   */
+  sandbox: { readonly network: boolean; readonly writableRoots: readonly string[] } | null | undefined
+  /** The call's approval: asked (and how it was answered), or refused without a question. */
+  approval: ToolApproval | null
 }
+
+export type ToolApproval =
+  /** Asked; `live` while the question waits for this user. */
+  | { readonly state: "asked"; readonly title: string; readonly live: boolean }
+  | { readonly state: "allowed"; readonly title: string; readonly choice: string; readonly note: string | null }
+  | { readonly state: "declined"; readonly title: string; readonly note: string | null }
+  /** Refused without a question: by the policy, or because nobody was present (`stop`: the run ended with it). */
+  | { readonly state: "denied"; readonly reason: "policy" | "unattended"; readonly needs: readonly string[]; readonly stop: boolean }
 
 export interface NoticeRow extends RowBase {
   readonly kind: "notice"
@@ -89,8 +106,12 @@ export interface OutcomeRow extends RowBase {
   readonly message: string | null
   readonly errorKind: string | null
   readonly requestId: string | null
+  /** The execution this ended, for its per-file diffs. */
+  readonly executionId: string | null
   /** `null`: the server did not say (a replayed turn, or no snapshot could tell). */
-  readonly changedFiles: readonly string[] | null
+  changedFiles: readonly string[] | null
+  /** The per-file diffs the server sent for this turn, once asked for (`/diff`, or expanding the row). */
+  serverDiff: DiffResult | "loading" | null
   /** The diffs of the edits this turn made, per path, as the tools reported them. */
   readonly diffs: ReadonlyMap<string, readonly string[]>
   /** Paths written whole (no diff from the tool). */
@@ -136,6 +157,8 @@ export interface Activity {
   compacting: { readonly since: number; repairing: boolean } | null
   retry: { readonly until: number; readonly attempt: number } | null
   stopping: boolean
+  /** A tool call's approval question waits for the user (live only): the call, and since when. */
+  waiting: { readonly key: string; readonly since: number } | null
 }
 
 export interface SessionInfo {
@@ -144,6 +167,8 @@ export interface SessionInfo {
   title: string | null
   model: string | null
   effort: string | null
+  /** Untrusted content is in the conversation: where it came from, in a sentence. */
+  taint: string | null
 }
 
 interface Turn {
@@ -180,7 +205,7 @@ export class Transcript {
   readonly rows: Row[] = []
   readonly pending: PendingItem[] = []
   readonly calls: CallUsage[] = []
-  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null }
+  readonly session: SessionInfo = { id: null, cwd: null, title: null, model: null, effort: null, taint: null }
   readonly activity: Activity = blankActivity()
   /** Bumped on every change. */
   version = 0
@@ -226,7 +251,7 @@ export class Transcript {
     this.rows.length = 0
     this.pending.length = 0
     this.calls.length = 0
-    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null })
+    Object.assign(this.session, { id: null, cwd: null, title: null, model: null, effort: null, taint: null })
     Object.assign(this.activity, blankActivity())
     for (const map of [this.openText, this.openReasoning, this.tools, this.checks, this.compactions, this.inboxText, this.resumes, this.stepModels, this.callDiagnostics]) map.clear()
     this.diagnosticsForNext = []
@@ -247,6 +272,18 @@ export class Transcript {
   apply(event: EngineEvent, replay = false): void {
     this.version += 1
     this.handle(event, replay)
+  }
+
+  /** How a turn ended, as the server says after its events (`<prefix>/turn`): the files it changed, also for a replayed turn. */
+  applyTurn(turn: TurnNotification): void {
+    const row = this.rows.findLast((candidate): candidate is OutcomeRow => candidate.kind === "outcome" && candidate.executionId === turn.executionId)
+    if (row === undefined || row.changedFiles !== null || turn.changedFiles === null) return
+    this.touch(row, () => (row.changedFiles = turn.changedFiles))
+  }
+
+  /** The tool row of a call, if shown. */
+  toolRowOf(messageId: string, callId: string): ToolRow | null {
+    return this.tools.get(key(messageId, callId)) ?? null
   }
 
   private handle(event: EngineEvent, replay: boolean): void {
@@ -306,10 +343,12 @@ export class Transcript {
         return this.toolCalled(event.data, replay)
       case "tool.started": {
         const row = this.tools.get(key(event.data.messageId, event.data.callId)) ?? this.toolRow(event.data.messageId, event.data.callId, "tool", "", replay)
+        const run = event.data.run
         this.touch(row, () => {
           row.phase = "running"
           row.startedAt = event.time
           row.runningSince = this.now()
+          if (run !== undefined) row.sandbox = run.sandbox
         })
         return
       }
@@ -324,8 +363,58 @@ export class Transcript {
           row.truncation = data.truncation
           row.settledAt = event.time
           row.progress = null
+          if (row.approval?.state === "asked") row.approval = { ...row.approval, live: false }
         })
+        if (this.activity.waiting?.key === row.key) this.activity.waiting = null
         this.recordChange(row)
+        return
+      }
+      case "approval.requested": {
+        const data = event.data
+        const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
+        // A replayed question is history: it was answered (or settled by recovery) long ago and is never put again.
+        this.touch(row, () => (row.approval = { state: "asked", title: sanitize(data.question.title), live: !replay }))
+        if (!replay) this.activity.waiting = { key: row.key, since: this.now() }
+        return
+      }
+      case "approval.answered": {
+        const data = event.data
+        const row = this.tools.get(key(data.messageId, data.callId))
+        if (this.activity.waiting?.key === key(data.messageId, data.callId)) this.activity.waiting = null
+        if (row === undefined) return
+        const title = row.approval?.state === "asked" ? row.approval.title : ""
+        const note = data.note === null ? null : sanitize(data.note)
+        this.touch(row, () => (row.approval = data.approve ? { state: "allowed", title, choice: data.choice, note } : { state: "declined", title, note }))
+        return
+      }
+      case "approval.denied": {
+        const data = event.data
+        const row = this.tools.get(key(data.messageId, data.callId)) ?? this.toolRow(data.messageId, data.callId, "tool", "", replay)
+        this.touch(row, () => (row.approval = { state: "denied", reason: data.reason, needs: data.needs.map(describeNeed), stop: data.stop }))
+        return
+      }
+      case "taint.noticed":
+        this.session.taint = sanitize(event.data.text)
+        this.notice(
+          SYMBOL.unknown,
+          "warn",
+          [span("untrusted content is in the conversation: ", "warn", { bold: true }), span(sanitize(event.data.text), "warn")],
+          [
+            [span("From here on, anything that can send data out (network access for a command, a command outside the sandbox) asks again, and earlier approvals for it no longer apply.", "dim")],
+            [span("/clear-taint", "accent"), span(" when you trust what is there", "dim")],
+          ],
+          replay,
+          "session",
+        )
+        return
+      case "taint.cleared":
+        this.session.taint = null
+        this.notice(SYMBOL.note, "dim", [span("the conversation is trusted again (/clear-taint): approvals apply as before", "dim")], [], replay, "session")
+        return
+      case "notice": {
+        const what = event.kind === "sandbox_unavailable" ? "no sandbox" : event.kind === "approval_ignored" ? "a project setting was not followed" : event.kind === "checks_not_run" ? "checks not run" : String(event.kind).replace(/_/g, " ")
+        const [first = "", ...rest] = sanitize(event.message).split("\n")
+        this.notice(SYMBOL.unknown, "warn", [span(`${what}: `, "warn", { bold: true }), span(first, "warn")], rest.map((line) => [span(line, "dim")]), replay, "session")
         return
       }
       case "step.started":
@@ -464,18 +553,20 @@ export class Transcript {
       case "execution.succeeded": {
         const turn = this.endTurn()
         const unresolved = event.data.verification.status === "unresolved"
-        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification }, replay)
+        this.outcome(unresolved ? "unresolved" : "succeeded", turn, event.time, { verification: event.data.verification, executionId: event.data.executionId }, replay)
         return
       }
       case "execution.failed": {
         const turn = this.endTurn()
-        this.outcome("failed", turn, event.time, { message: sanitize(event.data.message) }, replay)
+        // Ended because a call needed approval and nobody could give it (`unattended: stop`): not an error of the work.
+        if (event.data.cause === "approval" && turn !== null) turn.lastError = "approval needed"
+        this.outcome("failed", turn, event.time, { message: sanitize(event.data.message), executionId: event.data.executionId }, replay)
         return
       }
       case "execution.interrupted": {
         const turn = this.endTurn()
         if (event.data.reason === "shutdown") this.cutOff = "shutdown"
-        this.outcome(event.data.reason === "shutdown" ? "shutdown" : "interrupted", turn, event.time, {}, replay)
+        this.outcome(event.data.reason === "shutdown" ? "shutdown" : "interrupted", turn, event.time, { executionId: event.data.executionId }, replay)
         return
       }
       case "snapshot.unavailable":
@@ -651,6 +742,8 @@ export class Transcript {
         settledAt: null,
         runningSince: null,
         expand: 0,
+        sandbox: undefined,
+        approval: null,
       },
       replay,
     )
@@ -679,6 +772,8 @@ export class Transcript {
       this.notice(SYMBOL.inbox, "dim", [span(`${data.origin}: `, "dim"), span(`"${oneLine(text)}"`)], [], replay, "work")
       return
     }
+    // The title the server derives for a session without one: the first line of its first message.
+    if (this.session.title === null) this.session.title = deriveTitle(sanitize(text))
     if (!midTurn) {
       this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null }, replay)
       return
@@ -711,7 +806,7 @@ export class Transcript {
     return turn
   }
 
-  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string }, replay: boolean): void {
+  private outcome(outcome: OutcomeRow["outcome"], turn: Turn | null, time: number, extra: { verification?: VerificationOutcome; message?: string; executionId?: string }, replay: boolean): void {
     const waiting = outcome === "interrupted" ? this.pending.length : 0
     this.add<OutcomeRow>(
       {
@@ -724,7 +819,9 @@ export class Transcript {
         message: extra.message ?? null,
         errorKind: turn?.lastError ?? null,
         requestId: turn?.requestId ?? null,
+        executionId: extra.executionId ?? null,
         changedFiles: turn?.changedFiles ?? null,
+        serverDiff: null,
         diffs: turn?.diffs ?? new Map(),
         written: turn?.written ?? new Set(),
         waiting,
@@ -840,7 +937,7 @@ export function expandable(row: Row): boolean {
 }
 
 function blankActivity(): Activity {
-  return { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false }
+  return { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null }
 }
 
 function key(messageId: string, callId: string): string {

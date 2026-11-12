@@ -9,7 +9,7 @@
  * reaching the bottom again, or Esc, follows again.
  */
 import { type OptimizedBuffer, Renderable, type RenderContext } from "@opentui/core"
-import { truncate, width as textWidth } from "./layout.ts"
+import { truncate, width as textWidth, wrapText } from "./layout.ts"
 import { type LayoutContext, gapBefore, isLive, layoutRow, pendingLines } from "./rows.ts"
 import { type Line, type Span, type Theme, span } from "./theme.ts"
 import { type Row, type Transcript, expandable } from "./transcript.ts"
@@ -221,7 +221,8 @@ export class ConversationView extends Renderable {
         drawLine(buffer, this.theme, this.x + GUTTER, this.y + y, this.width - GUTTER, line)
       })
     }
-    if (this.total === 0) drawLine(buffer, this.theme, this.x + GUTTER, this.y, this.width - GUTTER, [span(this.empty, "dim")])
+    // Wrapped, so a hint longer than the column is read whole rather than cut by the panel.
+    if (this.total === 0) wrapText([span(this.empty, "dim")], Math.max(10, this.width - GUTTER - 1)).slice(0, height).forEach((line, row) => drawLine(buffer, this.theme, this.x + GUTTER, this.y + row, this.width - GUTTER, line))
   }
 
   /** What the view says before anything happened. */
@@ -436,4 +437,110 @@ function wrapSpans(line: Span[], columns: number): Span[][] {
   }
   if (current !== "") out.push([span(current, role)])
   return out
+}
+
+export interface PagerSpec {
+  readonly title: string
+  /** The body at a width; `marks` are the line numbers sections start at (one per file), for n and p. */
+  readonly body: (columns: number) => { readonly lines: Span[][]; readonly marks: readonly number[] }
+  readonly footer: string
+}
+
+/**
+ * A full-screen reader over the conversation: the per-file diff view.
+ * Up, Down, PageUp, PageDown, Home, End scroll; n and p jump to the next and
+ * previous file; Esc or q closes. Like the dialog, it never touches the input.
+ */
+export class Pager extends Renderable {
+  spec: PagerSpec | null = null
+  first = 0
+  private laid: { columns: number; lines: Span[][]; marks: readonly number[] } | null = null
+  private resolve: (() => void) | null = null
+
+  constructor(
+    ctx: RenderContext,
+    private readonly theme: Theme,
+    options: ConstructorParameters<typeof Renderable>[1],
+  ) {
+    super(ctx, { ...options, position: "absolute", zIndex: 90, visible: false })
+  }
+
+  get open(): boolean {
+    return this.spec !== null
+  }
+
+  show(spec: PagerSpec): Promise<void> {
+    this.close()
+    this.spec = spec
+    this.first = 0
+    this.laid = null
+    this.visible = true
+    this.requestRender()
+    return new Promise((resolve) => {
+      this.resolve = resolve
+    })
+  }
+
+  close(): void {
+    const resolve = this.resolve
+    this.resolve = null
+    this.spec = null
+    this.laid = null
+    this.visible = false
+    this.requestRender()
+    resolve?.()
+  }
+
+  key(name: string, sequence: string, ctrl: boolean): void {
+    const laid = this.layout()
+    if (laid === null) return
+    const page = Math.max(1, this.bodyHeight() - 1)
+    // The last file can be brought to the top, so n reaches every file.
+    const max = Math.max(0, laid.lines.length - this.bodyHeight(), laid.marks.at(-1) ?? 0)
+    if (name === "escape" || sequence === "q" || (ctrl && name === "c")) return this.close()
+    if (name === "up" || sequence === "k") this.first -= 1
+    else if (name === "down" || sequence === "j" || name === "return") this.first += 1
+    else if (name === "pageup" || sequence === "b") this.first -= page
+    else if (name === "pagedown" || sequence === " ") this.first += page
+    else if (name === "home" || sequence === "g") this.first = 0
+    else if (name === "end" || sequence === "G") this.first = max
+    else if (sequence === "n") this.first = laid.marks.find((mark) => mark > this.first) ?? this.first
+    else if (sequence === "p") this.first = laid.marks.findLast((mark) => mark < this.first) ?? 0
+    this.first = Math.max(0, Math.min(max, this.first))
+    this.requestRender()
+  }
+
+  /** The body as text at the current width, for tests. */
+  text(): string {
+    return (this.layout()?.lines ?? []).map((line) => line.map((part) => part.text).join("").trimEnd()).join("\n")
+  }
+
+  private bodyHeight(): number {
+    return Math.max(1, (this.parent?.height ?? this.height) - 2)
+  }
+
+  private layout(): { columns: number; lines: Span[][]; marks: readonly number[] } | null {
+    const spec = this.spec
+    if (spec === null) return null
+    const columns = Math.max(10, (this.parent?.width ?? this.width) - 2)
+    if (this.laid === null || this.laid.columns !== columns) this.laid = { columns, ...spec.body(columns) }
+    return this.laid
+  }
+
+  protected override renderSelf(buffer: OptimizedBuffer): void {
+    const spec = this.spec
+    const laid = this.layout()
+    if (spec === null || laid === null) return
+    const w = this.parent?.width ?? this.width
+    const h = this.parent?.height ?? this.height
+    clearRect(buffer, this.theme, 0, 0, w, h)
+    const body = this.bodyHeight()
+    const shown = laid.lines.length === 0 ? "" : ` · lines ${this.first + 1}-${Math.min(laid.lines.length, this.first + body)} of ${laid.lines.length}`
+    drawLine(buffer, this.theme, 0, 0, w, [span(truncate(spec.title, Math.max(4, w - textWidth(shown))), undefined, { bold: true }), span(shown, "dim")])
+    for (let row = 0; row < body; row += 1) {
+      const line = laid.lines[this.first + row]
+      if (line !== undefined) drawLine(buffer, this.theme, 1, 1 + row, w - 1, line)
+    }
+    drawLine(buffer, this.theme, 0, h - 1, w, [span(truncate(spec.footer, w), "dim")])
+  }
 }

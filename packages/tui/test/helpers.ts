@@ -8,7 +8,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import type { NewEvent, SessionId, StoredEvent } from "@light-harness/core"
 import type { Scenario } from "@light-harness/core/testing/scenarios"
 import { App } from "../src/app.ts"
-import type { Backend, BackendSession, Delivery, OpenSettings, OpenTarget, Question, StreamItem } from "../src/backend.ts"
+import type { ApprovalHandler, TurnNotification, Backend, BackendSession, Delivery, OpenSettings, OpenTarget, Question, StreamItem } from "../src/backend.ts"
 import { EventQueue } from "../src/acp-client.ts"
 import { type EngineEvent, findScenario } from "../src/cli.ts"
 import { DemoBackend } from "../src/demo-backend.ts"
@@ -120,6 +120,7 @@ export class ScriptBackend implements Backend {
   readonly label = "script"
   readonly restartable = false
   onQuestion: (question: Question) => Promise<string | null> = async () => null
+  onApproval: ApprovalHandler = async () => null
   onLog: (line: string, level: "warn" | "error" | "info") => void = () => {}
   readonly sent: { text: string; delivery: Delivery }[] = []
   interrupts = 0
@@ -140,6 +141,13 @@ export class ScriptSession implements BackendSession {
   readonly queue = new EventQueue<StreamItem>()
   private seq = 0
   gone: string | null = null
+  // Features a test gives the session when it needs them.
+  approval?: BackendSession["approval"]
+  clearTaint?: BackendSession["clearTaint"]
+  configChoices?: BackendSession["configChoices"]
+  setConfig?: BackendSession["setConfig"]
+  diff?: BackendSession["diff"]
+  rename?: BackendSession["rename"]
 
   constructor(
     private readonly backend: ScriptBackend,
@@ -173,6 +181,11 @@ export class ScriptSession implements BackendSession {
 
   lost(): string | null {
     return this.gone
+  }
+
+  /** How a turn ended, as the server says after its events. */
+  turn(turn: TurnNotification): void {
+    this.queue.push({ turn, replay: turn.replay === true })
   }
 
   /** The server went away. */

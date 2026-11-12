@@ -17,14 +17,16 @@
  */
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
 import type { RevertPlan, RevertResult } from "@light-harness/core"
-import { type Backend, BackendError, type BackendSession, type Delivery, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
+import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
+import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
 import { fileList, formatDuration } from "./cli.ts"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, panelLines } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
-import { type Row, Transcript, expandable } from "./transcript.ts"
-import { ConversationView, Dialog, type DialogSpec, LinesView } from "./views.ts"
+import { fileDiffLines } from "./rows.ts"
+import { type OutcomeRow, type Row, Transcript, expandable } from "./transcript.ts"
+import { ConversationView, Dialog, type DialogSpec, LinesView, Pager } from "./views.ts"
 
 /** How long after a first Ctrl-C a second one exits instead of waiting for the stop. */
 export const DOUBLE_INTERRUPT_MS = 2000
@@ -33,6 +35,8 @@ export const CLOSE_TIMEOUT_MS = 3000
 /** Below this width the panel hides itself unless asked for. */
 export const PANEL_AUTO_WIDTH = 100
 const MAX_INPUT_ROWS = 8
+/** The approval dock takes at most this share of the screen's rows. */
+const DOCK_SHARE = 0.6
 const HISTORY_LIMIT = 200
 
 export interface AppOptions {
@@ -86,6 +90,14 @@ export class App {
   private busyCommand = false
   /** The reason the last open failed, for /reconnect. */
   private target: OpenTarget
+  /** The approval question waiting for the user, and how to answer it. */
+  private dock: { readonly state: DockState; readonly answer: (answer: ApprovalAnswer | null) => void } | null = null
+  private readonly dockView: LinesView
+  readonly pager: Pager
+  /** When the user last typed in the input: the dock does not take the focus from someone typing. */
+  private lastTyped = 0
+  /** How the session's tool calls are approved, as the server last said. */
+  approvalInfo: ApprovalInfo | null = null
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -111,6 +123,8 @@ export class App {
     this.panel = new LinesView(renderer, theme, (columns, rows) => this.panelContent(columns, rows), { id: "panel", width: PANEL_WIDTH, height: "100%", flexShrink: 0 })
     this.panel.border = true
     main.add(this.panel)
+    this.dockView = new LinesView(renderer, theme, (columns, rows) => (this.dock === null ? [] : dockLines(this.dock.state, columns, rows, this.now())), { id: "approval", height: 0, width: "100%", visible: false })
+    root.add(this.dockView)
     this.status = new LinesView(renderer, theme, (columns) => [this.statusLine(columns)], { id: "status", height: 1, width: "100%" })
     root.add(this.status)
     this.inputRow = new BoxRenderable(renderer, { id: "input-row", flexDirection: "row", width: "100%", height: 1 })
@@ -139,11 +153,14 @@ export class App {
     root.add(this.hints)
     this.dialog = new Dialog(renderer, theme, { id: "dialog", left: 0, top: 0, width: "100%", height: "100%" })
     root.add(this.dialog)
+    this.pager = new Pager(renderer, theme, { id: "pager", left: 0, top: 0, width: "100%", height: "100%" })
+    root.add(this.pager)
     this.input.focus()
 
     renderer.keyInput.on("keypress", (key: KeyEvent) => this.onKey(key))
     renderer.on("resize", () => this.layout())
     options.backend.onQuestion = (question) => this.ask(question)
+    options.backend.onApproval = (ask, signal) => this.approve(ask, signal)
     options.backend.onLog = (line, level) => this.serverLog(line, level)
     this.layout()
     if (options.ticking !== false)
@@ -172,6 +189,14 @@ export class App {
       this.conversation.empty = this.welcome()
       this.pump = this.consume(session)
       void this.loadModels()
+      void this.refreshApproval()
+      void session.title?.().then(
+        (title) => {
+          if (title !== null && this.session === session) this.transcript.session.title = title
+          this.redraw()
+        },
+        () => {},
+      )
       this.suggest()
       this.redraw()
       return true
@@ -191,7 +216,9 @@ export class App {
   private async consume(session: BackendSession): Promise<void> {
     try {
       for await (const item of session.events) {
-        this.transcript.apply(item.event, item.replay)
+        if ("turn" in item) this.transcript.applyTurn(item.turn)
+        else this.transcript.apply(item.event, item.replay)
+        this.settleDock()
         if (!this.transcript.activity.executing) this.suggestIfIdle()
         // The mode label next to the input follows the turn starting and ending.
         if (this.modeText() !== this.shownMode) this.layout()
@@ -204,7 +231,8 @@ export class App {
     const lost = session.lost()
     if (lost === null) return
     this.connection = "disconnected"
-    Object.assign(this.transcript.activity, { executing: false, call: null, checking: null, compacting: null, retry: null, stopping: false })
+    Object.assign(this.transcript.activity, { executing: false, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null })
+    this.closeDock()
     this.transcript.note([span("the engine is gone: ", "error", { bold: true }), span(lost, "error")], "error", "✗", [[span(this.options.backend.restartable ? "Type /reconnect to start it again and resume this session, or /quit to leave." : "Type /quit to leave.", "dim")]])
     this.redraw()
   }
@@ -258,12 +286,44 @@ export class App {
       this.dialog.key(name, key.sequence, ctrl, meta)
       return handled()
     }
+    if (this.pager.open) {
+      this.pager.key(name, key.sequence, ctrl)
+      return handled()
+    }
     if (ctrl && name === "c") {
       this.ctrlC()
       return handled()
     }
     const text = this.input.plainText
     const palette = this.palette()
+    const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock.state : null
+    if (dock !== null && dock.focused) {
+      if ((name === "escape" && dock.note === null) || name === "tab") {
+        dock.focused = false
+        this.layout()
+        return handled()
+      }
+      const action = dock.key(name, key.sequence, ctrl, meta, this.now())
+      if (action.kind === "answer") {
+        this.answerDock({ choice: action.choice, ...(action.note === null ? {} : { note: action.note }) })
+        return handled()
+      }
+      if (action.kind === "none") {
+        this.layout()
+        return handled()
+      }
+      // Not the dock's key: it is the user's text, and goes to the input as typed.
+      dock.focused = false
+      this.lastTyped = this.now()
+      this.layout()
+      return
+    }
+    if (dock !== null && name === "tab" && palette.length === 0) {
+      dock.focus(this.now())
+      this.layout()
+      return handled()
+    }
+    if (!ctrl && !meta && key.sequence.length === 1) this.lastTyped = this.now()
     if (palette.length > 0) {
       if (name === "up" || name === "down") {
         this.paletteIndex = (this.paletteIndex + (name === "up" ? -1 : 1) + palette.length) % palette.length
@@ -381,7 +441,10 @@ export class App {
       if (this.transcript.activity.stopping && this.lastInterrupt !== 0) this.say("■ still stopping… press Ctrl-C again to exit now", "warn")
       this.lastInterrupt = now
       this.transcript.markStopAsked()
+      // A pending question goes from the screen now; it is answered `cancelled` once the stop has reached the engine.
+      if (this.dock !== null) this.dock.state.withdrawn = true
       this.session.interrupt()
+      this.layout()
       return
     }
     if (this.input.plainText !== "") return this.setInput("")
@@ -450,6 +513,14 @@ export class App {
         return backend.listModels !== undefined && session?.setConfig !== undefined
       case "compact":
         return session?.compact !== undefined
+      case "approval":
+        return session?.setConfig !== undefined && session.configChoices?.("approval") !== null && session.configChoices?.("approval") !== undefined
+      case "clear-taint":
+        return session?.clearTaint !== undefined
+      case "diff":
+        return session?.diff !== undefined
+      case "rename":
+        return session?.rename !== undefined
       case "reconnect":
         return this.connection !== "connected" && this.connection !== "starting"
       case "queue":
@@ -494,11 +565,19 @@ export class App {
         case "model":
           return await this.pickModel()
         case "compact":
-          if (this.session?.compact === undefined) return this.say("compaction on request is not offered by this server", "warn")
+          if (this.session?.compact === undefined) return this.say("/compact is not available: the engine has no operation to compact on request (EngineSession.compact)", "warn")
           this.say("compacting…")
           return await this.session.compact().catch((error: unknown) => this.say(`/compact failed: ${error instanceof Error ? error.message : String(error)}`, "error"))
         case "reconnect":
           return await this.reconnect()
+        case "approval":
+          return await this.pickApproval(rest)
+        case "clear-taint":
+          return await this.clearTaint()
+        case "diff":
+          return await this.showDiff()
+        case "rename":
+          return await this.rename(rest)
       }
     } finally {
       this.busyCommand = false
@@ -641,7 +720,11 @@ export class App {
       detail: [
         ...keys.map(([key, what]) => [span(key.padEnd(26), "accent"), span(what)]),
         [],
-        ...COMMANDS.filter((spec) => this.available(spec) || ["undo", "redo", "compact", "queue"].includes(spec.name)).map((spec) => [
+        [span("⊡".padEnd(26), "accent"), span("on a command: it ran in the sandbox (+network, +write <dir>: the extra access it was given)")],
+        [span("⊘".padEnd(26), "accent"), span("a call that was not allowed (by you, or by the approval policy)")],
+        [span("Tab".padEnd(26), "accent"), span("while a question waits: move between it and your message")],
+        [],
+        ...COMMANDS.filter((spec) => this.available(spec) || ["undo", "redo", "compact", "queue", "rename"].includes(spec.name)).map((spec) => [
           span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(26), "accent"),
           span(spec.description),
           span(this.available(spec) ? "" : " (not available now)", "dim"),
@@ -668,6 +751,180 @@ export class App {
     return answer
   }
 
+  // ---------------------------------------------------------------- approval
+
+  /**
+   * A tool call's approval question, in the dock above the input. It takes
+   * the focus only from someone who is not typing; the text in the input is
+   * never touched. Resolves with the answer, or `null` when the question is
+   * withdrawn (the turn was stopped, the session closed).
+   */
+  private approve(ask: ApprovalAsk, signal: AbortSignal): Promise<ApprovalAnswer | null> {
+    this.dock?.answer(null)
+    const row = this.transcript.toolRowOf(ask.messageId, ask.callId)
+    const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
+    return new Promise((resolve) => {
+      const state = new DockState(ask, row === null ? null : { name: row.name, arg: row.arg }, { focused: quiet, now: this.now() })
+      const entry = {
+        state,
+        answer: (answer: ApprovalAnswer | null) => {
+          if (this.dock === entry) this.dock = null
+          this.layout()
+          resolve(answer)
+        },
+      }
+      this.dock = entry
+      signal.addEventListener("abort", () => entry.answer(null), { once: true })
+      this.conversation.toBottom()
+      this.layout()
+    })
+  }
+
+  private answerDock(answer: ApprovalAnswer): void {
+    this.dock?.answer(answer)
+  }
+
+  private closeDock(): void {
+    this.dock?.answer(null)
+  }
+
+  /** The question was settled without this dock (the call ended, the turn ended): it goes away. */
+  private settleDock(): void {
+    const dock = this.dock
+    if (dock === null) return
+    const row = this.transcript.toolRowOf(dock.state.ask.messageId, dock.state.ask.callId)
+    const stillAsked = row === null || (row.phase !== "settled" && (row.approval === null || (row.approval.state === "asked" && row.approval.live)))
+    if (!stillAsked || !this.transcript.activity.executing) this.closeDock()
+  }
+
+  private async refreshApproval(): Promise<void> {
+    const session = this.session
+    if (session?.approval === undefined) return
+    try {
+      const info = await session.approval()
+      if (this.session !== session) return
+      this.approvalInfo = info
+      if (info.taint !== null && this.transcript.session.taint === null) this.transcript.session.taint = info.taint
+      if (!info.tainted) this.transcript.session.taint = null
+      this.redraw()
+    } catch {
+      // The panel leaves the mode out.
+    }
+  }
+
+  /** `/approval [ask|auto|full]`: the mode, from a picker that says what each does. */
+  private async pickApproval(rest: string): Promise<void> {
+    const session = this.session
+    const choices = session?.configChoices?.("approval") ?? null
+    if (session?.setConfig === undefined || choices === null) return this.say("choosing the approval mode is not available with this engine", "warn")
+    const current = this.approvalInfo?.mode ?? choices.current
+    const named = rest.trim().toLowerCase()
+    const chosen =
+      named !== ""
+        ? (choices.choices.find((choice) => choice.value === named)?.value ?? null)
+        : await this.dialog.show({
+            title: "Approval mode",
+            detail: [[span("When a tool call asks before it runs. Applies from the next tool call; a project's settings can only make it stricter.", "dim")]],
+            items: choices.choices.map((choice) => ({ id: choice.value, label: choice.name, ...(choice.description === null ? {} : { detail: choice.description }), current: choice.value === current, key: String(choices.choices.indexOf(choice) + 1) })),
+            filterable: false,
+            footer: "Enter choose · keys · Esc keeps it",
+            cancel: null,
+          })
+    if (named !== "" && chosen === null) return this.say(`/approval takes ${choices.choices.map((choice) => choice.value).join(", ")}`, "warn")
+    if (chosen === null || chosen === current) return
+    try {
+      await session.setConfig("approval", chosen)
+      await this.refreshApproval()
+      const now = this.approvalInfo?.mode ?? chosen
+      this.transcript.note([span(`approval mode: ${current ?? "?"} → ${now}`), span(" · from the next tool call", "dim")], "accent", "⇄", now !== chosen ? [[span(`the project's settings keep it at ${now}`, "warn")]] : [])
+    } catch (error) {
+      this.say(`could not switch the approval mode: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /** `/clear-taint`, after a confirmation that says what clearing means. */
+  private async clearTaint(): Promise<void> {
+    const session = this.session
+    if (session?.clearTaint === undefined) return this.say("/clear-taint is not available with this engine", "warn")
+    const taint = this.transcript.session.taint
+    if (taint === null && this.approvalInfo?.tainted !== true) return this.say("there is nothing to clear: no untrusted content is in this conversation")
+    const answer = await this.dialog.show({
+      title: "Trust what is in this conversation?",
+      detail: [
+        ...(taint === null ? [] : [[span(`Untrusted content: ${taint}`, "warn")]]),
+        [span("Clearing says you trust it. From then on, network access for a command and commands outside the sandbox follow your mode and your earlier approvals again instead of asking because of it.")],
+        [span("The content stays in the conversation, and the model may still act on what it says. Clear only if you read it or trust its source.", "dim")],
+      ],
+      items: [
+        { id: "clear", label: "Yes, I trust it: clear", key: "y" },
+        { id: "keep", label: "No, keep asking", key: "n" },
+      ],
+      filterable: false,
+      footer: "Enter choose · y n · Esc keeps asking",
+      cancel: "keep",
+    })
+    if (answer !== "clear") return this.say("the conversation stays untrusted")
+    try {
+      if (!(await session.clearTaint())) this.say("there was nothing to clear")
+      await this.refreshApproval()
+    } catch (error) {
+      this.say(`/clear-taint failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /** `/rename <title>`. */
+  private async rename(title: string): Promise<void> {
+    const session = this.session
+    if (session?.rename === undefined) return this.say("/rename is not available: the engine has no operation to rename a session (EngineSession.rename, appending session.renamed); titles are derived from the first message", "warn")
+    if (title.trim() === "") return this.say("/rename needs a title, e.g. /rename fix the login test", "warn")
+    try {
+      this.transcript.session.title = await session.rename(title.trim())
+      this.say(`renamed: ${this.transcript.session.title}`)
+    } catch (error) {
+      this.say(`/rename failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /**
+   * `/diff`: the per-file diffs of the selected step (a tool row) or turn
+   * (an ending row), or else of the latest turn, in a full-screen reader.
+   */
+  private async showDiff(): Promise<void> {
+    const session = this.session
+    if (session?.diff === undefined) return this.say("per-file diffs are not available with this engine", "warn")
+    const selected = this.conversation.selectedRow()
+    const outcome = selected?.kind === "outcome" ? selected : this.transcript.rows.findLast((row): row is OutcomeRow => row.kind === "outcome" && row.executionId !== null)
+    const params = selected?.kind === "tool" ? { messageId: selected.messageId } : outcome?.executionId == null ? {} : { executionId: outcome.executionId }
+    let result: DiffResult
+    try {
+      result = await session.diff(params)
+    } catch (error) {
+      return this.say(`/diff failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+    if (!result.available) return this.say(`no diff: ${result.message}`)
+    if (selected?.kind !== "tool" && outcome !== undefined && outcome.serverDiff === null) {
+      outcome.serverDiff = result
+      this.transcript.changed(outcome)
+    }
+    if (result.files.length === 0) return this.say(`the ${result.scope} changed no file`)
+    const what = result.scope === "step" ? "this step" : "this turn"
+    await this.pager.show({
+      title: `Changes of ${what}: ${plural(result.files.length, "file")} · +${result.files.reduce((sum, file) => sum + file.added, 0)} -${result.files.reduce((sum, file) => sum + file.removed, 0)}`,
+      body: (columns) => {
+        const lines: Span[][] = []
+        const marks: number[] = []
+        for (const file of result.files) {
+          if (lines.length > 0) lines.push([])
+          marks.push(lines.length)
+          lines.push(...fileDiffLines(file, 100_000, columns))
+        }
+        return { lines, marks }
+      },
+      footer: "↑↓ PgUp PgDn scroll · n p next/previous file · Esc close",
+    })
+    this.redraw()
+  }
+
   private toggle(row: Row): void {
     if (!expandable(row)) return
     switch (row.kind) {
@@ -677,8 +934,11 @@ export class App {
         break
       }
       case "reasoning":
+        row.expanded = !row.expanded
+        break
       case "outcome":
         row.expanded = !row.expanded
+        if (row.expanded) this.fetchDiff(row)
         break
       default:
         return
@@ -687,6 +947,25 @@ export class App {
     this.transcript.changed(row)
     this.conversation.keepInView(row)
     this.redraw()
+  }
+
+  /** The server's per-file diffs of a turn, for its expanded ending row. */
+  private fetchDiff(row: OutcomeRow): void {
+    const session = this.session
+    if (session?.diff === undefined || row.executionId === null || row.serverDiff !== null) return
+    row.serverDiff = "loading"
+    session.diff({ executionId: row.executionId }).then(
+      (result) => {
+        row.serverDiff = result
+        this.transcript.changed(row)
+        this.redraw()
+      },
+      (error: unknown) => {
+        row.serverDiff = { available: false, reason: "unavailable", message: error instanceof Error ? error.message : String(error) }
+        this.transcript.changed(row)
+        this.redraw()
+      },
+    )
   }
 
   // ---------------------------------------------------------------- leaving
@@ -703,6 +982,7 @@ export class App {
       this.redraw()
       const session = this.session
       this.session = null
+      this.closeDock()
       await within(CLOSE_TIMEOUT_MS, (async () => {
         await session?.close(true)
         await this.options.backend.stop()
@@ -768,6 +1048,9 @@ export class App {
     this.inputRow.height = Math.max(1, Math.min(maxRows, rows))
     const palette = this.palette()
     this.hints.height = palette.length === 0 ? 1 : Math.min(palette.length, 6)
+    const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock : null
+    this.dockView.visible = dock !== null
+    this.dockView.height = dock === null ? 0 : dockLines(dock.state, this.renderer.width, Math.max(4, Math.floor(this.renderer.height * DOCK_SHARE)), this.now()).length
     this.redraw()
   }
 
@@ -777,7 +1060,7 @@ export class App {
   }
 
   private welcome(): string {
-    return this.options.suggest === undefined ? "Type a message and press Enter. /help lists keys and commands." : "Demo: the scripted prompt is in the input; press Enter to play the turn. /help lists keys."
+    return this.options.suggest === undefined ? "Type a message and press Enter. /help lists keys and commands." : "Demo: the scripted prompt is in the input; press Enter to play it. /help lists keys."
   }
 
   private statusLine(columns: number): Span[] {
@@ -804,6 +1087,12 @@ export class App {
     const activity = this.transcript.activity
     const spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[Math.floor(now / 100) % 10]!
     const running = this.transcript.rows.filter((row) => row.kind === "tool" && row.phase === "running") as Extract<Row, { kind: "tool" }>[]
+    if (activity.waiting !== null && !activity.stopping && this.dock?.state.withdrawn !== true) {
+      const row = this.transcript.rows.find((candidate) => candidate.kind === "tool" && candidate.key === activity.waiting!.key) as Extract<Row, { kind: "tool" }> | undefined
+      const what = row === undefined ? "a tool call" : `${row.name} ${row.arg}`.trim()
+      const where = this.dock === null || this.dock.state.focused ? "" : " · Tab to answer"
+      return [span("? ", "warn", { bold: true }), span("waiting for your answer", "warn"), span(` · ${truncate(what, 40)} · ${formatDuration(Math.max(0, now - activity.waiting.since))}${where}`, "dim")]
+    }
     if (activity.stopping) {
       const waiting = running.length > 0 ? ` · waiting for ${running.length === 1 ? running[0]!.name : `${running.length} tools`} to stop` : ""
       return [span(`${spinner} stopping`, "warn"), span(waiting, "dim")]
@@ -866,6 +1155,7 @@ export class App {
         contextWindow: model === null ? null : (this.contextWindows.get(model) ?? null),
         connection: this.connection === "connected" ? "connected" : this.connection,
         home: this.options.home,
+        approval: this.approvalInfo === null || !this.approvalInfo.enabled ? null : { mode: this.approvalInfo.mode, sandbox: this.approvalInfo.sandboxUnavailable === null },
       },
       columns,
       rows,

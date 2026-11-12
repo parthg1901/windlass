@@ -4,8 +4,12 @@
  * CLI's scripted demo engine (`demo-backend.ts`). Optional members are
  * features a backend may lack; the TUI says so instead of offering them.
  */
+import type { ApprovalAnswer, ApprovalAsk } from "@light-harness/acp/client"
+import type { DiffResult, TurnNotification } from "@light-harness/acp/extensions"
 import type { RevertResult } from "@light-harness/core"
 import type { EngineEvent } from "./cli.ts"
+
+export type { ApprovalAnswer, ApprovalAsk, DiffResult, TurnNotification }
 
 export type Delivery = "steer" | "queue"
 
@@ -36,7 +40,7 @@ export interface SessionChoice {
   readonly archived: boolean
 }
 
-/** A question the agent asks (today the hand-edit question of an undo; tool approvals later), and its choices. */
+/** A question the agent asks besides tool approvals (the hand-edit question of an undo), and its choices. */
 export interface Question {
   readonly title: string
   readonly detail: readonly string[]
@@ -45,10 +49,34 @@ export interface Question {
 
 export type QuestionHandler = (question: Question) => Promise<string | null>
 
-export interface StreamItem {
-  readonly event: EngineEvent
-  /** Part of the stored history a `session/load` replays. */
-  readonly replay: boolean
+/** Answers a tool call's approval question, or `null` to cancel it. `signal` aborts when the question is withdrawn (the turn was stopped). */
+export type ApprovalHandler = (ask: ApprovalAsk, signal: AbortSignal) => Promise<ApprovalAnswer | null>
+
+/** One item of a session's stream: a harness event, or how a turn ended (`<prefix>/turn`, which carries the files it changed). */
+export type StreamItem =
+  | {
+      readonly event: EngineEvent
+      /** Part of the stored history a `session/load` replays. */
+      readonly replay: boolean
+    }
+  | { readonly turn: TurnNotification; readonly replay: boolean }
+
+/** How the session's tool calls are approved (`<prefix>/approval`). */
+export interface ApprovalInfo {
+  /** `false`: the server runs without the approval layer. */
+  readonly enabled: boolean
+  readonly mode: string | null
+  readonly tainted: boolean
+  /** Where the untrusted content came from, in a sentence; `null` when not tainted. */
+  readonly taint: string | null
+  readonly sandboxUnavailable: { readonly reason: string; readonly remedy: string | null } | null
+}
+
+/** A choice of a select config option (the approval modes, with what each does). */
+export interface ConfigChoice {
+  readonly value: string
+  readonly name: string
+  readonly description: string | null
 }
 
 export interface RevertOptions {
@@ -67,8 +95,20 @@ export interface BackendSession {
   interrupt(): void
   revert?(options: RevertOptions): Promise<RevertResult>
   undoRevert?(options: RevertOptions): Promise<RevertResult>
-  /** Switches the model or the effort from the next step boundary. */
-  setConfig?(id: "model" | "effort", value: string): Promise<void>
+  /** Switches the model or the effort from the next step boundary, or the approval mode from the next tool call. */
+  setConfig?(id: "model" | "effort" | "approval", value: string): Promise<void>
+  /** The choices of a select config option and its current value, as the server last reported them. */
+  configChoices?(id: string): { readonly current: string | null; readonly choices: readonly ConfigChoice[] } | null
+  /** How tool calls are approved here. */
+  approval?(): Promise<ApprovalInfo>
+  /** The user trusts what is in the conversation again. Resolves with whether it was tainted. */
+  clearTaint?(): Promise<boolean>
+  /** The files a turn (`executionId`, the latest by default) or a step (`messageId`) changed, with per-file patches. */
+  diff?(params: { readonly executionId?: string; readonly messageId?: string }): Promise<DiffResult>
+  /** The session's title as the server has it (its own, or derived from the first message). */
+  title?(): Promise<string | null>
+  /** Renames the session, when the server offers it. */
+  rename?(title: string): Promise<string>
   /** Compacts the conversation now, when the server offers it. */
   compact?(): Promise<void>
   /** Lets go of the session; with `shutdown`, running work stops as a shutdown and resumes at the next open. */
@@ -85,6 +125,8 @@ export interface Backend {
   listModels?(): Promise<{ readonly defaultModel: string; readonly models: readonly ModelChoice[] }>
   /** Who answers the agent's questions. Set by the app before the first open. */
   onQuestion: QuestionHandler
+  /** Who answers tool calls' approval questions. Set by the app before the first open. */
+  onApproval: ApprovalHandler
   /** Lines the server logged (its warnings and errors), never written to the terminal directly. */
   onLog: (line: string, level: "warn" | "error" | "info") => void
   /** Can the connection be made again after the server went away. */

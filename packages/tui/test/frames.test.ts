@@ -97,9 +97,9 @@ describe("the usage panel", () => {
   const calls = [call(1, 10_000, 0), call(2, 12_000, 9_000), call(3, 14_000, 13_000, { diagnostics: ["prefix_violation"] }), call(4, 20_000, 0, { kind: "compaction" })]
   const lines = panelLines(
     {
-      session: { id: "ses_0123456789abcdef0123", cwd: "/home/me/project", title: null, model: "gpt-6-luna", effort: "low" },
+      session: { id: "ses_0123456789abcdef0123", cwd: "/home/me/project", title: null, model: "gpt-6-luna", effort: "low", taint: null },
       calls,
-      activity: { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false },
+      activity: { executing: false, turnStartedAt: null, steps: 0, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null },
       now: 0,
       contextWindow: 272_000,
       connection: "connected",

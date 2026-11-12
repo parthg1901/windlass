@@ -47,6 +47,8 @@ export interface PanelInput {
   readonly contextWindow: number | null
   readonly connection: string
   readonly home: string | null
+  /** The approval mode, and whether commands can be sandboxed here; `null` when the server runs without the approval layer. */
+  readonly approval?: { readonly mode: string | null; readonly sandbox: boolean } | null
 }
 
 export const PANEL_WIDTH = 36
@@ -65,6 +67,9 @@ export function panelLines(input: PanelInput, columns: number, rows: number): Sp
   field("effort", session.effort ?? "default")
   field("state", stateText(input))
   if (session.title !== null && session.title !== "") field("title", session.title)
+  const approval = input.approval ?? null
+  if (approval !== null) field("mode", `approval: ${approval.mode ?? "?"}${approval.sandbox ? " · sandbox ⊡" : " · no sandbox"}`, approval.sandbox ? undefined : "warn")
+  if (session.taint !== null) field("trust", "untrusted · /clear-taint", "warn")
   lines.push([])
 
   const summary = summarize(input.calls)

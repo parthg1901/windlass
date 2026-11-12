@@ -5,7 +5,7 @@
  * model requests. It has no undo, no session list and no model list; the TUI
  * says so when they are asked for.
  */
-import type { Backend, BackendSession, Delivery, OpenSettings, OpenTarget, QuestionHandler, StreamItem } from "./backend.ts"
+import type { ApprovalHandler, Backend, BackendSession, Delivery, ModelChoice, OpenSettings, OpenTarget, QuestionHandler, StreamItem } from "./backend.ts"
 import { FakeEngine, type FakeOptions, type FakeSession } from "./cli.ts"
 import type { Scenario } from "@light-harness/core/testing/scenarios"
 
@@ -13,12 +13,17 @@ export class DemoBackend implements Backend {
   readonly label: string
   readonly restartable = false
   onQuestion: QuestionHandler = async () => null
+  onApproval: ApprovalHandler = async () => null
   onLog: (line: string, level: "warn" | "error" | "info") => void = () => {}
   private readonly engine: FakeEngine
   /** The session that was opened last, for the prompt the scripted turn starts with. */
   current: FakeSession | null = null
 
-  constructor(scenario: Scenario, name: string, options: FakeOptions = {}) {
+  constructor(
+    private readonly scenario: Scenario,
+    name: string,
+    options: FakeOptions = {},
+  ) {
     this.engine = new FakeEngine(scenario, options)
     this.label = `demo: ${name}`
   }
@@ -29,8 +34,18 @@ export class DemoBackend implements Backend {
     return new DemoSession(session, cwd)
   }
 
+  /** The scenario's model, with the context window it is played with, so the panel can say how full the window is. */
+  async listModels(): Promise<{ defaultModel: string; models: ModelChoice[] }> {
+    const created = this.scenario.phases.flatMap((phase) => phase.events).find((event) => event.type === "session.created")
+    const model = created?.type === "session.created" ? created.data.settings.model : "demo"
+    return { defaultModel: model, models: [{ id: model, name: `${model} (demo)`, efforts: [], defaultEffort: null, contextWindow: this.scenario.contextWindow ?? DEMO_CONTEXT_WINDOW, isDefault: true }] }
+  }
+
   async stop(): Promise<void> {}
 }
+
+/** The window a demo is played with when its scenario names none: a typical one for the models the account offers. */
+export const DEMO_CONTEXT_WINDOW = 272_000
 
 class DemoSession implements BackendSession {
   readonly id: string
