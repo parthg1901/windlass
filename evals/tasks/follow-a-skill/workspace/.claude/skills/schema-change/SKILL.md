@@ -20,4 +20,7 @@ every change is a new file.
    and rewrites `schema.sql`. Do not edit `schema.sql` by hand; reviewers diff it.
 3. Add one line to `docs/schema-changes.md` under `## Unreleased`, newest first:
    `- NNNN: <what changed, in plain words>`.
-4. Run `bun test`.
+4. If the column is part of the API, add it to `UserRow` (snake_case, as in the table) and to `ApiUser` and
+   `toApiUser()` in `src/users.ts` (camelCase). A nullable column is returned as `null` when it is unset, never left
+   out or `undefined`: the mobile client tells "not set" from "not sent" that way.
+5. Run `bun test`.

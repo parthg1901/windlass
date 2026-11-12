@@ -24,6 +24,6 @@ await Bun.write(pristineCheck, Bun.file(join(import.meta.dir, "workspace/scripts
 const report = await run(["bun", pristineCheck], workspace)
 await Bun.file(pristineCheck).delete()
 if (report.code !== 0) fail(`the project's api-report check fails: ${errorLine(report.output)}`)
-const lines = (await Bun.file(join(workspace, "api-report.txt")).text()).trim().split("\n")
-if (!lines.some((line) => line.startsWith("function median("))) fail("api-report.txt does not list median")
+const lines = (await Bun.file(join(workspace, ".api", "report.txt")).text()).trim().split("\n")
+if (!lines.some((line) => line.startsWith("function median("))) fail(".api/report.txt does not list median")
 pass("median works and the API report is updated")

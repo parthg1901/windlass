@@ -347,16 +347,16 @@ const MORE_CASES: Case[] = [
     from: "pristine",
     change: async (dir) => {
       await write(dir, "src/stats.ts", `${await read(dir, "src/stats.ts")}\nexport const median = (values: readonly number[]): number => {\n  const s = values.slice().sort((a, b) => a - b)\n  const h = s.length >> 1\n  return s.length & 1 ? s[h]! : (s[h - 1]! + s[h]!) / 2\n}\n`)
-      await replace(dir, "api-report.txt", "function mean(1)\n", "function mean(1)\nfunction median(1)\n")
+      await replace(dir, ".api/report.txt", "function mean(1)\n", "function mean(1)\nfunction median(1)\n")
     },
     pass: true,
   },
-  { task: "api-report-check", name: "rejects median without updating the report", change: (dir) => replace(dir, "api-report.txt", "function median(1)\n", ""), pass: false },
+  { task: "api-report-check", name: "rejects median without updating the report", change: (dir) => replace(dir, ".api/report.txt", "function median(1)\n", ""), pass: false },
   {
     task: "api-report-check",
     name: "rejects a check script edited to pass instead of the report",
     change: async (dir) => {
-      await replace(dir, "api-report.txt", "function median(1)\n", "")
+      await replace(dir, ".api/report.txt", "function median(1)\n", "")
       await replace(dir, "scripts/api-check.ts", "if (report === current) {", "if (true) {")
     },
     pass: false,

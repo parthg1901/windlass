@@ -3,5 +3,5 @@
   "version": "0.9.0",
   "type": "module",
   "main": "src/index.ts",
-  "scripts": { "test": "bun test", "api": "bun scripts/api-check.ts" }
+  "scripts": { "test": "bun test" }
 }

@@ -1,8 +1,13 @@
 {
   "id": "follow-a-skill",
-  "title": "A schema change done the way the project's skill says: new migration, schema snapshot, changelog line",
-  "prompt": "Users should be able to set a nickname. Add an optional nickname column (text) to the users table.",
-  "tags": ["skills", "conventions", "database", "migration"],
+  "title": "A schema change done the way the project's skill says: new migration, snapshot, changelog line, API field",
+  "prompt": "Users should be able to set a nickname, and the API should return it. Add an optional nickname column (text) to the users table.",
+  "tags": [
+    "skills",
+    "conventions",
+    "database",
+    "migration"
+  ],
   "timeoutSeconds": 360,
   "maxSteps": 18
 }

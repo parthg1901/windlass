@@ -7,7 +7,8 @@ const workspace = workspaceArg()
 await requireOriginalTestsPass(import.meta.dir, workspace, ["packages/server/src/config.test.ts", "packages/edge-agent/src/config.test.ts"])
 
 const GOOD: [string, number][] = [["1", 1], ["8080", 8080], [" 3000 ", 3000], ["65535", 65535], ["\t443\n", 443]]
-const BAD = ["0", "65536", "abc", "8080abc", "80.5", "", "  ", "-1", "1e3", "0x50"]
+// "1e3" and "0x50" are left out: whether they are "whole numbers" is a matter of reading.
+const BAD = ["0", "65536", "abc", "8080abc", "80.5", "", "  ", "-1", "12 34"]
 
 const server = await importFrom<{ parsePort?: (text: string) => unknown; loadConfig: (env: Record<string, string>) => { port: number } }>(workspace, "packages/server/src/config.ts")
 if (typeof server.parsePort !== "function") fail("packages/server/src/config.ts does not export parsePort")

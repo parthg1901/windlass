@@ -7,3 +7,11 @@ if (proc.exitCode !== 0) throw new Error("schema-dump failed")
 const path = join(dir, "docs/schema-changes.md")
 const text = await Bun.file(path).text()
 await Bun.write(path, text.replace("## Unreleased\n\n", "## Unreleased\n\n- 0005: users have an optional nickname.\n"))
+const users = join(dir, "src/users.ts")
+await Bun.write(
+  users,
+  (await Bun.file(users).text())
+    .replace("  readonly display_name: string | null\n}", "  readonly display_name: string | null\n  readonly nickname: string | null\n}")
+    .replace("  readonly displayName: string | null\n}", "  readonly displayName: string | null\n  readonly nickname: string | null\n}")
+    .replace("displayName: row.display_name ?? null }", "displayName: row.display_name ?? null, nickname: row.nickname ?? null }"),
+)

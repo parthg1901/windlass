@@ -1,0 +1,11 @@
+import { expect, test } from "bun:test"
+import { join } from "node:path"
+import { freshDatabase } from "./migrate.ts"
+import { getUser } from "./users.ts"
+
+test("a user from the database, as the API returns it", () => {
+  const db = freshDatabase(join(import.meta.dir, "../migrations"))
+  db.exec("INSERT INTO users (email, created_at) VALUES ('ada@example.com', '2026-01-01')")
+  expect(getUser(db, 1)).toMatchObject({ id: 1, email: "ada@example.com", createdAt: "2026-01-01", displayName: null })
+  expect(getUser(db, 2)).toBeNull()
+})

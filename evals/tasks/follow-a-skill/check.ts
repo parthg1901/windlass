@@ -1,10 +1,11 @@
 // The skill in the workspace (.claude/skills/schema-change) is the project's convention; the prompt does not repeat
 // it. Graded on the outcome: one new migration numbered 0005 whose up adds a nullable TEXT nickname and whose down
 // undoes it, the old migrations untouched, schema.sql regenerated (it equals what the migrations produce), a line
-// for 0005 under "## Unreleased", and the tests passing. The migration's name after the number is free.
+// for 0005 under "## Unreleased", the API returning nickname (null when unset, as the skill says), and the tests
+// passing. The migration's name after the number is free.
 import { Database } from "bun:sqlite"
 import { join } from "node:path"
-import { errorLine, fail, pass, pristine, readTree, requireUnchanged, run, workspaceArg } from "../../grader.ts"
+import { errorLine, fail, importFrom, pass, pristine, readTree, requireUnchanged, run, workspaceArg } from "../../grader.ts"
 
 type Migrate = typeof import("./workspace/src/migrate.ts")
 const { dumpSchema, freshDatabase, migrateUp, readMigrations } = (await import(join(import.meta.dir, "workspace/src/migrate.ts"))) as Migrate
@@ -59,6 +60,12 @@ if (!/^- 0005\b.*nickname/im.test(unreleased)) fail("docs/schema-changes.md has 
 for (const line of original.split("\n").filter((text) => text.startsWith("- "))) {
   if (!changes.includes(line)) fail(`docs/schema-changes.md lost the line "${line}"`)
 }
+const api = await importFrom<{ toApiUser: (row: Record<string, unknown>) => Record<string, unknown> }>(workspace, "src/users.ts")
+const row = { id: 7, email: "zed@example.com", created_at: "2026-02-02", display_name: null }
+const named = api.toApiUser({ ...row, nickname: "Zed" })
+if (named.nickname !== "Zed") fail(`toApiUser does not return the nickname: ${JSON.stringify(named)}`)
+const unnamed = api.toApiUser({ ...row, nickname: null })
+if (!("nickname" in unnamed) || unnamed.nickname !== null) fail(`toApiUser leaves an unset nickname out or undefined instead of null: ${JSON.stringify(unnamed)}`)
 const tests = await run(["bun", "test"], workspace)
 if (tests.code !== 0) fail(`bun test fails: ${errorLine(tests.output)}`)
 pass("a new 0005 migration with a working down, schema.sql regenerated, the change logged")
