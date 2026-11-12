@@ -324,6 +324,9 @@ export interface JsonNotice {
   readonly message: string
 }
 
+/** How the engine's sentence about a project's hook or server that waits for the user's approval ends. */
+const WAITS_FOR_APPROVAL = /runs only after you approve it\.$/
+
 /** The kinds of thing a project's configuration names that run only once the user approved them. */
 type Unapproved = "hooks" | "lsp" | "mcp"
 const isUnapprovedKind = (kind: string): kind is Unapproved => kind === "hooks" || kind === "lsp" || kind === "mcp"
@@ -447,7 +450,9 @@ export class FeatureWatch {
    * command: the one sentence of `look` stands for them all. What it says about anything else is drawn.
    */
   takes(event: EngineEvent): boolean {
-    if (this.attended || event.type !== "diagnostic" || !isUnapprovedKind(event.kind)) return false
+    if (event.type !== "diagnostic" || !isUnapprovedKind(event.kind)) return false
+    // With someone to ask, the question about it (put from `event`) says all of it, its command included: once.
+    if (this.attended) return WAITS_FOR_APPROVAL.test(event.message)
     if (this.held === null) return this.aboutSkipped(event)
     this.held.push(event)
     return true

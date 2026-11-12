@@ -128,6 +128,8 @@ describe("a project's hook", () => {
     expect(run.code).toBe(0)
     // The question: the command word for word, what it applies to, where it is defined, what each answer does.
     expect(run.seen).toContain("echo 'Secrets are not written here.'; exit 2")
+    // Said once, in the question: not again in a warning of the engine's beside it.
+    expect(run.seen).not.toContain("⚠ hook:")
     expect(run.seen).toContain("It applies to the tools write, for paths matching secret.txt.")
     expect(run.seen).toContain("If the hook is changed, you will be asked again.")
     expect(run.seen.replace(/\r?\n\s+/g, " ")).toContain(`defined in: ${projectFile(cwd)}`)
@@ -284,8 +286,8 @@ describe("language servers", () => {
     expect(run.seen).toContain("An edit's result waits at most 5000 ms for diagnostics")
     expect(run.seen).toContain("serves **/*.txt")
     expect(run.seen.replace(/\r?\n\s+/g, " ")).toContain(`defined in this project's file: ${projectFile(cwd)}`)
-    // Not headed as a problem: a note.
-    expect(run.seen).toContain("· language server: This project's configuration names the language server")
+    // Said once, in the question: the engine's sentence about it, with the same command, is not printed beside it.
+    expect(run.seen).not.toContain("· language server: This project's configuration names the language server")
   })
 
   test("a hook and a language server that wait at once are asked about one after the other, and each answer goes to its own question", async () => {
