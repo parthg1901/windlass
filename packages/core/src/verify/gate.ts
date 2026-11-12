@@ -60,7 +60,15 @@ export function decideGate(input: GateInput): GateDecision {
   return { kind: "report_and_continue", failing }
 }
 
-/** An acknowledgement counts only when it names every failing check; naming more is harmless. */
+/**
+ * An acknowledgement counts only when it names every failing check; naming
+ * more is harmless. The report shows a check as `name (command)`, and a model
+ * copies what it is shown, so a check is also named by that whole label:
+ * `test (bun test)` names `test`. Check names contain no space or bracket, so
+ * the prefix cannot be mistaken for another check's name.
+ */
 function acknowledges(acknowledgement: Acknowledgement | null, failing: readonly string[]) {
-  return acknowledgement !== null && failing.every((name) => acknowledgement.checks.includes(name))
+  if (acknowledgement === null) return false
+  const named = acknowledgement.checks.map((given) => given.trim())
+  return failing.every((name) => named.some((given) => given === name || given.startsWith(`${name} (`)))
 }

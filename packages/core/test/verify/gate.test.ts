@@ -42,6 +42,16 @@ const cases: [string, Partial<GateInput>, GateDecision][] = [
     { kind: "finish_unresolved", reason: "acknowledged", failing: ["test"] },
   ],
   [
+    "a check may be named by the label the report shows it with",
+    { latest: failingTest, reportsSent: 1, acknowledgement: { checks: [" test (bun test) "], reason: "the fixture is not mine to change" } },
+    { kind: "finish_unresolved", reason: "acknowledged", failing: ["test"] },
+  ],
+  [
+    "a name that merely starts like a failing check's does not name it",
+    { latest: failingTest, reportsSent: 1, acknowledgement: { checks: ["tests", "test-e2e (bun e2e)"], reason: "r" } },
+    { kind: "report_and_continue", failing: ["test"] },
+  ],
+  [
     "an acknowledgement may name more checks than fail",
     { latest: failingTest, acknowledgement: { checks: ["typecheck", "test"], reason: "r" } },
     { kind: "finish_unresolved", reason: "acknowledged", failing: ["test"] },

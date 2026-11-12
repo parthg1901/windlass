@@ -396,4 +396,26 @@ describe("a run of checks that does not go to plan", () => {
         { type: "workspace.changes", files: ["a.ts"] },
       ])
     }))
+
+  test("the changed files are announced once, when the execution ends, not with every round of checks", () =>
+    withProject(async (h) => {
+      h.provider.enqueue(write("a.ts", "2\n"), say("Done."), write("README.md", "better\n"), say("Done now."))
+      h.checks.on("test", "failed", "passed")
+      h.create().send("Change a.ts.")
+      await h.settled()
+      const announced = h.seenEvents.filter((item: EngineEvent) => item.type === "workspace.changes")
+      expect(announced).toMatchObject([{ files: ["README.md", "a.ts"] }])
+      // It is the last thing before the events that end the execution.
+      const order = h.seenEvents.map((item) => item.type)
+      expect(order.slice(order.lastIndexOf("workspace.changes"))).toEqual(["workspace.changes", "checks.finished", "execution.succeeded"])
+    }))
+
+  test("a model that names the check the way the report shows it has acknowledged it", () =>
+    withProject(async (h) => {
+      h.provider.enqueue(write("a.ts", "2\n"), say("Done."), call("report_check_failure", { checks: ["test (bun test)"], reason: "The fixture is not mine to change." }), say("Reported."))
+      h.checks.on("test", "failed")
+      h.create().send("Change a.ts.")
+      await h.settled()
+      expect(outcomes(h)).toMatchObject([{ status: "unresolved", reason: "acknowledged", failing: ["test"], acknowledgement: { checks: ["test (bun test)"] } }])
+    }))
 })

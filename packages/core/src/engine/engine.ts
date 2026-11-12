@@ -1703,8 +1703,6 @@ class LiveSession implements EngineSession {
     // Files a check itself wrote (a cache, a report) are part of this snapshot, so they never count as the model's change.
     await this.snapshot("checks_end")
     if (signal.aborted) return interrupted()
-    await this.announceChanges()
-    if (signal.aborted) return interrupted()
 
     const results = outcome.results
     const evidence = buildEvidence({ run: number, afterSeq: started!.seq, changedFiles: files, checks, results, fingerprints })
@@ -1712,6 +1710,12 @@ class LiveSession implements EngineSession {
     const after = this.projection()
     const input: GateInput = { ...work.input, latest: results, changedSinceLatest: false, reportsSent: reportsThisTurn(after).length, acknowledgement: acknowledgementThisTurn(after) }
     const decision = decideGate(input)
+    if (decision.kind === "finish" || decision.kind === "finish_unresolved") {
+      // The execution is about to end: say what it changed. Nothing the decision rests on can change meanwhile
+      // except input arriving, which `finish` looks for.
+      await this.announceChanges()
+      if (signal.aborted) return interrupted()
+    }
     const report = () => note(this.core.ids.message(), HARNESS_ORIGIN.checkReport, renderReport(results))
     switch (decision.kind) {
       case "finish":

@@ -383,7 +383,8 @@ export class PrettyRenderer implements Sink {
         this.line("info", [seg(`${failed ? SYMBOL.fail : SYMBOL.ok} `, failed ? "red" : "green"), seg(`checks: ${checksSummary(checks)}`, failed ? "red" : undefined), seg(suffix([took]), "dim")])
         for (const detail of checkLines(checks)) {
           this.lineWithArg("info", [seg(`  ${SYMBOL.fail} `, "red"), seg(detail.name, "bold"), seg(` · ${detail.status}`, "red"), seg(" · ", "dim")], detail.command, [])
-          if (detail.output !== null) this.line("info", [seg(`    output: ${detail.output}`, "dim")])
+          // A path is for copying: it is written whole and left to the terminal to wrap.
+          if (detail.output !== null) this.uncut("info", `    output: ${detail.output}`, "dim")
         }
         return
       }
@@ -707,6 +708,13 @@ export class PrettyRenderer implements Sink {
     const fixed = [...before, ...after].reduce((sum, part) => sum + displayWidth(flatten(part.text)), 0)
     const room = Math.max(8, this.width - fixed)
     this.line(kind, [...before, seg(truncate(arg, room)), ...after])
+  }
+
+  /** A whole line that is never shortened, whatever the terminal width. */
+  private uncut(kind: Block, text: string, tone?: Tone): void {
+    this.endLine()
+    this.gap(kind)
+    this.raw(`${paint(this.options.color, tone, flatten(text))}\n`)
   }
 
   private writeLine(segments: readonly Segment[]): void {
