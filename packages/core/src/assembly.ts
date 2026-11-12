@@ -200,6 +200,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...(options.engine?.memory === undefined ? { memory: {} } : {}),
       // Agents: a session can start as one, switch to one, and run a subagent as one. `null` builds a harness without them.
       ...(options.engine?.agents === undefined ? { agents: {} } : {}),
+      // Slash commands: a client can list, look up, expand and send the command files of a session's directory.
+      ...(options.engine?.commands === undefined ? { commands: {} } : {}),
+      // Live telemetry is behind the user's own configuration: nothing is exported for a session whose `telemetry`
+      // section does not turn it on, and a project's file can only turn it off. `null` builds a harness that never exports.
+      ...(options.engine?.telemetry === undefined ? { telemetry: {} } : {}),
       // Hooks and language-server diagnostics: nothing of either exists for a session whose configuration names none
       // (its requests are those of a harness without them). `null` builds a harness that never runs or starts any.
       ...(options.engine?.commandHooks === undefined ? { commandHooks: {} } : {}),

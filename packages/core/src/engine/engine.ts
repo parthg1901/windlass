@@ -50,6 +50,8 @@ import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import type { AgentDefinition } from "../agents/discover.ts"
+import type { CommandDefinition } from "../commands/discover.ts"
+import { type BuiltinCommand, type CommandListing, type CommandLookup, listCommands, lookupCommand } from "../commands/lookup.ts"
 import { NO_AGENT } from "../agents/definition.ts"
 import { checkAgentCall, effectiveApprovalMode, unknownToolNames } from "../agents/restrictions.ts"
 import { AGENT_KEY, type AgentRecord, agentRecordOf, agentSettings, agentSource, agentSwitch, childAgent, findAgent, resolveStartAgent } from "../agents/use.ts"
@@ -134,8 +136,10 @@ import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
-import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, effectivePolicy, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
+import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents } from "./agents.ts"
+import { SessionTrace, type TelemetrySetup, type TelemetryState, TelemetryHub } from "./telemetry.ts"
+import { type CommandExpansion, type CommandPlaces, type CommandsSetup, type SentCommand, commandPlaces, commandUseOf, expandNamed, findCommands } from "./commands.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
 import { type Clock, systemClock } from "./clock.ts"
 import {
@@ -293,12 +297,13 @@ export interface EngineHooks {
 /** Something the engine noticed that is not part of any session's log. Shown or logged, never stored. */
 export interface Diagnostic {
   /**
-   * `skills`, `mcp`, `wake`, `memory`, `agents`, `hooks` and `lsp` are about those features and are for the user to
-   * read, never the model: a skill that could not be loaded, a server of the project's that waits for approval, a
-   * note file that is invalid, an agent definition that was skipped or names a tool that does not exist, a hook
-   * that was skipped, failed or was left unsatisfied, a language server that gave an edit no diagnostics and why.
+   * `skills`, `mcp`, `wake`, `memory`, `agents`, `hooks`, `lsp` and `telemetry` are about those features and are for
+   * the user to read, never the model: a skill that could not be loaded, a server of the project's that waits for
+   * approval, a note file that is invalid, an agent definition that was skipped or names a tool that does not exist,
+   * a hook that was skipped, failed or was left unsatisfied, a language server that gave an edit no diagnostics and
+   * why, a telemetry section that turns export on and cannot be used.
    */
-  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp"
+  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry"
   readonly sessionId: SessionId | null
   readonly message: string
   readonly cause?: unknown
@@ -509,6 +514,15 @@ export interface EngineOptions {
    */
   readonly agents?: AgentsSetup | null
   /**
+   * Slash commands (`engine/commands.ts`): a client can list the command
+   * files of a session's working directory, look one up, expand it, and
+   * send its expansion as the user's message, which the log then says came
+   * from that command. Nothing of it reaches the model but the expanded
+   * text. Without it (or `null`) the engine offers none. `createHarness`
+   * switches it on.
+   */
+  readonly commands?: CommandsSetup | null
+  /**
    * Hooks (`engine/hooks.ts`): the commands a session's configuration names
    * under `hooks` are run before a tool call, after it and when a turn is
    * about to end. Without it (or `null`) no hook is ever run, whatever the
@@ -524,6 +538,18 @@ export interface EngineOptions {
    * `createHarness` switches it on.
    */
   readonly lsp?: LspSetup | null
+  /**
+   * Live telemetry (`engine/telemetry.ts`): for a session whose user
+   * configuration turns `telemetry` on, the spans of its turns (the turn,
+   * each model call, each tool call, spawned work, compactions, runs of
+   * checks) are sent to the collector that configuration names as the
+   * session runs, through a background queue: a collector that is slow,
+   * down or wrong costs the queue's memory and nothing else. Nothing is
+   * written to the log for it. Without it (or `null`) nothing is ever
+   * exported live, whatever the configuration says. `createHarness`
+   * switches it on, and the configuration alone then decides.
+   */
+  readonly telemetry?: TelemetrySetup | null
 }
 
 /** How a session is forked. */
@@ -699,6 +725,44 @@ export interface EngineSession {
   readonly send: (value: string, options?: SendOptions) => MessageId
   /** `send` with `delivery: "queue"`: delivered only once the turn in progress has its answer. */
   readonly queue: (value: string, options?: Omit<SendOptions, "delivery">) => MessageId
+  /**
+   * The slash commands of the session's working directory as they are now:
+   * the usable ones, the ones a client's own command hides (`builtins`: the
+   * client's commands and their aliases), and what discovery could not use
+   * or found shadowed (for a `/commands` listing and a palette). `null`
+   * when the engine offers no commands.
+   */
+  readonly commands: (builtins?: readonly BuiltinCommand[]) => CommandListing | null
+  /**
+   * Looks a typed name up: a client's own command first, then a command
+   * file, exactly and then ignoring case. An unknown name comes back with
+   * the close names and the sentence to show (`There is no command /deplyo.
+   * Did you mean /deploy? ...`); a file that cannot be used with why.
+   * `null` when the engine offers no commands.
+   */
+  readonly findCommand: (name: string, builtins?: readonly BuiltinCommand[]) => CommandLookup | null
+  /**
+   * What `/name args` would send, without sending it: the command and its
+   * expansion (the text, the positions that were not given, what was left
+   * as text and why), or why there is nothing to send. For a palette's
+   * preview. `null` when the engine offers no commands.
+   */
+  readonly expandCommand: (name: string, args: string, builtins?: readonly BuiltinCommand[]) => CommandExpansion | null
+  /**
+   * `send` for a slash command: the command file of that name is read now,
+   * its template is expanded with `args` (what was typed after the name),
+   * and the expanded text is admitted as the user's message; `command.expanded`
+   * records, in the same append, which file produced it. Nothing in the
+   * file is run or read: a command in backticks after `!` and an `@path`
+   * stay in the text as written, and the expansion returned here says so
+   * for the user. A command that names an `agent` switches the session to
+   * it at the boundary where the message is delivered, right before it.
+   * Throws `EngineError` `invalid_request`, with the sentence to show the
+   * user, and writes nothing, so no request is sent: when there is no such
+   * command (it suggests close names), its file cannot be used, its agent
+   * cannot be found, or the engine offers no commands.
+   */
+  readonly sendCommand: (name: string, args: string, options?: SendOptions) => SentCommand & { readonly messageId: MessageId }
   /**
    * Starts working if there is something to do and nothing is running: takes
    * the claim when input waits, or takes up a claim that is suspended or was
@@ -922,6 +986,13 @@ export interface Engine {
    */
   readonly listAgents: (cwd: string) => AgentListing | null
   /**
+   * The slash commands a session in `cwd` could use, as they are now, with
+   * the ones a client's own command hides and what discovery could not use
+   * or found shadowed. Reads the directories and the configuration files;
+   * opens nothing. `null` when the engine offers no commands.
+   */
+  readonly listCommands: (cwd: string, builtins?: readonly BuiltinCommand[]) => CommandListing | null
+  /**
    * Opens an existing session. If it holds a claim from a process that died
    * or shut down, it is recovered here, and what happens next is `resume`.
    */
@@ -1003,6 +1074,13 @@ export interface Engine {
    */
   readonly wake: () => WakeApi | null
   /**
+   * The collectors live telemetry has sent to in this process, each with
+   * what waits to be sent, what was dropped, taken and not taken (header
+   * values are never part of it). Empty until a session's configuration
+   * turns telemetry on; `null` when the engine exports none.
+   */
+  readonly telemetry: () => readonly TelemetryState[] | null
+  /**
    * The hook a process calls before it exits, for whatever reason it controls
    * (a normal end, SIGINT, SIGTERM, an uncaught error): every session is
    * closed as a shutdown, which stops every tool and waits for it. Safe to
@@ -1079,6 +1157,10 @@ interface Core {
   readonly memory: { readonly tools: readonly AnyTool[]; readonly setup: MemorySetup } | null
   /** Agents: where the user's own definitions are kept. `null` when the build offers none. */
   readonly agents: { readonly configDir: string; readonly home: string | undefined } | null
+  /** Live telemetry: the queues in front of the collectors sessions send to. `null` when the build exports none. */
+  readonly telemetry: TelemetryHub | null
+  /** Slash commands: where the user's own command files are kept. `null` when the build offers none. */
+  readonly commands: { readonly configDir: string; readonly home: string | undefined } | null
   /** By tool name: the tools that come from an MCP server (`Tool.origin`), whose declared effect an agent's restrictions do not trust. */
   readonly origins: ReadonlyMap<string, "builtin" | "mcp">
   /** Reads the configuration that applies in a directory without waiting; `null` when nothing can be read that way. */
@@ -1247,6 +1329,9 @@ export function createEngine(options: EngineOptions): Engine {
     memory: options.memory == null ? null : { tools: memoryToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), setup: options.memory },
     // As for skills: a caller that supplies the instruction sources itself and names no directory reads none of this machine's.
     agents: options.agents == null ? null : { configDir: options.agents.configDir ?? (options.discover === undefined ? configDirectory() : join(options.dataDir, "no-user-config")), home: options.agents.home },
+    telemetry: options.telemetry == null ? null : new TelemetryHub(options.telemetry),
+    // As for skills and agents: a caller that supplies the instruction sources itself and names no directory reads none of this machine's.
+    commands: options.commands == null ? null : { configDir: options.commands.configDir ?? (options.discover === undefined ? configDirectory() : join(options.dataDir, "no-user-config")), home: options.commands.home },
     origins: new Map(runnable.flatMap((tool) => (tool.origin === undefined ? [] : [[tool.name, tool.origin] as const]))),
     loadConfigSync: options.loadConfigSync !== undefined ? options.loadConfigSync : options.loadConfig === undefined ? (cwd) => loadConfigSync({ cwd }) : null,
     offered: () => offered,
@@ -1359,6 +1444,10 @@ export function createEngine(options: EngineOptions): Engine {
       const places = agentPlaces(configFilesNow(core, cwd).files, core.agents)
       return { ...findAgents(cwd, places), default: places.default, ignored: places.ignored }
     },
+    listCommands: (cwd, builtins = []) => {
+      if (core.commands === null) return null
+      return listCommands(findCommands(cwd, commandPlaces(configFilesNow(core, cwd).files, { configDir: core.commands.configDir, ...(core.commands.home === undefined ? {} : { home: core.commands.home }) })), builtins)
+    },
     openSession: (id, options$ = {}) => {
       assertOpen()
       const live = core.sessions.get(id)
@@ -1406,6 +1495,7 @@ export function createEngine(options: EngineOptions): Engine {
       if (problem !== null) throw problem
     },
     wake: () => (core.wake === null ? null : core.wake.runtime()),
+    telemetry: () => core.telemetry?.state() ?? null,
     close: () => {
       closing ??= (async () => {
         // First nothing new arrives: no firing is delivered, no check runs, the listener is gone.
@@ -1415,6 +1505,8 @@ export function createEngine(options: EngineOptions): Engine {
         await core.mcp?.hub.stop()
         // So is every language server, with its process group.
         await core.lsp?.hub.stop()
+        // The spans that are still queued are sent, for a short while at most: a collector that does not answer holds nothing up.
+        await core.telemetry?.close()
         wakeRuntime?.close()
       })()
       return closing
@@ -1666,6 +1758,17 @@ class LiveSession implements EngineSession {
   agentDecided = false
   /** A switch of agent that was asked for and waits for a step boundary: the record to switch to, `null` for none. */
   private pendingAgent: AgentRecord | null | undefined = undefined
+  /** Live telemetry of this session: its log as it grows, mapped to spans. `null`: off (not offered, not configured, switched off, or failed). */
+  private trace: SessionTrace | null = null
+  /** The configuration `trace` was made for: another one (another collector, content on or off) makes another. */
+  private traceKey: string | null = null
+  /**
+   * The agents that commands named, by the message each command produced:
+   * the session switches to one at the boundary where its message is
+   * delivered, right before it. The definition as it was when the command
+   * was sent.
+   */
+  private readonly commandAgents = new Map<MessageId, AgentRecord>()
   /** Whether an execution of this process has read the configuration, or it was looked at ahead of one. */
   private configRead = false
   /** The settings the loop last checked against the provider's listing, so each is checked once. */
@@ -1720,6 +1823,59 @@ class LiveSession implements EngineSession {
   }
 
   queue = (value: string, options: Omit<SendOptions, "delivery"> = {}) => this.send(value, { ...options, delivery: "queue" })
+
+  // ---- slash commands ----
+
+  commands = (builtins: readonly BuiltinCommand[] = []): CommandListing | null => (this.core.commands === null ? null : listCommands(this.commandSet(), builtins))
+
+  findCommand = (name: string, builtins: readonly BuiltinCommand[] = []): CommandLookup | null => (this.core.commands === null ? null : lookupCommand(this.commandSet(), name, builtins))
+
+  expandCommand = (name: string, args: string, builtins: readonly BuiltinCommand[] = []): CommandExpansion | null => (this.core.commands === null ? null : expandNamed(this.commandSet(), name, args, builtins))
+
+  sendCommand = (name: string, args: string, options: SendOptions = {}): SentCommand & { readonly messageId: MessageId } => {
+    this.assertOpen()
+    const projection = this.projection()
+    if (projection.session.replay !== undefined) throw new EngineError("invalid_request", REPLAY_TEXT.noPrompts)
+    if (this.core.commands === null) throw new EngineError("invalid_request", "this engine offers no slash commands")
+    // The client has run its own commands before it sends: here a name is a command file's, or nothing.
+    const found = expandNamed(this.commandSet(), name, args)
+    if (found.kind !== "command") throw new EngineError("invalid_request", found.kind === "builtin" ? `/${found.name} is a command of the client's own` : found.message)
+    const { command, expansion } = found
+    // The agent the command runs under is looked up before anything is written: a miss sends nothing.
+    const agent = command.agent === null ? null : this.commandAgent(command, projection)
+    const messageId = this.core.ids.message()
+    if (options.maxSteps !== undefined) this.turnLimits.set(messageId, options.maxSteps)
+    if (agent !== null) {
+      this.commandAgents.set(messageId, agent)
+      // The user chose an agent with the command: the default of the configuration no longer applies.
+      this.agentDecided = true
+    }
+    // One append: the message never waits without the record of where its text came from.
+    this.write([
+      event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(expansion.text) }),
+      event("command.expanded", { messageId, ...commandUseOf(command, expansion) }),
+    ])
+    this.start()
+    return { messageId, command, expansion }
+  }
+
+  /** The commands of this session's working directory as they are now. */
+  private commandSet() {
+    const commands = this.core.commands
+    const places: CommandPlaces = commandPlaces(this.files(), { configDir: commands?.configDir ?? configDirectory(), ...(commands?.home === undefined ? {} : { home: commands.home }) })
+    return findCommands(this.projection().session.cwd, places)
+  }
+
+  /** The definition of the agent a command names, read now, once. Throws with the sentence for the user when it cannot be used. */
+  private commandAgent(command: CommandDefinition, projection: Projection): AgentRecord {
+    const under = `The command /${command.name} (${command.path}) runs under the agent "${command.agent}"`
+    if (this.core.agents === null) throw new EngineError("invalid_request", `${under}, and this engine offers no agents.`)
+    if (projection.session.lineage?.kind === "spawn") throw new EngineError("invalid_request", `${under}, and a subagent keeps the agent it started as.`)
+    const places = this.agentPlaces()
+    const found = findAgent(findAgents(projection.session.cwd, places), command.agent!, places.disabled)
+    if (!found.ok) throw new EngineError("invalid_request", `${under}. ${found.message}`)
+    return agentRecordOf(found.agent)
+  }
 
   admit = (input: Admission): "admitted" | "duplicate" => {
     this.assertOpen()
@@ -1818,6 +1974,7 @@ class LiveSession implements EngineSession {
     if (!this.projection().inbox.some((item) => item.messageId === messageId)) return false
     this.write([event("inbox.cancelled", { messageId })])
     this.turnLimits.delete(messageId)
+    this.commandAgents.delete(messageId)
     return true
   }
 
@@ -2122,6 +2279,8 @@ class LiveSession implements EngineSession {
     const stored = this.store.append(this.id, events, options)
     if (this.taintHistory !== null) for (const item of stored) this.taintHistory.add(item)
     if (this.core.memory !== null) this.recordOutcomes(stored)
+    // Live telemetry reads what was appended; it never waits and never throws.
+    this.trace?.observe(stored)
     const run = this.run
     for (const item of stored) {
       // The ending of the execution this process is working on: it is durable now, and shown once the session is idle here.
@@ -2226,6 +2385,9 @@ class LiveSession implements EngineSession {
       while (this.ending.size > 0) await Promise.all([...this.ending]).catch(() => {})
       await Promise.all([...this.children].map((child) => child.close())).catch(() => {})
       await this.retaining?.catch(() => {})
+      // What closed and was not mapped yet is handed to the queue, and the queue is sent: nothing waits for the collector.
+      this.trace?.settle(true)
+      this.trace = null
       // Its servers are let go of: one that no other session uses is stopped.
       this.releaseMcp()
       this.releaseLsp()
@@ -2338,6 +2500,7 @@ class LiveSession implements EngineSession {
       // No configuration, no hooks and no language servers: what an earlier execution read is let go of.
       this.attachHooks()
       this.attachLsp()
+      this.attachTelemetry()
       return asAgent()
     }
     // Only what reads the files is a configuration problem. Anything that fails after them (the store, a server
@@ -2358,6 +2521,8 @@ class LiveSession implements EngineSession {
     // Its hooks apply from this turn's first call, and its language servers start at the first file they serve.
     this.attachHooks()
     this.attachLsp()
+    // Its telemetry section decides whether this turn's spans are exported as it runs, and where to.
+    this.attachTelemetry()
     return run.interrupt.signal.aborted ? true : asAgent()
   }
 
@@ -2445,7 +2610,7 @@ class LiveSession implements EngineSession {
         if (signal.aborted) return this.finishInterrupt(run)
       }
       // Read again: input may have arrived, or been withdrawn, while the gate ran and the snapshot was taken.
-      const waiting = this.projection()
+      let waiting = this.projection()
       const steers = waiting.inbox.filter(isSteer)
       const queued = waiting.inbox.find((item) => !isSteer(item))
       const follows = latestSpoken(waiting) !== undefined
@@ -2453,6 +2618,16 @@ class LiveSession implements EngineSession {
       const handover = steers.length === 0 && queued !== undefined && (ended !== null || !follows) ? queued : undefined
       // The turn may end and what waited behind it is gone: nothing follows, so the gate decides again, now alone.
       if (ended !== null && steers.length === 0 && handover === undefined) continue
+      // A command that names an agent switches the session to it here, where its message is delivered and right
+      // before it: the record alone before the first baseline (which then carries the agent), a message after it.
+      const arriving = steers.length > 0 ? steers : handover === undefined ? [] : [handover]
+      const commanded = arriving.flatMap((item) => this.commandAgents.get(item.messageId) ?? [])
+      for (const item of arriving) this.commandAgents.delete(item.messageId)
+      if (commanded.length > 0 && this.director === null) {
+        this.pendingAgent = commanded.at(-1)!
+        this.applyAgentSwitch()
+        waiting = this.projection()
+      }
       // Instructions first, then the waiting input, so the request carries both. A replay's instructions are its recording's.
       // The agent the session runs as is a section of a baseline that is being built (the first, and the one after
       // a compaction, from the record and never from the file). Between them it is not among the sources: a switch
@@ -2883,7 +3058,7 @@ class LiveSession implements EngineSession {
     const { messageId, request } = input
     const step = input.purpose === "step"
     const requestId = ids.request()
-    store.beginRequest({
+    const begun = store.beginRequest({
       id: requestId,
       sessionId: this.id,
       messageId,
@@ -2893,6 +3068,7 @@ class LiveSession implements EngineSession {
       provider: provider.id,
       blocks: input.blocks,
     })
+    this.trace?.request(begun)
 
     let usage: Usage | null = null
     let partialText = ""
@@ -3016,7 +3192,7 @@ class LiveSession implements EngineSession {
     }
     // No terminal event and nobody aborted: the stream broke.
     end ??= signal.aborted ? { type: "aborted" } : { type: "error", error: makeProviderError("incomplete_stream", INCOMPLETE_STREAM) }
-    store.finishRequest(requestId, {
+    const finished = store.finishRequest(requestId, {
       // A call the loop itself cut at the output bound did not finish: it was stopped.
       outcome: overran ? "aborted" : end.type === "finish" ? "ok" : end.type === "error" ? "error" : "aborted",
       usage,
@@ -3025,6 +3201,7 @@ class LiveSession implements EngineSession {
       providerRequestId: (end.type === "error" ? end.error.requestId : response?.requestId) ?? null,
       responseModel: response?.model ?? null,
     })
+    this.trace?.request(finished)
     return { end, usage, partialText, cutOff: streaming.size > 0, text: whole, overran }
   }
 
@@ -4503,7 +4680,7 @@ class LiveSession implements EngineSession {
   }
 
   /** Says something about a feature to the user, once per process. */
-  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp", message: string): void {
+  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents" | "hooks" | "lsp" | "telemetry", message: string): void {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
@@ -4829,6 +5006,55 @@ class LiveSession implements EngineSession {
    * server the project's file names and the user has not approved is never
    * started: the user is told, once. A replay starts none.
    */
+  /**
+   * Live telemetry as the configuration this execution read says: on, for
+   * the collector the user's own file names, unless the project's file
+   * turns it off. The session's log so far is read once when it starts (or
+   * when the collector or the content setting changed): what is closed in
+   * it is not sent again, an execution that is taken up again is. A section
+   * that turns telemetry on and cannot be used (no endpoint, a header that
+   * names a variable that is not set) is said to the user once; the turn
+   * runs as without telemetry.
+   */
+  private attachTelemetry(): void {
+    const hub = this.core.telemetry
+    if (hub === null) return
+    const plan = this.director !== null ? ({ kind: "off" } as const) : hub.plan(this.config?.files ?? null)
+    if (plan.kind !== "on") {
+      if (plan.kind === "unusable") this.say("telemetry", `Telemetry is not exported: ${plan.message}.`)
+      this.trace?.settle(true)
+      this.trace = null
+      this.traceKey = null
+      return
+    }
+    const key = hub.key(plan.config)
+    if (this.trace !== null && !this.trace.failed && this.traceKey === key) return
+    this.trace?.settle(true)
+    this.trace = null
+    this.traceKey = null
+    try {
+      const lineage = this.projection().session.lineage
+      const parent = lineage?.kind === "spawn" ? this.core.sessions.get(lineage.parentSessionId) : undefined
+      const placement = parent?.trace?.placementOf(this.id)
+      this.trace = new SessionTrace(
+        {
+          sessionId: this.id,
+          exporter: hub.exporter(plan.config),
+          content: plan.config.content,
+          // What content export redacts is what the harness redacts from a tool's result.
+          secrets: this.core.approvals?.secrets ?? environmentSecrets(process.env),
+          ...(placement === undefined ? {} : { placement }),
+          mapDelayMs: hub.mapDelayMs,
+          onFailure: (message) => this.say("telemetry", `Telemetry stopped for this session: its spans could not be derived (${message}).`),
+        },
+        { events: ownEvents(this.store, this.id), requests: this.store.readRequests(this.id) },
+      )
+      this.traceKey = key
+    } catch (error) {
+      this.say("telemetry", `Telemetry is not exported: ${describe(error)}.`)
+    }
+  }
+
   private attachLsp(): void {
     this.lspRead = true
     const lsp = this.core.lsp

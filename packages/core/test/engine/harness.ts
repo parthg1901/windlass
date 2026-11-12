@@ -25,6 +25,8 @@ import type { McpSetup } from "../../src/engine/mcp.ts"
 import type { MemorySetup } from "../../src/engine/memory.ts"
 import type { SkillsSetup } from "../../src/engine/skills.ts"
 import type { AgentsSetup } from "../../src/engine/agents.ts"
+import type { CommandsSetup } from "../../src/engine/commands.ts"
+import type { TelemetrySetup } from "../../src/engine/telemetry.ts"
 import type { SpawnSettings } from "../../src/engine/spawn.ts"
 import type { WakeSetup } from "../../src/engine/wake.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
@@ -368,6 +370,10 @@ export interface HarnessOptions {
   readonly extraTools?: readonly AnyTool[]
   /** Agents. Without it the engine offers none, as in every scenario that is not about them. */
   readonly agents?: AgentsSetup
+  /** Slash commands. Without it the engine offers none. */
+  readonly commands?: CommandsSetup
+  /** Live telemetry. Without it the engine exports nothing, whatever the configuration says. */
+  readonly telemetry?: TelemetrySetup
   /** Hooks. Without it the engine runs none, whatever the configuration says. */
   readonly hooks?: HooksSetup
   /** Language-server diagnostics. Without it the engine starts no server. */
@@ -483,6 +489,8 @@ export class Harness {
       ...(this.options.mcp === undefined ? {} : { mcp: this.options.mcp }),
       ...(this.options.wake === undefined ? {} : { wake: this.options.wake }),
       ...(this.options.memory === undefined ? {} : { memory: this.options.memory }),
+      ...(this.options.commands === undefined ? {} : { commands: this.options.commands }),
+      ...(this.options.telemetry === undefined ? {} : { telemetry: this.options.telemetry }),
       ...(this.options.hooks === undefined ? {} : { commandHooks: this.options.hooks }),
       ...(this.options.lsp === undefined ? {} : { lsp: this.options.lsp }),
       ...(this.options.exportSnapshot === undefined ? {} : { exportSnapshot: this.options.exportSnapshot }),
