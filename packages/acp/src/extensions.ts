@@ -66,6 +66,24 @@ export const EXT = {
   replayStarted: `${prefix}/replay_started`,
   /** Notification `ChildNotification`: one durable event of a subagent of a session open here, for a client that does not take the harness's events. */
   child: `${prefix}/child`,
+  /** Request `{ sessionId }` → `McpStateResult`: the session's MCP servers, their state, tools and where each is configured. */
+  mcp: `${prefix}/mcp`,
+  /** Request `{ sessionId, name, fingerprint }` → `{ approved, servers }`: the user starts a server the project's configuration names, remembered for the project. */
+  mcpApprove: `${prefix}/mcp_approve`,
+  /** Notification `McpStateResult`: the session's servers changed (one started, failed, waits for approval, or was approved). */
+  mcpChanged: `${prefix}/mcp_changed`,
+  /** Request `{ sessionId }` → `SkillsResult`: the skills of the session's directory, the shadowed ones and the ones that could not be loaded. */
+  skills: `${prefix}/skills`,
+  /** Request `{ sessionId }` → `WakeListResult`: the session's wake-ups, pending and ended, in the engine's words. */
+  wakeups: `${prefix}/wakeups`,
+  /** Request `{ sessionId, id }` → `{ cancelled, message }`: the user cancels a wake-up of the session. */
+  wakeCancel: `${prefix}/wake_cancel`,
+  /** Request `{ sessionId, id }` → `WakeSecretResult`: a webhook wake-up's URL and secret, for the user only. */
+  wakeSecret: `${prefix}/wake_secret`,
+  /** Request `{ sessionId }` → `MemoryStateResult`: the notes in force, the ones waiting for the user's confirmation, problems and the review report. */
+  memory: `${prefix}/memory`,
+  /** Request `MemoryChangeParams` → `MemoryChangeResult`: the user remembers, retracts, confirms, rejects or renews a note. */
+  memoryChange: `${prefix}/memory_change`,
 } as const
 
 export const META = {
@@ -380,6 +398,139 @@ export type DiffResult =
       readonly reason: "not_found" | "no_snapshots" | "unavailable"
       readonly message: string
     }
+
+/** One MCP server of a session, as a client shows it. */
+export interface McpServerInfo {
+  readonly name: string
+  /**
+   * `running`, `starting`, `failed` (the last attempt failed: `error`, and it is retried in `retryInMs`),
+   * `awaiting_approval` (the project's configuration names it and the user has not approved it: `question`),
+   * `disabled` (`enabled: false`), `stopped`, or `not_started` (named in a file, not looked at yet: servers start with a turn).
+   */
+  readonly state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started"
+  readonly transport: "stdio" | "http" | null
+  /** The command with its arguments, or the address. */
+  readonly target: string | null
+  /** Tools it offers, once running. */
+  readonly tools: number | null
+  /** Tools the configuration's allow or deny list hides. */
+  readonly hiddenTools: number
+  /** Why the last attempt failed or the connection ended, with the end of what it wrote to stderr. */
+  readonly error: string | null
+  readonly retryInMs: number | null
+  /** Which file defines it (`project`: the project's file names or changes it), and its path. */
+  readonly origin: "user" | "project" | null
+  readonly file: string | null
+  /** For `awaiting_approval`: the engine's question, and the fingerprint of exactly this definition, to approve it by. */
+  readonly question: { readonly fingerprint: string; readonly subject: string; readonly details: readonly string[] } | null
+}
+
+/** Result of `<prefix>/mcp`, and `<prefix>/mcp_changed`. `available: false`: this engine offers no MCP servers. */
+export interface McpStateResult {
+  readonly sessionId: string
+  readonly available: boolean
+  readonly servers: readonly McpServerInfo[]
+}
+
+/** Result of `<prefix>/skills`. */
+export interface SkillsResult {
+  readonly sessionId: string
+  readonly available: boolean
+  /** By name. `scope`: `project` (the working directory or a parent), `config` (`skills.paths`) or `user`; `root`: the directory it was found under. */
+  readonly skills: readonly { readonly name: string; readonly description: string; readonly path: string; readonly scope: "project" | "config" | "user"; readonly root: string }[]
+  /** `skipped`: not loaded, with the reason; `shadowed`: a nearer skill has the name; `warning`: loaded, but something is off. Full paths. */
+  readonly problems: readonly { readonly path: string; readonly severity: "skipped" | "shadowed" | "warning"; readonly reason: string }[]
+  /** Where skills are looked for, highest precedence first. */
+  readonly roots: readonly { readonly dir: string; readonly scope: "project" | "config" | "user" }[]
+}
+
+/** One wake-up of a session. `lines` are the engine's own (`describeLines`): state, limits, who created it, the message. */
+export interface WakeInfo {
+  readonly id: string
+  readonly trigger: "at" | "every" | "cron" | "check" | "webhook"
+  readonly description: string
+  /** `pending`, or how it ended (`completed`, `cancelled`, `expired`, `failed`, ...). */
+  readonly state: string
+  readonly nextAt: string | null
+  readonly fired: number
+  readonly maxFirings: number
+  readonly author: "user" | "model"
+  readonly message: string
+  /** A webhook's address. Its secret is never here: `<prefix>/wake_secret`. */
+  readonly url: string | null
+  readonly lines: readonly string[]
+}
+
+/** Result of `<prefix>/wakeups`. `running`: this process fires wake-ups. */
+export interface WakeListResult {
+  readonly sessionId: string
+  readonly available: boolean
+  readonly running: boolean
+  readonly wakeups: readonly WakeInfo[]
+}
+
+/** Result of `<prefix>/wake_secret`: `secret` and `url`, or `message` saying why there are none. */
+export interface WakeSecretResult {
+  readonly id: string
+  readonly url: string | null
+  readonly secret: string | null
+  readonly message: string | null
+}
+
+/** A note of the session's memory, as a client lists it. */
+export interface MemoryNote {
+  readonly id: string
+  readonly kind: string
+  readonly scope: "user" | "project"
+  readonly text: string
+  /** `active`, `expired (YYYY-MM-DD)`, `superseded by m_...`. */
+  readonly state: string
+  readonly author: "user" | "model"
+  /** The user's words it was derived from, when the model saved it from them. */
+  readonly quote: string | null
+  readonly created: string
+  readonly confirmed: string
+  readonly expires: string
+}
+
+/** Result of `<prefix>/memory`. `enabled: false`: `off` says why and how to turn it on. */
+export interface MemoryStateResult {
+  readonly sessionId: string
+  readonly enabled: boolean
+  readonly off: string | null
+  readonly notes: readonly MemoryNote[]
+  /** Notes the model saved after untrusted content arrived: not used until the user confirms them. */
+  readonly pending: readonly { readonly id: string; readonly scope: string; readonly kind: string; readonly text: string; readonly session: string | null; readonly created: string; readonly quote: string | null; readonly supersedes: string | null; readonly why: string; readonly decisions: readonly string[] }[]
+  /** Note files that are not valid and are not used. */
+  readonly problems: readonly { readonly path: string; readonly message: string }[]
+  /** What a person should look at, most urgent first (`reviewReport`). */
+  readonly review: readonly { readonly reason: string; readonly id: string | null; readonly path: string | null; readonly detail: string }[]
+  readonly paths: { readonly user: string; readonly project: string | null } | null
+}
+
+/** Params of `<prefix>/memory_change`. */
+export interface MemoryChangeParams {
+  readonly sessionId: string
+  readonly action: "remember" | "retract" | "confirm" | "reject" | "renew"
+  /** `remember`: the note. */
+  readonly text?: string
+  /** `remember`: `project` (default) or `user` (about you, for every project). */
+  readonly scope?: "user" | "project"
+  /** `remember`: default `fact` for the project, `preference` about you. */
+  readonly kind?: "preference" | "correction" | "fact" | "pointer"
+  /** The note acted on (`m_...`). */
+  readonly id?: string
+  /** `retract`: why. */
+  readonly reason?: string
+}
+
+export interface MemoryChangeResult {
+  readonly ok: boolean
+  /** The note saved or acted on. */
+  readonly id: string | null
+  /** What happened, or why nothing did, as a sentence. */
+  readonly message: string
+}
 
 /** The longest derived title, in characters. */
 export const TITLE_LENGTH = 60

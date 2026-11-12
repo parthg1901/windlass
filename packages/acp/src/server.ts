@@ -94,6 +94,7 @@ import {
   type StateNotification,
   titleFromEvents,
 } from "./extensions.ts"
+import { mcpKey, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText } from "./prompt.ts"
@@ -109,6 +110,8 @@ export const CONFIG = { model: "model", effort: "effort", approval: "approval" }
 const UNATTENDED = ["deny", "stop"] as const
 const DEFAULT_EFFORT_VALUE = "default"
 const LIST_PAGE = 100
+/** How often a session's MCP servers are looked at for `<prefix>/mcp_changed`. */
+const MCP_POLL_MS = 500
 /** How many of the latest turns a `session/load` replays the changed files of. */
 const REPLAYED_TURN_CHANGES = 50
 /** How far into a session's log its first message is looked for, for a derived title. */
@@ -143,8 +146,8 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay],
-  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange],
+  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
@@ -201,6 +204,28 @@ function buildAgent(state: ConnectionState): AgentApp {
     })
     .onRequest(EXT.fork, parseForkParams, ({ params }) => state.fork(params))
     .onRequest(EXT.replay, parseReplayParams, ({ params, signal }) => state.replay(params, signal))
+    .onRequest(EXT.mcp, parseObject, ({ params }) => mcpState(state.view(requireString(params, "sessionId")).session))
+    .onRequest(EXT.mcpApprove, parseObject, ({ params }) => state.approveMcp(requireString(params, "sessionId"), requireString(params, "name"), optionalString(params, "fingerprint")))
+    .onRequest(EXT.skills, parseObject, ({ params }) => skillsState(state.view(requireString(params, "sessionId")).session))
+    .onRequest(EXT.wakeups, parseObject, ({ params }) => wakeList(state.harness, state.view(requireString(params, "sessionId")).session.id))
+    .onRequest(EXT.wakeCancel, parseObject, ({ params }) => wakeCancel(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
+    .onRequest(EXT.wakeSecret, parseObject, ({ params }) => wakeSecret(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
+    .onRequest(EXT.memory, parseObject, ({ params }) => memoryState(state.view(requireString(params, "sessionId")).session))
+    .onRequest(EXT.memoryChange, parseObject, ({ params }) => {
+      const action = oneOfOrNull(params.action, ["remember", "retract", "confirm", "reject", "renew"] as const, "action")
+      if (action === null) throw RequestError.invalidParams(undefined, "action must be one of: remember, retract, confirm, reject, renew")
+      const scope = oneOfOrNull(params.scope, ["user", "project"] as const, "scope")
+      const kind = memoryKind(params.kind)
+      return memoryChange(state.view(requireString(params, "sessionId")).session, {
+        sessionId: requireString(params, "sessionId"),
+        action,
+        ...(typeof params.text === "string" ? { text: params.text } : {}),
+        ...(scope === null ? {} : { scope }),
+        ...(kind === undefined ? {} : { kind }),
+        ...(typeof params.id === "string" ? { id: params.id } : {}),
+        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+      })
+    })
 }
 
 interface Pending {
@@ -359,6 +384,8 @@ class ConnectionState {
           model: summary.session.settings.model,
           effort: summary.session.settings.reasoningEffort,
           ...(summary.session.archived ? { archived: true } : {}),
+          // A fork names what it was forked from, so a listing can tell it from its parent.
+          ...(summary.session.lineage?.kind === "fork" ? { forkedFrom: summary.session.lineage.parentSessionId, forkedThroughSeq: summary.session.lineage.throughSeq } : {}),
         },
       },
     }))
@@ -912,6 +939,19 @@ class ConnectionState {
     return view
   }
 
+  /** A session open on this connection, for the feature requests. */
+  view(sessionId: string): SessionView {
+    return this.requireView(sessionId)
+  }
+
+  /** `<prefix>/mcp_approve`: the user approves a server the project's configuration names; it starts at once. */
+  async approveMcp(sessionId: string, name: string, fingerprint: string | undefined) {
+    const view = this.requireView(sessionId)
+    const approved = view.session.approveMcpServer(name, fingerprint)
+    view.watchMcp(true)
+    return { approved, servers: (await mcpState(view.session)).servers }
+  }
+
   private requireView(sessionId: string): SessionView {
     const view = this.views.get(sessionId)
     if (view === undefined) throw RequestError.sessionNotFound(sessionId)
@@ -977,6 +1017,9 @@ class SessionView {
   private outbox: Promise<void> = Promise.resolve()
   private unlisten: (() => void) | null = null
   private detached = false
+  /** The MCP servers as last told to the client (`mcpKey`), and the timer that looks again. */
+  private mcpSeen: string | null = null
+  private mcpTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private readonly connection: ConnectionState,
@@ -1011,12 +1054,48 @@ class SessionView {
     // Handled after whatever produced the event has returned, in order: a prompt's sender registers what it
     // waits for before its own `inbox.enqueued` is looked at here.
     this.unlisten = this.session.subscribe((item) => queueMicrotask(() => this.onEvent(item)))
+    this.watchMcp()
+  }
+
+  /**
+   * Looks at the session's MCP servers every `MCP_POLL_MS` and sends
+   * `<prefix>/mcp_changed` when what a client shows changed: a server
+   * started, failed (with why), waits for the user's approval, or was
+   * approved. The engine has no listener for that; its state is cheap to read.
+   */
+  watchMcp(now = false): void {
+    if (this.detached) return
+    if (this.mcpTimer === null) {
+      this.mcpSeen = this.mcpKeyNow()
+      if (this.mcpSeen === null) return
+      this.mcpTimer = setInterval(() => this.checkMcp(), MCP_POLL_MS)
+      this.mcpTimer.unref?.()
+    }
+    if (now) this.checkMcp()
+  }
+
+  private mcpKeyNow(): string | null {
+    try {
+      return mcpKey(this.session)
+    } catch {
+      return null
+    }
+  }
+
+  private checkMcp(): void {
+    if (this.detached) return
+    const key = this.mcpKeyNow()
+    if (key === null || key === this.mcpSeen) return
+    this.mcpSeen = key
+    this.enqueue(async () => this.connection.sendExt(EXT.mcpChanged, { ...(await mcpState(this.session)) }))
   }
 
   detach(): void {
     if (this.detached) return
     this.detached = true
     this.unlisten?.()
+    if (this.mcpTimer !== null) clearInterval(this.mcpTimer)
+    this.mcpTimer = null
     this.connection.forget(this)
     const error = new RequestError(-32800, "the session was closed")
     for (const pending of this.pending.splice(0)) pending.reject(error)

@@ -45,7 +45,14 @@ import {
   EXT,
   type ForkParams,
   type ForkResult,
+  type McpStateResult,
+  type MemoryChangeParams,
+  type MemoryChangeResult,
+  type MemoryStateResult,
   META,
+  type SkillsResult,
+  type WakeListResult,
+  type WakeSecretResult,
   type OpenMeta,
   type ReplayParams,
   type ReplayResult,
@@ -78,6 +85,8 @@ export type SessionSignal =
   | { readonly kind: "notice"; readonly notice: string; readonly message: string }
   | { readonly kind: "diagnostic"; readonly diagnostic: string; readonly message: string }
   | { readonly kind: "update"; readonly update: SessionNotification["update"] }
+  /** The session's MCP servers changed (`<prefix>/mcp_changed`). */
+  | { readonly kind: "mcp"; readonly mcp: McpStateResult }
 
 /** A tool call's approval question, as the server puts it (`session/request_permission` with `_meta[<ns>].approval`). */
 export interface ApprovalAsk {
@@ -179,6 +188,9 @@ export interface SessionListing {
   readonly model: string
   readonly effort: string | null
   readonly archived: boolean
+  /** A fork: the session it was forked from, and the last event it inherited. */
+  readonly forkedFrom: string | null
+  readonly forkedThroughSeq: number | null
 }
 
 export interface ModelListing {
@@ -343,17 +355,27 @@ export class HarnessConnection {
     }
   }
 
-  /** `session/list`, every page. Never stops the server. */
-  async listSessions(cwd: string, options: { readonly archived?: boolean } = {}): Promise<SessionListing[]> {
+  /** `session/list`, every page: of `cwd`, or of every directory (`null`). Never stops the server. */
+  async listSessions(cwd: string | null, options: { readonly archived?: boolean } = {}): Promise<SessionListing[]> {
     const rows: SessionListing[] = []
     let cursor: string | undefined
     do {
       const page = await this.call(() =>
-        this.agent.request(methods.agent.session.list, { cwd, ...(cursor === undefined ? {} : { cursor }), ...(options.archived === true ? { _meta: { [NS]: { archived: true } } } : {}) }),
+        this.agent.request(methods.agent.session.list, { ...(cwd === null ? {} : { cwd }), ...(cursor === undefined ? {} : { cursor }), ...(options.archived === true ? { _meta: { [NS]: { archived: true } } } : {}) }),
       )
       for (const info of page.sessions) {
-        const meta = info._meta?.[NS] as { model?: string; effort?: string | null; archived?: boolean } | undefined
-        rows.push({ id: info.sessionId, title: info.title ?? null, cwd: info.cwd, updatedAt: Date.parse(info.updatedAt ?? ""), model: meta?.model ?? "", effort: meta?.effort ?? null, archived: meta?.archived === true })
+        const meta = info._meta?.[NS] as { model?: string; effort?: string | null; archived?: boolean; forkedFrom?: string; forkedThroughSeq?: number } | undefined
+        rows.push({
+          id: info.sessionId,
+          title: info.title ?? null,
+          cwd: info.cwd,
+          updatedAt: Date.parse(info.updatedAt ?? ""),
+          model: meta?.model ?? "",
+          effort: meta?.effort ?? null,
+          archived: meta?.archived === true,
+          forkedFrom: typeof meta?.forkedFrom === "string" ? meta.forkedFrom : null,
+          forkedThroughSeq: typeof meta?.forkedThroughSeq === "number" ? meta.forkedThroughSeq : null,
+        })
       }
       cursor = page.nextCursor ?? undefined
     } while (cursor !== undefined)
@@ -639,6 +661,44 @@ export class ClientSession {
   /** `<prefix>/compact`, when the server offers it (`offers(EXT.compact)`). */
   async compact(): Promise<void> {
     await this.link.request(EXT.compact, { sessionId: this.id })
+  }
+
+  /** `<prefix>/mcp`: the session's MCP servers, with their state, tools and where each is configured. */
+  mcp(): Promise<McpStateResult> {
+    return this.link.request<McpStateResult>(EXT.mcp, { sessionId: this.id })
+  }
+
+  /** `<prefix>/mcp_approve`: the user starts a server the project's configuration names (this definition of it). */
+  approveMcp(name: string, fingerprint: string): Promise<{ approved: boolean; servers: McpStateResult["servers"] }> {
+    return this.link.request(EXT.mcpApprove, { sessionId: this.id, name, fingerprint })
+  }
+
+  /** `<prefix>/skills`. */
+  skills(): Promise<SkillsResult> {
+    return this.link.request<SkillsResult>(EXT.skills, { sessionId: this.id })
+  }
+
+  /** `<prefix>/wakeups`: the session's wake-ups, pending and ended. */
+  wakeups(): Promise<WakeListResult> {
+    return this.link.request<WakeListResult>(EXT.wakeups, { sessionId: this.id })
+  }
+
+  cancelWake(id: string): Promise<{ cancelled: boolean; message: string }> {
+    return this.link.request(EXT.wakeCancel, { sessionId: this.id, id })
+  }
+
+  /** `<prefix>/wake_secret`: a webhook wake-up's URL and secret. For the user's eyes: never log it or put it in an event stream. */
+  wakeSecret(id: string): Promise<WakeSecretResult> {
+    return this.link.request<WakeSecretResult>(EXT.wakeSecret, { sessionId: this.id, id })
+  }
+
+  /** `<prefix>/memory`: the notes, what waits for the user's confirmation, problems, the review report; or why memory is off. */
+  memory(): Promise<MemoryStateResult> {
+    return this.link.request<MemoryStateResult>(EXT.memory, { sessionId: this.id })
+  }
+
+  memoryChange(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult> {
+    return this.link.request<MemoryChangeResult>(EXT.memoryChange, { sessionId: this.id, ...params })
   }
 
   /** `session/close`: with `shutdown`, running work stops as a shutdown and resumes at the next open, every event of it before the answer. */
@@ -936,6 +996,8 @@ function signalOf(method: string, params: Record<string, unknown>): SessionSigna
       return { kind: "notice", notice: String(params.kind ?? ""), message: String(params.message ?? "") }
     case EXT.diagnostic:
       return { kind: "diagnostic", diagnostic: String(params.kind ?? ""), message: String(params.message ?? "") }
+    case EXT.mcpChanged:
+      return { kind: "mcp", mcp: { sessionId: String(params.sessionId), available: params.available === true, servers: Array.isArray(params.servers) ? (params.servers as McpStateResult["servers"]) : [] } }
     default:
       return null
   }
