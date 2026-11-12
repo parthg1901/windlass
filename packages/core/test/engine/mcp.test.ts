@@ -249,10 +249,18 @@ describe("a call", () => {
         userConfig: { mcp: { servers: { mine: fixtureServer(["--only", "echo"], { untrusted: false }), theirs: fixtureServer(["--only", "add"]) } } },
       },
       async (h) => {
-        h.provider.enqueue([call("mcp_call", { server: "mine", tool: "echo", arguments: { text: "hello" } }), U], answer("Done."), [call("mcp_search", { query: "add" }, "call_2"), U], answer("Found."))
+        h.provider.enqueue(
+          // A search of the trusted server alone shows its own notes too: what it wrote about itself is trusted with it.
+          [call("mcp_search", { query: "echo", server: "mine", includeSchema: true }, "call_0"), U],
+          [call("mcp_call", { server: "mine", tool: "echo", arguments: { text: "hello" } }), U],
+          answer("Done."),
+          [call("mcp_search", { query: "add" }, "call_2"), U],
+          answer("Found."),
+        )
         h.create().send("Echo hello.")
         await h.settled()
-        expect(of(h, "tool.settled")[0]!.data).toMatchObject({ output: "Result of MCP tool mine/echo:\nhello", display: { mcp: { untrusted: false } } })
+        expect(of(h, "tool.settled")[0]!.data).toMatchObject({ outcome: "success", display: { mcp: { kind: "search", servers: ["mine"], untrusted: false } } })
+        expect(of(h, "tool.settled")[1]!.data).toMatchObject({ output: "Result of MCP tool mine/echo:\nhello", display: { mcp: { untrusted: false } } })
         expect(of(h, "taint.noticed")).toEqual([])
         expect(h.session.approval()!.taint.tainted).toBe(false)
         h.session.send("Is there an add tool?")

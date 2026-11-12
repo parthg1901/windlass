@@ -155,14 +155,18 @@ export function mcpSearchTool(backend: () => McpBridgeBackend | null): Tool<Sear
         if (shown.length < matches.length) lines.push("", `Narrow the query, or raise limit, to see the other ${matches.length - shown.length}.`)
         else if (!includeSchema) lines.push("", "Use includeSchema: true to see a tool's input schema before you call it with mcp_call.")
       }
-      const notes = scope === null ? null : (servers.find((entry) => entry.name === scope)?.instructions ?? null)
-      if (notes !== null && notes.trim() !== "") lines.push("", `Notes from the server ${scope}: ${excerpt(notes, 1500)}`)
+      const scoped = scope === null ? undefined : servers.find((entry) => entry.name === scope)
+      const notes = scoped?.instructions == null || scoped.instructions.trim() === "" ? null : scoped.instructions
+      if (notes !== null) lines.push("", `Notes from the server ${scope}: ${excerpt(notes, 1500)}`)
       const unavailable = status.filter((entry) => entry.state !== "ready" && entry.state !== "disabled" && (scope === null || entry.name === scope))
       if (unavailable.length > 0) lines.push("", `Not available right now: ${unavailable.map(describeStatus).join("; ")}.`)
       const shownServers = [...new Set(shown.map((match) => match.server))].sort(byCodeUnits)
-      // Descriptions, notes and stderr shown in a status are all text the servers wrote.
+      // Descriptions, notes and stderr shown in a status are all text the servers wrote. What a server the
+      // configuration marks as trusted wrote about itself (its descriptions, its notes) is trusted with it.
       const untrusted =
-        shownServers.some((name) => servers.find((entry) => entry.name === name)?.untrusted !== false) || notes !== null || unavailable.some((entry) => entry.error !== null)
+        shownServers.some((name) => servers.find((entry) => entry.name === name)?.untrusted !== false) ||
+        (notes !== null && scoped?.untrusted !== false) ||
+        unavailable.some((entry) => entry.error !== null)
       return result("success", lines.join("\n"), source("search", shownServers, null, untrusted, null))
     },
   }
