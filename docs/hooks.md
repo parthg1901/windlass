@@ -211,16 +211,17 @@ A project's file cannot take a hook out of the sandbox (`"sandbox": false` there
 `maxStopRounds`:
 `⚠ hooks: The project's configuration asks for more than yours allows and was not followed: hooks.maxStopRounds: the project's 9 is above the user's 3.`
 
+## Approving, listing and seeing hooks
+
+- **Approving a project's hook.** An interactive `windlass` and `windlass tui` ask you about a hook a project's
+  file names, showing the whole command; `/hooks approve <hook>` answers it later. A one-prompt run cannot ask: it
+  says once that the hook was skipped and how to approve it. An approval is for that exact definition; an edited
+  hook is asked about again.
+- **Listing.** `/hooks` shows each hook, when it runs, its command, the file that defines it and its state.
+- **Seeing what a hook did.** A call a hook refused is shown with the hook's name and its reason; a note a hook
+  added, a stop hook that sent the agent back, and a turn that ended with a stop hook unsatisfied each have a row.
+  `--json` has all of it in the `hook.ran` events (`toModel`, `forUser`).
+
 ## Not yet
 
-<!-- NOT-YET(hooks-approve): no client can approve a project's hook -->
-- **Approving a project's hook.** Neither `windlass` nor `windlass tui` asks about it or has a command for it, so a
-  project's hook never runs. After reading what it does, copy it into your own file.
-<!-- NOT-YET(hooks-command): no /hooks command -->
-- **Listing the hooks in force.** There is no `/hooks` command; the configuration files are the list.
-<!-- NOT-YET(hooks-shown): the clients do not show a note, a stop message or a hook's stderr -->
-- **Seeing what a hook said.** Only a refusal is shown with its words. A note added after a call is not on the
-  call's row, a stop hook's message is the line `· note to the model (stop_hook)` without its text, and what a
-  hook writes to standard error is not printed. All three are in `--json` (the `hook.ran` events: `toModel`,
-  `forUser`).
 - **Other points.** There are these three: no hook when a session starts, on your message, or at a compaction.

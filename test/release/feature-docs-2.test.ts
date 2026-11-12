@@ -103,7 +103,7 @@ describe("commands", () => {
     const tui = new Set(COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]))
     const line = new Set(BUILTIN_COMMANDS.commands().flatMap((command) => [command.name, ...(command.aliases ?? [])]))
     // The pages say these do not exist ("Not yet"). When one does, its page is out of date.
-    const missing: Readonly<Record<string, Page>> = { hooks: "docs/hooks.md", lsp: "docs/diagnostics.md", tasks: "docs/task-list.md" }
+    const missing: Readonly<Record<string, Page>> = { tasks: "docs/task-list.md" }
     const named = new Set<string>()
     for (const page of PAGES)
       for (const [, name] of text[page].matchAll(/`\/([a-z][a-z-]*)(?: [a-z]+)?`/g)) {
@@ -441,7 +441,6 @@ describe("quoted program messages", () => {
       quote: "⚠ hooks: The project's configuration asks for more than yours allows and was not followed: hooks.maxStopRounds: the project's 9 is above the user's 3.",
       pieces: ["The project's configuration asks for more than yours allows and was not followed: ", "hooks.maxStopRounds: the project's ", " is above the user's "],
     },
-    { page: "docs/hooks.md", quote: "· note to the model (stop_hook)", pieces: ["note to the model (", "stop_hook"] },
     // diagnostics
     {
       page: "docs/diagnostics.md",
@@ -543,8 +542,8 @@ describe("what the pages say is not there yet", () => {
   test("each Not yet section marks its sentences for whoever adds the feature", () => {
     const markers: Readonly<Record<Page, readonly string[]>> = {
       "docs/agents.md": ["agents-start-warnings", "agents-subagent-row", "agents-model-switch"],
-      "docs/hooks.md": ["hooks-approve", "hooks-command", "hooks-shown"],
-      "docs/diagnostics.md": ["lsp-approve", "lsp-command", "lsp-shown"],
+      "docs/hooks.md": [],
+      "docs/diagnostics.md": [],
       "docs/task-list.md": ["tasks-command", "tasks-edit"],
     }
     for (const page of PAGES) {
@@ -554,28 +553,27 @@ describe("what the pages say is not there yet", () => {
     }
   })
 
-  test("no client approves a project's hook or language server yet (hooks-approve, lsp-approve)", () => {
+  test("both interfaces approve a project's hook and language server, list them, and show what they did", () => {
     expect(text["docs/hooks.md"]).toContain("**Approving a project's hook.**")
+    expect(text["docs/hooks.md"]).toContain("`/hooks approve <hook>`")
     expect(text["docs/diagnostics.md"]).toContain("**Approving a project's server.**")
-    // The engine offers both; a client that calls one makes the pages out of date.
+    expect(text["docs/diagnostics.md"]).toContain("`/lsp approve <server>`")
+    // The engine offers both approvals and the clients call them.
     const engine = read(join(ROOT, "packages/core/src/engine/engine.ts"))
     expect(engine).toMatch(/\bapproveHook = \(/)
     expect(engine).toMatch(/\bapproveLspServer = \(/)
-    for (const file of clientFiles()) {
-      expect(/approveHook\b/.test(read(file)), `${file} approves a project's hook: update docs/hooks.md`).toBe(false)
-      expect(/approveLspServer\b/.test(read(file)), `${file} approves a project's language server: update docs/diagnostics.md`).toBe(false)
+    const clients = clientFiles().map(read).join("\n")
+    expect(clients).toMatch(/approveHook\b/)
+    expect(clients).toMatch(/approveLspServer\b/)
+    // The commands the pages name, with the arguments they name, in both interfaces.
+    for (const commandsOf of [COMMANDS, BUILTIN_COMMANDS.commands()]) {
+      expect(commandsOf.find((command) => command.name === "hooks")?.args).toBe("[approve <hook>]")
+      expect(commandsOf.find((command) => command.name === "lsp")?.args).toBe("[approve <server>]")
     }
-  })
-
-  test("the clients show neither a hook's words nor a diagnostics note yet (hooks-shown, lsp-shown)", () => {
-    expect(text["docs/hooks.md"]).toContain("**Seeing what a hook said.**")
+    // What a hook did and what an edit got are read by the clients, and are in --json as the pages say.
+    expect(text["docs/hooks.md"]).toContain("**Seeing what a hook did.**")
     expect(text["docs/diagnostics.md"]).toContain("**Seeing the note.**")
-    for (const file of clientFiles()) {
-      const source = read(file)
-      expect(/hook\.ran|toModel|forUser/.test(source), `${file} reads a hook's record: update docs/hooks.md`).toBe(false)
-      expect(/noteAdded|data\.diagnostics\b/.test(source), `${file} reads an edit's diagnostics: update docs/diagnostics.md`).toBe(false)
-    }
-    // What --json has, as the pages say.
+    expect(clients).toMatch(/hook\.ran|forUser/)
     const durable = read(join(ROOT, "packages/core/src/event/durable.ts"))
     for (const field of ["toModel", "forUser", "noteAdded", "unsatisfied"]) expect(SOURCE, field).toContain(field)
     expect(durable).toContain('"hook.ran"')

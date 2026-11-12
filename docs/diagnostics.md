@@ -142,16 +142,18 @@ repository chose. You are told at the first turn, and once more when an edit wou
 
 The agent is not told, and its edits go through without notes.
 
+## Approving, listing and seeing diagnostics
+
+- **Approving a project's server.** An interactive `windlass` and `windlass tui` ask you about a language server a
+  project's file names, showing the whole command; `/lsp approve <server>` answers it later. A one-prompt run
+  cannot ask: it says once that the server was not started and how to approve it. An edited definition is asked
+  about again.
+- **Listing.** `/lsp` shows each server, the files it serves, the file that defines it and its state (started,
+  waiting for your approval, failed and why).
+- **Seeing the note.** The row of an edit that got diagnostics says how many and from which server. `--json` has
+  the rest: the `tool.settled` event's `output` ends with the note, and its `diagnostics` field has the counts,
+  the wait and each server's outcome (`compared`, `timeout`, `crashed`, `not_running`).
+
 ## Not yet
 
-<!-- NOT-YET(lsp-approve): no client can approve a project's language server -->
-- **Approving a project's server.** Neither `windlass` nor `windlass tui` asks about it or has a command for it, so a
-  project's server never starts. After reading what it runs, copy it into your own file.
-<!-- NOT-YET(lsp-command): no /lsp command -->
-- **Seeing the servers.** There is no `/lsp` command: no list of servers, their state, or why one failed, beyond
-  the `⚠ lsp:` lines.
-<!-- NOT-YET(lsp-shown): the clients do not show the note -->
-- **Seeing the note.** The edit's row (`✓ +1 -1`) is the same with and without a note. `--json` has it: the
-  `tool.settled` event's `output` ends with the note, and its `diagnostics` field has the counts, the wait and
-  each server's outcome (`compared`, `timeout`, `crashed`, `not_running`).
 - **Anything but diagnostics.** The agent gets no go-to-definition, references or rename from the server.
