@@ -39,8 +39,12 @@ export interface McpBridgeBackend {
 
 /**
  * Where the text of a bridge result came from, recorded in the result's
- * `display` under `mcp`. `untrusted` is true when the text contains anything
- * an untrusted server produced (a result, an error message, tool descriptions).
+ * `display` under `mcp`. `untrusted` is true when the text contains free text
+ * an untrusted server produced: a call's result or error message, and in a
+ * search the server's notes or the error text of a server that is
+ * unavailable. What a server declares about its tools (names, descriptions,
+ * input schemas) is not: a search shows what the catalogue carries, and the
+ * catalogue is not untrusted content either.
  */
 export interface McpResultSource {
   readonly kind: "call" | "search"
@@ -161,12 +165,11 @@ export function mcpSearchTool(backend: () => McpBridgeBackend | null): Tool<Sear
       const unavailable = status.filter((entry) => entry.state !== "ready" && entry.state !== "disabled" && (scope === null || entry.name === scope))
       if (unavailable.length > 0) lines.push("", `Not available right now: ${unavailable.map(describeStatus).join("; ")}.`)
       const shownServers = [...new Set(shown.map((match) => match.server))].sort(byCodeUnits)
-      // Descriptions, notes and stderr shown in a status are all text the servers wrote. What a server the
-      // configuration marks as trusted wrote about itself (its descriptions, its notes) is trusted with it.
-      const untrusted =
-        shownServers.some((name) => servers.find((entry) => entry.name === name)?.untrusted !== false) ||
-        (notes !== null && scoped?.untrusted !== false) ||
-        unavailable.some((entry) => entry.error !== null)
+      // What a server declares about its tools (names, descriptions, input schemas) is what the catalogue carries
+      // too, and like the catalogue it is not untrusted content: a search for a tool must not change how the call
+      // that follows is decided. What the catalogue never carries is: a server's free-text notes (trusted with a
+      // server the configuration marks as trusted) and the error or stderr text of one that is unavailable.
+      const untrusted = (notes !== null && scoped?.untrusted !== false) || unavailable.some((entry) => entry.error !== null)
       return result("success", lines.join("\n"), source("search", shownServers, null, untrusted, null))
     },
   }

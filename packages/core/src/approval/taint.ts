@@ -20,8 +20,11 @@
  * and from whether anything the server wrote is in the text). Such a result
  * is a source when it says so, and not otherwise: a call to a server the
  * user's configuration marks as trusted, or one that was refused before
- * anything was sent, brought nothing in. A search of the catalogue that shows
- * an untrusted server's descriptions is a source in the same way.
+ * anything was sent, brought nothing in. A search of the catalogue is a source
+ * only for the text the catalogue never carries (a server's notes, the error
+ * text of a server that is unavailable): the names, descriptions and input
+ * schemas of an untrusted server's tools are not one, in a search as in the
+ * catalogue.
  *
  * Not sources, by decision:
  * - Workspace files in general, including ones this session did not write.

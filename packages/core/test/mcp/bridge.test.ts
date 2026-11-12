@@ -167,13 +167,15 @@ describe("what the model sees", () => {
         "Use includeSchema: true to see a tool's input schema before you call it with mcp_call.",
       ].join("\n"),
     )
-    expect(mcpResultSource(search.settlement.display)).toEqual({ kind: "search", servers: ["github"], tool: null, untrusted: true, outcome: null })
+    // What a search shows of a tool is what the server declares about it, as the catalogue does: not untrusted content.
+    expect(mcpResultSource(search.settlement.display)).toEqual({ kind: "search", servers: ["github"], tool: null, untrusted: false, outcome: null })
 
     const schema = await run(MCP_SEARCH_TOOL, { query: "create issue", includeSchema: true })
     expect(schema.settlement.output).toContain(
       'Input schema: {"additionalProperties":false,"properties":{"labels":{"items":{"type":"string"},"maxItems":5,"type":"array"},',
     )
     expect(schema.settlement.output).toContain("The second line of the description is not part of the catalogue.")
+    expect(mcpResultSource(schema.settlement.display)!.untrusted).toBe(false)
 
     const call = await run(MCP_CALL_TOOL, { server: "github", tool: "create_issue", arguments: { repo: "acme/web", title: "Login fails" } })
     expect(call.kind).toBe("completed")
