@@ -19,7 +19,7 @@ import { brand } from "@windlass/core"
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
 import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
-import { DockState, QUIET_MS, dockLines } from "./approval.ts"
+import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
 import { agentProblemLines, compactText, requestsText } from "./cli.ts"
 import { COPY_NOTE, changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
@@ -102,6 +102,8 @@ export class App {
   /** Servers the project's configuration names that wait for the user's answer in the dock, and the ones asked about. */
   private readonly serverQuestions: McpServerInfo[] = []
   private readonly asked = new Set<string>()
+  /** The questions whose command did not fit the dock and was printed in full above it. */
+  private readonly printedCommands = new Set<string>()
   /** Failures already told, by server and reason. */
   private readonly toldFailures = new Set<string>()
   private unwatchMcp: (() => void) | null = null
@@ -966,7 +968,8 @@ export class App {
     const server = this.serverQuestions.shift()
     if (server === undefined) return
     const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
-    const state = new DockState(mcpServerAsk(session.id, server), null, { focused: quiet, now: this.now(), withNote: false })
+    const state = new DockState(mcpServerAsk(session.id, server), null, { focused: quiet, now: this.now(), withNote: false, whole: true })
+    this.printWholeCommand(mcpAskId(server), state)
     const entry = {
       state,
       server,
@@ -982,6 +985,25 @@ export class App {
     this.dock = entry
     this.conversation.toBottom()
     this.layout()
+  }
+
+  /**
+   * A command too long for the dock is printed in full above it, once,
+   * before the question can be answered (and again when a smaller terminal
+   * makes it too long): nothing of what the user is asked to let run is
+   * ever out of sight.
+   */
+  private printWholeCommand(id: string, state: DockState): void {
+    if (this.printedCommands.has(id) || !commandOverflows(state, this.renderer.width, this.dockRows())) return
+    this.printedCommands.add(id)
+    const question = state.ask.question
+    this.transcript.note([span(`${question.title} The whole command:`, "warn")], "warn", "?", question.subject.split("\n").map((line) => [span(line, "accent")]))
+    this.conversation.toBottom()
+  }
+
+  /** The most rows the dock takes of the terminal. */
+  private dockRows(): number {
+    return Math.max(4, Math.floor(this.renderer.height * DOCK_SHARE))
   }
 
   private async answerServer(session: BackendSession, server: McpServerInfo, start: boolean): Promise<void> {
@@ -1429,8 +1451,9 @@ export class App {
     const palette = this.palette()
     this.hints.height = palette.length === 0 ? 1 : Math.min(palette.length, 6)
     const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock : null
+    if (dock?.server !== undefined) this.printWholeCommand(mcpAskId(dock.server), dock.state)
     this.dockView.visible = dock !== null
-    this.dockView.height = dock === null ? 0 : dockLines(dock.state, this.renderer.width, Math.max(4, Math.floor(this.renderer.height * DOCK_SHARE)), this.now()).length
+    this.dockView.height = dock === null ? 0 : dockLines(dock.state, this.renderer.width, this.dockRows(), this.now()).length
     this.redraw()
   }
 

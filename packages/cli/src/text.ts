@@ -99,6 +99,33 @@ export function wrap(text: string, width: number): string[] {
 }
 
 /**
+ * Prose as rows of `width`, wrapped at words, with nothing left out: a word
+ * wider than a row (a path, a command) is broken across rows, never cut.
+ */
+export function wrapWhole(text: string, width: number): string[] {
+  const room = Math.max(1, width)
+  const rows: string[] = []
+  let current = ""
+  for (const word of text.split(" ")) {
+    const next = current === "" ? word : `${current} ${word}`
+    if (displayWidth(next) <= room) {
+      current = next
+      continue
+    }
+    if (current.trim() !== "") rows.push(current.trimEnd())
+    if (displayWidth(word) <= room) {
+      current = word
+      continue
+    }
+    const pieces = hardWrap(word, room)
+    rows.push(...pieces.slice(0, -1))
+    current = pieces.at(-1) ?? ""
+  }
+  if (current.trim() !== "" || rows.length === 0) rows.push(current.trimEnd())
+  return rows
+}
+
+/**
  * Preformatted text (a line of a diff, a command) as rows of `width`
  * columns: every character kept, nothing reflowed, a tab as four spaces. A
  * row that is cut continues on the next, from the very next character.

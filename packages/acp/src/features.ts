@@ -55,6 +55,11 @@ async function configView(cwd: string): Promise<ConfigView> {
   return { userFile: where.userFile, projectFile: where.projectFile, user, project, servers }
 }
 
+/** The command and its arguments, one each; `null` for a server reached at an address. */
+function argvOf(config: McpServerConfig | undefined): string[] | null {
+  return config?.transport.kind === "stdio" ? [config.transport.command, ...config.transport.args] : null
+}
+
 function targetOf(config: McpServerConfig): string {
   const transport = config.transport
   return transport.kind === "stdio" ? [transport.command, ...transport.args].join(" ") : transport.url
@@ -84,6 +89,7 @@ export async function mcpState(session: EngineSession): Promise<McpStateResult> 
       state: word,
       transport: status.transport,
       target: config === undefined ? null : targetOf(config),
+      argv: argvOf(config),
       tools: status.state === "ready" ? status.tools : null,
       hiddenTools: status.hiddenTools,
       error: word === "failed" || word === "stopped" ? status.error : null,
@@ -100,6 +106,8 @@ export async function mcpState(session: EngineSession): Promise<McpStateResult> 
       state: "awaiting_approval",
       transport: config?.transport.kind ?? null,
       target: question.subject,
+      // Only when the file still names the command the question is about: the arguments shown are then the ones asked about.
+      argv: argvOf(config)?.join(" ") === question.subject ? argvOf(config) : null,
       tools: null,
       hiddenTools: 0,
       error: null,
@@ -117,6 +125,7 @@ export async function mcpState(session: EngineSession): Promise<McpStateResult> 
       state: config.enabled ? "not_started" : "disabled",
       transport: config.transport.kind,
       target: targetOf(config),
+      argv: argvOf(config),
       tools: null,
       hiddenTools: 0,
       error: null,

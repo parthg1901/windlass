@@ -52,14 +52,21 @@ export class DockState {
   focused: boolean
   /** The user stopped the turn: the question is off the screen and waits to be withdrawn. */
   withdrawn = false
+  /**
+   * The subject is a command the user is asked to let run (a project's MCP
+   * server, hook or language server): the dock shows all of it, wrapped and
+   * never cut, and no call's row in the conversation repeats it.
+   */
+  readonly whole: boolean
   private armedAt: number
 
   constructor(
     readonly ask: ApprovalAsk,
     /** The tool and its argument, as the conversation shows the call; `input`: its arguments as written. */
     readonly tool: { readonly name: string; readonly arg: string; readonly input?: string } | null,
-    options: { readonly focused: boolean; readonly now: number; readonly withNote?: boolean },
+    options: { readonly focused: boolean; readonly now: number; readonly withNote?: boolean; readonly whole?: boolean },
   ) {
+    this.whole = options.whole === true
     const letters: Record<string, string> = { once: "a", session: "s", project: "p", deny: "n" }
     const choices = ask.question.choices
     this.items = [
@@ -117,11 +124,50 @@ export class DockState {
   }
 }
 
+/** Every line of a command the user is asked about, wrapped at `columns` and never cut: a word wider than the dock is broken across lines. */
+export function commandLines(state: DockState, columns: number): Span[][] {
+  return sanitize(state.ask.question.subject)
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .flatMap((line) => wrapLine([span("  "), span(line, "accent")], columns, [span("  ")]))
+}
+
+/** The lines of the dock that are always there besides the subject: its title, the choices (or the note), and the keys. */
+function fixedRows(state: DockState, columns: number): number {
+  return 1 + choiceLines(state, columns).length + 1
+}
+
+/**
+ * Whether a command the user is asked about does not fit the dock at this
+ * size: the dock then shows its beginning and says that the whole of it is
+ * above, where the app prints it before the question can be answered.
+ */
+export function commandOverflows(state: DockState, columns: number, rows: number): boolean {
+  return state.whole && commandLines(state, columns).length > Math.max(1, rows - fixedRows(state, columns))
+}
+
+function choiceLines(state: DockState, columns: number): Span[][] {
+  const inner = Math.max(10, columns - 2)
+  const lines: Span[][] = []
+  if (state.note === null)
+    state.items.forEach((item, index) => {
+      const chosen = state.focused && index === state.index
+      const line: Span[] = [span(chosen ? "› " : "  ", "accent"), span(`[${item.key}] `, "dim"), span(item.label, chosen ? "selected" : undefined, { bold: chosen }), span(item.remembers === null ? "" : `  remembers ${item.remembers}`, "dim")]
+      lines.push(...wrapLine(line, columns, [span("        ")]).slice(0, 2))
+    })
+  else {
+    lines.push([span("  Don't allow. Your note to the agent:", "warn")])
+    const shown = state.note.length === 0 ? "" : state.note
+    const room = inner - 4
+    lines.push([span("  › ", "accent"), span(textWidth(shown) > room ? `…${shown.slice(-(room - 1))}` : shown), span("▏", "accent")])
+  }
+  return lines
+}
+
 /** The dock as lines at `columns`, at most `rows` of them (details are dropped first, the choices never). */
 export function dockLines(state: DockState, columns: number, rows: number, now: number): Span[][] {
   const ask = state.ask
   const question = ask.question
-  const inner = Math.max(10, columns - 2)
   // A subagent's question says which one asks: the first line of its task.
   const who = ask.subagent === null ? "" : ` subagent: ${truncate(sanitize(ask.subagent), Math.max(12, Math.floor(columns / 3)))} `
   const title = truncate(sanitize(question.title), Math.max(10, columns - 6 - textWidth(who)))
@@ -132,8 +178,17 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
     .split("\n")
     .filter((line) => line.trim() !== "")
   const toolName = state.tool?.name ?? null
-  const what: Span[][] = subject.length === 0 ? [] : wrapLine([span("  "), span(toolName === null ? "" : `${toolName}  `, undefined, { bold: true }), span(subject[0]!, "accent")], columns, [span("    ")]).slice(0, 2)
-  if (subject.length > 1) what.push([span(`    … and ${plural(subject.length - 1, "more line")}`, "dim")])
+  // A tool call's subject is on its row in the conversation too, so two lines of it do here. A command the user is
+  // asked to let run is nowhere else: all of it, or its beginning and where the whole of it is.
+  let what: Span[][]
+  if (state.whole) {
+    what = commandLines(state, columns)
+    const room = Math.max(1, rows - fixedRows(state, columns))
+    if (what.length > room) what = [...what.slice(0, Math.max(0, room - 1)), [span(`  … ${plural(what.length - Math.max(0, room - 1), "more line")} of the command do not fit here: the whole of it is printed above, to its end`, "warn")]]
+  } else {
+    what = subject.length === 0 ? [] : wrapLine([span("  "), span(toolName === null ? "" : `${toolName}  `, undefined, { bold: true }), span(subject[0]!, "accent")], columns, [span("    ")]).slice(0, 2)
+    if (subject.length > 1) what.push([span(`    … and ${plural(subject.length - 1, "more line")}`, "dim")])
+  }
   // An MCP call: the title names the server's tool; what the user decides on is what would leave the machine.
   const sent = toolName === "mcp_call" && state.tool?.input !== undefined ? mcpArguments(state.tool.input) : null
   if (sent !== null) what.push(...wrapLine([span("  sends: ", "dim"), span(sanitize(sent))], columns, [span("    ")]).slice(0, 4))
@@ -143,19 +198,7 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
   const runLine = ask.then.kind === "run" && !needs.some((need) => need.includes("command")) ? [] : [runs]
   const details = question.details.flatMap((detail) => wrapLine([span(`  ${sanitize(detail)}`, "dim")], columns, [span("  ")]))
 
-  const choiceLines: Span[][] = []
-  if (state.note === null)
-    state.items.forEach((item, index) => {
-      const chosen = state.focused && index === state.index
-      const line: Span[] = [span(chosen ? "› " : "  ", "accent"), span(`[${item.key}] `, "dim"), span(item.label, chosen ? "selected" : undefined, { bold: chosen }), span(item.remembers === null ? "" : `  remembers ${item.remembers}`, "dim")]
-      choiceLines.push(...wrapLine(line, columns, [span("        ")]).slice(0, 2))
-    })
-  else {
-    choiceLines.push([span("  Don't allow. Your note to the agent:", "warn")])
-    const shown = state.note.length === 0 ? "" : state.note
-    const room = inner - 4
-    choiceLines.push([span("  › ", "accent"), span(textWidth(shown) > room ? `…${shown.slice(-(room - 1))}` : shown), span("▏", "accent")])
-  }
+  const choices = choiceLines(state, columns)
   const footer = state.note !== null
     ? [span(columns < 80 ? "  Enter sends the refusal · Esc back" : "  Enter sends the refusal with your note · Esc back to the choices · Ctrl-C stops the turn", "dim")]
     : state.focused
@@ -163,12 +206,12 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
       : [span("  Tab", "warn", { bold: true }), span(columns < 80 ? " answers it · your message stays" : " answers the question · your message stays as it is · Ctrl-C stops the turn", "warn")]
 
   // Never more than `rows`: the details go first, then the why and how, never the title, the subject or the choices.
-  const fixed = 1 + what.length + choiceLines.length + 1
+  const fixed = 1 + what.length + choices.length + 1
   const room = Math.max(0, rows - fixed)
   const optional = [...why, ...runLine, ...details]
   const body = optional.slice(0, room)
   if (body.length < optional.length && room > 0) body[body.length - 1] = [span(`  … ${plural(optional.length - body.length + 1, "more line")} (a wider or taller terminal shows them)`, "dim")]
-  return [head, ...what, ...body, ...choiceLines, footer].map((line) => clip(line, columns)).slice(0, Math.max(1, rows))
+  return [head, ...what, ...body, ...choices, footer].map((line) => clip(line, columns)).slice(0, Math.max(1, rows))
 }
 
 function runsText(then: { readonly network: boolean; readonly writableRoots: readonly string[] }): Span[] {

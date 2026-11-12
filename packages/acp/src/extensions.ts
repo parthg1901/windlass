@@ -425,6 +425,12 @@ export interface McpServerInfo {
   readonly transport: "stdio" | "http" | null
   /** The command with its arguments, or the address. */
   readonly target: string | null
+  /**
+   * The command and each of its arguments, one string each, so a client can show where one argument ends
+   * (`quotedCommand`). `null` for a server reached at an address, and when the definition a question is about
+   * is no longer the one in the file.
+   */
+  readonly argv: readonly string[] | null
   /** Tools it offers, once running. */
   readonly tools: number | null
   /** Tools the configuration's allow or deny list hides. */
@@ -588,6 +594,17 @@ export type CompactResult =
   | { readonly kind: "compacted"; readonly tokensBefore: number; readonly tokensAfter: number; readonly source: "model" | "repaired" | "fallback"; readonly detail: string | null }
   | { readonly kind: "nothing"; readonly message: string }
   | { readonly kind: "failed"; readonly message: string }
+
+/**
+ * A command and its arguments as one line a person can read without
+ * guessing where an argument ends: an argument of plain characters as it
+ * is, any other in single quotes (a single quote inside as `'\''`), the way
+ * a shell would take it back. `bash -c "a b"` given as three arguments reads
+ * `bash -c 'a b'`, never `bash -c a b`.
+ */
+export function quotedCommand(argv: readonly string[]): string {
+  return argv.map((argument) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(argument) ? argument : `'${argument.replace(/'/g, `'\\''`)}'`)).join(" ")
+}
 
 /** One item of the model's task list (the `todo` tool). */
 export interface TaskItem {

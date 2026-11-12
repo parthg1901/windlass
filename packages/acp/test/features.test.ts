@@ -90,6 +90,8 @@ describe("MCP servers", () => {
     const waiting = (await ext<McpStateResult>(harness, EXT.mcp, { sessionId })).servers[0]!
     expect(waiting).toMatchObject({ name: "theirs", state: "awaiting_approval", origin: "project", file, tools: null })
     expect(waiting.target).toContain("stdio-server.ts --only echo")
+    // Each argument on its own, for a client that shows where one ends.
+    expect(waiting.argv).toEqual([process.execPath, SERVER, "--only", "echo"])
     expect(waiting.question!.details.join(" ")).toContain("runs outside the sandbox")
     expect(waiting.question!.fingerprint).toMatch(/^[0-9a-f]{16}$/)
 

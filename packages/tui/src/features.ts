@@ -6,7 +6,7 @@
  */
 import type { ApprovalAsk } from "@windlass/acp/client"
 import type { McpServerInfo } from "@windlass/acp/extensions"
-import type { Line } from "./cli.ts"
+import { type Line, shownCommand } from "./cli.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
 const ROLES: Record<Line["tone"], Role | undefined> = { plain: undefined, dim: "dim", warn: "warn", error: "error", ok: "ok", bold: undefined, accent: "accent" }
@@ -37,7 +37,7 @@ export function mcpServerAsk(sessionId: string, server: McpServerInfo): Approval
     callId: "",
     question: {
       title: `Start the MCP server "${server.name}" that this project's configuration names?`,
-      subject: question?.subject ?? server.target ?? server.name,
+      subject: shownCommand(server.argv, question?.subject ?? server.target ?? server.name),
       details: [...(server.file === null ? [] : [`Defined in ${server.file}.`]), ...(question?.details ?? [])],
       choices: [
         { id: "once", label: "Start it for this project", approve: true, remembers: "that, for 30 days, for exactly this definition" },

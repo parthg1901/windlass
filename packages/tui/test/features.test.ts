@@ -27,6 +27,7 @@ const THEIRS: McpServerInfo = {
   state: "awaiting_approval",
   transport: "stdio",
   target: "tracker-mcp --stdio",
+  argv: ["tracker-mcp", "--stdio"],
   tools: null,
   hiddenTools: 0,
   error: null,

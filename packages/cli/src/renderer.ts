@@ -14,7 +14,7 @@ import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./featu
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
-import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
+import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapWhole } from "./text.ts"
 
 export interface Sink {
   event(event: EngineEvent): void
@@ -217,10 +217,10 @@ export class PrettyRenderer implements Sink {
     for (const item of lines) {
       const indent = " ".repeat(item.indent ?? 0)
       const tone = LINE_TONES[item.tone]
-      // A path or a command is one word that may be longer than the line: it is broken, never cut.
+      // A path or a command is one word that may be longer than the line: it is broken, never cut. A command the
+      // user is asked about is not even reflowed: every character of it is shown, in order, to its end.
       const room = Math.max(10, this.width - indent.length - 1)
-      for (const text of wrap(flatten(item.text), room).flatMap((part) => hardWrap(part, room)))
-        this.line("info", [seg(`${indent}${text}`, tone)])
+      for (const text of item.verbatim === true ? hardWrap(sanitize(item.text), room) : wrapWhole(flatten(item.text), room)) this.line("info", [seg(`${indent}${text}`, tone)])
     }
     this.drawStatus()
   }
@@ -946,8 +946,9 @@ export class PrettyRenderer implements Sink {
    */
   private headed(what: string, parts: readonly string[]): void {
     const [first = "", ...rest] = parts.map((part) => part.trim()).filter((part) => part !== "")
-    wrap(`${what}: ${first}`.trimEnd(), this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.unknown} ` : "  ", "yellow"), seg(line, "yellow")]))
-    for (const part of rest) for (const line of wrap(part, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
+    // In full: what the engine says may name a command or a path wider than the terminal, which is broken, never cut.
+    wrapWhole(`${what}: ${first}`.trimEnd(), this.width - 2).forEach((line, index) => this.line("info", [seg(index === 0 ? `${SYMBOL.unknown} ` : "  ", "yellow"), seg(line, "yellow")]))
+    for (const part of rest) for (const line of wrapWhole(part, this.width - 2)) this.line("info", [seg(`  ${line}`, "yellow")])
   }
 
   /**

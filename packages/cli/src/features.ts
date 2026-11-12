@@ -7,7 +7,7 @@
  */
 import { brand } from "@windlass/core"
 import { isUndone, turnsOf } from "@windlass/acp/turns"
-import type { McpServerInfo, McpStateResult, MemoryStateResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import { type McpServerInfo, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeListResult, type WakeSecretResult, quotedCommand } from "@windlass/acp/extensions"
 
 export type LineTone = "plain" | "dim" | "warn" | "error" | "ok" | "bold" | "accent"
 
@@ -16,6 +16,20 @@ export interface Line {
   readonly tone: LineTone
   /** Columns of indentation, kept when the line wraps. */
   readonly indent?: number
+  /**
+   * A command, word for word: shown whole, broken where the row ends and
+   * never reflowed at its spaces or cut, so that its end is as visible as
+   * its start.
+   */
+  readonly verbatim?: boolean
+}
+
+/** A command the user is asked about, as a line of its own: whole and word for word. */
+export const commandLine = (text: string, indent = 4): Line => ({ text, tone: "plain", indent, verbatim: true })
+
+/** A server's command as it is shown: each argument quoted where it needs it, so its boundaries are unambiguous. */
+export function shownCommand(argv: readonly string[] | null | undefined, joined: string): string {
+  return argv == null ? joined : quotedCommand(argv)
 }
 
 const line = (text: string, tone: LineTone = "plain", indent = 0): Line => ({ text, tone, indent })
@@ -62,7 +76,7 @@ export function mcpLines(state: McpStateResult): Line[] {
   for (const server of state.servers) {
     const tone: LineTone = server.state === "running" ? "ok" : server.state === "failed" || server.state === "awaiting_approval" ? "warn" : "dim"
     lines.push(line(`${server.name} · ${mcpStateWords(server)}`, tone, 2))
-    if (server.target !== null) lines.push(line(`${server.transport === "http" ? "reached at" : "runs"} ${server.target}`, "dim", 4))
+    if (server.target !== null) lines.push(line(`${server.transport === "http" ? "reached at" : "runs"} ${shownCommand(server.argv, server.target)}`, "dim", 4))
     lines.push(line(where(server), "dim", 4))
     if (server.error !== null) lines.push(line(`why: ${server.error}`, "warn", 4))
     if (server.state === "awaiting_approval") lines.push(line(`/mcp approve ${server.name} starts it for this project (you are asked first).`, "dim", 4))
@@ -75,7 +89,7 @@ export function mcpQuestionLines(server: McpServerInfo): Line[] {
   const question = server.question
   return [
     line(`? Start the MCP server "${server.name}" that this project's configuration names?`, "bold"),
-    line(question?.subject ?? server.target ?? "", "plain", 4),
+    commandLine(shownCommand(server.argv, question?.subject ?? server.target ?? "")),
     ...(server.file === null ? [] : [line(`defined in ${server.file}`, "dim", 2)]),
     ...(question?.details ?? []).map((detail) => line(detail, "dim", 2)),
     line("y  start it for this project and remember that (30 days, this exact definition: an edited one is asked about again)", "dim", 2),
