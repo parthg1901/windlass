@@ -104,7 +104,7 @@ describe("the whole flow, dry", () => {
     const result = await nightly(["--root", root, "--tasks", TASKS.join(","), "--baseline", baselineFile, "--recall-history", seeded("pass", [oracleRow({ engine: full(12) })])])
     expect(result.code).toBe(EXIT.pass)
     const summary = summaryOf(root)
-    expect(summary).toMatchObject({ verdict: "pass", exitCode: 0, errors: [], gate: { verdict: "pass", regressions: [], inconclusive: [] }, recall: { status: "ok" } })
+    expect(summary).toMatchObject({ verdict: "pass", exitCode: 0, errors: [], gate: { verdict: "pass", regressions: [], warnings: [], inconclusive: [] }, recall: { status: "ok" } })
     expect(summary.tasks[0]!.baseline).toEqual({ runs: 3, passes: 0, passRate: 0 })
     expect(readFileSync(join(root, published(root)[0]!, "summary.md"), "utf8")).toContain("PASS (exit 0)")
   }, 240_000)

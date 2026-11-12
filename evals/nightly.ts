@@ -102,7 +102,7 @@ export interface NightlySummary {
   readonly errors: readonly string[]
   readonly tasks: readonly TaskLine[]
   readonly totals: { readonly runs: number; readonly passed: number; readonly passRate: number; readonly baselinePassRate: number | null } | null
-  readonly gate: { readonly verdict: GateResult["verdict"]; readonly exitCode: number; readonly regressions: readonly string[]; readonly inconclusive: readonly string[]; readonly passedChecks: number } | null
+  readonly gate: { readonly verdict: GateResult["verdict"]; readonly exitCode: number; readonly regressions: readonly string[]; readonly warnings: readonly string[]; readonly inconclusive: readonly string[]; readonly passedChecks: number } | null
   readonly cache: {
     readonly cachedShare: number | null
     readonly classified: number
@@ -245,6 +245,8 @@ async function locked(options: NightlyOptions, deps: NightlyDeps) {
             verdict: gated.verdict,
             exitCode: gated.exitCode,
             regressions: gated.findings.filter((finding) => finding.level === "fail" || finding.level === "regression").map((finding) => `${finding.level.toUpperCase()} ${finding.rule} ${finding.scope}: ${finding.message}`),
+            // Cost above a baseline with one batch: shown, not part of the verdict.
+            warnings: gated.findings.filter((finding) => finding.level === "warning").map((finding) => `${finding.rule} ${finding.scope}: ${finding.message}`),
             inconclusive: gated.findings.filter((finding) => finding.level === "no-data" || finding.level === "unchecked").map((finding) => `${finding.rule} ${finding.scope}: ${finding.message}`),
             passedChecks: gated.passedChecks,
           },
@@ -388,6 +390,10 @@ export function renderSummary(summary: NightlySummary): string {
   ]
   if (summary.errors.length > 0) lines.push("", "## Errors", ...summary.errors.map((error) => `- ${error}`))
   if (summary.gate !== null && summary.gate.regressions.length > 0) lines.push("", "## Regressions", ...summary.gate.regressions.map((line) => `- ${line}`))
+  if (summary.gate !== null && summary.gate.warnings.length > 0) {
+    lines.push("", "## Warnings", ...summary.gate.warnings.slice(0, 10).map((line) => `- ${line}`))
+    if (summary.gate.warnings.length > 10) lines.push(`- ... and ${summary.gate.warnings.length - 10} more (gate.txt)`)
+  }
   if (summary.gate !== null && summary.gate.inconclusive.length > 0) {
     lines.push("", "## Not enough data", ...summary.gate.inconclusive.slice(0, 5).map((line) => `- ${line}`))
     if (summary.gate.inconclusive.length > 5) lines.push(`- ... and ${summary.gate.inconclusive.length - 5} more (gate.txt)`)
