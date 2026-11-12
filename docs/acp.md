@@ -178,8 +178,7 @@ A client tells the two apart by `_meta["windlass"]`: `approval` or `plan`.
 - Images and audio in prompts (`promptCapabilities.image` is false), and binary embedded resources.
 - MCP servers: the ones a client passes in `session/new` are ignored, with a line in the log.
 - The client's file system and terminal methods (`fs/*`, `terminal/*`): tools run inside the agent.
-- Session modes, plans, slash commands (`available_commands_update`), `logout`, additional directories, and system
-  prompt overrides.
+- Session modes, plans, `logout`, additional directories, and system prompt overrides.
 - A subagent's history on `session/load`: what a parent forwards is not stored in its log, so a loaded session shows
   its `subagent` calls and their results only. The subagent's own log is `_windlass/events` of its session (the
   TUI reads it when such a row is expanded).
@@ -231,7 +230,10 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | An edit that got diagnostics: how many, from which server | `tool.settled`'s `diagnostics`; for other clients `_meta["windlass/diagnostics"]` on the settled call |
 | `/skills` | `_windlass/skills` |
 | `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_windlass/wakeups`, `_windlass/wake_cancel`, `_windlass/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
-| `/memory`, `/remember`, `/forget` | `_windlass/memory`, `_windlass/memory_change` |
+| `/memory`, `/remember`, `/forget`; a note written before the first message, kept and saved once the session has started | `_windlass/memory`, `_windlass/memory_change` (`deferred`), the `baseline.set` event |
+| A question about a project's hook, language server or MCP server put before a message is sent | `_windlass/hooks`, `_windlass/lsp`, `_windlass/mcp` read before `_windlass/steer`; the message goes after the answers |
+| The notice that a wake-up created in a one-prompt run will not fire there | `_windlass/wakeups` (`running: false`) after the `tool.settled` of `wake_create` |
+| `/name args` of a command file, its line in the transcript, the command files in `/help` and the palette | `_windlass/commands` (with the client's own commands as `builtins`), `_windlass/send_command`; the `command.expanded` event |
 | `/approval [ask\|auto\|full]` | `session/set_config_option` `approval`, then `_windlass/approval` for the mode in force |
 | `/diff` | `_windlass/diff` for the latest turn |
 | The sandbox marker on a command (`⊡`, `+network`, `+write <dir>`, "no sandbox") | `tool.started`'s `run.sandbox` in the events |
@@ -264,12 +266,12 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   same process (`{ kind: "memory", harness }`, for tests), and negotiates the harness's events
   (`events: true, updates: false`). It refuses a server that does not offer them, with a sentence.
 - A connection serves any number of sessions: `newSession`, `resolve`, `openSession` (load or resume),
-  `listSessions`, `listModels`, `listAgents`, `storedEvents`, `unarchive`. Listings never stop a server in use; `stop()` does.
+  `listSessions`, `listModels`, `listAgents`, `listCommands`, `storedEvents`, `unarchive`. Listings never stop a server in use; `stop()` does.
 - A `ClientSession` has `events` (typed harness events with `replay`) or `items` (the events and the session's
   notifications: turn endings, state, usage, taint, notices, MCP changes, in arrival order), `send` (steer or queue), `cancel`,
   `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `mcp`, `approveMcp`,
   `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `agents`, `setAgent`, `rename`,
-  `compact`, `close`. `offers(method)` says whether a server (of another version) has a method.
+  `compact`, `commands`, `expandCommand`, `sendCommand`, `close`. `offers(method)` says whether a server (of another version) has a method.
 - `fork(params)` (`_windlass/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
   (`_windlass/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
   `_windlass/replay_started` names it, so its `events` are the progress and its `cancel()` ends the replay; the
@@ -289,7 +291,7 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
 ## Extensions
 
 Advertised in `initialize` as `agentCapabilities._meta["windlass"] = { methods, notifications, promptMeta,
-clientMeta, openMeta, permissionRequests }`.
+commands, clientMeta, openMeta, permissionRequests }`.
 
 **Full fidelity: the harness's own events.** A client that renders the harness's events itself (the CLI does) asks
 for them in `initialize`:
@@ -714,16 +716,63 @@ pending and ended. Each is `{ id, trigger, description, state, nextAt, fired, ma
 address and the secret that signs its requests, for the user. It is in no event, notification or log: only in this
 answer. `secret: null` with `message` for another trigger or an unknown wake-up.
 
-**`_windlass/memory`** (request) → `{ sessionId, enabled, off, notes, pending, problems, review, paths }`. With
-memory off (`enabled: false`), `off` says why and how to turn it on. Otherwise `notes` are the notes in force and the
+**`_windlass/memory`** (request) → `{ sessionId, enabled, off, startsWithFirstTurn?, notes, pending, problems,
+review, paths }`. With memory off (`enabled: false`), `off` says why and how to turn it on;
+`startsWithFirstTurn: true` says it is on in the configuration and starts with this session's first turn, which has
+not begun (a session's notes are read then). Otherwise `notes` are the notes in force and the
 lapsed or superseded ones (`{ id, kind, scope, text, state, author, quote, created, confirmed, expires }`), `pending`
 the ones waiting for the user's confirmation (with why, and `decisions`), `problems` the note files that are not
 valid, `review` what to look at (`reviewReport`), `paths` the two directories of notes.
 
 **`_windlass/memory_change`** (request) `{ sessionId, action, text?, scope?, kind?, id?, reason? }` → `{ ok, id,
-message }`: the user's own change. `remember` saves `text` as a note written by the user (`scope` `project` by
-default, or `user`); `retract`, `confirm`, `reject` and `renew` act on the note `id`. `message` says what happened,
-or why nothing did.
+message, deferred? }`: the user's own change. `remember` saves `text` as a note written by the user (`scope`
+`project` by default, or `user`); `retract`, `confirm`, `reject` and `renew` act on the note `id`. `message` says
+what happened, or why nothing did: without memory it is the sentence `_windlass/memory` gives as `off`. A `remember`
+before the session's first turn, with memory on in the configuration, answers `{ ok: false, deferred: true }`:
+nothing is wrong with the note and nothing is saved yet. The client keeps it and sends it again once the session
+has started (its `baseline.set` event), so a note is never dropped; both interfaces do, and say what became of it.
+
+### Slash commands
+
+A slash command is a Markdown file of the user's or the project's whose text, with what was typed after its name put
+in, is sent as the user's message (`packages/core/src/commands/README.md` has the format and where the files live).
+Nothing in a file is run or read when it is used. The server offers them three ways.
+
+**The protocol's own way.** After `session/new` (right after its answer) and `session/load`, and again before a
+prompt is admitted when the files changed, the server sends a `session/update` of kind `available_commands_update`:
+`availableCommands: [{ name, description, input?: { hint }, _meta: { "windlass": { path, scope, agent } } }]`.
+A `session/prompt` whose text is `/name args` is then expanded by the server: the file's text is admitted as the
+user's message and the turn runs as for any prompt. A name no file has is refused with invalid-params and the
+sentence to show (`There is no command /deplyo. Did you mean /deploy? To send it to the model as text, start it
+with //.`); nothing is admitted and no request is sent. `//text` sends the text `/text`; a first word that cannot be
+a command's name (`/usr/bin/env is missing`) is an ordinary prompt. `agentCapabilities._meta["windlass"].commands`
+is `true` on a server that does this. A client with commands of its own runs those before it sends.
+
+**`_windlass/commands`** (request) `{ sessionId }` or `{ cwd }`, with `builtins?: [{ name, aliases? }]` (the
+client's own commands) → `{ available, commands, problems }`. `commands` are the files by name (`{ name,
+description, argumentHint, agent, path, scope, hiddenBy }`; `scope` is `project`, `config` or `user`; `hiddenBy`
+names the client's command that takes the name, when one does). `problems` (`{ path, severity, reason, name }`) are
+the files that cannot be used (`skipped`), the ones a nearer file or a client's command hides (`shadowed`) and the
+ones used although something in them is not read (`warning`). `available: false`: this engine offers none.
+
+**`_windlass/expand_command`** (request) `{ sessionId, name, args, builtins? }` → what `/name args` would send,
+without sending it: `{ kind: "command", command, text, missing, unused, appended, unsupported, notes }`, or
+`{ kind: "builtin", name }`, `{ kind: "broken", name, message }`, `{ kind: "unknown", name, suggestions, message }`
+(the close names of the client's commands and of the files), `{ kind: "unavailable", message }`. `missing` are the
+positions the file uses that were not given (each is empty in the text); `unsupported` is what another harness would
+run or read at that point and this one leaves in the text as written (`{ kind: "shell" | "include", text, line,
+reason }`).
+
+**`_windlass/send_command`** (request) `{ sessionId, name, args, delivery?, maxSteps?, builtins? }` →
+`{ messageId, command, missing, unused, appended, unsupported, notes }`: the command is expanded and admitted as the
+user's message, answered once admitted (as `_windlass/steer` is). The log records which file produced the message:
+the `command.expanded` event follows the `inbox.enqueued` at once, with `{ messageId, name, path, scope,
+fingerprint, arguments, missing, unsupported }`. Refused with invalid-params (`reason: "invalid_request"`) and the
+sentence to show, with nothing admitted, when no file has the name, the file cannot be used, the name is one of
+`builtins`, or the agent the file names does not exist.
+
+A client that takes the standard updates is shown such a message as `user_message_chunk` with its text and
+`_meta["windlass/command"] = { name, arguments, path, scope, missing, unsupported }`.
 
 ## Trying it without an editor
 
