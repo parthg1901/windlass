@@ -1,267 +1,1252 @@
 {
-  "note": "27 tasks, 3 repeats, after the engine fixes and the final tool list",
+  "note": "6 repeats per task over 2 batches.",
   "configuration": {
     "model": "gpt-6-luna",
     "effort": "low"
   },
   "date": "2026-11-12",
-  "commit": "d3d80a1a4251c467f3350e91c80e0f56cbd22e27",
-  "repeats": 3,
+  "commit": "93721d519ca456b81d57c6defa2bd9567efc7f97",
+  "repeats": 6,
   "sources": [
-    "baseline-run"
+    "batch-1",
+    "batch-2"
+  ],
+  "batches": [
+    {
+      "source": "batch-1",
+      "startedAt": "2026-11-12T20:16:32.153Z",
+      "runs": 81
+    },
+    {
+      "source": "batch-2",
+      "startedAt": "2026-11-12T22:08:32.268Z",
+      "runs": 81
+    }
   ],
   "summary": {
-    "runs": 81,
-    "passes": 69,
-    "passRate": 0.8518518518518519,
-    "medianSteps": 8,
-    "medianWallMs": 33882,
-    "medianInputTokens": 51921,
-    "cachedShare": 0.8320300953916432
+    "runs": 162,
+    "passes": 141,
+    "passRate": 0.8703703703703703,
+    "medianSteps": 9,
+    "medianWallMs": 32694.5,
+    "medianInputTokens": 53901,
+    "cachedShare": 0.8606187034303869
   },
   "tasks": {
     "add-feature": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
       "medianSteps": 8,
-      "medianWallMs": 35053,
-      "medianInputTokens": 41248,
-      "cachedShare": 0.8684966626884144
+      "medianWallMs": 30173.5,
+      "medianInputTokens": 41009.5,
+      "cachedShare": 0.8387741450644557,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            7,
+            8,
+            8
+          ],
+          "inputTokens": [
+            36987,
+            40878,
+            41206
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 40878
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            8,
+            8,
+            8
+          ],
+          "inputTokens": [
+            40961,
+            41058,
+            41092
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 41058
+        }
+      ]
     },
     "agents-md-rule": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 8,
-      "medianWallMs": 28077,
-      "medianInputTokens": 42851,
-      "cachedShare": 0.7540426996706383
+      "medianSteps": 9.5,
+      "medianWallMs": 31791,
+      "medianInputTokens": 50558.5,
+      "cachedShare": 0.8188161772911374,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            8,
+            8,
+            12
+          ],
+          "inputTokens": [
+            42014,
+            42190,
+            64582
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 42190
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            9,
+            10,
+            10
+          ],
+          "inputTokens": [
+            47576,
+            53541,
+            54771
+          ],
+          "medianSteps": 10,
+          "medianInputTokens": 53541
+        }
+      ]
     },
     "answer-question": {
-      "runs": 3,
-      "passes": 3,
-      "passRate": 1,
+      "runs": 6,
+      "passes": 5,
+      "passRate": 0.8333333333333334,
       "medianSteps": 4,
-      "medianWallMs": 15359,
-      "medianInputTokens": 20073,
-      "cachedShare": 0.6199424129953565
+      "medianWallMs": 13535.5,
+      "medianInputTokens": 20392,
+      "cachedShare": 0.848787355218532,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            4,
+            4,
+            4
+          ],
+          "inputTokens": [
+            19546,
+            19638,
+            20354
+          ],
+          "medianSteps": 4,
+          "medianInputTokens": 19638
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            4,
+            4,
+            5
+          ],
+          "inputTokens": [
+            20430,
+            20482,
+            24566
+          ],
+          "medianSteps": 4,
+          "medianInputTokens": 20482
+        }
+      ]
     },
     "api-report-check": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 10,
-      "medianWallMs": 38598,
-      "medianInputTokens": 53594,
-      "cachedShare": 0.8094383420681073
+      "medianSteps": 11.5,
+      "medianWallMs": 37811.5,
+      "medianInputTokens": 61676.5,
+      "cachedShare": 0.87015684671862,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            9,
+            10,
+            12
+          ],
+          "inputTokens": [
+            47797,
+            52965,
+            64712
+          ],
+          "medianSteps": 10,
+          "medianInputTokens": 52965
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            11,
+            12,
+            12
+          ],
+          "inputTokens": [
+            58641,
+            64990,
+            65700
+          ],
+          "medianSteps": 12,
+          "medianInputTokens": 64990
+        }
+      ]
     },
     "audit-every-handler": {
-      "runs": 3,
+      "runs": 6,
       "passes": 3,
-      "passRate": 1,
-      "medianSteps": 16,
-      "medianWallMs": 115617,
-      "medianInputTokens": 180891,
-      "cachedShare": 0.8081598292524267
+      "passRate": 0.5,
+      "medianSteps": 11,
+      "medianWallMs": 70024.5,
+      "medianInputTokens": 142475.5,
+      "cachedShare": 0.8350745209717624,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 1,
+          "steps": [
+            6,
+            9,
+            13
+          ],
+          "inputTokens": [
+            60928,
+            121724,
+            163227
+          ],
+          "medianSteps": 9,
+          "medianInputTokens": 121724
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            7,
+            31,
+            34
+          ],
+          "inputTokens": [
+            74999,
+            367704,
+            430605
+          ],
+          "medianSteps": 31,
+          "medianInputTokens": 367704
+        }
+      ]
     },
     "config-edits": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 5,
-      "medianWallMs": 19072,
-      "medianInputTokens": 24748,
-      "cachedShare": 0.7669054168141833
+      "medianSteps": 6,
+      "medianWallMs": 20579.5,
+      "medianInputTokens": 29540.5,
+      "cachedShare": 0.8160733102068362,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            5,
+            6,
+            7
+          ],
+          "inputTokens": [
+            24768,
+            29679,
+            34566
+          ],
+          "medianSteps": 6,
+          "medianInputTokens": 29679
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            4,
+            6,
+            6
+          ],
+          "inputTokens": [
+            19345,
+            29402,
+            31166
+          ],
+          "medianSteps": 6,
+          "medianInputTokens": 29402
+        }
+      ]
     },
     "crashing-script": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 6,
-      "medianWallMs": 22975,
-      "medianInputTokens": 30295,
-      "cachedShare": 0.7620472539118509
+      "medianSteps": 7,
+      "medianWallMs": 21981.5,
+      "medianInputTokens": 35672,
+      "cachedShare": 0.818342151675485,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            6,
+            7,
+            7
+          ],
+          "inputTokens": [
+            30263,
+            35677,
+            35725
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 35677
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            7,
+            7,
+            7
+          ],
+          "inputTokens": [
+            35641,
+            35667,
+            35683
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 35667
+        }
+      ]
     },
     "due-dates-feature": {
-      "runs": 3,
-      "passes": 1,
-      "passRate": 0.3333333333333333,
-      "medianSteps": 18,
-      "medianWallMs": 80247,
-      "medianInputTokens": 131338,
-      "cachedShare": 0.875259451751609
+      "runs": 6,
+      "passes": 5,
+      "passRate": 0.8333333333333334,
+      "medianSteps": 19,
+      "medianWallMs": 87037,
+      "medianInputTokens": 142233,
+      "cachedShare": 0.886954087791979,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            9,
+            11,
+            19
+          ],
+          "inputTokens": [
+            63528,
+            76772,
+            144344
+          ],
+          "medianSteps": 11,
+          "medianInputTokens": 76772
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            19,
+            20,
+            31
+          ],
+          "inputTokens": [
+            140122,
+            159566,
+            294541
+          ],
+          "medianSteps": 20,
+          "medianInputTokens": 159566
+        }
+      ]
     },
     "fix-failing-test": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 7,
-      "medianWallMs": 19909,
-      "medianInputTokens": 37167,
-      "cachedShare": 0.8408545641494345
+      "medianSteps": 5.5,
+      "medianWallMs": 18443.5,
+      "medianInputTokens": 27713,
+      "cachedShare": 0.7993635335849688,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            6,
+            6,
+            6
+          ],
+          "inputTokens": [
+            29988,
+            30789,
+            31153
+          ],
+          "medianSteps": 6,
+          "medianInputTokens": 30789
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            5,
+            5,
+            5
+          ],
+          "inputTokens": [
+            24387,
+            25418,
+            25438
+          ],
+          "medianSteps": 5,
+          "medianInputTokens": 25418
+        }
+      ]
     },
     "follow-a-skill": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 14,
-      "medianWallMs": 41948,
-      "medianInputTokens": 83922,
-      "cachedShare": 0.8478308778516916
+      "medianSteps": 15.5,
+      "medianWallMs": 48842,
+      "medianInputTokens": 94589.5,
+      "cachedShare": 0.8887749054727058,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            13,
+            16,
+            17
+          ],
+          "inputTokens": [
+            79792,
+            99934,
+            116623
+          ],
+          "medianSteps": 16,
+          "medianInputTokens": 99934
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            13,
+            15,
+            17
+          ],
+          "inputTokens": [
+            83522,
+            89245,
+            107966
+          ],
+          "medianSteps": 15,
+          "medianInputTokens": 89245
+        }
+      ]
     },
     "follow-up-change": {
-      "runs": 3,
-      "passes": 3,
-      "passRate": 1,
-      "medianSteps": 14,
-      "medianWallMs": 54164,
-      "medianInputTokens": 73970,
-      "cachedShare": 0.8612279226240538
+      "runs": 6,
+      "passes": 5,
+      "passRate": 0.8333333333333334,
+      "medianSteps": 11,
+      "medianWallMs": 44599.5,
+      "medianInputTokens": 57286.5,
+      "cachedShare": 0.8578962524632558,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            12,
+            12,
+            17
+          ],
+          "inputTokens": [
+            63204,
+            63465,
+            101130
+          ],
+          "medianSteps": 12,
+          "medianInputTokens": 63465
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            5,
+            10,
+            10
+          ],
+          "inputTokens": [
+            23679,
+            51359,
+            51369
+          ],
+          "medianSteps": 10,
+          "medianInputTokens": 51359
+        }
+      ]
     },
     "frozen-api": {
-      "runs": 3,
-      "passes": 3,
-      "passRate": 1,
-      "medianSteps": 8,
-      "medianWallMs": 23234,
-      "medianInputTokens": 40339,
-      "cachedShare": 0.875813276113165
+      "runs": 6,
+      "passes": 5,
+      "passRate": 0.8333333333333334,
+      "medianSteps": 7.5,
+      "medianWallMs": 21251.5,
+      "medianInputTokens": 37729,
+      "cachedShare": 0.9131965585704831,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            7,
+            9,
+            11
+          ],
+          "inputTokens": [
+            34765,
+            45600,
+            56337
+          ],
+          "medianSteps": 9,
+          "medianInputTokens": 45600
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            3,
+            7,
+            8
+          ],
+          "inputTokens": [
+            14490,
+            34911,
+            40547
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 34911
+        }
+      ]
     },
     "generated-file-trap": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 10,
-      "medianWallMs": 42331,
-      "medianInputTokens": 65711,
-      "cachedShare": 0.8260432142205542
+      "medianSteps": 8,
+      "medianWallMs": 33874.5,
+      "medianInputTokens": 48096.5,
+      "cachedShare": 0.8616811025575903,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            8,
+            8,
+            13
+          ],
+          "inputTokens": [
+            45208,
+            47597,
+            86119
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 47597
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            8,
+            8,
+            11
+          ],
+          "inputTokens": [
+            47796,
+            48397,
+            67432
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 48397
+        }
+      ]
     },
     "large-log": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
       "medianSteps": 4,
-      "medianWallMs": 13814,
-      "medianInputTokens": 24373,
-      "cachedShare": 0.6390764401655835
+      "medianWallMs": 14423,
+      "medianInputTokens": 38589,
+      "cachedShare": 0.7401967739591155,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            3,
+            4,
+            4
+          ],
+          "inputTokens": [
+            19306,
+            51342,
+            74794
+          ],
+          "medianSteps": 4,
+          "medianInputTokens": 51342
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            4,
+            5,
+            5
+          ],
+          "inputTokens": [
+            19359,
+            25836,
+            98324
+          ],
+          "medianSteps": 5,
+          "medianInputTokens": 25836
+        }
+      ]
     },
     "long-file-search": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
       "medianSteps": 7,
-      "medianWallMs": 25131,
-      "medianInputTokens": 142514,
-      "cachedShare": 0.8011567262845795
+      "medianWallMs": 22499,
+      "medianInputTokens": 116924,
+      "cachedShare": 0.7974875047995353,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            6,
+            7,
+            7
+          ],
+          "inputTokens": [
+            59071,
+            115876,
+            117972
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 115876
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            6,
+            8,
+            8
+          ],
+          "inputTokens": [
+            60716,
+            120237,
+            135562
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 120237
+        }
+      ]
     },
     "nested-agents-md": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 11,
-      "medianWallMs": 61111,
-      "medianInputTokens": 73214,
-      "cachedShare": 0.870132463555881
+      "medianSteps": 14.5,
+      "medianWallMs": 63787,
+      "medianInputTokens": 97204.5,
+      "cachedShare": 0.9094745839677325,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            11,
+            15,
+            17
+          ],
+          "inputTokens": [
+            74146,
+            100781,
+            111958
+          ],
+          "medianSteps": 15,
+          "medianInputTokens": 100781
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            12,
+            14,
+            16
+          ],
+          "inputTokens": [
+            74967,
+            93628,
+            106075
+          ],
+          "medianSteps": 14,
+          "medianInputTokens": 93628
+        }
+      ]
     },
     "noisy-test-suite": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 7,
-      "medianWallMs": 37788,
-      "medianInputTokens": 47551,
-      "cachedShare": 0.8467524683663352
+      "medianSteps": 8,
+      "medianWallMs": 37654.5,
+      "medianInputTokens": 166537.5,
+      "cachedShare": 0.8381173916989071,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            6,
+            8,
+            8
+          ],
+          "inputTokens": [
+            44299,
+            125854,
+            208043
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 125854
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            7,
+            8,
+            9
+          ],
+          "inputTokens": [
+            48112,
+            207221,
+            446377
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 207221
+        }
+      ]
     },
     "not-a-bug": {
-      "runs": 3,
-      "passes": 1,
-      "passRate": 0.3333333333333333,
-      "medianSteps": 9,
-      "medianWallMs": 26477,
-      "medianInputTokens": 47899,
-      "cachedShare": 0.8317905563347359
+      "runs": 6,
+      "passes": 4,
+      "passRate": 0.6666666666666666,
+      "medianSteps": 6.5,
+      "medianWallMs": 28777.5,
+      "medianInputTokens": 35649.5,
+      "cachedShare": 0.8063609237827489,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            6,
+            7,
+            9
+          ],
+          "inputTokens": [
+            31167,
+            38053,
+            47299
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 38053
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 1,
+          "steps": [
+            6,
+            6,
+            9
+          ],
+          "inputTokens": [
+            31923,
+            33246,
+            50228
+          ],
+          "medianSteps": 6,
+          "medianInputTokens": 33246
+        }
+      ]
     },
     "options-refactor": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 18,
-      "medianWallMs": 61677,
-      "medianInputTokens": 119345,
-      "cachedShare": 0.8319785089950362
+      "medianSteps": 15,
+      "medianWallMs": 54773,
+      "medianInputTokens": 102151,
+      "cachedShare": 0.8960956136898499,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            14,
+            14,
+            21
+          ],
+          "inputTokens": [
+            87729,
+            88891,
+            130194
+          ],
+          "medianSteps": 14,
+          "medianInputTokens": 88891
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            15,
+            15,
+            16
+          ],
+          "inputTokens": [
+            98138,
+            106164,
+            111389
+          ],
+          "medianSteps": 15,
+          "medianInputTokens": 106164
+        }
+      ]
     },
     "project-checks": {
-      "runs": 3,
-      "passes": 3,
+      "runs": 6,
+      "passes": 6,
       "passRate": 1,
-      "medianSteps": 7,
-      "medianWallMs": 23492,
-      "medianInputTokens": 40512,
-      "cachedShare": 0.8401515215428875
+      "medianSteps": 9,
+      "medianWallMs": 29552.5,
+      "medianInputTokens": 48143,
+      "cachedShare": 0.8572191567506078,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            9,
+            9,
+            9
+          ],
+          "inputTokens": [
+            48017,
+            48269,
+            48297
+          ],
+          "medianSteps": 9,
+          "medianInputTokens": 48269
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            9,
+            9,
+            9
+          ],
+          "inputTokens": [
+            45936,
+            45936,
+            51882
+          ],
+          "medianSteps": 9,
+          "medianInputTokens": 45936
+        }
+      ]
     },
     "read-chart-image": {
-      "runs": 3,
-      "passes": 3,
-      "passRate": 1,
-      "medianSteps": 6,
-      "medianWallMs": 24061,
-      "medianInputTokens": 29582,
-      "cachedShare": 0.8179956224013502
+      "runs": 6,
+      "passes": 4,
+      "passRate": 0.6666666666666666,
+      "medianSteps": 5.5,
+      "medianWallMs": 22920,
+      "medianInputTokens": 27606.5,
+      "cachedShare": 0.7879864829862722,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            4,
+            6,
+            7
+          ],
+          "inputTokens": [
+            19443,
+            30404,
+            35206
+          ],
+          "medianSteps": 6,
+          "medianInputTokens": 30404
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            5,
+            5,
+            6
+          ],
+          "inputTokens": [
+            24337,
+            24809,
+            31814
+          ],
+          "medianSteps": 5,
+          "medianInputTokens": 24809
+        }
+      ]
     },
     "reconcile-several-bugs": {
-      "runs": 3,
-      "passes": 2,
-      "passRate": 0.6666666666666666,
-      "medianSteps": 13,
-      "medianWallMs": 52020,
-      "medianInputTokens": 90546,
-      "cachedShare": 0.8579294712922632
+      "runs": 6,
+      "passes": 3,
+      "passRate": 0.5,
+      "medianSteps": 11.5,
+      "medianWallMs": 47987.5,
+      "medianInputTokens": 84664.5,
+      "cachedShare": 0.8721071289764095,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 1,
+          "steps": [
+            5,
+            10,
+            10
+          ],
+          "inputTokens": [
+            21089,
+            65693,
+            67640
+          ],
+          "medianSteps": 10,
+          "medianInputTokens": 65693
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            13,
+            14,
+            15
+          ],
+          "inputTokens": [
+            101689,
+            107038,
+            146293
+          ],
+          "medianSteps": 14,
+          "medianInputTokens": 107038
+        }
+      ]
     },
     "rename-across-files": {
-      "runs": 3,
-      "passes": 1,
-      "passRate": 0.3333333333333333,
-      "medianSteps": 16,
-      "medianWallMs": 83576,
-      "medianInputTokens": 146508,
-      "cachedShare": 0.8902115205971572
+      "runs": 6,
+      "passes": 6,
+      "passRate": 1,
+      "medianSteps": 17.5,
+      "medianWallMs": 83620.5,
+      "medianInputTokens": 148472.5,
+      "cachedShare": 0.9113334086033645,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            12,
+            16,
+            18
+          ],
+          "inputTokens": [
+            88475,
+            143881,
+            153064
+          ],
+          "medianSteps": 16,
+          "medianInputTokens": 143881
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            17,
+            19,
+            22
+          ],
+          "inputTokens": [
+            143248,
+            167387,
+            189645
+          ],
+          "medianSteps": 19,
+          "medianInputTokens": 167387
+        }
+      ]
     },
     "rename-function": {
-      "runs": 3,
-      "passes": 3,
-      "passRate": 1,
-      "medianSteps": 12,
-      "medianWallMs": 35583,
-      "medianInputTokens": 60751,
-      "cachedShare": 0.8174548178668415
+      "runs": 6,
+      "passes": 5,
+      "passRate": 0.8333333333333334,
+      "medianSteps": 11.5,
+      "medianWallMs": 38873,
+      "medianInputTokens": 58097.5,
+      "cachedShare": 0.8901475699523703,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            8,
+            12,
+            12
+          ],
+          "inputTokens": [
+            40735,
+            60637,
+            60817
+          ],
+          "medianSteps": 12,
+          "medianInputTokens": 60637
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            10,
+            11,
+            13
+          ],
+          "inputTokens": [
+            54261,
+            55558,
+            69796
+          ],
+          "medianSteps": 11,
+          "medianInputTokens": 55558
+        }
+      ]
     },
     "retry-after-error": {
-      "runs": 3,
-      "passes": 2,
+      "runs": 6,
+      "passes": 4,
       "passRate": 0.6666666666666666,
-      "medianSteps": 8,
-      "medianWallMs": 22169,
-      "medianInputTokens": 40968,
-      "cachedShare": 0.7846104429137372
+      "medianSteps": 9,
+      "medianWallMs": 29357.5,
+      "medianInputTokens": 48279,
+      "cachedShare": 0.9050765247822958,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 1,
+          "steps": [
+            4,
+            7,
+            10
+          ],
+          "inputTokens": [
+            19750,
+            34373,
+            54527
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 34373
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            8,
+            13,
+            13
+          ],
+          "inputTokens": [
+            42031,
+            70776,
+            71716
+          ],
+          "medianSteps": 13,
+          "medianInputTokens": 70776
+        }
+      ]
     },
     "run-to-find-out": {
-      "runs": 3,
-      "passes": 1,
-      "passRate": 0.3333333333333333,
-      "medianSteps": 6,
-      "medianWallMs": 26049,
-      "medianInputTokens": 49043,
-      "cachedShare": 0.8478632478632478
+      "runs": 6,
+      "passes": 6,
+      "passRate": 1,
+      "medianSteps": 7.5,
+      "medianWallMs": 26585,
+      "medianInputTokens": 45525.5,
+      "cachedShare": 0.8739270850173508,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            7,
+            8,
+            10
+          ],
+          "inputTokens": [
+            40273,
+            46351,
+            54736
+          ],
+          "medianSteps": 8,
+          "medianInputTokens": 46351
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 3,
+          "steps": [
+            4,
+            7,
+            10
+          ],
+          "inputTokens": [
+            23633,
+            44700,
+            56288
+          ],
+          "medianSteps": 7,
+          "medianInputTokens": 44700
+        }
+      ]
     },
     "test-blames-wrong-file": {
-      "runs": 3,
-      "passes": 1,
+      "runs": 6,
+      "passes": 2,
       "passRate": 0.3333333333333333,
       "medianSteps": 16,
-      "medianWallMs": 58232,
-      "medianInputTokens": 108992,
-      "cachedShare": 0.817584860406277
+      "medianWallMs": 50363.5,
+      "medianInputTokens": 99332.5,
+      "cachedShare": 0.8952601288352443,
+      "batches": [
+        {
+          "source": "batch-1",
+          "runs": 3,
+          "passes": 2,
+          "steps": [
+            10,
+            13,
+            16
+          ],
+          "inputTokens": [
+            58919,
+            72491,
+            117213
+          ],
+          "medianSteps": 13,
+          "medianInputTokens": 72491
+        },
+        {
+          "source": "batch-2",
+          "runs": 3,
+          "passes": 0,
+          "steps": [
+            16,
+            16,
+            16
+          ],
+          "inputTokens": [
+            97537,
+            101128,
+            112031
+          ],
+          "medianSteps": 16,
+          "medianInputTokens": 101128
+        }
+      ]
     }
   }
 }
