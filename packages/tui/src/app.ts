@@ -494,6 +494,10 @@ export class App {
       this.recall(1)
       return handled()
     }
+    if (meta && (name === "pageup" || name === "pagedown")) {
+      this.conversation.selectTurn(name === "pageup" ? -1 : 1)
+      return handled()
+    }
     if (name === "pageup" || name === "pagedown") {
       this.conversation.page(name === "pageup" ? -1 : 1)
       return handled()
@@ -1090,6 +1094,7 @@ export class App {
       ["Ctrl-D", "leave, on an empty prompt"],
       ["PageUp, PageDown, wheel", "scroll; Esc or Ctrl-End follows the output again"],
       ["Alt-Up, Alt-Down", "select a tool call, thought or turn ending"],
+      ["Alt-PageUp, Alt-PageDown", "select the ending of the turn before or after"],
       ["Ctrl-O, click", "expand or collapse it (twice on a tool call: its full output)"],
       ["Ctrl-X", "stop the selected running tool call (or the only one running): the turn goes on"],
       ["Ctrl-P", "show or hide the session panel"],

@@ -129,6 +129,30 @@ export class ConversationView extends Renderable {
     return entry.row
   }
 
+  /**
+   * Moves the selection to the ending row of the turn before (-1) or after (1)
+   * the selected row, and scrolls it into view: with nothing selected, up is
+   * the latest turn's ending.
+   */
+  selectTurn(direction: 1 | -1): Row | null {
+    this.layout()
+    const endings = this.laid.filter((entry) => entry.row.kind === "outcome" && entry.height > 0)
+    if (endings.length === 0) return null
+    const at = this.laid.find((entry) => entry.row.id === this.selected)
+    const entry =
+      at === undefined
+        ? direction === -1
+          ? endings.at(-1)!
+          : endings[0]!
+        : direction === -1
+          ? (endings.findLast((candidate) => candidate.start < at.start) ?? endings[0]!)
+          : (endings.find((candidate) => candidate.start > at.start) ?? endings.at(-1)!)
+    this.selected = entry.row.id
+    this.reveal(entry)
+    this.requestRender()
+    return entry.row
+  }
+
   selectedRow(): Row | null {
     return this.selected === null ? null : (this.transcript.rows.find((row) => row.id === this.selected) ?? null)
   }

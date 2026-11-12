@@ -60,3 +60,43 @@ describe("turn endings", () => {
     expect(frame).toContain("no closing answer: The model returned an empty response twice after its work")
   })
 })
+
+describe("moving between turns", () => {
+  test("Alt-PageUp selects the ending of the turn before, Alt-PageDown the one after, over the rows between them", async () => {
+    const { session } = await open(130, 30)
+    // Three turns of several tool calls each: reaching an earlier ending with Alt-Up takes a key per call.
+    for (const turn of [1, 2, 3]) {
+      const calls = [1, 2, 3, 4, 5].flatMap((n) => [call(`a${turn}`, `c${turn}${n}`, "read", { path: `src/file${n}.ts` }), settle(`a${turn}`, `c${turn}${n}`, "success", "x")])
+      session.emit(started(`exe_${turn}`), event("step.started", { messageId: m(`a${turn}`), attempt: 1, model: "gpt-test" }), ...calls, event("step.ended", { messageId: m(`a${turn}`), finish: "stop", usage: null }), succeeded({ status: "not_configured" }, `exe_${turn}`))
+    }
+    await mounted!.settle()
+    const app = mounted!.app
+    const turnOf = () => {
+      const row = app.conversation.selectedRow()
+      return row?.kind === "outcome" ? row.turn : row?.kind ?? null
+    }
+    const altPage = (key: "\u001b[5;3~" | "\u001b[6;3~") => mounted!.setup.mockInput.pressKey(key)
+    altPage("\u001b[5;3~")
+    await mounted!.settle()
+    expect(turnOf()).toBe(3)
+    altPage("\u001b[5;3~")
+    await mounted!.settle()
+    expect(turnOf()).toBe(2)
+    expect(await mounted!.frame()).toMatch(/▌.*○ done · .*turn 2/)
+    altPage("\u001b[5;3~")
+    altPage("\u001b[5;3~")
+    await mounted!.settle()
+    expect(turnOf()).toBe(1)
+    altPage("\u001b[6;3~")
+    await mounted!.settle()
+    expect(turnOf()).toBe(2)
+    // From a tool call inside turn 3, up is the ending of turn 2 and down that of turn 3.
+    mounted!.setup.mockInput.pressArrow("down", { meta: true })
+    mounted!.setup.mockInput.pressArrow("down", { meta: true })
+    await mounted!.settle()
+    expect(turnOf()).toBe("tool")
+    altPage("\u001b[6;3~")
+    await mounted!.settle()
+    expect(turnOf()).toBe(3)
+  })
+})

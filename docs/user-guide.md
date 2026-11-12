@@ -332,7 +332,7 @@ worked counts as a message, so `/undo` goes back past it first.
 ## Reviewing a turn's changes
 
 In the full-screen interface `/review` opens the changes of a turn to comment on: the latest turn that ended, or
-the one whose ending row is selected (Alt-Up). `r` in the `/diff` reader opens the same view. It lists the changed
+the one whose ending row is selected (Alt-Up, or Alt-PageUp and Alt-PageDown from turn to turn). `r` in the `/diff` reader opens the same view. It lists the changed
 files, then shows each file's patch with the line numbers of the old and the new file, and a cursor on one line.
 
 | Key | What it does |
