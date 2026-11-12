@@ -17,6 +17,7 @@ import { escalationSchema } from "../approval/escalation.ts"
 import { interruptReasonOf } from "../interrupt.ts"
 import type { CommandSandbox } from "../sandbox/command.ts"
 import { OUTPUT_LIMITS, type OutputLimits, fitsLimits, renderCapped } from "../tool/cap.ts"
+import { redactingStream } from "../tool/redact-stream.ts"
 import type { Tool, ToolContext, ToolResult } from "../tool/tool.ts"
 import type { ToolOptions } from "./common.ts"
 
@@ -348,7 +349,11 @@ function guardGroup(pid: number): { release: () => void } {
 
 type OutputBuffer = ReturnType<typeof createOutputBuffer>
 
-/** Spills every byte (up to the limit) and keeps the first and last bytes, the byte counts and the line count. */
+/**
+ * Spills every byte (up to the limit) and keeps the first and last bytes, the byte counts and the line count.
+ * With the harness's redaction in the context, the output is redacted as it arrives, before any of that: the
+ * progress, the spill file, the counts and the text the model is shown all hold the redacted output.
+ */
 function createOutputBuffer(sink: Bun.FileSink, spillLimit: number, context: ToolContext) {
   const head = new Uint8Array(HEAD_KEEP)
   let headLength = 0
@@ -369,36 +374,45 @@ function createOutputBuffer(sink: Bun.FileSink, spillLimit: number, context: Too
     return out
   }
 
+  const take = (chunk: Uint8Array) => {
+    if (chunk.length === 0) return
+    if (spilled < spillLimit) {
+      const part = chunk.subarray(0, spillLimit - spilled)
+      sink.write(part)
+      spilled += part.length
+    }
+    if (headLength < HEAD_KEEP) {
+      const part = chunk.subarray(0, HEAD_KEEP - headLength)
+      head.set(part, headLength)
+      headLength += part.length
+    }
+    const recent = chunk.length > ring.length ? chunk.subarray(chunk.length - ring.length) : chunk
+    for (let offset = 0; offset < recent.length; ) {
+      const room = Math.min(ring.length - ringEnd, recent.length - offset)
+      ring.set(recent.subarray(offset, offset + room), ringEnd)
+      ringEnd = (ringEnd + room) % ring.length
+      offset += room
+    }
+    for (let index = chunk.indexOf(0x0a); index !== -1; index = chunk.indexOf(0x0a, index + 1)) newlines += 1
+    total += chunk.length
+    lastByte = chunk[chunk.length - 1]!
+    const now = performance.now()
+    if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
+      lastProgress = now
+      context.progress({ text: lastLines(tailBytes(4096), PROGRESS_LINES) })
+    }
+  }
+  const redacting = context.redact === undefined ? null : redactingStream({ redact: context.redact, ...(context.unfinishedSecret === undefined ? {} : { unfinishedSecret: context.unfinishedSecret }) }, take)
+
   return {
     append(chunk: Uint8Array) {
       if (closed || chunk.length === 0) return
-      if (spilled < spillLimit) {
-        const part = chunk.subarray(0, spillLimit - spilled)
-        sink.write(part)
-        spilled += part.length
-      }
-      if (headLength < HEAD_KEEP) {
-        const part = chunk.subarray(0, HEAD_KEEP - headLength)
-        head.set(part, headLength)
-        headLength += part.length
-      }
-      const recent = chunk.length > ring.length ? chunk.subarray(chunk.length - ring.length) : chunk
-      for (let offset = 0; offset < recent.length; ) {
-        const room = Math.min(ring.length - ringEnd, recent.length - offset)
-        ring.set(recent.subarray(offset, offset + room), ringEnd)
-        ringEnd = (ringEnd + room) % ring.length
-        offset += room
-      }
-      for (let index = chunk.indexOf(0x0a); index !== -1; index = chunk.indexOf(0x0a, index + 1)) newlines += 1
-      total += chunk.length
-      lastByte = chunk[chunk.length - 1]!
-      const now = performance.now()
-      if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
-        lastProgress = now
-        context.progress({ text: lastLines(tailBytes(4096), PROGRESS_LINES) })
-      }
+      if (redacting === null) take(chunk)
+      else redacting.write(chunk)
     },
     async close() {
+      if (closed) return
+      redacting?.end()
       closed = true
       await sink.end()
     },

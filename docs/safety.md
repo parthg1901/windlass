@@ -160,9 +160,14 @@ What the redaction misses:
 - environment values shorter than 8 characters, or values of variables whose names do not look like credentials;
 - secrets split across lines, or encoded (base64, URL encoding, hex), or quoted with escapes;
 - `Bearer`/`Basic` values without a digit, and a token glued to the next token with no separator;
-- a secret cut in two by the cap on long output;
-- the live progress line of a running command in the terminal, and the files that keep a long output in full
-  (in the session's temp directory): they hold what the command printed. What the model reads of them is redacted.
+- in a command's output, a secret in a line longer than 64 KB that falls where the line is passed on in parts, and
+  an environment value with a line break in it that arrives in parts.
+
+The same redaction covers what a running command shows while it runs and the files that keep a long output in full
+(in the session's temp directory): a command's output is redacted as it arrives, holding back the unfinished end of
+a line until it is complete, so a secret printed in two parts is replaced whole. Those files hold the redacted
+output, not what the command printed byte for byte (invalid UTF-8 is replaced too). Where long output is shortened,
+the cut never splits a placeholder.
 
 It also redacts too much sometimes: example keys in tests and documentation, identifiers that begin with `sk-`,
 JWTs that are not secret, and every occurrence of an environment value, including a harmless one.

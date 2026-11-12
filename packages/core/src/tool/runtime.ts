@@ -22,7 +22,7 @@ import { interruptReasonOf } from "../interrupt.ts"
 import { excerpt, parseArguments } from "./args.ts"
 import { OUTPUT_LIMITS, type OutputLimits, capOutput } from "./cap.ts"
 import { type SchemaCheck, compileSchema } from "./schema.ts"
-import type { AnyTool, PutBlob, SandboxRun, ToolContext, ToolResult, Truncation } from "./tool.ts"
+import type { AnyTool, PutBlob, SandboxRun, ToolContext, ToolProgress, ToolResult, Truncation } from "./tool.ts"
 
 /** Exactly the fields of the `tool.settled` event besides `messageId` and `callId`. */
 export interface Settlement<Outcome extends "success" | "error" | "not_started" | "effect_unknown"> {
@@ -138,13 +138,20 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     if (stopped !== null) return notStarted(stopped)
     if (decided?.kind === "refuse") return { kind: "denied", settlement: { outcome: "error", output: decided.output, truncation: null, attachments: [], display: null } }
     hooks.onStart?.()
-    const context = { ...call.context, putBlob: options.putBlob, ...(decided?.sandbox === undefined ? {} : { sandbox: decided.sandbox }) }
+    // With the harness's redaction, what a tool shows while it runs and the full text the cap keeps are redacted like its result.
+    const redacted = redactedText(call.context)
+    const context = {
+      ...call.context,
+      putBlob: options.putBlob,
+      ...(decided?.sandbox === undefined ? {} : { sandbox: decided.sandbox }),
+      ...(call.context.redact === undefined ? {} : { progress: (update: ToolProgress) => call.context.progress({ text: redacted(update.text) }) }),
+    }
     const ran = await execute(entry.tool, input.value, context)
     if (!ran.ok) return crashed(entry.tool, ran.error)
     const result = decided?.note === undefined ? ran : { ok: true as const, value: { ...ran.value, output: `${decided.note}\n\n${ran.value.output}` } }
     if (result.value.truncation !== null)
       return { kind: "completed", settlement: { ...settlementOf(result.value), outcome: result.value.status } }
-    const capped = await capOutput(result.value.output, call.context.spillDir ?? options.spillDir, limits)
+    const capped = await capOutput(redacted(result.value.output), call.context.spillDir ?? options.spillDir, limits)
     return {
       kind: "completed",
       settlement: { ...settlementOf(result.value), outcome: result.value.status, output: capped.output, truncation: capped.truncation },
@@ -228,6 +235,13 @@ function notStarted(reason: "user" | "shutdown"): ToolCallOutcome {
 
 function refused(reason: "unknown_tool" | "malformed_arguments" | "invalid_arguments", output: string): ToolCallOutcome {
   return { kind: "refused", reason, settlement: { outcome: "error", output, truncation: null, attachments: [], display: null } }
+}
+
+/** The context's redaction as text in, text out; the identity without one. */
+function redactedText(context: ToolCallContext): (text: string) => string {
+  const redact = context.redact
+  if (redact === undefined) return (text) => text
+  return (text) => redact(text).map((piece) => piece.text).join("")
 }
 
 function settlementOf(result: ToolResult) {

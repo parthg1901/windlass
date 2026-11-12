@@ -181,3 +181,39 @@ function redactPart(part: string, values: readonly string[]): Piece[] {
     afterValues,
   )
 }
+
+/**
+ * For text that is still arriving (a command's output, read chunk by chunk):
+ * where its end may be the beginning of one of `secrets`, which `redact` can
+ * replace only once it is whole. The start of the longest such ending, or
+ * `text.length` when there is none. A caller that redacts a stream keeps the
+ * text from there until more of it has arrived (`tool/redact-stream.ts`).
+ */
+export function unfinishedSecret(text: string, secrets: readonly string[]): number {
+  let start = text.length
+  for (const value of new Set(secrets)) {
+    if (value.length < MIN_SECRET_LENGTH) continue
+    const length = endingPrefix(text.slice(-(value.length - 1)), value)
+    if (length > 0) start = Math.min(start, text.length - length)
+  }
+  return start
+}
+
+/** The length of the longest proper prefix of `value` that `text` ends with (Knuth-Morris-Pratt). */
+function endingPrefix(text: string, value: string): number {
+  const fail = new Array<number>(value.length).fill(0)
+  for (let index = 1, length = 0; index < value.length; index += 1) {
+    while (length > 0 && value[index] !== value[length]) length = fail[length - 1]!
+    if (value[index] === value[length]) length += 1
+    fail[index] = length
+  }
+  let matched = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text[index]
+    while (matched > 0 && value[matched] !== unit) matched = fail[matched - 1]!
+    if (value[matched] === unit) matched += 1
+    // The whole value is not unfinished: the redaction has replaced it.
+    if (matched === value.length) matched = fail[matched - 1]!
+  }
+  return matched
+}

@@ -147,6 +147,15 @@ export interface ToolContext {
    * arguments stands for instead of writing the placeholder into the file.
    */
   readonly redact?: (text: string) => readonly RedactedText[]
+  /**
+   * With `redact`, for output that is still arriving: where the end of `text`
+   * may be the beginning of a secret value `redact` replaces only once it is
+   * whole (`unfinishedSecret` in `approval/redact.ts`), or `text.length`.
+   * A stream is redacted a line at a time (`tool/redact-stream.ts`); without
+   * this, a value with a line break in it is missed where the stream is cut
+   * between its lines.
+   */
+  readonly unfinishedSecret?: (text: string) => number
   /** For a tool that can start work in the background. Absent where there is no session to own that work. */
   readonly background?: BackgroundHost
 }
