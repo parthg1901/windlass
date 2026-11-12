@@ -115,7 +115,7 @@ describe("/undo", () => {
       "  k  keep: it stays exactly as now, those changes and the agent's in it both; the other files go back",
       "  n  change nothing",
     ])
-    expect(prompt()).toBe("[y] overwrite · [k] keep as they are now · [N] change nothing ›")
+    expect(prompt()).toBe("[y] overwrite · [k] keep as it is now · [N] change nothing ›")
     // The engine found them when asked to change nothing that was edited by hand, and changed nothing.
     expect(calls).toEqual(['revert {"dryRun":true}', 'revert {"handEdits":"abort"}'])
     await type("y\r")

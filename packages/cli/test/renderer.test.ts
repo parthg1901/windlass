@@ -549,9 +549,11 @@ describe("verification, the workspace and reverts", () => {
     const restore = { target: "w0", before: "w1", after: "w0", written: 3, removed: 0, changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
     expect(lines([event("history.reverted", { fromSeq: 6, restore })])).toEqual([
       "↶ went back · 3 files as they were before the turn · /redo brings it back",
-      "  left as they are now, the outside changes and the agent's both: notes.md",
+      "  left as it is now, the outside changes and the agent's both: notes.md",
       "  left alone (ignored or never recorded): dist/app.js",
     ])
+    const two = { ...restore, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "todo.md", reason: "hand_edited" as const }] }
+    expect(lines([event("history.reverted", { fromSeq: 6, restore: two })], 140)[1]).toBe("  left as they are now, the outside changes and the agent's both: notes.md, todo.md")
     expect(lines([event("history.reverted", { fromSeq: 6, restore: null })])).toEqual(["↶ went back · no file was restored · /redo brings it back"])
     expect(lines([event("history.restored", { revertSeq: 9, restore: { ...restore, kept: [] } })])).toEqual(["↷ brought back · 3 files as the turn left them"])
     expect(lines([event("revert.failed", { message: "git refused the restore" })])).toEqual(["✗ the workspace could not be restored: git refused the restore", "  nothing changed in the conversation"])

@@ -99,7 +99,7 @@ export async function runSessionCommand(command: Command, session: RevertableSes
       // What each answer does to those files, said before it is asked. Only an undo keeps a way back: /redo restores
       // the workspace as it was right before it, hand edits included.
       for (const line of handEditChoices(undo, them)) io.print([seg(line, "dim")])
-      const answer = (await io.ask("[y] overwrite · [k] keep as they are now · [N] change nothing › "))?.trim().toLowerCase() ?? ""
+      const answer = (await io.ask(`[y] overwrite · [k] keep ${edited.length === 1 ? "as it is" : "as they are"} now · [N] change nothing › `))?.trim().toLowerCase() ?? ""
       if (answer === "y" || answer === "yes" || answer === "overwrite") return "overwrite"
       if (answer === "k" || answer === "keep") return "keep"
       declined = true

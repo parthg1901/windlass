@@ -849,7 +849,8 @@ export class PrettyRenderer implements Sink {
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
-        if (byHand.length > 0) this.lineWithArg("info", [seg(undone ? "  left as they are now, the outside changes and the agent's both: " : "  left as they are now, with the outside changes: ", "dim")], fileList(byHand, 6), [])
+        const are = byHand.length === 1 ? "as it is" : "as they are"
+        if (byHand.length > 0) this.lineWithArg("info", [seg(undone ? `  left ${are} now, the outside changes and the agent's both: ` : `  left ${are} now, with the outside changes: `, "dim")], fileList(byHand, 6), [])
         if (other.length > 0 || (record?.keptOmitted ?? 0) > 0)
           this.lineWithArg("info", [seg("  left alone (ignored or never recorded): ", "dim")], fileList(other, 6), [seg((record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : "", "dim")])
         return
