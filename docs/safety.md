@@ -21,17 +21,26 @@ your configuration file (`~/.config/windlass/config.json`). The default is `auto
 | Run a command | asks, then runs in the sandbox | runs in the sandbox | runs with your full permissions |
 | Run a command, on a machine without a sandbox | asks, runs unsandboxed | asks, runs unsandboxed | runs |
 | A command that asks for the network or for another directory | asks | asks | runs |
+| Call a tool of an MCP server (`mcp_call`; it runs outside the sandbox) | asks | asks | runs |
+| Change only Windlass's own records: cancel a wake-up, save or retract a memory note | asks | runs | runs |
 | The project's checks (the verification gate) | sandboxed, no question | sandboxed, no question | unsandboxed |
 | The project's checks, on a machine without a sandbox | not run | not run | run |
-| After untrusted content entered the conversation: network access for a command, a command without the sandbox | asks again; earlier approvals for it stop applying | same | commands run in the sandbox; the rest asks |
+| After untrusted content entered the conversation: network access for a command, a command without the sandbox, an MCP tool | asks again; earlier approvals for it stop applying | same | commands run in the sandbox; the rest asks |
 
 `full` is an explicit choice for a container or a machine with nothing to lose. A project's own configuration file
 (`.windlass/config.json` in the repository) can make the policy stricter and never looser: a repository you
 cloned cannot switch the questions off. When it tries, you are told once and its setting is not followed.
 
+**Windlass's own records.** `wake_cancel`, `memory_save` and `memory_retract` change no file of the workspace and
+send nothing anywhere: they change only what Windlass keeps for itself (its wake-ups, its notes). So they run
+without a question in `auto` and `full`, also in a one-shot run, and only `ask`, where every change asks, asks about
+them (`? Allow memory_save: changing Windlass's own records?`). Creating a wake-up is not one of them: it is
+decided like the command it may run. Looking things up (`wake_list`, `memory_search`, `mcp_search`) is a read and
+runs in every mode.
+
 ## When nobody is there to answer
 
-A question is put only where someone can answer it: the interactive mode of `windlass`, or an editor. A one-shot run
+A question is put only where someone can answer it: the interactive mode of `windlass`, `windlass tui`, or an editor. A one-shot run
 (`windlass "fix the test"`), `--json`, a pipe and the eval runner are unattended. There, a call that would ask is refused
 at once, the agent is told why and goes on (`--unattended deny`, the default), or the run ends with exit code 4
 (`--unattended stop`). Nothing ever waits, and no setting turns a question into a yes: to let more run unattended,
@@ -122,7 +131,11 @@ counts a conversation as tainted once it holds content from a source it does not
 - the output of a command that ran with network access you granted;
 - a workspace file matching `approval.untrustedPaths` in your configuration (`["**"]` treats a whole repository
   from someone else as untrusted);
-- later: the result of a web tool or an MCP tool.
+- the result of a call to an MCP tool, unless its server is marked `untrusted: false`. Searching the tools
+  (`mcp_search`) is not one: it shows what the model was already given ([mcp.md](mcp.md), "Trust and taint");
+- the body of a webhook request that fired a wake-up ([wake-ups.md](wake-ups.md));
+- the result of a subagent whose own conversation was tainted ([subagents.md](subagents.md));
+- later: the result of a web tool (there is none yet).
 
 You are told once, with the source. From then on anything that can send data out (network access for a command, a
 command without the sandbox, a network or MCP tool) asks again, even if you had allowed it for the session before:

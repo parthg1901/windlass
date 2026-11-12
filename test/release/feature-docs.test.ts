@@ -21,6 +21,8 @@ import { createHmac } from "node:crypto"
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { type CallFacts, decide } from "../../packages/core/src/approval/decide.ts"
+import { CLEAN } from "../../packages/core/src/approval/taint.ts"
 import { brand } from "../../packages/core/src/brand.ts"
 import { parseConfigFile } from "../../packages/core/src/config/schema.ts"
 import { MCP_START_WAIT_MS } from "../../packages/core/src/engine/mcp.ts"
@@ -226,6 +228,58 @@ describe("MCP trust against the code", () => {
     expect(down.output).toContain("Not available right now: ")
     expect(down.untrusted).toBe(true)
     expect(page).toContain("`Not available right now: ...` line")
+  })
+})
+
+describe("docs/safety.md against the approval policy", () => {
+  const page = readFileSync(join(ROOT, "docs/safety.md"), "utf8")
+  type Mode = "ask" | "auto" | "full"
+  const decided = (mode: Mode, call: Partial<CallFacts> & Pick<CallFacts, "tool" | "effect">, present: boolean) =>
+    decide({
+      policy: { mode, unattended: "deny", taint: "enforce" },
+      call: { origin: "builtin", paths: [], command: null, escalation: null, ...call },
+      sandbox: { available: true },
+      taint: CLEAN,
+      grants: [],
+      present,
+      now: 0,
+      workspace: "/w",
+      home: "/home/me",
+    })
+  /** A row of the modes table as the three words it gives. */
+  const row = (start: string) => (page.split("\n").find((line) => line.startsWith(`| ${start}`)) ?? "").split("|").slice(2, 5).map((cell) => cell.trim())
+
+  test("tools that change only the program's own records run unasked in auto and full, and ask in ask", () => {
+    expect(row(`Change only ${brand.name}'s own records`)).toEqual(["asks", "runs", "runs"])
+    // The tools the page names are the ones marked so, and no other: one wake-up tool, two memory tools.
+    const marked = sourceFiles()
+      .map((file) => ({ file: file.slice(ROOT.length + 1), count: readFileSync(file, "utf8").split('\n').filter((line) => line.trim() === 'changes: "records",').length }))
+      .filter((entry) => entry.count > 0)
+    expect(marked).toEqual([
+      { file: "packages/core/src/memory/tools.ts", count: 2 },
+      { file: "packages/core/src/wake/tools.ts", count: 1 },
+    ])
+    for (const tool of ["wake_cancel", "memory_save", "memory_retract"]) {
+      expect(page).toContain(`\`${tool}\``)
+      expect(SOURCE).toContain(`"${tool}"`)
+      const call = { tool, effect: "write" as const, changes: "records" as const }
+      expect(decided("auto", call, false).kind).toBe("run")
+      expect(decided("full", call, false).kind).toBe("run")
+      expect(decided("ask", call, false).kind).toBe("deny")
+      const asked = decided("ask", call, true)
+      expect(asked.kind === "ask" ? asked.question.title : "").toBe(`Allow ${tool}: changing ${brand.name}'s own records?`)
+    }
+    expect(page).toContain(`\`? Allow memory_save: changing ${brand.name}'s own records?\``)
+  })
+
+  test("an MCP call asks in ask and auto and runs in full; MCP taint is not a thing for later", () => {
+    expect(row("Call a tool of an MCP server")).toEqual(["asks", "asks", "runs"])
+    const call = { tool: "tracker/create_issue", effect: "network" as const, origin: "mcp" as const }
+    expect(decided("ask", call, true).kind).toBe("ask")
+    expect(decided("auto", call, true).kind).toBe("ask")
+    expect(decided("full", call, false).kind).toBe("run")
+    expect(page).not.toMatch(/later:[^\n]*MCP/)
+    expect(page).toContain("the result of a call to an MCP tool, unless its server is marked `untrusted: false`")
   })
 })
 
