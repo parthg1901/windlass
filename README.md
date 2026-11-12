@@ -2,13 +2,12 @@
 
 A coding agent for the terminal: you describe a change, and it reads your code, edits files and runs commands in
 your project until the change is done. Commands run in an operating-system sandbox, edits can be undone, and every
-session is kept on disk so it can be resumed. It is one program, `lh`, with a line interface, a full-screen
+session is kept on disk so it can be resumed. It is one program, `lh` (`wl` for short, wherever it is installed), with a line interface, a full-screen
 interface, and a server for editors (the Agent Client Protocol).
 
 **State of the project.** It works on Linux (built and run on arm64). macOS and Linux x64 executables can be built,
 but have never been run. The only model provider is a ChatGPT plan, through "Sign in with ChatGPT". Nothing is
-published: there is no package, no download and no release; you build it from this repository. The name is a
-placeholder.
+published: there is no package, no download and no release; you build it from this repository.
 
 ## Requirements
 
