@@ -135,6 +135,11 @@ const SYMBOL = {
 
 export class PrettyRenderer implements Sink {
   private atLineStart = true
+  /**
+   * Streamed model text not written yet, and the column the text has reached: a word is written once it is whole
+   * (the next space or line break, or the end of the text), on the next row when it does not fit on this one.
+   */
+  private readonly flow = { column: 0, word: "", spaces: "" }
   private lines = 0
   private last: Block | null = null
   private readonly textBuffers = new Map<string, string>()
@@ -857,7 +862,7 @@ export class PrettyRenderer implements Sink {
     if (before === "") this.startText()
     // Another line (a steer, a stop) came in while the text streamed: carry on below it, marked as a continuation.
     else if (this.last !== "text") this.resumeText()
-    this.raw(after.slice(before.length))
+    this.flowText(after.slice(before.length))
   }
 
   private textEnded(messageId: string, text: string): void {
@@ -867,28 +872,76 @@ export class PrettyRenderer implements Sink {
     if (streamed === "") {
       if (final.trim() === "") return
       this.startText()
-      this.raw(final)
+      this.flowText(final)
     } else if (final.startsWith(streamed)) {
       if (final.length > streamed.length && this.last !== "text") this.resumeText()
-      this.raw(final.slice(streamed.length))
+      this.flowText(final.slice(streamed.length))
     } else {
       // The final text is not what was streamed; show the final one in full rather than a broken mix.
       this.endLine()
-      this.raw(final)
+      this.flowText(final)
     }
     this.endLine()
+  }
+
+  /**
+   * Model text, wrapped between words as it streams: the terminal would split a word at the right edge. Only a word
+   * longer than a whole row is broken, from a row of its own.
+   */
+  private flowText(text: string): void {
+    for (const part of text.split(/(\n|[ \t]+)/)) {
+      if (part === "") continue
+      if (part === "\n") {
+        this.flushWord()
+        this.flow.spaces = ""
+        this.raw("\n")
+        this.flow.column = 0
+      } else if (/^[ \t]+$/.test(part)) {
+        this.flushWord()
+        this.flow.spaces += part.replace(/\t/g, "    ")
+      } else this.flow.word += part
+    }
+  }
+
+  /** Writes the word received so far, after its spaces when it fits the row, else on the next row without them. */
+  private flushWord(): void {
+    const { word, spaces } = this.flow
+    if (word === "") return
+    this.flow.word = ""
+    this.flow.spaces = ""
+    // One column stays free: a row filled to the edge leaves the cursor in the terminal's pending wrap.
+    const room = Math.max(10, this.width - 1)
+    const width = displayWidth(word)
+    const before = displayWidth(spaces)
+    if (this.flow.column + before + width <= room) {
+      this.raw(spaces + word)
+      this.flow.column += before + width
+    } else if (width <= room) {
+      this.raw(`\n${word}`)
+      this.flow.column = width
+    } else {
+      const rows = hardWrap(word, room)
+      this.raw(`${this.flow.column > 0 ? "\n" : ""}${rows.join("\n")}`)
+      this.flow.column = displayWidth(rows.at(-1) ?? "")
+    }
   }
 
   /** Starts a text block; after a continuation note it is marked as picking up a sentence mid-way. */
   private startText(): void {
     this.startStream("text")
-    if (this.continuing) this.raw(paint(this.options.color, "dim", "… "))
+    if (this.continuing) this.mark()
     this.continuing = false
   }
 
   private resumeText(): void {
     this.startStream("text")
+    this.mark()
+  }
+
+  /** The mark of text that picks up where it was cut off or interrupted. */
+  private mark(): void {
     this.raw(paint(this.options.color, "dim", "… "))
+    this.flow.column = 2
   }
 
   private reasoningDelta(messageId: string, text: string): void {
@@ -1400,7 +1453,10 @@ export class PrettyRenderer implements Sink {
   }
 
   private endLine(): void {
+    this.flushWord()
+    this.flow.spaces = ""
     if (!this.atLineStart) this.raw("\n")
+    this.flow.column = 0
     this.sayInstructions()
   }
 

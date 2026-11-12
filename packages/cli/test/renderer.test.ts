@@ -45,6 +45,26 @@ describe("streamed text", () => {
     }
   })
 
+  test("is wrapped between words as it streams, also when a word arrives in pieces", () => {
+    const [step, ended] = stored([stepStarted("a1"), said("a1", "The fix is finished-marker done? Yes.")])
+    const out = render([step!, delta("a1", "The fix is fini"), delta("a1", "shed-mar"), delta("a1", "ker done"), delta("a1", "? Yes."), ended!], { columns: () => 20 })
+    expect(out).toBe("The fix is\nfinished-marker\ndone? Yes.\n")
+    for (const row of out.split("\n")) expect(displayWidth(row)).toBeLessThan(20)
+  })
+
+  test("breaks only a word longer than a row, from a row of its own, and keeps the model's own line breaks", () => {
+    const long = "x".repeat(30)
+    const out = render(stored([stepStarted("a1"), said("a1", `See ${long} here.\n\n- one\n- two`)]), { columns: () => 20 })
+    expect(out).toBe(`See\n${"x".repeat(19)}\n${"x".repeat(11)} here.\n\n- one\n- two\n`)
+  })
+
+  test("a line printed while the text streams ends the row with the word received so far", () => {
+    const [step, steer, ended] = stored([stepStarted("a1"), event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("b") }), said("a1", "Hello there, world.")])
+    const out = render([event("execution.started", { executionId: "exe_1" as never }) as never, step!, delta("a1", "Hello there"), steer!, delta("a1", ", world."), ended!].map((item, index) => ("seq" in item ? { ...item, seq: index + 1 } : item)) as never)
+    expect(out).toContain("Hello there\n")
+    expect(out).toContain("… , world.\n")
+  })
+
   test("escape sequences in model text are not passed to the terminal", () => {
     const out = render(stored([stepStarted("a1"), said("a1", "red \x1b[31mtext\x1b[0m and a bell\x07")]))
     expect(out).toBe("red text and a bell\n")
@@ -174,9 +194,9 @@ describe("tool calls", () => {
 })
 
 describe("width", () => {
-  test("no line is wider than the terminal except model text", () => {
+  test("no line is wider than the terminal except a path, and model text is wrapped between its words", () => {
     const long = "a-very-long-directory-name/".repeat(6)
-    const model = "The model may write a long line that the terminal wraps itself, and that is never cut by the renderer."
+    const model = "The model may write a long line that the renderer wraps between words, and that is never cut."
     const events = stored([
       ...opening(),
       stepStarted("a1"),
@@ -193,9 +213,11 @@ describe("width", () => {
     for (const columns of [24, 40, 80]) {
       const out = render(events, { columns: () => columns, color: true })
       const lines = out.split("\n").map(stripAnsi)
-      expect(lines).toContain(model)
+      // Every word of the model's text, in order, none split.
+      const at = lines.findIndex((line) => line.startsWith("The model"))
+      expect(lines.slice(at, lines.indexOf("", at)).join(" ")).toBe(model)
       // A row that is one word (a path) is the one thing never cut or broken: it is written whole, however wide.
-      for (const line of lines.filter((line) => line !== model && line.trim().includes(" "))) expect(displayWidth(line), `${columns}: ${line}`).toBeLessThanOrEqual(columns)
+      for (const line of lines.filter((line) => line.trim().includes(" "))) expect(displayWidth(line), `${columns}: ${line}`).toBeLessThanOrEqual(columns)
       expect(lines).toContain(long)
       expect(out).toContain("…")
     }
@@ -339,14 +361,15 @@ describe("events the core added", () => {
     let text = ""
     const renderer = new PrettyRenderer({ write: (value) => (text += value), color: false, columns: () => 80, live: false, showReasoning: false, echoPrompts: false })
     for (const item of [...stored([...opening(), stepStarted("a1"), synthetic("s1", "continuation", "Continue."), stepStarted("a2")]), delta("a2", " test"), delta("a2", " first.")]) renderer.event(item)
-    expect(text.endsWith("\n… test first.")).toBe(true)
+    // A word is written once it is whole: the last one waits for what follows it.
+    expect(text.endsWith("\n… test")).toBe(true)
   })
 
   test("a line that arrives while text streams does not split the text silently", () => {
     const events = stored([...opening(), stepStarted("a1")])
     const [enqueued] = stored([event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("Also b.ts") })]).map((item) => ({ ...item, seq: 99 }))
     const out = render([...events, delta("a1", "Reading a."), enqueued!, delta("a1", "ts now.")])
-    expect(out).toContain('Reading a.\n\n↳ sent: "Also b.ts" · the agent will see it after the current step\n\n… ts now.')
+    expect(out).toContain('Reading a.\n\n↳ sent: "Also b.ts" · the agent will see it after the current step\n\n… ts')
   })
 
   test("messages still waiting when a turn is interrupted are counted", () => {
