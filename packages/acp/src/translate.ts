@@ -369,6 +369,10 @@ export class Translator {
       case "execution.interrupt_requested":
       // The user asked one call to stop: its result, which follows, says what came of it.
       case "tool.cancel_requested":
+      // The user's watches on a background command's output: a firing is a harness message to the model, not the user's.
+      case "watch.started":
+      case "watch.fired":
+      case "watch.ended":
       case "session.archived":
       case "session.unarchived":
       case "history.reverted":

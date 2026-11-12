@@ -236,6 +236,7 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | An edit that got diagnostics: how many, from which server | `tool.settled`'s `diagnostics`; for other clients `_meta["windlass/diagnostics"]` on the settled call |
 | `/skills` | `_windlass/skills` |
 | `/wakeups`, `/wakeups cancel`, `/wakeups secret`, a webhook's secret shown once when it is created | `_windlass/wakeups`, `_windlass/wake_cancel`, `_windlass/wake_secret` (after the `tool.settled` of `wake_create` whose `display.wake` is `{ action: "create", id }`) |
+| `/watch <command id> [--regex] [--ignore-case] [--times <n>] <text>`, `/watch` (the running commands and their watches), `/watch remove <watch id>`; a firing drawn as the watch's message, not the user's | `_windlass/watch`, `_windlass/watches`, `_windlass/unwatch`; the `watch.started`, `watch.fired` and `watch.ended` events (the firing's message is the `inbox.enqueued` before it, with `origin: "background_watch"`) |
 | `/memory`, `/remember`, `/forget`; a note written before the first message, kept and saved once the session has started | `_windlass/memory`, `_windlass/memory_change` (`deferred`), the `baseline.set` event |
 | A question about a project's hook, language server or MCP server put before a message is sent | `_windlass/hooks`, `_windlass/lsp`, `_windlass/mcp` read before `_windlass/steer`; the message goes after the answers |
 | The notice that a wake-up created in a one-prompt run will not fire there (in `--json`: a line of the CLI's own, `{ type: "cli.notice", kind: "wake_not_firing", sessionId, wakeId, message }`) | `_windlass/wakeups` (`running: false`) after the `tool.settled` of `wake_create` |
@@ -277,7 +278,7 @@ other half: it depends on the SDK and on `extensions.ts`, never on a client, so 
   notifications: turn endings, state, usage, taint, notices, MCP changes, in arrival order), `send` (steer or queue), `cancel`,
   `setConfig`, `revert`, `undoRevert`, `withdraw`, `state`, `approval`, `clearTaint`, `diff`, `mcp`, `approveMcp`,
   `skills`, `wakeups`, `cancelWake`, `wakeSecret`, `memory`, `memoryChange`, `agents`, `setAgent`, `rename`,
-  `compact`, `commands`, `expandCommand`, `sendCommand`, `cancelCall`, `close`. `offers(method)` says whether a server (of another version) has a method.
+  `compact`, `commands`, `expandCommand`, `sendCommand`, `cancelCall`, `watchOutput`, `unwatchOutput`, `watches`, `close`. `offers(method)` says whether a server (of another version) has a method.
 - `fork(params)` (`_windlass/fork`; nothing is opened) and `replay(params, { cwd, onStart })`
   (`_windlass/replay`): `onStart` gets the replay session as a `ClientSession` as soon as
   `_windlass/replay_started` names it, so its `events` are the progress and its `cancel()` ends the replay; the
@@ -505,6 +506,28 @@ with its ordinary result. The model reads the result in its next request. With `
 of the call and `message` says why in a sentence: no turn runs, the whole turn is being stopped, there is no such
 call in the step in progress, it has not started or already has its result, or it was already asked to stop. A
 client that takes the standard updates sees the call's final `tool_call_update` and nothing else of it.
+
+**`_windlass/watch`** (request) `{ sessionId, command, pattern, regex?, ignoreCase?, limit? }` → `{ watchId,
+spawnId, pattern, regex, ignoreCase, limit, fired }`: the user sets a watch on the output of a background command
+that is running (`EngineSession.watchOutput`), so that the model is told, without polling, when the command prints a
+line that matches. `command` is the command's ID (`spawn.started.spawnId`); `pattern` is text a line must contain, or
+with `regex` a regular expression; `limit` is how often it may fire (default 1). `fired` counts the lines the command
+had already printed that matched at once. The model has no tool for this: it is the user's to ask for. What the
+engine refuses (no such command runs, the ID names a subagent, a pattern it cannot use, a limit out of range, a
+command that has its fill of watches) is `-32602` with `reason: "invalid_request"` and the engine's sentence, and
+nothing is written. A firing is the `watch.fired` event right after the `inbox.enqueued` of the harness message that
+tells the model (`origin: "background_watch"`): a client shows it as the watch's, with the line, never as something
+the user typed; a client that takes the standard updates is sent no `user_message_chunk` for it. Answered after the
+watch's events were sent.
+
+**`_windlass/unwatch`** (request) `{ sessionId, watchId }` → `{ removed: boolean }`: removes a watch that could
+still fire (`watch.ended`, `removed`); `false` for one that has fired as often as it may, has ended, or is unknown.
+
+**`_windlass/watches`** (request) `{ sessionId }` → `{ sessionId, commands: { spawnId, command, logPath, watches: {
+watchId, pattern, regex, ignoreCase, description, limit, fired, watching }[] }[] }`: the session's background
+commands that are running, oldest first, each with the watches on its output; `description` is what a watch looks
+for in the engine's words (`text "ready"`, `pattern /error/i`), `watching` whether it can still fire. A command that
+ended is not listed: its watches ended with it.
 
 **`_windlass/withdraw`** (request) `{ sessionId, messageId }` → `{ withdrawn: boolean }`: takes back a message
 that was admitted and not delivered yet (`inbox.cancelled`); `false` when it was delivered or is unknown.

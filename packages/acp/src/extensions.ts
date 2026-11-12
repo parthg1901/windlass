@@ -104,6 +104,12 @@ export const EXT = {
   expandCommand: `${prefix}/expand_command`,
   /** Request `CancelCallParams` → `CancelCallResult`: the user stops one running tool call and nothing else; the turn goes on. */
   cancelCall: `${prefix}/cancel_call`,
+  /** Request `WatchParams` → `WatchSetResult`: the user sets a watch on the output of a running background command; refused with the engine's sentence. */
+  watch: `${prefix}/watch`,
+  /** Request `{ sessionId, watchId }` → `{ removed }`: removes a watch that could still fire. */
+  unwatch: `${prefix}/unwatch`,
+  /** Request `{ sessionId }` → `WatchesResult`: the background commands that are running, each with the watches set on its output. */
+  watches: `${prefix}/watches`,
   /** Request `SendCommandParams` → `SendCommandResult`: `/name args` expanded and admitted as the user's message, recorded as that command's (`command.expanded`). Answers once admitted; refused, with the sentence to show, when nothing was sent. */
   sendCommand: `${prefix}/send_command`,
 } as const
@@ -862,6 +868,50 @@ export interface CancelCallParams {
 export interface CancelCallResult {
   readonly stopped: boolean
   readonly message: string | null
+}
+
+/** Params of `<prefix>/watch`. */
+export interface WatchParams {
+  readonly sessionId: string
+  /** The background command, by its ID (`spawn.started.spawnId`; `<prefix>/watches` lists the running ones). */
+  readonly command: string
+  /** Text a line must contain, or with `regex` a regular expression (JavaScript's) a line must match. */
+  readonly pattern: string
+  readonly regex?: boolean
+  readonly ignoreCase?: boolean
+  /** How often it may fire. Default 1. */
+  readonly limit?: number
+}
+
+/** Result of `<prefix>/watch`: the watch as it was set (`watch.started`), and how often it fired at once on what the command had already printed. */
+export interface WatchSetResult {
+  readonly watchId: string
+  readonly spawnId: string
+  readonly pattern: string
+  readonly regex: boolean
+  readonly ignoreCase: boolean
+  readonly limit: number
+  readonly fired: number
+}
+
+/** One watch on a running command's output, as `<prefix>/watches` lists it. */
+export interface WatchInfo {
+  readonly watchId: string
+  readonly pattern: string
+  readonly regex: boolean
+  readonly ignoreCase: boolean
+  /** What it looks for, in the engine's words: `text "ready"`, `pattern /error/i`. */
+  readonly description: string
+  readonly limit: number
+  readonly fired: number
+  /** Whether it can still fire: it has not fired as often as it may and was not removed. */
+  readonly watching: boolean
+}
+
+/** Result of `<prefix>/watches`: the session's background commands that are running, oldest first, each with its watches. */
+export interface WatchesResult {
+  readonly sessionId: string
+  readonly commands: readonly { readonly spawnId: string; readonly command: string; readonly logPath: string | null; readonly watches: readonly WatchInfo[] }[]
 }
 
 /** A file of a revert plan (`RevertPlan.changes`), as far as the hand-edit question needs it. */

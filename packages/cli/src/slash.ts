@@ -58,6 +58,7 @@ export const BUILTIN_COMMANDS: CommandSource = {
     { name: "lsp", args: "[approve <server>]", description: "the language servers that add diagnostics to edits: state, the files each serves, where it is defined; approve one the project names", aliases: ["diagnostics"], when: "any" },
     { name: "skills", args: "", description: "the skills the model can load here, and the ones that could not be loaded", when: "any" },
     { name: "wakeups", args: "[cancel|secret <id>]", description: "this session's wake-ups; cancel one, or show a webhook's secret", aliases: ["wake"], when: "any" },
+    { name: "watch", args: "[<command id> <text> | remove <watch id>]", description: "tell the agent when a background command prints a line with that text; with nothing, the running commands and their watches", aliases: ["watches"], when: "any" },
     { name: "memory", args: "[confirm|reject|renew|forget <id>]", description: "the notes later sessions are given, and the ones waiting for your confirmation", when: "any" },
     { name: "remember", args: "[--me] <text>", description: "save a note for later sessions (this project; --me: about you, everywhere)", when: "any" },
     { name: "forget", args: "<id>", description: "retract a note: no later session is given it", when: "any" },

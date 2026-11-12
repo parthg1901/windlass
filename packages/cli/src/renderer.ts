@@ -10,7 +10,7 @@
 import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
 import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
 import type { EngineEvent } from "./engine.ts"
-import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
+import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText } from "./features.ts"
 import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRefusal, objectionTexts, stopHookSentBack, unsatisfiedText } from "./hooks.ts"
 import { restoredFiles } from "./commands.ts"
 import { commandSent } from "./slash.ts"
@@ -130,6 +130,7 @@ const SYMBOL = {
   prompt: "›",
   undo: "↶",
   redo: "↷",
+  watch: "◉",
 } as const
 
 export class PrettyRenderer implements Sink {
@@ -164,6 +165,8 @@ export class PrettyRenderer implements Sink {
   private asking: string | null = null
   /** How many calls the turn has started: the number `/stop` names the next one by. */
   private started = 0
+  /** How often each watch on a background command's output may fire (`watch.started`), for the count on a firing. */
+  private readonly watchLimits = new Map<string, number>()
   /** The next text block continues a response that a provider error cut off. */
   private continuing = false
   private status: string | null = null
@@ -489,6 +492,22 @@ export class PrettyRenderer implements Sink {
         this.running.add(id)
         return
       }
+      case "watch.started": {
+        this.watchLimits.set(event.data.watchId, event.data.limit)
+        const said = watchStartedText(event.data)
+        this.lineWrapped([seg(`${SYMBOL.watch} `, "magenta"), seg(said.head), seg(said.tail, "dim")])
+        return
+      }
+      case "watch.fired": {
+        // The message that tells the agent was admitted just before: it is the watch's, not something the user typed.
+        this.lineWrapped([seg(`${SYMBOL.watch} `, "magenta"), seg(watchFiredText(event.data, this.watchLimits.get(event.data.watchId) ?? null), "magenta")])
+        for (const line of hardWrap(sanitize(event.data.line), this.width - 4)) this.line("info", [seg(`    ${line}`)])
+        return
+      }
+      case "watch.ended":
+        this.watchLimits.delete(event.data.watchId)
+        this.line("info", [seg(`${SYMBOL.watch} `, "dim"), seg(watchEndedText(event.data), "dim")])
+        return
       case "tool.cancel_requested": {
         // The user stopped this one call: said at once, and the call's own line says what came of it.
         const call = this.calls.get(key(event.data.messageId, event.data.callId))
@@ -1177,6 +1196,8 @@ export class PrettyRenderer implements Sink {
       if (summary.message !== null) for (const line of wrap(flatten(summary.message), this.width - 4)) this.line("info", [seg(`  ${line}`, "bold")])
       return
     }
+    // A watch's message is said by its own event (`watch.fired`), which follows at once: which watch, and the line.
+    if (data.origin === "background_watch") return
     if (data.origin !== null) {
       this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg(`${data.origin}: `, "dim"), seg(quote(text))])
       return

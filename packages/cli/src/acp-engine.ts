@@ -49,6 +49,8 @@ import {
   type SkillsResult,
   type WakeListResult,
   type WakeSecretResult,
+  type WatchSetResult,
+  type WatchesResult,
   titleFromEvents,
 } from "@windlass/acp/extensions"
 import { forkPointOfTurn, isUndone, turnsOf } from "@windlass/acp/turns"
@@ -392,6 +394,18 @@ class AcpSession implements Session {
 
   wakeSecret(id: string): Promise<WakeSecretResult> {
     return this.feature(EXT.wakeSecret, () => this.session.wakeSecret(id))
+  }
+
+  watchOutput(command: string, watch: { readonly pattern: string; readonly regex?: boolean; readonly ignoreCase?: boolean; readonly limit?: number }): Promise<WatchSetResult> {
+    return this.feature(EXT.watch, () => this.session.watchOutput(command, watch))
+  }
+
+  unwatchOutput(watchId: string): Promise<boolean> {
+    return this.feature(EXT.unwatch, () => this.session.unwatchOutput(watchId))
+  }
+
+  watches(): Promise<WatchesResult> {
+    return this.feature(EXT.watches, () => this.session.watches())
   }
 
   memory(): Promise<MemoryStateResult> {

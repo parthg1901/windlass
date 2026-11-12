@@ -521,6 +521,7 @@ async function interactiveLoop(context: Interactive): Promise<number> {
           case "lsp":
           case "skills":
           case "wakeups":
+          case "watch":
           case "memory":
           case "remember":
           case "forget":

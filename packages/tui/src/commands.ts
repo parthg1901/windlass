@@ -28,6 +28,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "lsp", args: "[approve <server>]", description: "the language servers that add diagnostics to edits: state, the files each serves, where it is defined; approve one the project names", aliases: ["diagnostics"] },
   { name: "skills", args: "", description: "the skills the model can load here, and the ones that could not be loaded" },
   { name: "wakeups", args: "[cancel|secret <id>]", description: "this session's wake-ups; cancel one, or show a webhook's secret", aliases: ["wake"] },
+  { name: "watch", args: "[<command id> <text> | remove <watch id>]", description: "tell the agent when a background command prints a line with that text; with nothing, the running commands and their watches", aliases: ["watches"] },
   { name: "memory", args: "[confirm|reject|renew|forget <id>]", description: "the notes later sessions are given, and the ones waiting for your confirmation" },
   { name: "remember", args: "[--me] <text>", description: "save a note for later sessions (this project; --me: about you, everywhere)" },
   { name: "forget", args: "<id>", description: "retract a note: no later session is given it" },

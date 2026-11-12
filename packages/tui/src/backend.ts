@@ -6,7 +6,7 @@
  */
 import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
 import type { AgentsResult, ClientCommand, CommandsResult, CompactResult } from "@windlass/acp/extensions"
-import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
 import type { RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 
@@ -161,6 +161,10 @@ export interface BackendSession {
   cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>
   /** A webhook wake-up's URL and secret: for the user's eyes only. */
   wakeSecret?(id: string): Promise<WakeSecretResult>
+  /** Sets a watch on the output of a running background command (rejects with the engine's sentence), removes one, lists them. */
+  watchOutput?(command: string, watch: { readonly pattern: string; readonly regex?: boolean; readonly ignoreCase?: boolean; readonly limit?: number }): Promise<WatchSetResult>
+  unwatchOutput?(watchId: string): Promise<boolean>
+  watches?(): Promise<WatchesResult>
   memory?(): Promise<MemoryStateResult>
   memoryChange?(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult>
   /** Lets go of the session; with `shutdown`, running work stops as a shutdown and resumes at the next open. */

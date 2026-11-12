@@ -7,7 +7,7 @@
  */
 import { brand } from "@windlass/core"
 import { isUndone, turnsOf } from "@windlass/acp/turns"
-import { type McpServerInfo, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeListResult, type WakeSecretResult, quotedCommand } from "@windlass/acp/extensions"
+import { type McpServerInfo, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeListResult, type WakeSecretResult, type WatchesResult, quotedCommand } from "@windlass/acp/extensions"
 
 export type LineTone = "plain" | "dim" | "warn" | "error" | "ok" | "bold" | "accent"
 
@@ -270,6 +270,95 @@ export function wakeMessageSummary(text: string, origin: string): { readonly hea
   const message = body === null ? null : (body.split("\n\n", 1)[0] ?? "").trim() || null
   const why = origin === "wake_webhook" ? "a webhook request arrived" : stopped ? "it stopped" : "it fired"
   return { head: `wake-up${id === null ? "" : ` ${id}`}: ${why}${match?.[3] === undefined ? "" : ` (${localTimes(match[3])})`} · not typed by you`, message }
+}
+
+// ---------------------------------------------------------------- watches on a background command's output
+
+/** What a watch looks for, in the engine's words: `text "ready"`, `pattern /error/i`. */
+export function watchWords(watch: { readonly pattern: string; readonly regex: boolean; readonly ignoreCase: boolean }): string {
+  if (watch.regex) return `pattern /${watch.pattern}/${watch.ignoreCase ? "i" : ""}`
+  return `text ${JSON.stringify(watch.pattern)}${watch.ignoreCase ? ", ignoring case" : ""}`
+}
+
+/** How often a watch may fire, in words. */
+export const watchTimes = (limit: number): string => (limit === 1 ? "once" : `up to ${limit} times`)
+
+/** How `/watch` is used, in one sentence. */
+export const WATCH_USAGE =
+  "/watch <command id> <text> tells the agent when that background command prints a line with the text (once; put --times <n>, --regex or --ignore-case before the text for more often, a regular expression, or any case); /watch lists the running commands and their watches; /watch remove <watch id> removes one"
+
+/** What was typed after `/watch`. */
+export type WatchEntry =
+  | { readonly kind: "list" }
+  | { readonly kind: "remove"; readonly watchId: string }
+  | { readonly kind: "set"; readonly command: string; readonly pattern: string; readonly regex: boolean; readonly ignoreCase: boolean; readonly limit: number | null }
+  | { readonly problem: string }
+
+/**
+ * `/watch`, `/watch list`, `/watch remove <watch id>`, or `/watch <command
+ * id> [--regex] [--ignore-case] [--times <n>] <text>`. The text is
+ * everything after the options, as typed, spaces included; `--` ends the
+ * options for a text that starts with two dashes.
+ */
+export function watchEntry(rest: string): WatchEntry {
+  const typed = rest.trim()
+  if (typed === "" || typed === "list") return { kind: "list" }
+  const [first = "", ...others] = typed.split(/\s+/)
+  if (first === "remove" || first === "rm") return others.length === 1 ? { kind: "remove", watchId: others[0]! } : { problem: "/watch remove takes one watch's ID, as /watch lists them: /watch remove bg_1.w1" }
+  let left = typed.slice(first.length).trimStart()
+  let regex = false
+  let ignoreCase = false
+  let limit: number | null = null
+  for (;;) {
+    const option = /^(--regex|--ignore-case|--times|--)(?=\s|$)\s*/.exec(left)
+    if (option === null) break
+    left = left.slice(option[0].length)
+    if (option[1] === "--") break
+    if (option[1] === "--regex") regex = true
+    else if (option[1] === "--ignore-case") ignoreCase = true
+    else {
+      const count = /^(\d+)(?=\s|$)\s*/.exec(left)
+      if (count === null) return { problem: "/watch --times takes a number: how often the watch may fire, such as --times 3" }
+      limit = Number(count[1])
+      left = left.slice(count[0].length)
+    }
+  }
+  if (left === "") return { problem: `/watch ${first} needs the text to look for. ${WATCH_USAGE}` }
+  return { kind: "set", command: first, pattern: left, regex, ignoreCase, limit }
+}
+
+/** `/watch`: the background commands that are running, each with the watches on its output, and how to set and remove one. */
+export function watchLines(result: WatchesResult): Line[] {
+  if (result.commands.length === 0)
+    return [
+      line("No background command is running, so there is no output to watch.", "dim"),
+      line("A watch tells the agent when a command it started in the background (a server, a file watcher) prints a line you name; /watch <command id> <text> sets one while the command runs.", "dim", 2),
+    ]
+  const lines: Line[] = [line(`Background commands running (${result.commands.length}):`, "bold")]
+  for (const command of result.commands) {
+    lines.push(line(`${command.spawnId} · ${command.command}`, "plain", 2))
+    if (command.watches.length === 0) lines.push(line("no watch on its output", "dim", 4))
+    for (const watch of command.watches)
+      lines.push(line(`${watch.watchId} · ${watch.description} · fired ${watch.fired} of ${watch.limit}${watch.watching ? "" : watch.fired >= watch.limit ? " · done" : " · removed"}`, watch.watching ? "plain" : "dim", 4))
+  }
+  lines.push(line(WATCH_USAGE, "dim"))
+  return lines
+}
+
+/** A watch that was set (`watch.started`), for the transcript. */
+export function watchStartedText(watch: { readonly watchId: string; readonly spawnId: string; readonly pattern: string; readonly regex: boolean; readonly ignoreCase: boolean; readonly limit: number }): { readonly head: string; readonly tail: string } {
+  return { head: `watching background ${watch.spawnId} for ${watchWords(watch)}`, tail: ` · the agent is told when it prints a matching line (${watchTimes(watch.limit)}) · ${watch.watchId}` }
+}
+
+/** A watch that fired (`watch.fired`), for the transcript: which watch, on which command, and that the message is the watch's, not the user's. */
+export function watchFiredText(fired: { readonly watchId: string; readonly spawnId: string; readonly firing: number }, limit: number | null): string {
+  return `watch ${fired.watchId}: background ${fired.spawnId} printed a matching line${limit === null ? "" : ` (${fired.firing} of ${limit})`} · the agent is told · sent by the watch, not typed by you`
+}
+
+/** A watch that ended before it had fired as often as it may (`watch.ended`), for the transcript. */
+export function watchEndedText(ended: { readonly watchId: string; readonly spawnId: string; readonly reason: "removed" | "command_ended" | "lost" }): string {
+  const why = ended.reason === "removed" ? "removed" : ended.reason === "command_ended" ? `ended with its command (background ${ended.spawnId})` : `lost: background ${ended.spawnId} did not survive a restart`
+  return `watch ${ended.watchId} ${why}`
 }
 
 // ---------------------------------------------------------------- memory

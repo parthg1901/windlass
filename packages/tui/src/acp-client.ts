@@ -338,6 +338,18 @@ class AcpSession implements BackendSession {
     return this.feature(EXT.wakeSecret, () => this.session.wakeSecret(id))
   }
 
+  watchOutput(command: string, watch: { readonly pattern: string; readonly regex?: boolean; readonly ignoreCase?: boolean; readonly limit?: number }) {
+    return this.feature(EXT.watch, () => this.session.watchOutput(command, watch))
+  }
+
+  unwatchOutput(watchId: string): Promise<boolean> {
+    return this.feature(EXT.unwatch, () => this.session.unwatchOutput(watchId))
+  }
+
+  watches() {
+    return this.feature(EXT.watches, () => this.session.watches())
+  }
+
   memory(): Promise<MemoryStateResult> {
     return this.feature(EXT.memory, () => this.session.memory())
   }

@@ -168,6 +168,9 @@ export class ScriptSession implements BackendSession {
   commands?: BackendSession["commands"]
   sendCommand?: BackendSession["sendCommand"]
   cancelCall?: BackendSession["cancelCall"]
+  watchOutput?: BackendSession["watchOutput"]
+  unwatchOutput?: BackendSession["unwatchOutput"]
+  watches?: BackendSession["watches"]
   private readonly mcpListeners = new Set<(state: McpStateResult) => void>()
 
   onMcp(listener: (state: McpStateResult) => void): () => void {

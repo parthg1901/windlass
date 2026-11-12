@@ -61,6 +61,8 @@ import {
   type SkillsResult,
   type WakeListResult,
   type WakeSecretResult,
+  type WatchSetResult,
+  type WatchesResult,
   type OpenMeta,
   type ReplayParams,
   type ReplayResult,
@@ -694,6 +696,25 @@ export class ClientSession {
    */
   cancelCall(target: { readonly callId: string; readonly messageId?: string; readonly childSessionId?: string }): Promise<CancelCallResult> {
     return this.link.request<CancelCallResult>(EXT.cancelCall, { sessionId: this.id, ...target })
+  }
+
+  /**
+   * `<prefix>/watch`: sets a watch on the output of a running background command. Rejects with a `ClientError`
+   * (`invalid_request`) whose message is the engine's sentence when it refuses (no such command runs, a pattern it
+   * cannot use, too many watches).
+   */
+  watchOutput(command: string, watch: { readonly pattern: string; readonly regex?: boolean; readonly ignoreCase?: boolean; readonly limit?: number }): Promise<WatchSetResult> {
+    return this.link.request<WatchSetResult>(EXT.watch, { sessionId: this.id, command, ...watch })
+  }
+
+  /** `<prefix>/unwatch`: removes a watch that could still fire; `false` for one that is over or unknown. */
+  async unwatchOutput(watchId: string): Promise<boolean> {
+    return (await this.link.request<{ removed: boolean }>(EXT.unwatch, { sessionId: this.id, watchId })).removed
+  }
+
+  /** `<prefix>/watches`: the running background commands, each with the watches on its output. */
+  watches(): Promise<WatchesResult> {
+    return this.link.request<WatchesResult>(EXT.watches, { sessionId: this.id })
   }
 
   /** `session/set_config_option`: `model`, `effort`, `approval` or `agent`. Resolves with the options as they now are. */

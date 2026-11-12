@@ -25,6 +25,11 @@ export {
   wakeLines,
   wakeMessageSummary,
   wakeNotFiringText,
+  watchEndedText,
+  watchEntry,
+  watchFiredText,
+  watchLines,
+  watchStartedText,
   webhookSecretLines,
 } from "../../cli/src/features.ts"
 export { mcpArguments } from "../../cli/src/tools.ts"

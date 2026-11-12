@@ -27,6 +27,8 @@ import {
   skillsLines,
   wakeLines,
   wakeNotFiringText,
+  watchEntry,
+  watchLines,
   webhookSecretLines,
 } from "./features.ts"
 import { hookQuestionLines, hooksLines, hooksUnattendedText, lspLines, lspQuestionLines, lspUnattendedText } from "./hooks.ts"
@@ -52,7 +54,7 @@ export interface KeptNote {
   readonly scope: "user" | "project"
 }
 
-export const FEATURE_COMMANDS = ["mcp", "hooks", "lsp", "skills", "wakeups", "memory", "remember", "forget"] as const
+export const FEATURE_COMMANDS = ["mcp", "hooks", "lsp", "skills", "wakeups", "watch", "memory", "remember", "forget"] as const
 export type FeatureCommand = (typeof FEATURE_COMMANDS)[number]
 
 const MCP_ANSWERS = "[y] start it · [N] not now › "
@@ -116,6 +118,20 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
           return out.notice(result.message, result.cancelled ? "info" : "warn")
         }
         return out.lines(webhookSecretLines(await session.wakeSecret!(words[1]!), false))
+      }
+      case "watch": {
+        if (session.watches === undefined || session.watchOutput === undefined || session.unwatchOutput === undefined) return missing("watch")
+        const entry = watchEntry(rest)
+        if ("problem" in entry) return out.notice(entry.problem, "warn")
+        if (entry.kind === "list") return out.lines(watchLines(await session.watches()))
+        if (entry.kind === "remove") {
+          // What was removed is the session's own event (`watch.ended`); one that is over or unknown is said here.
+          if (!(await session.unwatchOutput(entry.watchId))) out.notice(`there is no watch ${entry.watchId} that could still fire (it has fired as often as it may, was removed, or its command ended); /watch lists them`, "warn")
+          return
+        }
+        // A watch that was set is the session's own event (`watch.started`); a refusal is the engine's sentence.
+        await session.watchOutput(entry.command, { pattern: entry.pattern, regex: entry.regex, ignoreCase: entry.ignoreCase, ...(entry.limit === null ? {} : { limit: entry.limit }) }).catch((error: unknown) => out.notice(error instanceof Error ? error.message : String(error), "warn"))
+        return
       }
       case "memory": {
         if (session.memory === undefined) return missing("memory")

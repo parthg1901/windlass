@@ -12,7 +12,7 @@ import { type DiffResult, type TaskItem, type TurnNotification, deriveTitle } fr
 import { type TurnInfo, TurnTracker } from "@windlass/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@windlass/core"
 import { type DiagnosticsRecord, type HookRecord, hookPrinted, objectionTexts, stopHookSentBack, unsatisfiedText } from "./cli.ts"
-import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
+import { type EngineEvent, LEFT_TO_PARENT, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, callArgument, commandSent, restoredFiles, tasksOf, wakeMessageSummary, watchEndedText, watchFiredText, watchStartedText, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
 import { type Role, type Span, span } from "./theme.ts"
 
@@ -424,6 +424,9 @@ export class Transcript {
     return true
   }
 
+  /** How often each watch on a background command's output may fire (`watch.started`), for the count on a firing. */
+  private readonly watchLimits = new Map<string, number>()
+
   /** The tool calls that are running now, oldest first: what the key that stops one call can act on. */
   runningCalls(): ToolRow[] {
     return this.rows.filter((row): row is ToolRow => row.kind === "tool" && row.phase === "running")
@@ -584,6 +587,20 @@ export class Transcript {
         })
         return
       }
+      case "watch.started": {
+        this.watchLimits.set(event.data.watchId, event.data.limit)
+        const said = watchStartedText({ ...event.data, pattern: sanitize(event.data.pattern) })
+        this.notice("◉", "accent", [span(said.head), span(said.tail, "dim")], [], replay, "session")
+        return
+      }
+      case "watch.fired":
+        // The message that tells the agent was admitted just before: it is the watch's, not something the user typed.
+        this.notice("◉", "accent", [span(watchFiredText(event.data, this.watchLimits.get(event.data.watchId) ?? null), "accent")], [[span(sanitize(event.data.line))]], replay, "session")
+        return
+      case "watch.ended":
+        this.watchLimits.delete(event.data.watchId)
+        this.notice("◉", "dim", [span(watchEndedText(event.data), "dim")], [], replay, "session")
+        return
       case "tool.cancel_requested": {
         // The user stopped this one call: its row says so until it settles, and then what came of it.
         const row = this.tools.get(key(event.data.messageId, event.data.callId))
@@ -1095,6 +1112,8 @@ export class Transcript {
       this.notice("⏰", "accent", [span(summary.head, "accent")], summary.message === null ? [] : [[span(sanitize(summary.message))]], replay, "session")
       return
     }
+    // A watch's message is said by its own event (`watch.fired`), which follows at once: which watch, and the line.
+    if (data.origin === "background_watch") return
     if (data.origin !== null) {
       this.notice(SYMBOL.inbox, "dim", [span(`${data.origin}: `, "dim"), span(`"${oneLine(text)}"`)], [], replay, "work")
       return

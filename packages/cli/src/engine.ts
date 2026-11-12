@@ -33,7 +33,7 @@
  *   that leaves them out has no undo, and the commands say so.
  */
 import type { AgentsResult, CancelCallResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
-import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
@@ -297,6 +297,13 @@ export interface Session {
   wakeups?(): Promise<WakeListResult>
   cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>
   wakeSecret?(id: string): Promise<WakeSecretResult>
+  /**
+   * `/watch`: sets a watch on the output of a running background command (rejects with the engine's sentence when
+   * it refuses), removes one, and lists the running commands with their watches.
+   */
+  watchOutput?(command: string, watch: { readonly pattern: string; readonly regex?: boolean; readonly ignoreCase?: boolean; readonly limit?: number }): Promise<WatchSetResult>
+  unwatchOutput?(watchId: string): Promise<boolean>
+  watches?(): Promise<WatchesResult>
   /** `/memory`, and the user's own changes to notes (`/remember`, `/forget`, `/memory confirm|reject|renew`). */
   memory?(): Promise<MemoryStateResult>
   memoryChange?(params: Omit<MemoryChangeParams, "sessionId">): Promise<MemoryChangeResult>

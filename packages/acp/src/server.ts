@@ -61,6 +61,7 @@ import {
   type MessageId,
   type ModelEntry,
   ModelListError,
+  type OutputWatchRequest,
   type ReplayRequest,
   type RevertOptions,
   type RevertPlan,
@@ -79,6 +80,7 @@ import {
 } from "@windlass/core"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
+import { describeWatch } from "../../core/src/engine/spawn.ts"
 import type { CommandExpansion } from "../../core/src/engine/commands.ts"
 import type { Expansion } from "../../core/src/commands/expand.ts"
 import type { CommandListing, ListedCommand } from "../../core/src/commands/lookup.ts"
@@ -110,6 +112,8 @@ import {
   type RevertParams,
   type SendCommandResult,
   type SubagentRef,
+  type WatchSetResult,
+  type WatchesResult,
   type SessionState,
   type StateNotification,
   handEditSentences,
@@ -181,7 +185,7 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact, EXT.commands, EXT.expandCommand, EXT.sendCommand, EXT.cancelCall, EXT.watch, EXT.unwatch, EXT.watches],
   notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged, EXT.hooksChanged, EXT.lspChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /**
@@ -272,6 +276,19 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.cancelCall, parseObject, ({ params }) =>
       state.cancelCall(requireString(params, "sessionId"), { callId: requireString(params, "callId"), messageId: optionalString(params, "messageId"), childSessionId: optionalString(params, "childSessionId") }),
     )
+    .onRequest(EXT.watch, parseObject, ({ params }) => {
+      if (params.regex !== undefined && typeof params.regex !== "boolean") throw RequestError.invalidParams(undefined, "regex must be a boolean")
+      if (params.ignoreCase !== undefined && typeof params.ignoreCase !== "boolean") throw RequestError.invalidParams(undefined, "ignoreCase must be a boolean")
+      if (typeof params.pattern !== "string") throw RequestError.invalidParams(undefined, "pattern must be a string")
+      return state.watch(requireString(params, "sessionId"), requireString(params, "command"), {
+        pattern: params.pattern,
+        ...(params.regex === undefined ? {} : { regex: params.regex }),
+        ...(params.ignoreCase === undefined ? {} : { ignoreCase: params.ignoreCase }),
+        ...(typeof params.limit === "number" ? { limit: params.limit } : {}),
+      })
+    })
+    .onRequest(EXT.unwatch, parseObject, ({ params }) => state.unwatch(requireString(params, "sessionId"), requireString(params, "watchId")))
+    .onRequest(EXT.watches, parseObject, ({ params }) => state.watches(requireString(params, "sessionId")))
     .onRequest(EXT.memory, parseObject, ({ params }) => memoryState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.memoryChange, parseObject, ({ params }) => {
       const action = oneOfOrNull(params.action, ["remember", "retract", "confirm", "reject", "renew"] as const, "action")
@@ -627,6 +644,55 @@ class ConnectionState {
     if (part.state.status === "running") return { stopped: false, message: "That call cannot be stopped from here (it is answered from a recording, or its tool has already come back). Nothing was stopped." }
     if (part.state.status === "pending") return { stopped: false, message: "That call has not started yet, so there is nothing to stop; Ctrl-C stops the whole turn." }
     return { stopped: false, message: "That call already has its result. Nothing was stopped." }
+  }
+
+  /**
+   * `_<ns>/watch`: the user sets a watch on the output of a background
+   * command that is running (`EngineSession.watchOutput`): the model is
+   * told, without polling, when the command prints a line that matches.
+   * What the engine refuses (no such command runs, a pattern it cannot
+   * use, too many watches) is a bad request with the engine's sentence.
+   * Answered after the watch's events (`watch.started`, and `watch.fired`
+   * for a line the command had already printed) were sent.
+   */
+  async watch(sessionId: string, command: string, request: OutputWatchRequest): Promise<WatchSetResult> {
+    const view = this.requireView(sessionId)
+    const set = this.engineErrors(() => view.session.watchOutput(command, request))
+    await view.drained()
+    return { watchId: set.watchId, spawnId: set.spawnId, pattern: set.pattern, regex: set.regex, ignoreCase: set.ignoreCase, limit: set.limit, fired: set.fired }
+  }
+
+  /** `_<ns>/unwatch`: removes a watch that could still fire (`watch.ended`, `removed`); `false` for one that is over or unknown. */
+  async unwatch(sessionId: string, watchId: string) {
+    const view = this.requireView(sessionId)
+    const removed = this.engineErrors(() => view.session.unwatchOutput(watchId))
+    await view.drained()
+    return { removed }
+  }
+
+  /** `_<ns>/watches`: the session's running background commands, each with the watches on its output, from its state. */
+  watches(sessionId: string): WatchesResult {
+    const running = this.requireView(sessionId).session.projection().session.spawned?.running ?? []
+    return {
+      sessionId,
+      commands: running
+        .filter((entry) => entry.kind === "command")
+        .map((entry) => ({
+          spawnId: entry.spawnId,
+          command: entry.command ?? "",
+          logPath: entry.logPath,
+          watches: (entry.watches ?? []).map((watch) => ({
+            watchId: watch.watchId,
+            pattern: watch.pattern,
+            regex: watch.regex,
+            ignoreCase: watch.ignoreCase,
+            description: describeWatch(watch),
+            limit: watch.limit,
+            fired: watch.fired,
+            watching: watch.ended === null && watch.fired < watch.limit,
+          })),
+        })),
+    }
   }
 
   /** `_<ns>/steer` and `_<ns>/queue`: admit input without waiting for the turn. */

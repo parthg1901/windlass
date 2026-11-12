@@ -22,7 +22,7 @@ import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend,
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, type CommandSpec, complete, fileCommands, findFileCommand, parseCommand } from "./commands.ts"
 import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
-import { COPY_NOTE, wakeNotFiringText, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
+import { COPY_NOTE, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpFirstMessageText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
@@ -709,6 +709,8 @@ export class App {
         return session?.skills !== undefined
       case "wakeups":
         return session?.wakeups !== undefined
+      case "watch":
+        return session?.watches !== undefined && session.watchOutput !== undefined && session.unwatchOutput !== undefined
       case "memory":
       case "remember":
       case "forget":
@@ -821,6 +823,7 @@ export class App {
         case "lsp":
         case "skills":
         case "wakeups":
+        case "watch":
         case "memory":
         case "remember":
         case "forget":
@@ -1312,7 +1315,7 @@ export class App {
   }
 
   /** `/mcp`, `/skills`, `/wakeups`, `/memory`, `/remember`, `/forget`: the line CLI's words, as a note in the conversation. */
-  private async featureCommand(name: "mcp" | "hooks" | "lsp" | "skills" | "wakeups" | "memory" | "remember" | "forget", rest: string): Promise<void> {
+  private async featureCommand(name: "mcp" | "hooks" | "lsp" | "skills" | "wakeups" | "watch" | "memory" | "remember" | "forget", rest: string): Promise<void> {
     const session = this.session
     if (session === null) return this.say(`/${name} needs an open session`, "warn")
     const missing = () => this.say(`/${name} is not available with this engine (${this.options.backend.label})`, "warn")
@@ -1361,6 +1364,20 @@ export class App {
           if (words[0] === "secret") return this.showLines(webhookSecretLines(await session.wakeSecret!(words[1]!), false), "accent", "⏰")
           const result = await session.cancelWake!(words[1]!)
           return this.say(result.message, result.cancelled ? "dim" : "warn")
+        }
+        case "watch": {
+          if (session.watches === undefined || session.watchOutput === undefined || session.unwatchOutput === undefined) return missing()
+          const entry = watchEntry(rest)
+          if ("problem" in entry) return this.say(entry.problem, "warn")
+          if (entry.kind === "list") return this.showLines(watchLines(await session.watches()))
+          if (entry.kind === "remove") {
+            // What was removed is the session's own event (`watch.ended`); one that is over or unknown is said here.
+            if (!(await session.unwatchOutput(entry.watchId))) this.say(`there is no watch ${entry.watchId} that could still fire (it has fired as often as it may, was removed, or its command ended); /watch lists them`, "warn")
+            return
+          }
+          // A watch that was set is the session's own event (`watch.started`); a refusal is the engine's sentence.
+          await session.watchOutput(entry.command, { pattern: entry.pattern, regex: entry.regex, ignoreCase: entry.ignoreCase, ...(entry.limit === null ? {} : { limit: entry.limit }) }).catch((error: unknown) => this.say(error instanceof Error ? error.message : String(error), "warn"))
+          return
         }
         case "memory": {
           if (session.memory === undefined) return missing()
