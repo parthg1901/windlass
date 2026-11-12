@@ -38,6 +38,7 @@ import { JsonSink, PrettyRenderer, QuietSink, type Sink } from "./renderer.ts"
 import { selectEngine } from "./select-engine.ts"
 import { selfCommand } from "./self.ts"
 import { type EditorAction, Screen } from "./terminal.ts"
+import { BUILTIN_COMMANDS, helpLines, lookup, unknownCommandText } from "./slash.ts"
 import { colorEnabled, displayWidth, flatten, formatDuration, truncate } from "./text.ts"
 
 export interface Io {
@@ -233,8 +234,11 @@ export async function run(io: Io): Promise<number> {
     io.onSignal("SIGTERM", () => leave(EXIT.terminated)),
     io.stdout.onClosed?.(() => leave(EXIT.outputClosed)),
   ]
+  const resumed = options.session !== null || options.continue
   const flow = async (): Promise<number> => {
     if (autoplay) return playDemo(session as FakeSession, turn, options.demoSpeed)
+    // Which session this is, before anything else: a new one, or the one resumed with its title and its turns.
+    if (terminal !== null && demo === null) await sayOpened(sink as PrettyRenderer, session, resumed)
     if (terminal === null) {
       const outcome = await turn(prompt!)
       if (outcome === "closed") return 1
@@ -257,6 +261,8 @@ export async function run(io: Io): Promise<number> {
     // The engine went away on its own (its process died): said last, where it is seen.
     const lost = session.lost?.() ?? null
     if (lost !== null) io.stderr.write(`${brand.binary}: ${lost}\n`)
+    // How to come back to it, as the TUI says on leaving; a one-shot run's output stays only the run's.
+    else if (terminal !== null && demo === null) io.stdout.write(`${brand.binary}: session ${session.id} · resume with: ${brand.binary} --session ${session.id}\n`)
   }
 }
 
@@ -333,10 +339,7 @@ async function interactiveLoop(context: Interactive): Promise<number> {
   const screen = terminal.screen
   let waiting: ((text: string | null) => void) | null = null
 
-  const steer = (text: string) => {
-    const queued = /^\/queue(\s|$)/.test(text.trim())
-    const message = queued ? text.trim().replace(/^\/queue\s*/, "") : text
-    if (message.trim() === "") return renderer.notice("/queue needs a message, e.g. /queue then update the changelog", "warn")
+  const steer = (message: string, queued: boolean) => {
     session.send(message, { delivery: queued ? "queue" : "steer" }).then(
       (id) => {
         if (id === null) renderer.notice("not sent: the session is not taking input right now", "warn")
@@ -355,16 +358,38 @@ async function interactiveLoop(context: Interactive): Promise<number> {
         if (!control.running) waiting?.(null)
         return
       case "submit": {
-        const trimmed = action.text.trim()
-        if (trimmed === "/exit" || trimmed === "/quit") {
-          if (control.running) return context.leave(0)
-          return waiting?.(null)
+        // A `/word` is a command or nothing: an unknown one is never sent (it would cost a request and title the session).
+        const found = lookup(action.text, [BUILTIN_COMMANDS])
+        if (found.kind === "unknown") return renderer.notice(unknownCommandText(found), "warn")
+        if (found.kind === "message") {
+          if (control.running) return found.text.trim() === "" ? undefined : steer(found.text, false)
+          return waiting?.(found.text)
         }
-        if (trimmed === "/clear-taint") return void clearTaint(session, renderer, screen)
-        if (/^\/(approval|mode)(\s|$)/.test(trimmed)) return void approvalMode(session, renderer, trimmed.replace(/^\/\w+\s*/, ""))
-        if (trimmed === "/diff") return void showDiff(session, renderer)
-        if (control.running) return trimmed === "" ? undefined : steer(action.text)
-        return waiting?.(action.text)
+        const name = found.command.name
+        switch (name) {
+          case "exit":
+            if (control.running) return context.leave(0)
+            return waiting?.(null)
+          case "help":
+            for (const line of helpLines([BUILTIN_COMMANDS])) renderer.notice(line)
+            return
+          case "clear-taint":
+            return void clearTaint(session, renderer, screen)
+          case "approval":
+            return void approvalMode(session, renderer, found.rest)
+          case "diff":
+            return void showDiff(session, renderer)
+          case "queue":
+            if (found.rest === "") return renderer.notice("/queue needs a message, e.g. /queue then update the changelog", "warn")
+            // With nothing running there is nothing to queue behind: a queued message is a prompt.
+            return control.running ? steer(found.rest, true) : waiting?.(found.rest)
+          case "undo":
+          case "redo":
+            // The editor runs `/undo` and `/redo` themselves; one with words after it reaches here.
+            return renderer.notice(`/${name} takes nothing after it`, "warn")
+          default:
+            return renderer.notice(`/${name} cannot be run here`, "warn")
+        }
       }
     }
   })
@@ -382,8 +407,6 @@ async function interactiveLoop(context: Interactive): Promise<number> {
       waiting = null
       if (text === null) break
       if (text.trim() === "") continue
-      // With nothing running there is nothing to queue behind: a queued message is a prompt.
-      text = /^\/queue\s/.test(text.trim()) ? text.trim().replace(/^\/queue\s*/, "") : text
       renderer.prompt(text)
     }
     screen.show("› ", STEER_HINT)
@@ -391,6 +414,16 @@ async function interactiveLoop(context: Interactive): Promise<number> {
     if ((await context.turn(text)) === "closed") return 1
   }
   return 0
+}
+
+/** The line the interactive mode starts with: which session, and for a resumed one its title and its turns. */
+async function sayOpened(renderer: PrettyRenderer, session: Session, resumed: boolean): Promise<void> {
+  const described = await session.describe?.().catch(() => null)
+  const hint = " · /help lists the commands"
+  if (!resumed || described == null) return renderer.notice(`${resumed ? "resumed" : "new"} session ${session.id}${hint}`)
+  const title = described.title === null ? "" : ` "${truncate(flatten(described.title), 50)}"`
+  const turns = `${described.turns === 1 ? "1 turn" : `${described.turns} turns`}${described.undone > 0 ? ` (${described.undone} undone)` : ""}`
+  renderer.notice(`resumed session ${session.id}${title} · ${turns}${hint}`)
 }
 
 /**

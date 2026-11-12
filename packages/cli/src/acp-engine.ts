@@ -31,7 +31,8 @@
  *   after it; a server in use is never stopped by a listing.
  */
 import { type ClientSession, HarnessConnection, ClientError, START_TIMEOUT_MS, openWhenReleased } from "@light-harness/acp/client"
-import { type DiffResult, EXT, type ForkResult, type ReplayResult } from "@light-harness/acp/extensions"
+import { type DiffResult, EXT, type ForkResult, type ReplayResult, titleFromEvents } from "@light-harness/acp/extensions"
+import { isUndone, turnsOf } from "@light-harness/acp/turns"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@light-harness/core"
 import { selfCommand } from "./self.ts"
 import {
@@ -47,6 +48,7 @@ import {
   type ReplayProgress,
   type SendOptions,
   type Session,
+  type SessionDescription,
   type SessionRevertOptions,
   type SessionSummary,
   signInSentence,
@@ -271,6 +273,13 @@ class AcpSession implements Session {
     } catch (error) {
       throw new Error(unavailable(error).message)
     }
+  }
+
+  /** The title and the turns, from the stored log. */
+  async describe(): Promise<SessionDescription> {
+    const [state, events] = await Promise.all([this.session.state(), this.session.connection.storedEvents(this.id)])
+    const turns = turnsOf(events)
+    return { title: state.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length }
   }
 
   close(): Promise<void> {

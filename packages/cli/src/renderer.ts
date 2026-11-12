@@ -160,8 +160,13 @@ export class PrettyRenderer implements Sink {
     this.drawStatus()
   }
 
+  /** A line from the CLI itself: never cut, wrapped under itself when it does not fit. */
   notice(text: string, tone: "info" | "warn" | "error" = "info"): void {
-    this.line("info", [seg(text, tone === "error" ? "red" : tone === "warn" ? "yellow" : "dim")])
+    const color = tone === "error" ? "red" : tone === "warn" ? "yellow" : "dim"
+    const lead = text.slice(0, text.length - text.trimStart().length)
+    const [first = "", ...rest] = wrap(text, this.width)
+    this.line("info", [seg(first, color)])
+    for (const line of wrap(rest.join(" "), this.width - lead.length - 2)) this.line("info", [seg(`${lead}  ${line}`, color)])
     this.drawStatus()
   }
 

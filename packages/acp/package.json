@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./extensions": "./src/extensions.ts",
-    "./client": "./src/client.ts"
+    "./client": "./src/client.ts",
+    "./turns": "./src/turns.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.5.0",

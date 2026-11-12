@@ -25,6 +25,7 @@ import {
   createHarness,
 } from "@light-harness/core"
 import { titleFromEvents } from "@light-harness/acp/extensions"
+import { isUndone, turnsOf } from "@light-harness/acp/turns"
 import { askLocally } from "./commands.ts"
 import { type Approver, type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, type Session, type SessionSummary, signInSentence } from "./engine.ts"
 
@@ -82,6 +83,11 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
           if (mode !== undefined) session.setApproval({ mode: mode as "ask" | "auto" | "full" })
           const state = session.approval()
           return { mode: state?.policy.mode ?? null, tainted: state?.taint.tainted ?? false, taint: session.projection().session.approval?.taint?.text ?? null }
+        },
+        describe: async () => {
+          const events = harness.engine.readEvents(session.id)
+          const turns = turnsOf(events)
+          return { title: session.projection().session.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length }
         },
         close: () => harness.close(),
       }

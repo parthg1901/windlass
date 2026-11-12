@@ -229,6 +229,8 @@ export interface Session {
   approvalMode?(mode?: string): Promise<{ readonly mode: string | null; readonly tainted: boolean; readonly taint: string | null }>
   /** `/diff`: the files the latest turn changed, with bounded per-file patches. */
   diff?(): Promise<DiffResult>
+  /** What the interactive mode says when it opens the session: its title and its turns (`/undo` keeps their count, marked undone). */
+  describe?(): Promise<SessionDescription>
   /** Stops anything still running (as a shutdown) and ends `events`. */
   close(): Promise<void>
   /**
@@ -237,6 +239,13 @@ export interface Session {
    * in this process never lose their sessions and leave it out.
    */
   lost?(): string | null
+}
+
+export interface SessionDescription {
+  readonly title: string | null
+  readonly turns: number
+  /** Of `turns`, the ones `/undo` took back. */
+  readonly undone: number
 }
 
 /** How long the CLI waits for `Session.close` before it exits anyway. */
