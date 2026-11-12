@@ -78,3 +78,15 @@ test("a watch that is set, fires and ends is a row of its own each; its message 
   expect(frame).not.toContain("background_watch")
   expect(frame).not.toContain("› Background command")
 })
+
+test("a watch the engine ended because its pattern took too long says so in its own sentence", async () => {
+  const { session } = await open()
+  session.emit(
+    event("watch.started", { watchId: "bg_1.w1", spawnId: "bg_1", pattern: "(a+)+$", regex: true, ignoreCase: false, limit: 1 }),
+    event("watch.ended", { watchId: "bg_1.w1", spawnId: "bg_1", reason: "too_slow" }),
+  )
+  await mounted!.settle()
+  const frame = flat(await mounted!.frame())
+  expect(frame).toContain("◉ watch bg_1.w1 ended: its pattern took too long to match a line")
+  expect(frame).not.toContain("too_slow")
+})
