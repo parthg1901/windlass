@@ -232,6 +232,11 @@ describe("a multi-turn task", () => {
     expect(turns.map((argv) => flag(argv, "--max-steps"))).toEqual([String(result.maxSteps), String(result.maxSteps)])
     expect(turns.every((argv) => argv.indexOf("--max-steps") < argv.indexOf("--"))).toBe(true)
     expect(turns.map((argv) => flag(argv, "--model"))).toEqual(["stand-in-model", null])
+    // Every turn says how calls are approved: the default mode, and a refusal where a person would be asked.
+    expect(turns.map((argv) => [flag(argv, "--approval"), flag(argv, "--unattended")])).toEqual([
+      ["auto", "deny"],
+      ["auto", "deny"],
+    ])
     expect(turns.map((argv) => flag(argv, "--session"))).toEqual([null, "ses_standin"])
   }, 60_000)
 

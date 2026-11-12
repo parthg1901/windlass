@@ -24,6 +24,9 @@ const REPO = resolve(import.meta.dir, "..")
 export const DEFAULT_CLI = ["bun", join(REPO, "packages/cli/src/main.ts")]
 export const RESULTS_DIR = join(import.meta.dir, "results")
 
+/** How the agent's tool calls are approved in an eval: the default mode, and a refusal instead of a question. */
+export const UNATTENDED_FLAGS = ["--approval", "auto", "--unattended", "deny"] as const
+
 // A `Record` over the union, so a new ephemeral event type fails to compile here until it is listed.
 const EPHEMERAL: Record<EphemeralEventType, true> = {
   "text.delta": true,
@@ -46,7 +49,7 @@ export interface RunOptions {
   readonly keep?: boolean
   /** Where results.json and the raw streams go. Default: a timestamped directory under evals/results/. */
   readonly out?: string
-  /** The command that starts the agent; the runner appends `--json --cwd <dir> --max-steps <n> [--model] [--effort] -- <prompt>`. */
+  /** The command that starts the agent; the runner appends `--json --cwd <dir> --approval auto --unattended deny --max-steps <n> [--model] [--effort] -- <prompt>`. */
   readonly cli?: readonly string[]
   /** Overrides every task's `timeoutSeconds`. */
   readonly timeoutSeconds?: number
@@ -389,7 +392,9 @@ function sessionOf(jsonl: string): string | null {
 
 /** Starts the agent for one prompt, streams stdout to the events file, and stops it like a user would when time is up. */
 async function runProcess(prompt: string, flags: readonly string[], dir: string, timeoutMs: number, writer: ReturnType<ReturnType<typeof Bun.file>["writer"]>, options: RunOptions) {
-  const cmd = [...(options.cli ?? DEFAULT_CLI), "--json", "--cwd", dir, ...flags, "--", prompt]
+  // Said explicitly, on every turn: an eval runs with nobody to answer, in the default mode. A call that would ask is
+  // refused and the agent goes on (`deny`), so a run never waits, and the refusal is in the events for whoever reads them.
+  const cmd = [...(options.cli ?? DEFAULT_CLI), "--json", "--cwd", dir, ...UNATTENDED_FLAGS, ...flags, "--", prompt]
   const started = performance.now()
   const proc = Bun.spawn(cmd, {
     cwd: dir,
