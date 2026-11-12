@@ -43,6 +43,8 @@ export const DOUBLE_INTERRUPT_MS = 2000
 export const CLOSE_TIMEOUT_MS = 3000
 /** Below this width the panel hides itself unless asked for. */
 export const PANEL_AUTO_WIDTH = 100
+/** How long after a failed listing of the models it is asked for again. */
+export const MODELS_RETRY_MS = 30_000
 const MAX_INPUT_ROWS = 8
 /** The width of the key column in the help: the longest key and a space. */
 const KEY_COLUMN = 33
@@ -377,12 +379,19 @@ export class App {
     await this.openSession(this.target)
   }
 
+  /** When the models were last asked for, so that a listing that failed is asked for again, at most twice a minute. */
+  private modelsAskedAt = Number.NEGATIVE_INFINITY
+  private modelsListed = false
+
+  /** The models' context windows, for the panel: asked for when a session opens, and again after a listing that failed. */
   private async loadModels(): Promise<void> {
     const backend = this.options.backend
-    if (backend.listModels === undefined || this.contextWindows.size > 0) return
+    if (backend.listModels === undefined || this.modelsListed || this.now() - this.modelsAskedAt < MODELS_RETRY_MS) return
+    this.modelsAskedAt = this.now()
     try {
       const listed = await backend.listModels()
       for (const model of listed.models) this.contextWindows.set(model.id, model.contextWindow)
+      this.modelsListed = true
       this.renderer.requestRender()
     } catch {
       // The panel shows "window unknown"; the model picker reports the error when it is opened.
@@ -1043,6 +1052,7 @@ export class App {
       return this.say(`could not list the models: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
     for (const model of models) this.contextWindows.set(model.id, model.contextWindow)
+    this.modelsListed = true
     const currentModel = this.transcript.session.model
     const chosen = await this.dialog.show({
       title: "Model",
@@ -2055,6 +2065,8 @@ export class App {
 
   private panelContent(columns: number, rows: number): Span[][] {
     const model = this.transcript.session.model
+    // The listing failed (the network, the provider): asked for again once a call says how full the context is.
+    if (!this.modelsListed && this.transcript.calls.length > 0) void this.loadModels()
     return panelLines(
       {
         session: { ...this.transcript.session, id: this.transcript.session.id ?? this.session?.id ?? null, cwd: this.transcript.session.cwd ?? this.options.cwd },

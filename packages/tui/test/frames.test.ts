@@ -5,11 +5,12 @@
  * read in them.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { brand } from "@windlass/core"
+import { brand, event } from "@windlass/core"
+import { MODELS_RETRY_MS } from "../src/app.ts"
 import { panelLines, panelWidth } from "../src/panel.ts"
 import { Theme } from "../src/theme.ts"
 import type { CallUsage } from "../src/transcript.ts"
-import { type Mounted, mount, playAll } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, playAll } from "./helpers.ts"
 
 const SIZES = [
   [60, 20],
@@ -225,4 +226,37 @@ test("the panel grows on a wide terminal, and every name in the session section 
   expect(lines).toContain("trust    untrusted · /clear-taint")
   const starts = lines.slice(1, 9).filter((line) => line !== "").map((line) => line.search(/(?<=^\S+\s+)\S/))
   expect(new Set(starts)).toEqual(new Set([9]))
+})
+
+test("a listing of the models that failed is asked for again, so the panel learns the context window", async () => {
+  const backend = new ScriptBackend()
+  let asked = 0
+  Object.assign(backend, {
+    listModels: async () => {
+      asked += 1
+      if (asked === 1) throw new Error("could not list the models: the provider did not answer")
+      return { defaultModel: "gpt-6-luna", models: [{ id: "gpt-6-luna", name: "gpt-6-luna", efforts: ["low"], defaultEffort: "low", contextWindow: 272_000, isDefault: true }] }
+    },
+  })
+  mounted = await mount({ width: 120, height: 30, backend })
+  const usage = { inputTokens: 4_000, cachedInputTokens: 0, outputTokens: 50, reasoningTokens: 0 }
+  backend.session!.emit(
+    event("session.created", { cwd: "/work", title: null, lineage: null, settings: { model: "gpt-6-luna", reasoningEffort: "low" } }),
+    event("step.started", { messageId: "a1" as never, attempt: 1, model: "gpt-6-luna" }),
+    event("step.ended", { messageId: "a1" as never, finish: "stop", usage }),
+  )
+  await mounted.settle()
+  expect(await mounted.frame()).toContain("(window unknown)")
+  expect(asked).toBe(1)
+  mounted.clock.now += MODELS_RETRY_MS + 10
+  backend.session!.emit(event("step.started", { messageId: "a2" as never, attempt: 1, model: "gpt-6-luna" }), event("step.ended", { messageId: "a2" as never, finish: "stop", usage }))
+  await mounted.settle()
+  await mounted.settle()
+  expect(asked).toBe(2)
+  expect(await mounted.frame()).toMatch(/context\s+4\.0k of 272k/)
+  // Listed once, it is not asked for again.
+  mounted.clock.now += MODELS_RETRY_MS + 10
+  backend.session!.emit(event("step.started", { messageId: "a3" as never, attempt: 1, model: "gpt-6-luna" }), event("step.ended", { messageId: "a3" as never, finish: "stop", usage }))
+  await mounted.settle()
+  expect(asked).toBe(2)
 })
