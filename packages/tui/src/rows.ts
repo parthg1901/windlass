@@ -78,7 +78,9 @@ export function isLive(row: Row): boolean {
 function userLines(row: UserRow, columns: number): Span[][] {
   const command = row.command
   // A command file's message is shown as it was typed; the text it stands for is under it when expanded.
-  const lines = (command?.typed ?? row.text).split("\n").flatMap((line, index) => wrapLine([span(index === 0 ? "› " : "  ", "accent"), span(line, "user")], columns, [span("  ")]))
+  // A line of the message that starts indented (a quote in a review, a list) goes on under its own text when it wraps.
+  const own = (line: string) => Math.min(line.length - line.trimStart().length, Math.floor(columns / 3))
+  const lines = (command?.typed ?? row.text).split("\n").flatMap((line, index) => wrapLine([span(index === 0 ? "› " : "  ", "accent"), span(line, "user")], columns, [span(" ".repeat(2 + own(line)))]))
   if (command !== null) {
     lines.push(...wrapLine([span(`  ${command.head} · ${command.where}: `, "dim"), span(command.path, "dim")], columns, [span("    ")]))
     for (const note of command.notes) lines.push(...wrapLine([span("  ⚠ ", "warn"), span(note, "warn")], columns, [span("    ")]))

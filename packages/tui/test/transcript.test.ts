@@ -293,6 +293,19 @@ describe("a steered message", () => {
   })
 })
 
+describe("a message with indented lines", () => {
+  test("an indented line goes on under its own text when it wraps", () => {
+    const transcript = play([...opening("start")])
+    const text = "Review of the changes in turn 2: 1 comment on 1 file.\n\n1. src/parse.ts, line 15 (added)\n   >   return text.split(\"\\n\").filter((line) => line.trim() !== \"\").map(parseLine)"
+    transcript.apply({ ...event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: [{ type: "text", text }] }), sessionId: "s" as never, seq: 100, time: CLOCK_START })
+    transcript.apply({ ...event("inbox.delivered", { messageId: m("u2") }), sessionId: "s" as never, seq: 101, time: CLOCK_START })
+    const lines = layoutRow(transcript.rows.at(-1)!, 60, { now: CLOCK_START, debug: false, color: false }).map((line) => line.map((part) => part.text).join(""))
+    const quote = lines.findIndex((line) => line.startsWith("     >   return"))
+    expect(quote).toBeGreaterThan(-1)
+    expect(lines[quote + 1]).toMatch(/^ {5}\S/)
+  })
+})
+
 describe("an instruction update", () => {
   const INDEX = [
     "Agents you can run a subagent as:",
