@@ -115,8 +115,9 @@ describe("as a process", () => {
     const none = await cli(at, [], ["--list-sessions", "--session", "ffffffffff"])
     expect(none.out).toBe(`no session in ${at.workspace} starts with ses_ffffffffff\n`)
 
+    // A usage error, as --help says: the command line named a session that is not there.
     const missing = await cli(at, [], ["fork", "ses_nothing"])
-    expect(missing.code).toBe(1)
+    expect(missing.code).toBe(2)
     expect(missing.err).toStartWith(`${brand.binary}: `)
     expect(missing.err).toContain("ses_nothing")
   })
@@ -145,6 +146,10 @@ describe("as a process", () => {
     const missing = await cli(at, [], ["fork", result.parentSessionId, "--turn", "7"])
     expect(missing.code).toBe(2)
     expect(missing.err).toBe(`${brand.binary}: there is no turn 7: the session has turns 1 to 2\nIts turns:\n  1  "write b"\n  2  "now check it"\n`)
+    // A session the command line names that does not exist is a usage error, as an unknown model is; -c with nothing to continue is not.
+    for (const args of [["fork", "ses_nope"], ["--session", "ses_nope", "hello"]]) expect(await cli(at, [], args), args.join(" ")).toEqual({ code: 2, out: "", err: `${brand.binary}: there is no session ses_nope\n` })
+    const none = await cli(place("nothing-here"), [], ["-c", "hello"])
+    expect([none.code, none.err]).toEqual([1, `${brand.binary}: there is no session to continue in ${place("nothing-here").workspace}\n`])
     expect(parseArgs(["fork", "--turn", "1", "--through", "3"])).toMatchObject({ kind: "error" })
     expect(parseArgs(["fork", "--turn", "x"])).toEqual({ kind: "error", message: "fork: --turn takes a turn number, such as 3" })
   })

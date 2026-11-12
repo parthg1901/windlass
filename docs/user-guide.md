@@ -404,7 +404,7 @@ the new prefix. `windlass --demo list` has scripted compactions under "Compactio
 |---|---|
 | 0 | done; with `--unattended deny` also when calls were refused for lack of approval (the ending says how many) |
 | 1 | failed |
-| 2 | usage error: an unknown option (the nearest one is suggested), a wrong value, an unknown model or an ambiguous session ID |
+| 2 | usage error: an unknown option (the nearest one is suggested), a wrong value, an unknown model, or a session ID that matches no session or several (`-c` with no session to continue is 1) |
 | 3 | done, but the project's checks still fail and were left unresolved |
 | 4 | stopped: a tool call needed your approval and nobody was there to give it (`--unattended stop`) |
 | 130 | interrupted (Ctrl-C) |

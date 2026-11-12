@@ -185,7 +185,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
           })
           return { ...forked, named: named.sessionId }
         } catch (error) {
-          throw unavailable(error)
+          throw unavailable(error, request.session !== null)
         }
       }),
     replay: (request: ReplayCommand, progress: ReplayProgress): Promise<ReplayResult> =>
@@ -208,7 +208,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
           await reading
           return result
         } catch (error) {
-          throw unavailable(error)
+          throw unavailable(error, request.session !== null)
         }
       }),
   }
@@ -228,7 +228,7 @@ async function openSession(connected: HarnessConnection, request: OpenRequest, s
     )
     return new AcpSession(opened, request.maxSteps)
   } catch (error) {
-    throw unavailable(error)
+    throw unavailable(error, target.kind === "resume")
   }
 }
 
@@ -496,11 +496,14 @@ function turnList(turns: ReturnType<typeof turnsOf>): string {
 /** Refusals that say the command line asked for something wrong: an exit with the usage code. */
 const USAGE_REASONS = new Set(["unknown_model", "unknown_effort", "ambiguous_session", "invalid_request"])
 
-/** The error the CLI prints for something the server refused, or for the server being gone. */
-function unavailable(error: unknown): EngineUnavailable {
+/**
+ * The error the CLI prints for something the server refused, or for the server being gone. `named`: the command
+ * line named the session, so one that does not exist is a usage error (`-c` with nothing to continue is not).
+ */
+function unavailable(error: unknown, named = false): EngineUnavailable {
   if (error instanceof EngineUnavailable) return error
   if (error instanceof ClientError && error.reason === "auth_required") return new EngineUnavailable(signInSentence(error.message), "auth")
-  if (error instanceof ClientError && error.reason !== null && USAGE_REASONS.has(error.reason)) return new EngineUnavailable(error.message, "usage")
+  if (error instanceof ClientError && error.reason !== null && (USAGE_REASONS.has(error.reason) || (named && error.reason === "session_not_found"))) return new EngineUnavailable(error.message, "usage")
   return new EngineUnavailable(error instanceof Error ? error.message : String(error))
 }
 

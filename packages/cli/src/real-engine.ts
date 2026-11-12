@@ -187,7 +187,8 @@ async function unavailable<T>(work: () => Promise<T>): Promise<T> {
   } catch (error) {
     // Each of these messages is written for the user: which session, who holds it and what to do, or which models exist.
     if (error instanceof EngineError && error.code !== "closed")
-      throw new EngineUnavailable(error.message, error.code === "unknown_model" || error.code === "unknown_effort" || error.code === "ambiguous_session" || error.code === "invalid_request" ? "usage" : null)
+      // A session the command line named that does not exist is as wrong as an unknown model (`-c` with nothing to continue says so on its own).
+      throw new EngineUnavailable(error.message, error.code === "unknown_model" || error.code === "unknown_effort" || error.code === "ambiguous_session" || error.code === "session_not_found" || error.code === "invalid_request" ? "usage" : null)
     if (error instanceof StoreError && error.code === "schema_mismatch")
       throw new EngineUnavailable(`that session was written by another version of ${brand.name} and cannot be opened by this one (${error.message})`)
     throw error
