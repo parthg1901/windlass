@@ -198,12 +198,30 @@ function versionOnDisk(path: string): FileVersion | null {
 const same = (a: FileVersion | null, b: FileVersion | null) =>
   a === null || b === null ? a === b : a.mode === b.mode && a.bytes.length === b.bytes.length && Buffer.compare(a.bytes, b.bytes) === 0
 
+/** The merges in progress, by repository: one at a time into one working tree. */
+const merging = new Map<string, Promise<unknown>>()
+
 /**
  * Merges the child's work into the parent's workspace and cleans up. `probe`
  * is called between computing the merge and writing the first file (a crash
  * test dies there, and after the first file).
+ *
+ * Merges into one repository run one after the other: each reads the working
+ * tree as the one before it left it. Two subagents that finish at the same
+ * moment would otherwise both merge against the same state, and the second
+ * to write would undo the first.
  */
-export async function mergeWorktree(worktree: WorktreeRecord, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
+export function mergeWorktree(worktree: WorktreeRecord, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
+  const turn = (merging.get(worktree.repository) ?? Promise.resolve()).then(() => mergeNow(worktree, input))
+  const settled = turn.catch(() => {})
+  merging.set(worktree.repository, settled)
+  void settled.then(() => {
+    if (merging.get(worktree.repository) === settled) merging.delete(worktree.repository)
+  })
+  return turn
+}
+
+async function mergeNow(worktree: WorktreeRecord, input: { readonly title: string; readonly probe?: (point: "computed" | "writing") => void }): Promise<MergeOutcome> {
   const base = { branch: worktree.branch, files: [] as string[], conflicts: [] as string[] }
   const failed = async (reason: string): Promise<MergeOutcome> => {
     await removeWorktree(worktree, { keepBranch: true })
