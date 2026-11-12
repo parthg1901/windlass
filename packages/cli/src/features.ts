@@ -75,19 +75,19 @@ export function mcpStateWords(server: McpServerInfo): string {
     case "stopped":
       return "stopped"
     case "not_started":
-      // Until a session's first message is sent, the engine has not looked at the servers: a project's may still need an approval.
-      return server.origin === "project" ? "not looked at yet: a project's server is asked about once the first message is sent" : "not started yet: servers start with the next message"
+      // Named in a file the session has not read since: the next message reads the files again.
+      return server.origin === "project" ? "not read yet: a project's server is asked about with the next message" : "not started yet: servers start with the next message"
   }
 }
 
 /**
  * `/mcp approve <name>` for a server that does not wait for an approval:
- * the state it is in, and for one a session has not looked at yet (servers
- * are read when the first message is sent) what to do instead.
+ * the state it is in, and for one named in a file the session has not read
+ * since (the files are read again with the next message) what to do instead.
  */
 export function mcpNotWaitingText(server: McpServerInfo): string {
   if (server.state === "not_started" && server.origin === "project")
-    return `The MCP server "${server.name}" cannot be approved yet: a session looks at its MCP servers when its first message is sent. Send your message: if this project's server still needs your approval you are asked then (/mcp approve ${server.name} asks again), and the agent has its tools from the message after you approve.`
+    return `The MCP server "${server.name}" is named in this project's file but the session has not read it yet: it reads the file again with your next message, and asks you then if the server needs your approval (/mcp approve ${server.name} asks again).`
   if (server.state === "not_started") return `The MCP server "${server.name}" is your own and needs no approval: it starts with your next message.`
   return `the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`
 }

@@ -349,10 +349,10 @@ describe("what the renderer says", () => {
 describe("what the project's configuration asks for is settled before a message is sent", () => {
   const server = (state: McpServerInfo["state"], origin: "user" | "project"): McpServerInfo => ({ name: "issues", state, transport: "stdio", target: "bun server.ts", argv: ["bun", "server.ts"], tools: null, hiddenTools: 0, error: null, retryInMs: null, origin, file: "/w/config.json", question: state === "awaiting_approval" ? { fingerprint: "f1", subject: "bun server.ts", details: [] } : null })
 
-  test("the words: a server not looked at yet, one that cannot be approved yet, and an approval in the middle of a turn", () => {
-    expect(mcpStateWords(server("not_started", "project"))).toBe("not looked at yet: a project's server is asked about once the first message is sent")
+  test("the words: a server not read yet, one that cannot be approved yet, and an approval in the middle of a turn", () => {
+    expect(mcpStateWords(server("not_started", "project"))).toBe("not read yet: a project's server is asked about with the next message")
     expect(mcpStateWords(server("not_started", "user"))).toBe("not started yet: servers start with the next message")
-    expect(mcpNotWaitingText(server("not_started", "project"))).toContain("Send your message: if this project's server still needs your approval you are asked then (/mcp approve issues asks again)")
+    expect(mcpNotWaitingText(server("not_started", "project"))).toContain("it reads the file again with your next message, and asks you then if the server needs your approval (/mcp approve issues asks again)")
     expect(mcpNotWaitingText(server("not_started", "user"))).toBe('The MCP server "issues" is your own and needs no approval: it starts with your next message.')
     expect(mcpNotWaitingText(server("running", "project"))).toBe('the MCP server "issues" does not wait for an approval: it is running')
     expect(mcpApprovedText({ name: "issues" }, false)).toBe('approved: "issues" starts now; the agent has its tools from your next message. /mcp shows it.')
