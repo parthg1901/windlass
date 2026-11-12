@@ -397,6 +397,9 @@ describe("events the core added", () => {
     const [enqueued] = stored([event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: text("Also b.ts") })]).map((item) => ({ ...item, seq: 99 }))
     const out = render([...events, delta("a1", "Reading a."), enqueued!, delta("a1", "ts now.")])
     expect(out).toContain('Reading a.\n\n↳ sent: "Also b.ts" · the agent will see it after the current step\n\n… ts')
+    // Text that resumes with a space after the mark: one space, the mark's own.
+    expect(render([...events, delta("a1", "Reading the"), enqueued!, delta("a1", " commands now.")])).toContain("\n… commands")
+    expect(render([...events, delta("a1", "Reading the"), enqueued!, delta("a1", " commands now.")])).not.toContain("…  ")
   })
 
   test("a message still waiting when its turn was stopped says so when it goes out with the next one", () => {

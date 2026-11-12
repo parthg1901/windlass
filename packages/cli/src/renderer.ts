@@ -143,7 +143,7 @@ export class PrettyRenderer implements Sink {
    * Streamed model text not written yet, and the column the text has reached: a word is written once it is whole
    * (the next space or line break, or the end of the text), on the next row when it does not fit on this one.
    */
-  private readonly flow = { column: 0, word: "", spaces: "" }
+  private readonly flow = { column: 0, word: "", spaces: "", marked: false }
   private lines = 0
   private last: Block | null = null
   private readonly textBuffers = new Map<string, string>()
@@ -930,10 +930,13 @@ export class PrettyRenderer implements Sink {
 
   /** Writes the word received so far, after its spaces when it fits the row, else on the next row without them. */
   private flushWord(): void {
-    const { word, spaces } = this.flow
+    const { word } = this.flow
     if (word === "") return
+    // Right after the continuation mark, which ends in its own space, the spaces the text resumes with are one too many.
+    const spaces = this.flow.marked ? "" : this.flow.spaces
     this.flow.word = ""
     this.flow.spaces = ""
+    this.flow.marked = false
     // One column stays free: a row filled to the edge leaves the cursor in the terminal's pending wrap.
     const room = Math.max(10, this.width - 1)
     const width = displayWidth(word)
@@ -967,6 +970,7 @@ export class PrettyRenderer implements Sink {
   private mark(): void {
     this.raw(paint(this.options.color, "dim", "… "))
     this.flow.column = 2
+    this.flow.marked = true
   }
 
   private reasoningDelta(messageId: string, text: string): void {
@@ -1488,6 +1492,7 @@ export class PrettyRenderer implements Sink {
   private endLine(): void {
     this.flushWord()
     this.flow.spaces = ""
+    this.flow.marked = false
     if (!this.atLineStart) this.raw("\n")
     this.flow.column = 0
     this.sayInstructions()
