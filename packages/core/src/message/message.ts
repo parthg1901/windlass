@@ -285,6 +285,8 @@ export const inboxItem = object({
   content,
   /** The slash command that produced `content`, when one did (`command.expanded`). */
   command: optional(commandUse),
+  /** The agent that command names, as its definition was when the command was sent: the session switches to it where this item is delivered, right before it. */
+  agent: optional(agentRecord),
 })
 export type InboxItem = Infer<typeof inboxItem>
 

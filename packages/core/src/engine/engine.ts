@@ -2008,13 +2008,6 @@ class LiveSession implements EngineSession {
   private trace: SessionTrace | null = null
   /** The configuration `trace` was made for: another one (another collector, content on or off) makes another. */
   private traceKey: string | null = null
-  /**
-   * The agents that commands named, by the message each command produced:
-   * the session switches to one at the boundary where its message is
-   * delivered, right before it. The definition as it was when the command
-   * was sent.
-   */
-  private readonly commandAgents = new Map<MessageId, AgentRecord>()
   /** Whether an execution of this process has read the configuration, or it was looked at ahead of one. */
   private configRead = false
   /** The settings the loop last checked against the provider's listing, so each is checked once. */
@@ -2099,15 +2092,13 @@ class LiveSession implements EngineSession {
     const agent = command.agent === null ? null : this.commandAgent(command, projection)
     const messageId = this.core.ids.message()
     if (options.maxSteps !== undefined) this.turnLimits.set(messageId, options.maxSteps)
-    if (agent !== null) {
-      this.commandAgents.set(messageId, agent)
-      // The user chose an agent with the command: the default of the configuration no longer applies.
-      this.agentDecided = true
-    }
-    // One append: the message never waits without the record of where its text came from.
+    // The user chose an agent with the command: the default of the configuration no longer applies.
+    if (agent !== null) this.agentDecided = true
+    // One append: the message never waits without the record of where its text came from, nor without the agent it
+    // switches the session to where it is delivered. That switch is the log's to keep, not this process's.
     this.write([
       event("inbox.enqueued", { messageId, origin: null, delivery: options.delivery ?? "steer", content: text(expansion.text) }),
-      event("command.expanded", { messageId, ...commandUseOf(command, expansion) }),
+      event("command.expanded", { messageId, ...commandUseOf(command, expansion), ...(agent === null ? {} : { agent }) }),
     ])
     this.start()
     return { messageId, command, expansion }
@@ -2228,7 +2219,6 @@ class LiveSession implements EngineSession {
     if (!this.projection().inbox.some((item) => item.messageId === messageId)) return false
     this.write([event("inbox.cancelled", { messageId })])
     this.turnLimits.delete(messageId)
-    this.commandAgents.delete(messageId)
     return true
   }
 
@@ -2518,7 +2508,9 @@ class LiveSession implements EngineSession {
    */
   private startAgent(): string | null {
     const projection = this.projection()
-    const undecided = this.core.agents !== null && !this.agentDecided && projection.baseline === null && projection.session.lineage === null && projection.session.agent === undefined
+    // A command that waits with an agent is the user's choice of one, also for a process that did not see it sent.
+    const undecided =
+      this.core.agents !== null && !this.agentDecided && projection.baseline === null && projection.session.lineage === null && projection.session.agent === undefined && !projection.inbox.some((item) => item.agent !== undefined)
     this.agentDecided = true
     if (!undecided) return null
     const places = this.agentPlaces()
@@ -2937,9 +2929,9 @@ class LiveSession implements EngineSession {
       if (ended !== null && steers.length === 0 && handover === undefined) continue
       // A command that names an agent switches the session to it here, where its message is delivered and right
       // before it: the record alone before the first baseline (which then carries the agent), a message after it.
+      // The agent waits with the message in the inbox, so a process that was started again makes the same switch.
       const arriving = steers.length > 0 ? steers : handover === undefined ? [] : [handover]
-      const commanded = arriving.flatMap((item) => this.commandAgents.get(item.messageId) ?? [])
-      for (const item of arriving) this.commandAgents.delete(item.messageId)
+      const commanded = arriving.flatMap((item) => item.agent ?? [])
       if (commanded.length > 0 && this.director === null) {
         this.pendingAgent = commanded.at(-1)!
         this.applyAgentSwitch()

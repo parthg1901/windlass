@@ -15,7 +15,7 @@ import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import type { Json } from "../../src/json.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import { measured } from "../scenarios/script.ts"
-import { Harness, type HarnessOptions, removeHarnessDirectories } from "./harness.ts"
+import { Harness, type HarnessOptions, Killed, removeHarnessDirectories } from "./harness.ts"
 
 const made: string[] = []
 afterAll(() => {
@@ -248,6 +248,89 @@ describe("sending a command", () => {
     expect(of(h, "command.expanded")).toHaveLength(2)
     expect(h.session.projection().baseline!.sources.at(-1)!.source).toBe("agent")
     expect(h.provider.prefixBreaks()).toEqual([])
+    h.verify()
+    await h.dispose()
+  })
+})
+
+describe("a queued command that names an agent", () => {
+  test("keeps its switch in the log: a process that dies before the message is delivered makes the switch when it starts again, from the definition as it was when the command was sent", async () => {
+    const files = project({ review: REVIEW })
+    const definition = files.write(join(files.cwd, ".claude", "agents", "reviewer.md"), REVIEWER)
+    const h = harness(files, { agents: { configDir: files.configDir } })
+    h.create()
+    // While the first turn's step is open the user queues the command, and the process dies before anything is delivered.
+    h.at("step.started", 1, () => {
+      h.session.sendCommand("review", "the tests", { delivery: "queue" })
+      h.kill()
+      throw new Killed()
+    })
+    h.session.send("A question.")
+    await h.settled()
+
+    // The definition is gone by the time the next process starts: what the command read is what counts.
+    rmSync(definition)
+    h.provider.enqueue(answer("An answer."), answer("Reviewed."))
+    h.restart()
+    await h.settled()
+    const [expanded] = of(h, "command.expanded")
+    expect(expanded!.data.agent).toMatchObject({ name: "reviewer", path: definition, restrictions: { effects: ["read"] } })
+    // The switch is made where the command's message is delivered, right before it, and announced to the model.
+    const switched = of(h, "agent.switched")
+    expect(switched.map((item) => [item.data.from, item.data.to?.name])).toEqual([[null, "reviewer"]])
+    expect(switched[0]!.data.to).toEqual(expanded!.data.agent!)
+    const delivered = of(h, "inbox.delivered").find((item) => item.data.messageId === expanded!.data.messageId)!
+    expect(switched[0]!.seq).toBeLessThan(delivered.seq)
+    expect(of(h, "inbox.delivered").map((item) => item.seq).filter((seq) => seq > switched[0]!.seq)).toEqual([delivered.seq])
+    expect(h.session.agent()?.name).toBe("reviewer")
+    expect(JSON.stringify(h.provider.requests.at(-1)!.input)).toContain("Read the code and report what is wrong.")
+    // The delivered message is shown as the command; the agent's record stayed with the waiting item and `agent.switched`.
+    const message = h.session.projection().messages.find((item) => item.id === expanded!.data.messageId)!
+    expect(message).toMatchObject({ kind: "user", command: { name: "review", arguments: "the tests" } })
+    expect(message.kind === "user" && Object.keys(message.command!)).not.toContain("agent")
+    expect(h.provider.prefixBreaks()).toEqual([])
+    h.verify()
+    await h.dispose()
+  })
+
+  test("a session's first message, killed before its first baseline: the command's agent is the one that baseline carries, whatever the session was created as", async () => {
+    const files = project({ review: REVIEW })
+    files.write(join(files.cwd, ".claude", "agents", "reviewer.md"), REVIEWER)
+    files.write(join(files.cwd, ".claude", "agents", "captain.md"), "---\nname: captain\ndescription: Runs the release.\n---\nPrepare the release.\n")
+    const h = harness(files, { agents: { configDir: files.configDir }, userConfig: { verify: { mode: "off" }, agents: { default: "captain" } } })
+    h.create()
+    const waiting = h.session.projection().session.agent ?? null
+    h.dieAt("execution.claimed")
+    h.session.sendCommand("review", "the tests")
+    await h.settled()
+    h.provider.enqueue(answer("Reviewed."))
+    h.restart()
+    await h.settled()
+    // Whatever the session was created as, the command's agent is in force for its message, and the baseline carries it.
+    expect(of(h, "agent.switched").at(-1)!.data.to?.name).toBe("reviewer")
+    expect(of(h, "agent.switched").map((item) => item.data.to?.name)).toEqual(waiting === null ? ["reviewer"] : [waiting.name, "reviewer"])
+    expect(h.session.projection().baseline!.sources.at(-1)!.source).toBe("agent")
+    expect(JSON.stringify(h.provider.requests[0]!.instructions)).toContain("Read the code and report what is wrong.")
+    expect(h.provider.prefixBreaks()).toEqual([])
+    h.verify()
+    await h.dispose()
+  })
+
+  test("a command that is withdrawn takes its switch along", async () => {
+    const files = project({ review: REVIEW })
+    files.write(join(files.cwd, ".claude", "agents", "reviewer.md"), REVIEWER)
+    const h = harness(files, { agents: { configDir: files.configDir } })
+    h.provider.enqueue(answer("An answer."))
+    h.create()
+    h.at("step.started", 1, () => {
+      const { messageId } = h.session.sendCommand("review", "the tests", { delivery: "queue" })
+      expect(h.session.projection().inbox.at(-1)!.agent?.name).toBe("reviewer")
+      expect(h.session.withdraw(messageId)).toBe(true)
+    })
+    h.session.send("A question.")
+    await h.settled()
+    expect(of(h, "agent.switched")).toEqual([])
+    expect(h.session.agent()).toBeNull()
     h.verify()
     await h.dispose()
   })

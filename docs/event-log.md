@@ -264,7 +264,7 @@ Input was admitted and is waiting to be delivered. `messageId` is the ID the mes
 
 Version 1.
 
-The message admitted by the event right before this one was produced by a slash command: the user typed `/name arguments`, and the content of that `inbox.enqueued` is the command's template with the arguments put in. Written in the same append as the admission, so a message never waits without it. The model is sent the expanded text and nothing of this; a client shows the line as typed, with the file it came from. `name`, `path` and `scope` are the command, its file and where the file was found; `fingerprint` is the SHA-256 of the file's text as it was read, so the version that was used is known after the file changes; `arguments` is what was typed after the name; `missing` lists the positions (`$2`) the template uses that were not given and became empty text; `unsupported` lists what the file holds that other harnesses run or read at this moment (a command in backticks after `!`, an `@path`), with its line: here it stays in the text as written and is never run.
+The message admitted by the event right before this one was produced by a slash command: the user typed `/name arguments`, and the content of that `inbox.enqueued` is the command's template with the arguments put in. Written in the same append as the admission, so a message never waits without it. The model is sent the expanded text and nothing of this; a client shows the line as typed, with the file it came from. `name`, `path` and `scope` are the command, its file and where the file was found; `fingerprint` is the SHA-256 of the file's text as it was read, so the version that was used is known after the file changes; `arguments` is what was typed after the name; `missing` lists the positions (`$2`) the template uses that were not given and became empty text; `unsupported` lists what the file holds that other harnesses run or read at this moment (a command in backticks after `!`, an `@path`), with its line: here it stays in the text as written and is never run. `agent` is set when the command names an agent: the definition as it was read when the command was sent, which the session switches to where the message is delivered, right before it. It waits with the message in the inbox, so a process that starts again before the delivery makes the same switch; a message that is withdrawn takes it along. The delivered message does not carry it: `agent.switched` does.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -279,6 +279,7 @@ The message admitted by the event right before this one was produced by a slash 
 | `unsupported[].kind` | one of `"shell"`, `"include"` | yes |
 | `unsupported[].text` | string, not empty | yes |
 | `unsupported[].line` | integer ≥ 1 | yes |
+| `agent` | [agentRecord](#agentrecord) | may be absent |
 
 ### `inbox.delivery_changed`
 

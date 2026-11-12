@@ -584,8 +584,14 @@ export const durableEvents = {
    * text; `unsupported` lists what the file holds that other harnesses run
    * or read at this moment (a command in backticks after `!`, an `@path`),
    * with its line: here it stays in the text as written and is never run.
+   * `agent` is set when the command names an agent: the definition as it
+   * was read when the command was sent, which the session switches to
+   * where the message is delivered, right before it. It waits with the
+   * message in the inbox, so a process that starts again before the
+   * delivery makes the same switch; a message that is withdrawn takes it
+   * along. The delivered message does not carry it: `agent.switched` does.
    */
-  "command.expanded": define(1, object({ messageId, ...commandUseFields })),
+  "command.expanded": define(1, object({ messageId, ...commandUseFields, agent: optional(agentRecord) })),
   /** A waiting item was switched between steer and queue. */
   "inbox.delivery_changed": define(1, object({ messageId, delivery })),
   /** A waiting item was withdrawn before delivery. It never becomes a message. */

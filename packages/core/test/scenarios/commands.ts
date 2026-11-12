@@ -9,6 +9,7 @@
  * And live telemetry, which adds nothing to a log at all: the scenario says
  * so by being the events of a turn without it.
  */
+import type { AgentRecord } from "../../src/agents/use.ts"
 import { expandTemplate } from "../../src/commands/expand.ts"
 import { event } from "../../src/event/durable.ts"
 import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
@@ -31,7 +32,7 @@ export const REVIEW_FILE = "---\ndescription: Review the uncommitted changes as 
 export const SHIP_FILE = "---\ndescription: Prepare a release\nagent: captain\n---\nPrepare release $1 on a release branch.\n"
 
 /** What a command file sends for what was typed after its name, and the record the log keeps of it. */
-function use(name: string, file: string, typed: string) {
+function use(name: string, file: string, typed: string, agent?: AgentRecord) {
   const parsed = parseFrontMatter(file)
   if (!parsed.ok) throw new Error(parsed.reason)
   const expansion = expandTemplate(parsed.body, typed)
@@ -47,6 +48,8 @@ function use(name: string, file: string, typed: string) {
         arguments: expansion.raw,
         missing: [...expansion.missing],
         unsupported: expansion.unsupported.map((construct) => ({ kind: construct.kind, text: construct.text, line: construct.line })),
+        // The agent the command names, as its definition was when the command was sent: it waits with the message.
+        ...(agent === undefined ? {} : { agent }),
       }),
   }
 }
@@ -56,10 +59,10 @@ export const RELEASE_NOTES_ARGS = "1.4"
 const NOTES = use("release-notes", RELEASE_NOTES_FILE, RELEASE_NOTES_ARGS)
 /** `/review focus on the tests`, run under the reviewer. */
 export const REVIEW_ARGS = "focus on the tests"
-const REVIEW = use("review", REVIEW_FILE, REVIEW_ARGS)
+const REVIEW = use("review", REVIEW_FILE, REVIEW_ARGS, REVIEWER)
 /** `/ship 1.4`, run under the captain, which names another model. */
 export const SHIP_ARGS = "1.4"
-const SHIP = use("ship", SHIP_FILE, SHIP_ARGS)
+const SHIP = use("ship", SHIP_FILE, SHIP_ARGS, CAPTAIN)
 
 export const commandSent: Scenario = {
   title: "The user sends a slash command: the expanded text is the message, and the log says which command produced it",
@@ -93,7 +96,7 @@ export const commandSent: Scenario = {
 export const commandWithAgent: Scenario = {
   title: "A command that names an agent: the session switches to it where the command's message is delivered",
   description:
-    "A command file may name an agent (`agent: reviewer`). The first thing the user types in a new session is `/review focus on the tests`. The command's text is admitted with its record, and the agent's definition is read then, once. Where the message is delivered, right before it, the session switches to the agent: no baseline is set yet, so `agent.switched` is the record alone and the first baseline carries the reviewer's instructions as its last section, exactly as for a session that was started as the reviewer. Later, while the model is answering a question, the user queues `/ship 1.4`, a command that runs under `captain`. A queued message waits for the turn in progress, and so does its switch: the reviewer answers the question as the reviewer. At the boundary where the queued message is delivered the switch is made first, as an appended instruction message and `agent.switched` (the baseline is frozen), then `settings.changed` because the captain names another model, then the turn's ending and the delivery. A command whose agent cannot be found sends nothing at all.",
+    "A command file may name an agent (`agent: reviewer`). The first thing the user types in a new session is `/review focus on the tests`. The command's text is admitted with its record, and the agent's definition is read then, once. Where the message is delivered, right before it, the session switches to the agent: no baseline is set yet, so `agent.switched` is the record alone and the first baseline carries the reviewer's instructions as its last section, exactly as for a session that was started as the reviewer. Later, while the model is answering a question, the user queues `/ship 1.4`, a command that runs under `captain`. A queued message waits for the turn in progress, and so does its switch: the reviewer answers the question as the reviewer. The switch waits in the log: `command.expanded` carries the agent's record as it was read when the command was sent, so a process that dies before the delivery and starts again makes the same switch. At the boundary where the queued message is delivered the switch is made first, as an appended instruction message and `agent.switched` (the baseline is frozen), then `settings.changed` because the captain names another model, then the turn's ending and the delivery. A command whose agent cannot be found sends nothing at all.",
   provider: "turn 1 (as the reviewer) answers. Turn 2 answers the question; the queued command's turn (as the captain, on the other model) answers",
   features: { commands: true, agents: true },
   phases: [

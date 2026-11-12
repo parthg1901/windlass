@@ -519,8 +519,8 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (item === undefined) return fail("not_found", `inbox item ${event.data.messageId} is not waiting`)
       if (item.seq !== event.seq - 1) fail("invalid_transition", `a command's record follows at once the admission of the message it produced, and ${event.data.messageId} was admitted at seq ${item.seq}`)
       if (item.origin !== null) fail("invalid_transition", "a command produces a message of the user's, never one of the harness's")
-      const { messageId: _, ...command } = event.data
-      return { ...state, inbox: state.inbox.with(index, { ...item, command }) }
+      const { messageId: _, agent, ...command } = event.data
+      return { ...state, inbox: state.inbox.with(index, { ...item, command, ...(agent === undefined ? {} : { agent }) }) }
     }
     case "inbox.delivery_changed": {
       const index = state.inbox.findIndex((item) => item.messageId === event.data.messageId)

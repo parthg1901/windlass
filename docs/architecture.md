@@ -1159,7 +1159,12 @@ message, and the model sees that message and nothing else.
   session switches to it at the boundary where the command's message is delivered, right before it, by the
   rules of any switch: before the first baseline the record alone (the baseline then carries the agent), later
   the instruction message and `agent.switched`, then `settings.changed` when the agent names another model. A
-  queued command's switch waits with its message: the turn in progress ends as the agent it ran as.
+  queued command's switch waits with its message: the turn in progress ends as the agent it ran as. It waits
+  in the log, not in the process: `command.expanded` carries the agent's record (`agent`, the definition as it
+  was read when the command was sent), the waiting inbox item has it, and the loop reads it from there where
+  the item is delivered. A process that dies before the delivery and starts again therefore makes the same
+  switch, from the same definition, whatever became of the agent's file; a command that is withdrawn takes its
+  switch along. The delivered message keeps the command's record without the agent, which `agent.switched` has.
 - *Configuration.* `commands.paths` (the project's first, then the user's) and `commands.disabled` (either
   file's) are read from both files: a command only ever produces a message the user sends.
 
@@ -1286,7 +1291,7 @@ These are the shapes the scenarios spell out event by event.
   `hook.ran` (`stop`, `no`) and `synthetic.appended stop_hook` · the next step. At the bound: `hook.ran` ·
   `execution.succeeded` (or, with a queued message, `turn.ended`) with `hooks.unsatisfied`.
 - **A slash command.** In one append `inbox.enqueued` (the expanded text, origin `null`) and `command.expanded`
-  (that message) · if idle `execution.started` · where it is delivered, when the command names an agent, the
+  (that message, with the agent's record when the command names one) · if idle `execution.started` · where it is delivered, when the command names an agent, the
   switch (`agent.switched`, after its instruction message once a baseline is set, then `settings.changed` when
   the agent names another model) · `turn.ended` when it was queued behind a turn · `inbox.delivered` · the
   turn's steps. A command that cannot be used: nothing.
