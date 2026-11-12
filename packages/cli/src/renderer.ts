@@ -134,10 +134,14 @@ export class PrettyRenderer implements Sink {
   /**
    * The spawned work that is running, by its ID: a subagent (with what was
    * seen of it so far: its task, its steps and its tool calls) or a
-   * background command. A child's own events are not printed; they are
-   * counted, and the count is in the status line and on the line that ends it.
+   * background command. A child's tool calls are one indented line each when
+   * they settle; its steps are counted, in the status line and on the line
+   * that ends it.
    */
-  private readonly spawned = new Map<string, { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; title: string | null; steps: number; tools: number; asking: boolean }>()
+  private readonly spawned = new Map<
+    string,
+    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string }> }
+  >()
 
   constructor(private readonly options: PrettyOptions) {}
 
@@ -219,11 +223,11 @@ export class PrettyRenderer implements Sink {
         const where = [...(event.data.background ? ["in the background"] : []), ...(work.kind === "subagent" && work.worktree !== null ? ["in its own worktree"] : [])]
         if (work.kind === "subagent") {
           const label = `subagent ${shortId(work.sessionId)}`
-          this.spawned.set(event.data.spawnId, { kind: "subagent", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false })
+          this.spawned.set(event.data.spawnId, { kind: "subagent", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
           this.line("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(` started${where.length === 0 ? "" : ` ${where.join(", ")}`}`, "dim")])
         } else {
           const label = `background ${event.data.spawnId}`
-          this.spawned.set(event.data.spawnId, { kind: "command", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false })
+          this.spawned.set(event.data.spawnId, { kind: "command", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
           this.lineWithArg("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(" · ", "dim")], flatten(work.command), [])
         }
         return
@@ -765,10 +769,11 @@ export class PrettyRenderer implements Sink {
   }
 
   /**
-   * Something happened in a subagent. Its events are counted, not printed:
-   * the task is said once, a question it asks is said (it waits for the
-   * user), and the rest shows as a running count in the status line and on
-   * the line that ends it.
+   * Something happened in a subagent. Compactly, indented under the call
+   * that started it: the task once, each tool call in one line when it
+   * settles (`↳ subagent 1a2b ✓ read a.txt · 12 lines`), and a question it
+   * asks in full, since it waits for the user. Its steps are a running count
+   * in the status line and on the line that ends it.
    */
   private childEvent(spawnId: string, title: string, event: EngineEvent): void {
     const child = this.spawned.get(spawnId)
@@ -778,11 +783,35 @@ export class PrettyRenderer implements Sink {
       this.lineWithArg("info", [seg(`    ${child.label}: `, "dim")], flatten(title), [])
     }
     if (event.type === "step.ended") child.steps += 1
-    if (event.type === "tool.called") child.tools += 1
+    if (event.type === "tool.called") {
+      child.tools += 1
+      child.calls.set(key(event.data.messageId, event.data.callId), { name: event.data.name, arg: flatten(callArgument(event.data.name, event.data.input)) })
+    }
+    if (event.type === "tool.settled") {
+      const id = key(event.data.messageId, event.data.callId)
+      const call = child.calls.get(id) ?? { name: "tool", arg: "" }
+      child.calls.delete(id)
+      const outcome = describeOutcome(call.name, event.data)
+      this.lineWithArg(
+        "info",
+        [seg(`    ${SYMBOL.inbox} ${child.label} `, "dim"), seg(`${outcome.symbol} `, outcome.tone), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")],
+        call.arg,
+        outcome.text === "" ? [] : [seg(" · ", "dim"), seg(outcome.text, outcome.tone === "green" ? "dim" : outcome.tone)],
+      )
+    }
     if (event.type === "approval.requested") {
       child.asking = true
-      // A question waits for the user: it is wrapped, never cut.
-      wrap(`? ${child.label} asks: ${flatten(event.data.question.title)}`, this.width - 6).forEach((line, index) => this.line("info", [seg(`    ${index === 0 ? "" : "  "}${line}`, "yellow")]))
+      // A question waits for the user: said in full (what would run, what each answer remembers), wrapped, never cut.
+      const question = event.data.question
+      wrap(`? ${child.label} asks: ${flatten(question.title)}`, this.width - 6).forEach((line, index) => this.line("info", [seg(`    ${index === 0 ? "" : "  "}${line}`, ["yellow", "bold"])]))
+      for (const part of question.subject.split("\n")) for (const line of wrap(sanitize(part), this.width - 8)) this.line("info", [seg(`        ${line}`)])
+      for (const detail of question.details) for (const line of wrap(flatten(detail), this.width - 6)) this.line("info", [seg(`      ${line}`, "dim")])
+      for (const choice of question.choices)
+        if (choice.remembers !== null) for (const line of wrap(`${choice.label} remembers ${flatten(choice.remembers)}`, this.width - 6)) this.line("info", [seg(`      ${line}`, "dim")])
+    }
+    if (event.type === "approval.answered") {
+      const note = event.data.note === null ? "" : ` · your note: ${flatten(event.data.note)}`
+      this.line("info", [seg(`    ${event.data.approve ? SYMBOL.ok : SYMBOL.notRun} `, event.data.approve ? "green" : "yellow"), seg(`${child.label}: ${event.data.approve ? (event.data.choice === "once" ? "allowed once" : "allowed") : "not allowed"}${note}`, "dim")])
     }
     if (event.type === "approval.answered" || event.type === "tool.settled" || event.type === "step.failed") child.asking = false
   }

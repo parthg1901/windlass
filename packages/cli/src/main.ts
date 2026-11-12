@@ -37,7 +37,7 @@ import { JsonSink, PrettyRenderer, QuietSink, type Sink } from "./renderer.ts"
 import { selectEngine } from "./select-engine.ts"
 import { selfCommand } from "./self.ts"
 import { type EditorAction, Screen } from "./terminal.ts"
-import { colorEnabled, displayWidth, formatDuration } from "./text.ts"
+import { colorEnabled, displayWidth, flatten, formatDuration, truncate } from "./text.ts"
 
 export interface Io {
   readonly argv: readonly string[]
@@ -405,7 +405,9 @@ export function approverAt(screen: Pick<Screen, "ask">, session: Pick<Session, "
     const choices = request.question.choices
     const has = (id: string) => choices.some((choice) => choice.id === id)
     const keys = [has("once") ? "[a]llow once" : null, has("session") ? "this [s]ession" : null, has("project") ? "this [p]roject" : null, "[N]o"].filter((item) => item !== null)
-    const entry = await screen.ask(`${keys.join(" · ")} › `)
+    // A subagent's question says whose it is where it is answered: several may be at work.
+    const who = request.subagent == null ? "" : `for subagent "${truncate(flatten(request.subagent), 40)}": `
+    const entry = await screen.ask(`${who}${keys.join(" · ")} › `)
     if (entry === null) {
       session.interrupt()
       return null
