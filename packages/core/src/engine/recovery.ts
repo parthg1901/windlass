@@ -6,7 +6,8 @@
  * 1. An interrupt was requested. Finish it: settle every unsettled call,
  *    close the open step or compaction as interrupted for that reason, write
  *    the marker, write `execution.interrupted`. A user cancel leaves the
- *    session idle; a shutdown leaves the claim suspended.
+ *    session idle; a shutdown leaves the claim suspended. (An execution with
+ *    no turn, `turnless`, gets no marker: nothing of the model's was cut.)
  * 2. The claim is `running` and nothing was requested. The process died.
  *    Settle, close the open step as crashed, write the marker, then
  *    `execution.resumed` (which counts the crash), or `execution.failed` once
@@ -24,7 +25,7 @@ import { type NewEvent, type StepError, HARNESS_ORIGIN, event } from "../event/d
 import type { MessageId } from "../id.ts"
 import type { Projection } from "../message/message.ts"
 import { FAILURE_TEXT, NOTE_TEXT } from "./constants.ts"
-import { CRASHED, note, openStep, owesMarker, settleUnsettled } from "./state.ts"
+import { CRASHED, note, openStep, owesMarker, settleUnsettled, turnless } from "./state.ts"
 
 export interface Recovery {
   /** What to append, in one transaction. Empty when there is nothing to repair. */
@@ -60,8 +61,9 @@ export function recover(
   if (reason !== null) {
     const last = projection.messages.at(-1)
     const marked = last?.kind === "synthetic" && last.origin === HARNESS_ORIGIN.interrupt && last.seq > execution.startedSeq
-    // A user cancel is always told to the model; a shutdown only when it cut a step short.
-    if (reason === "user" ? cutShort || !marked : cutShort)
+    // A user cancel is always told to the model, unless the execution had no turn to cancel (a compaction the user
+    // asked for and nothing else); a shutdown only when it cut a step short.
+    if (reason === "user" ? cutShort || (!marked && !turnless(projection)) : cutShort)
       events.push(marker(reason === "user" ? NOTE_TEXT.interruptedByUser : NOTE_TEXT.interruptedByRestart))
     events.push(event("execution.interrupted", { executionId: execution.id, reason }))
     return { events, claim: reason === "user" ? "none" : "suspended" }

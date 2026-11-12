@@ -42,6 +42,19 @@ export function wouldGoIdle(projection: Projection): boolean {
   return latest === undefined || (latest.kind === "assistant" && latest.status === "completed" && latest.finish !== "tool_calls")
 }
 
+/**
+ * Whether the claim has no turn: nothing was said under it and nothing waits
+ * to be. That is an execution started only to make a compaction the user
+ * asked for while the session was idle (or one whose only input was
+ * withdrawn before it was delivered). It is not a turn: a stop of it cuts
+ * nothing the model was doing short, so no marker is left for the model, and
+ * there is nothing to take up again at the next start, so a shutdown ends it
+ * as a user's stop does instead of keeping its claim.
+ */
+export function turnless(projection: Projection): boolean {
+  return latestSpoken(projection) === undefined && projection.inbox.length === 0
+}
+
 /** Whether `message` came out of the inbox: something a user or a harness component submitted. */
 function delivered(message: Message): boolean {
   return message.kind === "user" || (message.kind === "synthetic" && message.delivery !== null)

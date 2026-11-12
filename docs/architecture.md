@@ -540,7 +540,8 @@ is a new version with a decoder for the old one.
   `undoRevert`, `compact`, `setAgent`, a new prompt) is therefore never refused as busy, however many turns of the
   event loop the loop takes to return (`test/engine/idle-at-ending.test.ts`).
 - `Engine.close()` is the hook a process calls before it exits: every session is stopped as a shutdown, which leaves
-  its execution suspended and resumable, and is let go of. If the process dies without it, a guard process kills
+  its execution suspended and resumable, and is let go of (an execution that has no turn, a compaction the user
+  asked for while idle, is ended instead: see "Compaction", *On request*). If the process dies without it, a guard process kills
   the process group of every running shell command (`tools/shell.ts`), the operating system drops the session's
   lock, and whoever opens the session next recovers it.
 - *Usage of a step that was cut short.* `step.failed` for an interrupted step carries the usage the provider had
@@ -683,7 +684,13 @@ is a new version with a decoder for the old one.
   reason, and writes nothing, when there is nothing worth compacting: no conversation yet, only what the next
   request needs in view, or fewer than `manualCompactionMinTokens` (2,000) tokens to take out, which a checkpoint
   would not undercut. A request that never reaches a boundary because the turn failed or was stopped first is
-  answered with `failed`, never made later behind the user's back.
+  answered with `failed`, never made later behind the user's back. The execution of an idle session's compaction
+  is not a turn (`turnless` in `engine/state.ts`: nothing was said under its claim and nothing waits), and an
+  interrupted one leaves nothing behind: the compaction fails as interrupted, no marker is left for the model, so
+  the conversation is as it was, and the claim is released. That holds for a shutdown too: the session is closed
+  while the summary is being written, the interrupt is requested and recorded with the reason `user`, not
+  `shutdown`, because `shutdown` means a claim kept for the next start and there is no turn to take up. The next
+  request for a compaction starts an execution of its own.
 - *The task list.* The model's task list is the `display` of its latest successful `todo` call (`tools/todo.ts`;
   nothing is stored outside the log). When a compaction removes that call from the model's view, the checkpoint
   carries the list as the call left it, after the summary.
@@ -1183,6 +1190,7 @@ These are the shapes the scenarios spell out event by event.
 - **A cancel or a shutdown.** `execution.interrupt_requested`, written the moment the abort fires · the visible
   partial text · one `tool.settled` per unsettled call · `step.failed` as interrupted · the interrupt marker ·
   `execution.interrupted`. A `user` interrupt releases the claim; a `shutdown` keeps it suspended for the next start.
+  An execution without a turn (a compaction asked for while idle) gets no marker, and a shutdown ends it as `user`.
 - **One call stopped.** `tool.cancel_requested`, written before that call's signal fires · the call's
   `tool.settled` (what its tool observed, or the outcome its effect class gives) · the step's other calls and
   its `step.ended`, as ever · the next `step.started`. No interrupt, no marker.

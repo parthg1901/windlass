@@ -207,6 +207,7 @@ import {
   ranSideEffectsSince,
   refusedTurnStart,
   repeatsItself,
+  turnless,
   reportsThisTurn,
   saysNothing,
   settleUnsettled,
@@ -2570,7 +2571,10 @@ class LiveSession implements EngineSession {
       // Nothing the session spawned outlives it here: a command dies with the process anyway, and a subagent has nobody to answer to.
       this.stopSpawned("shutdown")
       if (this.run !== null) {
-        this.requestInterrupt("shutdown")
+        // `shutdown` keeps the claim for the next start, which takes the turn up again. An execution that has no
+        // turn (it was started only to make a compaction the user asked for) leaves nothing to take up: it is
+        // stopped as a user's stop stops it, the claim is released, and history is as it was.
+        this.requestInterrupt(turnless(this.projection()) ? "user" : "shutdown")
         await this.settled()
         return
       }
@@ -4867,8 +4871,9 @@ class LiveSession implements EngineSession {
    * the visible partial text, one terminal result for every unsettled call,
    * the step closed as interrupted, the marker for the model, the release
    * (cancel rules 3, 4 and 6). With no step open there is nothing to close;
-   * a user's cancel still leaves the marker, a shutdown at a boundary cut
-   * nothing short and leaves none. `usage` is what the provider reported for
+   * a user's cancel still leaves the marker (unless the execution had no
+   * turn, `turnless`), a shutdown at a boundary cut nothing short and
+   * leaves none. `usage` is what the provider reported for
    * the open step's model call, when it reported anything before the stop.
    */
   private finishInterrupt(run: Run, partialText = "", usage: Usage | null = null, stopHooks: readonly NewEvent<"hook.ran">[] = []): void {
@@ -4895,7 +4900,9 @@ class LiveSession implements EngineSession {
     if (open?.kind === "checks") events.push(event("checks.failed", { run: open.run, error }))
     // The stop hooks that had answered when the interrupt came are on record too.
     events.push(...stopHooks)
-    if (cutShort || reason === "user")
+    // The marker tells the model that its turn was cut short. An execution without a turn (a compaction the user
+    // asked for, and nothing else) has none to tell about: the conversation stays as it was.
+    if (cutShort || (reason === "user" && !turnless(projection)))
       events.push(
         note(this.core.ids.message(), HARNESS_ORIGIN.interrupt, reason === "user" ? NOTE_TEXT.interruptedByUser : NOTE_TEXT.interruptedByRestart),
       )

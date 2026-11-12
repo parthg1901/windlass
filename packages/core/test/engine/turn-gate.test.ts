@@ -9,6 +9,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import type { ConfigFile } from "../../src/config/schema.ts"
 import type { StoredEvent, VerificationOutcome } from "../../src/event/durable.ts"
 import type { Json } from "../../src/json.ts"
+import { selectModelHistory } from "../../src/message/history.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import type { ToolContext } from "../../src/tool/tool.ts"
 import { SUMMARY } from "../scenarios/script.ts"
@@ -286,6 +287,65 @@ describe("a compaction the user asks for", () => {
         await h.settled()
         expect(h.session.projection().session.compaction).toBeNull()
         expect(h.session.projection().session.execution).toBeNull()
+        // Nothing of the model's was cut short, so no marker was left for it.
+        expect(h.session.projection().messages.filter((message) => message.kind === "synthetic")).toEqual([])
+      },
+      { limits: { manualCompactionMinTokens: 0 } },
+    )
+  })
+
+  test("a shutdown during the summary call leaves nothing to resume: the claim is released, history is as it was, and the next request starts an execution of its own", async () => {
+    await project(
+      async (h) => {
+        h.provider.enqueue([...write("a.ts", "2\n"), at(3000)], [script.text("Changed a."), at(3200)], [script.hang()], [script.text(SUMMARY)])
+        h.create().send("Change a.ts.")
+        await h.settled()
+        const view = selectModelHistory(h.session.projection()).messages.map((message) => message.id)
+        const before = h.log().length
+        const asked = h.session.compact()
+        await h.seen((item) => item.type === "compaction.started")
+        // The user leaves (the client closes the session) while the summary is being written.
+        await h.session.close()
+        expect(await asked).toEqual({ kind: "failed", message: "The compaction was interrupted; the conversation is unchanged." })
+        const ending = h.log().slice(before)
+        expect(ending.map((item) => item.type)).toEqual(["execution.started", "compaction.started", "execution.interrupt_requested", "compaction.failed", "execution.interrupted"])
+        // Not a shutdown's interruption, which would keep the claim for the next start.
+        expect(ending.at(-1)!.data).toMatchObject({ reason: "user" })
+
+        // The next start: no claim to take up, in either mode, and nothing is appended by opening.
+        await h.dispose()
+        const session = h.restart("start")
+        await h.settled()
+        expect(h.log()).toHaveLength(before + ending.length)
+        expect(session.projection().session.execution).toBeNull()
+        expect(session.projection().session.compaction).toBeNull()
+        expect(session.projection().messages.filter((message) => message.kind === "synthetic")).toEqual([])
+        expect(selectModelHistory(session.projection()).messages.map((message) => message.id)).toEqual(view)
+        // Asked again, the compaction is made under an execution of its own: nothing is resumed.
+        expect(await session.compact()).toMatchObject({ kind: "compacted" })
+        await h.settled()
+        expect(h.log().slice(before + ending.length).map((item) => item.type)).toEqual(["execution.started", "compaction.started", "compaction.ended", "snapshot.taken", "execution.succeeded"])
+        expect(h.log().some((item) => item.type === "execution.resumed")).toBe(false)
+      },
+      { limits: { manualCompactionMinTokens: 0 } },
+    )
+  })
+
+  test("a shutdown during a turn that the compaction was asked in still keeps the turn for the next start", async () => {
+    await project(
+      async (h) => {
+        h.provider.enqueue([...call("read", { path: "a.ts" }), at(3000)], [script.hang()])
+        let asked: Promise<unknown> = Promise.resolve()
+        h.tools.on("read", () => {
+          asked = h.session.compact()
+          return "1"
+        })
+        h.create().send("What is in a.ts?")
+        await h.seen((item) => item.type === "compaction.started")
+        await h.session.close()
+        expect(await asked).toMatchObject({ kind: "failed" })
+        expect(h.log().at(-1)).toMatchObject({ type: "execution.interrupted", data: { reason: "shutdown" } })
+        expect(h.engine.getSession(h.session.id)!.session.execution).toMatchObject({ status: "suspended" })
       },
       { limits: { manualCompactionMinTokens: 0 } },
     )
