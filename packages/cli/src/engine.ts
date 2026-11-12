@@ -33,6 +33,7 @@
  *   that leaves them out has no undo, and the commands say so.
  */
 import type { DiffResult, ForkResult, ReplayParams, ReplayResult } from "@light-harness/acp/extensions"
+import type { TurnEvent } from "@light-harness/acp/turns"
 import { brand } from "@light-harness/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
@@ -246,6 +247,8 @@ export interface SessionDescription {
   readonly turns: number
   /** Of `turns`, the ones `/undo` took back. */
   readonly undone: number
+  /** The stored log, from which the turns were counted: what `/undo` and `/redo` then name. */
+  readonly events: readonly TurnEvent[]
 }
 
 /** How long the CLI waits for `Session.close` before it exits anyway. */

@@ -4,6 +4,7 @@ import { c, executionSucceeded, m, opening, say, stepStarted } from "@light-harn
 import { findScenario } from "../src/cli.ts"
 import { summarize } from "../src/panel.ts"
 import { Transcript } from "../src/transcript.ts"
+import { layoutRow } from "../src/rows.ts"
 import { CLOCK_START, stamp } from "./helpers.ts"
 
 function play(events: readonly NewEvent[]): Transcript {
@@ -91,5 +92,39 @@ describe("rows from a scripted turn", () => {
     const transcript = play([...opening("go"), stepStarted("a1"), called("one", "shell"), called("two", "shell"), event("tool.started", { messageId: m("a1"), callId: c("one"), effect: "exec" }), event("tool.started", { messageId: m("a1"), callId: c("two"), effect: "exec" }), settled("two")])
     const tools = transcript.rows.filter((row) => row.kind === "tool")
     expect(tools.map((row) => `${row.arg}:${row.phase}`)).toEqual(["run one:running", "run two:settled"])
+  })
+})
+
+describe("undo and redo", () => {
+  const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
+  const turn = (id: string, exe: string, prompt: string, answer: string) => [
+    said(id, prompt),
+    event("execution.started", { executionId: exe as never }),
+    event("inbox.delivered", { messageId: m(id) }),
+    stepStarted(`a${id}`),
+    event("text.ended", { messageId: m(`a${id}`), text: answer, providerData: null }),
+    event("step.ended", { messageId: m(`a${id}`), finish: "stop", usage: null }),
+    event("execution.succeeded", { executionId: exe as never, verification: { status: "not_configured" } }),
+  ]
+  const shown = (transcript: Transcript) =>
+    transcript.rows.flatMap((row) => layoutRow(row, 140, { now: CLOCK_START, debug: false, color: false })).map((line) => line.map((part) => part.text).join("").trimEnd())
+
+  test("an undone turn is one dim line naming it; /redo shows it as before; the ending rows carry the turn number", () => {
+    const first = turn("u1", "exe_1", "Write the notes.", "Wrote them.")
+    const second = turn("u2", "exe_2", "Now add a test.", "Added one.")
+    // created is seq 1; the second prompt is delivered at seq 11.
+    const transcript = play([event("session.created", { cwd: "/w", title: null, lineage: null, settings: { model: "m", reasoningEffort: null } }), ...first, ...second])
+    const before = shown(transcript)
+    expect(before.filter((line) => line.includes("turn "))).toEqual(["○ done · no checks configured · 1 step · 500ms · turn 1", "○ done · no checks configured · 1 step · 500ms · turn 2"])
+    transcript.apply({ ...event("history.reverted", { fromSeq: 11, restore: null }), sessionId: "s" as never, seq: 16, time: CLOCK_START })
+    const undone = shown(transcript)
+    expect(undone).toContain('↶ undone turn 2: "Now add a test." · out of the conversation · /redo brings it back')
+    expect(undone).not.toContain("Added one.")
+    expect(undone).toContain("Wrote them.")
+    expect(undone.at(-1)).toBe('↶ undone: turn 2 "Now add a test." · out of the conversation · no file was restored · /redo brings it back')
+    transcript.apply({ ...event("history.restored", { revertSeq: 16, restore: null }), sessionId: "s" as never, seq: 17, time: CLOCK_START })
+    const redone = shown(transcript)
+    expect(redone).toContain("Added one.")
+    expect(redone.at(-1)).toBe('↷ redone: turn 2 "Now add a test." · back in the conversation · no file was restored')
   })
 })

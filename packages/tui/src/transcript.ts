@@ -9,6 +9,7 @@
  * line-based CLI's renderer, so both clients say the same things.
  */
 import { type DiffResult, type TurnNotification, deriveTitle } from "@light-harness/acp/extensions"
+import { type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
 import { type EventData, type Json, type ProviderError, type StepError, type Usage, type VerificationOutcome, describeNeed } from "@light-harness/core"
 import { type EngineEvent, callArgument, checkLines, checksSummary, fileList, unresolvedReason } from "./cli.ts"
 import { plural, sanitize, thousands } from "./layout.ts"
@@ -22,11 +23,21 @@ interface RowBase {
   version: number
   /** From a `session/load` replay rather than live. */
   readonly replay: boolean
+  /**
+   * The event number the row belongs to: the latest stored event when it was
+   * added (a user's message: its delivery). `-1` for the TUI's own lines,
+   * which `/undo` never takes back.
+   */
+  seq: number
+  /** The reverts (`history.reverted` seqs) that took this row's turn out of the conversation and were not undone since. */
+  readonly undoneBy: Set<number>
 }
 
 export interface UserRow extends RowBase {
   readonly kind: "user"
   readonly text: string
+  /** The turn this message started, numbered as the user counts turns; `null` for a steer or a queued follow-up's own row. */
+  turn: number | null
   /** How a message sent while the agent worked reached it; `null` for the prompt that started a turn. */
   readonly delivered: "steer" | "queue" | null
 }
@@ -139,6 +150,8 @@ export interface OutcomeRow extends RowBase {
   /** Messages still waiting after an interrupt. */
   readonly waiting: number
   expanded: boolean
+  /** The turn this ended, numbered as the user counts turns (what `/fork <turn>` takes). */
+  readonly turn: number | null
 }
 
 export interface DebugRow extends RowBase {
@@ -253,6 +266,12 @@ export class Transcript {
   private stopAsked = false
   /** The stop line that tells how to exit at once; the hint goes once the turn has ended. */
   private stopRow: NoticeRow | null = null
+  /** The session's turns as the user counts them, for `/undo`, `/redo` and `/fork <turn>`. */
+  turns = new TurnTracker()
+  /** The latest stored event applied: what a row added now belongs to. */
+  private lastSeq = 0
+  /** The rows of user messages not delivered yet, by message: their delivery is where `/undo` cuts. */
+  private readonly userRows = new Map<string, UserRow>()
   private instructionFiles = ""
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -265,6 +284,7 @@ export class Transcript {
   /** A line from the TUI itself (a command's answer, an error), in the conversation. */
   note(text: string | Span[], tone: Role = "dim", symbol: string = SYMBOL.note, detail: Span[][] = []): NoticeRow {
     const row = this.add<NoticeRow>({ kind: "notice", symbol, tone, text: typeof text === "string" ? [span(text, tone === "dim" ? "dim" : undefined)] : text, detail, group: "session" }, false)
+    row.seq = -1
     return row
   }
 
@@ -283,6 +303,9 @@ export class Transcript {
     this.sentBack = 0
     this.stopAsked = false
     this.instructionFiles = ""
+    this.turns = new TurnTracker()
+    this.lastSeq = 0
+    this.userRows.clear()
     this.version += 1
   }
 
@@ -293,8 +316,19 @@ export class Transcript {
 
   apply(event: EngineEvent, replay = false): void {
     this.version += 1
+    let redone: readonly TurnInfo[] = []
+    if ("seq" in event && event.seq > this.lastSeq) {
+      this.lastSeq = event.seq
+      // Read before the tracker forgets that they were undone.
+      if (event.type === "history.restored") redone = this.turns.turns.filter((turn) => turn.undoneBy.has(event.data.revertSeq))
+      this.turns.add(event)
+    }
+    this.redone = redone
     this.handle(event, replay)
   }
+
+  /** The turns the `history.restored` being applied brings back. */
+  private redone: readonly TurnInfo[] = []
 
   /** How a turn ended, as the server says after its events (`<prefix>/turn`): the files it changed, also for a replayed turn. */
   applyTurn(turn: TurnNotification): void {
@@ -613,8 +647,16 @@ export class Transcript {
         this.inboxText.delete(event.data.messageId)
         const at = this.pending.findIndex((entry) => entry.messageId === event.data.messageId)
         const pending = at === -1 ? null : this.pending.splice(at, 1)[0]!
+        // A prompt's row was added when it was admitted; it belongs where it became part of the conversation.
+        const shown = this.userRows.get(event.data.messageId)
+        this.userRows.delete(event.data.messageId)
+        if (shown !== undefined) {
+          shown.seq = event.seq
+          shown.turn = this.turns.turns.at(-1)?.number ?? null
+        }
         if (item === undefined || !item.midTurn) return
-        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery }, replay)
+        const turnOfQueued = this.turns.turns.findLast((turn) => turn.messageSeq === event.seq)?.number ?? null
+        this.add<UserRow>({ kind: "user", text: item.text, delivered: pending?.delivery ?? item.delivery, turn: turnOfQueued }, replay)
         return
       }
       case "inbox.cancelled": {
@@ -720,15 +762,31 @@ export class Transcript {
       case "history.restored": {
         const undone = event.type === "history.reverted"
         const record = event.data.restore
-        const what = record === null ? (undone ? " · the conversation was rewound; no file was restored" : " · the conversation is as it was; no file was restored") : ` · ${plural(record.changed, "file")} restored${undone ? " · /redo brings it back" : ""}`
+        // The rows of the turns it takes out of the conversation, or puts back: they look undone until a /redo.
+        if (event.type === "history.reverted") {
+          for (const row of this.rows)
+            if (row.seq >= event.data.fromSeq && row.seq < event.seq) this.touch(row, () => row.undoneBy.add(event.seq))
+        } else {
+          const revert = event.data.revertSeq
+          for (const row of this.rows) if (row.undoneBy.has(revert)) this.touch(row, () => row.undoneBy.delete(revert))
+        }
+        const turns = undone ? this.turns.turns.filter((turn) => turn.undoneBy.has(event.seq)) : this.redone
+        const which = turnsLabel(turns)
+        const head = which === null ? (undone ? "went back" : "brought back") : undone ? `undone: ${which} · out of the conversation` : `redone: ${which} · back in the conversation`
+        const what =
+          record === null
+            ? undone
+              ? " · no file was restored · /redo brings it back"
+              : " · no file was restored"
+            : ` · ${plural(record.changed, "file")} ${undone ? "restored · /redo brings it back" : "as the turn left them"}`
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
         const detail = [
-          ...(byHand.length > 0 ? [[span(`kept as you edited them: ${fileList(byHand, 6)}`, "dim")]] : []),
+          ...(byHand.length > 0 ? [[span(`${undone ? "left as they are now, your edits and the agent's changes both" : "left as they are now, with your edits"}: ${fileList(byHand, 6)}`, "dim")]] : []),
           ...(other.length > 0 || (record?.keptOmitted ?? 0) > 0 ? [[span(`left alone (ignored or never recorded): ${fileList(other, 6)}${(record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : ""}`, "dim")]] : []),
         ]
-        this.notice(undone ? SYMBOL.undo : SYMBOL.redo, "accent", [span(undone ? "went back" : "brought back"), span(what, "dim")], detail, replay, "session")
+        this.notice(undone ? SYMBOL.undo : SYMBOL.redo, "accent", [span(head), span(what, "dim")], detail, replay, "session")
         return
       }
       case "revert.failed":
@@ -873,7 +931,7 @@ export class Transcript {
     // The title the server derives for a session without one: the first line of its first message.
     if (this.session.title === null) this.session.title = deriveTitle(sanitize(text))
     if (!midTurn) {
-      this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null }, replay)
+      this.userRows.set(data.messageId, this.add<UserRow>({ kind: "user", text: sanitize(text), delivered: null, turn: null }, replay))
       return
     }
     this.pending.push({ messageId: data.messageId, text: sanitize(text), delivery: data.delivery })
@@ -924,6 +982,7 @@ export class Transcript {
         written: turn?.written ?? new Set(),
         waiting,
         expanded: false,
+        turn: this.turns.turns.findLast((candidate) => candidate.endSeq === this.lastSeq)?.number ?? null,
       },
       replay,
     )
@@ -1010,8 +1069,8 @@ export class Transcript {
     return this.add<NoticeRow>({ kind: "notice", symbol, tone, text, detail, group }, replay)
   }
 
-  private add<R extends Row>(fields: Omit<R, "id" | "version" | "replay">, replay: boolean): R {
-    const row = { ...fields, id: this.nextId++, version: 0, replay } as R
+  private add<R extends Row>(fields: Omit<R, "id" | "version" | "replay" | "seq" | "undoneBy">, replay: boolean): R {
+    const row = { ...fields, id: this.nextId++, version: 0, replay, seq: this.lastSeq, undoneBy: new Set<number>() } as unknown as R
     this.rows.push(row)
     this.version += 1
     return row
@@ -1028,6 +1087,21 @@ export class Transcript {
     row.version += 1
     this.version += 1
   }
+}
+
+/** Whether `/undo` took the row's turn out of the conversation (and no `/redo` put it back). */
+export function isUndoneRow(row: Row): boolean {
+  return row.undoneBy.size > 0
+}
+
+/** Turns as the user sees them named: `turn 3 "fix the test"`, `turns 2 to 4`; `null` for none. */
+export function turnsLabel(turns: readonly TurnInfo[]): string | null {
+  if (turns.length === 0) return null
+  if (turns.length === 1) {
+    const turn = turns[0]!
+    return `turn ${turn.number}${turn.prompt === "" ? "" : ` "${oneLine(turn.prompt).slice(0, 40)}${oneLine(turn.prompt).length > 40 ? "…" : ""}"`}`
+  }
+  return `turns ${turns[0]!.number} to ${turns.at(-1)!.number}`
 }
 
 export function expandable(row: Row): boolean {

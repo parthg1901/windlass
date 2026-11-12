@@ -184,7 +184,7 @@ export class ConversationView extends Renderable {
     const pending = pendingLines(transcript.pending, columns)
     if (pending.length > 0) {
       const lines = [[], ...pending]
-      laid.push({ row: { kind: "debug", id: -1, version: 0, replay: false, text: "" }, start: line, height: lines.length, lines })
+      laid.push({ row: { kind: "debug", id: -1, version: 0, replay: false, seq: -1, undoneBy: new Set(), text: "" }, start: line, height: lines.length, lines })
       line += lines.length
     }
     this.laid = laid

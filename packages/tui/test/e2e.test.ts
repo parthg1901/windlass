@@ -169,12 +169,16 @@ describe("against lh acp with a scripted model", () => {
     writeFileSync(join(space.cwd, "notes.md"), "first\nsecond\nmine\n")
     term.type("/undo")
     term.keys("Enter")
-    const question = await term.waitFor("Undo: overwrite 1 file edited by hand since then?")
-    expect(question).toContain("[y] Overwrite them")
+    const question = await term.waitFor("Undo: 1 file edited by hand since the turn")
+    // Each choice says what it does to the file: keep leaves the agent's change in it too.
+    expect(question).toContain("[y] Overwrite: it goes back to before the turn")
+    expect(question).toContain("[2] Keep: it stays exactly as now")
     expect(question).toContain("[n] Change nothing")
     term.keys("y")
-    await term.waitFor("↶ went back · 1 file restored")
+    await term.waitFor("↶ undone: turn 1")
     expect(existsSync(join(space.cwd, "notes.md"))).toBe(false)
+    // The undone turn is one line where it was, until /redo.
+    await term.waitFor('↶ undone turn 1: "write the notes"')
   }, 60_000)
 
   test("the session picker switches to an earlier session and shows its history", async () => {

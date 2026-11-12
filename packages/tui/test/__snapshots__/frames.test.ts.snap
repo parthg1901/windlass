@@ -14,7 +14,7 @@ exports[`the showcase turn 60x20 1`] = `
 
   \`bun test src/add.test.ts\` passes (1 pass, 0 fail).
 
-  ○ done · no checks configured · 5 steps · 11s
+  ○ done · no checks configured · 5 steps · 11s · turn 1
     edited 1 file: src/add.ts (from its tool calls) ·
       Ctrl-O for diffs
     tokens · 44,746 in · 78% cached · 396 out
@@ -47,7 +47,7 @@ exports[`the showcase turn 100x30 1`] = `
                                                                 │ 3 ████████████████    9.0k  97%
   \`bun test src/add.test.ts\` passes (1 pass, 0 fail).           │ 4 ████████████████░   9.2k  97%
                                                                 │ 5 █████████████████   9.4k  98%
-  ○ done · no checks configured · 5 steps · 11s                 │
+  ○ done · no checks configured · 5 steps · 11s · turn 1        │
     edited 1 file: src/add.ts (from its tool calls) · Ctrl-O    │ demo: find-and-fix-a-failing-test
       for diffs                                                 │
     tokens · 44,746 in · 78% cached · 396 out                   │
@@ -79,7 +79,7 @@ exports[`the showcase turn 200x50 1`] = `
                                                                                                                                                                     │ 2 ███████████████░    8.9k  92%
   \`bun test src/add.test.ts\` passes (1 pass, 0 fail).                                                                                                               │ 3 ████████████████    9.0k  97%
                                                                                                                                                                     │ 4 ████████████████░   9.2k  97%
-  ○ done · no checks configured · 5 steps · 11s                                                                                                                     │ 5 █████████████████   9.4k  98%
+  ○ done · no checks configured · 5 steps · 11s · turn 1                                                                                                            │ 5 █████████████████   9.4k  98%
     edited 1 file: src/add.ts (from its tool calls) · Ctrl-O for diffs                                                                                              │
     tokens · 44,746 in · 35,072 cached (78%) · 396 out (64 reasoning)                                                                                               │ demo: find-and-fix-a-failing-test
                                                                                                                                                                     │

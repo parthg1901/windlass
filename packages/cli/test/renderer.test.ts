@@ -476,12 +476,24 @@ describe("verification, the workspace and reverts", () => {
     const restore = { target: "w0", before: "w1", after: "w0", changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
     expect(lines([event("history.reverted", { fromSeq: 6, restore })])).toEqual([
       "↶ went back · 3 files restored · /redo brings it back",
-      "  kept as you edited them: notes.md",
+      "  left as they are now, your edits and the agent's changes both: notes.md",
       "  left alone (ignored or never recorded): dist/app.js",
     ])
-    expect(lines([event("history.reverted", { fromSeq: 6, restore: null })])).toEqual(["↶ went back · the conversation was rewound; no file was restored"])
-    expect(lines([event("history.restored", { revertSeq: 9, restore: { ...restore, kept: [] } })])).toEqual(["↷ brought back · 3 files restored"])
+    expect(lines([event("history.reverted", { fromSeq: 6, restore: null })])).toEqual(["↶ went back · no file was restored · /redo brings it back"])
+    expect(lines([event("history.restored", { revertSeq: 9, restore: { ...restore, kept: [] } })])).toEqual(["↷ brought back · 3 files as the turn left them"])
     expect(lines([event("revert.failed", { message: "git refused the restore" })])).toEqual(["✗ the workspace could not be restored: git refused the restore", "  nothing changed in the conversation"])
+  })
+
+  test("/undo and /redo name the turn they take out of the conversation or put back", () => {
+    const said = (id: string, text: string) => event("inbox.enqueued", { messageId: m(id), origin: null, delivery: "steer", content: [{ type: "text", text }] })
+    const turn = (id: string, exe: string, prompt: string) => [said(id, prompt), event("execution.started", { executionId: exe as never }), event("inbox.delivered", { messageId: m(id) }), event("execution.succeeded", { executionId: exe as never, verification: { status: "not_configured" } })]
+    const restore = { target: "w0", before: "w1", after: "w0", changed: 1, kept: [], keptOmitted: 0 }
+    const history = [...turn("u1", "exe_1", "Write the notes."), ...turn("u2", "exe_2", "Now add a test.")]
+    const shown = lines([...history, event("history.reverted", { fromSeq: 7, restore }), event("history.restored", { revertSeq: 9, restore })], 140)
+    expect(shown.filter((line) => /^[↶↷]/.test(line))).toEqual([
+      '↶ undone: turn 2 "Now add a test." · out of the conversation · 1 file restored · /redo brings it back',
+      '↷ redone: turn 2 "Now add a test." · back in the conversation · 1 file as the turn left them',
+    ])
   })
 
   test("a diagnostic of the engine is printed in full", () => {

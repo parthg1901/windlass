@@ -87,7 +87,7 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
         describe: async () => {
           const events = harness.engine.readEvents(session.id)
           const turns = turnsOf(events)
-          return { title: session.projection().session.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length }
+          return { title: session.projection().session.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length, events }
         },
         close: () => harness.close(),
       }

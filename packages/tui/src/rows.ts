@@ -15,7 +15,7 @@ import { truncate, wrapLine, wrapText, plural, sanitize, width as textWidth } fr
 import { markdown } from "./markdown.ts"
 import type { DiffFile } from "@light-harness/acp/extensions"
 import { type Line, type Role, type Span, span } from "./theme.ts"
-import { type NoticeRow, type OutcomeRow, type PendingItem, type ReasoningRow, type Row, type SubagentView, type TextRow, type ToolRow, type UserRow, asObject } from "./transcript.ts"
+import { type NoticeRow, type OutcomeRow, type PendingItem, type ReasoningRow, type Row, type SubagentView, type TextRow, type ToolRow, type UserRow, asObject, isUndoneRow } from "./transcript.ts"
 
 /** Lines of output an expanded call shows before it says how many more there are. */
 export const EXPANDED_OUTPUT_LINES = 24
@@ -37,6 +37,8 @@ export interface LayoutContext {
 const INDENT = "    "
 
 export function layoutRow(row: Row, columns: number, context: LayoutContext): Span[][] {
+  // A turn `/undo` took out of the conversation is one dim line where its prompt was; the rest of it is not shown.
+  if (isUndoneRow(row)) return row.kind === "user" && row.delivered === null ? undoneLines(row, columns) : []
   switch (row.kind) {
     case "user":
       return userLines(row, columns)
@@ -78,6 +80,16 @@ function userLines(row: UserRow, columns: number): Span[][] {
   const lines = row.text.split("\n").flatMap((line, index) => wrapLine([span(index === 0 ? "› " : "  ", "accent"), span(line, "user")], columns, [span("  ")]))
   if (tag.length > 0) lines[0] = [...lines[0]!, ...tag]
   return lines
+}
+
+function undoneLines(row: UserRow, columns: number): Span[][] {
+  const head = `↶ undone${row.turn === null ? "" : ` turn ${row.turn}`}: `
+  const text = row.text.split("\n").find((line) => line.trim() !== "") ?? ""
+  // The prompt comes first; the explanation is shortened before it is.
+  const want = Math.min(textWidth(text), 30)
+  const tail = [" · out of the conversation · /redo brings it back", " · /redo brings it back", ""].find((candidate) => columns - textWidth(head) - textWidth(candidate) - 2 >= want) ?? ""
+  const room = Math.max(8, columns - textWidth(head) - textWidth(tail) - 2)
+  return [[span(head, "dim"), span(`"${truncate(text, room)}"`, "dim"), span(tail, "dim")]]
 }
 
 function textLines(row: TextRow, columns: number, color: boolean): Span[][] {
@@ -360,7 +372,7 @@ function noticeLines(row: NoticeRow, columns: number): Span[][] {
 }
 
 function outcomeLines(row: OutcomeRow, columns: number, nested = false): Span[][] {
-  const parts = [row.steps > 0 ? plural(row.steps, "step") : null, row.durationMs === null ? null : formatDuration(row.durationMs)].filter((part) => part !== null)
+  const parts = [row.steps > 0 ? plural(row.steps, "step") : null, row.durationMs === null ? null : formatDuration(row.durationMs), nested || row.turn === null ? null : `turn ${row.turn}`].filter((part) => part !== null)
   const after = parts.length === 0 ? "" : ` · ${parts.join(" · ")}`
   const lines: Span[][] = []
   const wrapped = (spans: Span[], indent = "  ") => lines.push(...wrapLine(spans, columns, [span(indent)]))

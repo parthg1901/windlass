@@ -419,6 +419,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
 /** The line the interactive mode starts with: which session, and for a resumed one its title and its turns. */
 async function sayOpened(renderer: PrettyRenderer, session: Session, resumed: boolean): Promise<void> {
   const described = await session.describe?.().catch(() => null)
+  // The events the stream will bring are the ones after these: the renderer counts turns from the first.
+  if (described != null) renderer.primeTurns(described.events)
   const hint = " · /help lists the commands"
   if (!resumed || described == null) return renderer.notice(`${resumed ? "resumed" : "new"} session ${session.id}${hint}`)
   const title = described.title === null ? "" : ` "${truncate(flatten(described.title), 50)}"`

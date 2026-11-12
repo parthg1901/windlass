@@ -20,7 +20,7 @@ import type { RevertPlan, RevertResult } from "@light-harness/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
-import { fileList, formatDuration } from "./cli.ts"
+import { changeLabel, fileList, formatDuration } from "./cli.ts"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
@@ -605,7 +605,7 @@ export class App {
       const preview = await act({ dryRun: true })
       if (preview.kind !== "preview") return this.say(refusal(command, preview), "warn")
       const plan = preview.plan
-      this.transcript.note([span(undo ? "going back to before your last message" : "bringing back what the last /undo took away"), span(` · ${plural(plan.messages, "message")}`, "dim")], "accent", undo ? "↶" : "↷", describePlan(plan))
+      this.transcript.note([span(undo ? "going back to before your last message" : "bringing back what the last /undo took away"), span(` · ${plural(plan.messages, "message")}`, "dim")], "accent", undo ? "↶" : "↷", describePlan(plan, undo))
       this.redraw()
       const byHand = plan.changes.filter((change) => change.handEdited)
       if (byHand.length === 0 && plan.target === null && undo) {
@@ -1227,10 +1227,10 @@ export class App {
   }
 }
 
-function describePlan(plan: RevertPlan): Span[][] {
+function describePlan(plan: RevertPlan, undo: boolean): Span[][] {
   if (plan.target === null) return [[span(`files are not restored: ${plan.unrestorable ?? "no snapshot"}`, "warn")]]
   if (plan.changes.length === 0) return [[span("no file needs to change", "dim")]]
-  const describe = (status: string) => (status === "added" ? "restored" : status === "deleted" ? "removed" : "changed back")
+  const describe = (status: string) => changeLabel(status, undo)
   const lines = ["modified", "mode_changed", "type_changed", "added", "deleted"].flatMap((status) => {
     const paths = plan.changes.filter((change) => change.status === status).map((change) => `${change.path}${change.handEdited ? " (edited by hand)" : ""}`)
     return paths.length === 0 ? [] : [[span(`${describe(status)}: `, "dim"), span(fileList(paths, 6))]]

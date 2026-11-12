@@ -98,7 +98,7 @@ describe("/undo", () => {
     const calls = session({ kind: "preview", plan: agentOnly })
     const { type, actions, output, prompt } = setup()
     await type("/undo\r")
-    expect(output()).toEqual(["↶ going back to before your last message · 3 messages", "  changed back: src/add.ts", "  removed: src/new.ts"])
+    expect(output()).toEqual(["↶ going back to before your last message · 3 messages", "  changed back to before the turn: src/add.ts", "  removed (the turn created it): src/new.ts"])
     expect(calls).toEqual(['revert {"dryRun":true}', 'revert {"handEdits":"abort"}'])
     expect(actions).toEqual([])
     expect(prompt()).toBe("› type a message")
@@ -106,10 +106,16 @@ describe("/undo", () => {
 
   test("asks before overwriting files edited by hand, and y overwrites them", async () => {
     const calls = session({ kind: "preview", plan: withHandEdit })
-    const { type, actions, output, prompt, screen } = setup()
+    const { type, actions, output, prompt, screen } = setup(120)
     await type("/undo\r")
-    expect(output().slice(-2)).toEqual(["  you edited 1 file by hand since then: notes.md", "  overwriting them is safe: /redo brings them back"])
-    expect(prompt()).toBe("overwrite them? [y]es · [k]eep mine · [N]o ›")
+    // What each answer does to the file, before it is asked: keep leaves the agent's change in it too.
+    expect(output().slice(-4)).toEqual([
+      "  you edited 1 file by hand since the turn: notes.md",
+      "  y  overwrite: it goes back to before the turn and your edits are lost (/redo brings them back)",
+      "  k  keep: it stays exactly as now, your edits and the agent's changes in it both; the other files go back",
+      "  n  change nothing",
+    ])
+    expect(prompt()).toBe("[y] overwrite · [k] keep as they are now · [N] change nothing ›")
     // The engine found them when asked to change nothing that was edited by hand, and changed nothing.
     expect(calls).toEqual(['revert {"dryRun":true}', 'revert {"handEdits":"abort"}'])
     await type("y\r")
@@ -196,7 +202,8 @@ describe("/redo", () => {
     const calls = session({ kind: "preview", plan: plan([{ path: "src/add.ts", status: "modified", handEdited: false }, { path: "src/new.ts", status: "added", handEdited: false }]) })
     const { type, output } = setup()
     await type("/redo\r")
-    expect(output()).toEqual(["↷ bringing back what the last /undo took away · 3 messages", "  changed back: src/add.ts", "  restored: src/new.ts"])
+    // Said as what it does: the turn's changes go back in.
+    expect(output()).toEqual(["↷ bringing back what the last /undo took away · 3 messages", "  the turn's changes put back: src/add.ts", "  brought back (the turn created it): src/new.ts"])
     expect(calls).toEqual(['undoRevert {"dryRun":true}', 'undoRevert {"handEdits":"abort"}'])
   })
 

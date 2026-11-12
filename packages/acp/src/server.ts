@@ -483,7 +483,7 @@ class ConnectionState {
       sessionId: view.session.id,
       toolCall: {
         toolCallId: `${META.capabilities}-${command}-${plan.fromSeq}`,
-        title: undo ? `Redo: overwrite ${files} edited by hand since the undo?` : `Undo: overwrite ${files} edited by hand since then?`,
+        title: undo ? `Redo: ${files} edited by hand since the undo` : `Undo: ${files} edited by hand since the turn`,
         kind: "edit",
         status: "pending",
         locations: byHand.map((path) => ({ path: join(cwd, path) })),
@@ -492,15 +492,19 @@ class ConnectionState {
             type: "content",
             content: {
               type: "text",
-              text: `Edited by hand: ${byHand.join(", ")}. ${undo ? "Overwriting them cannot be taken back." : "Overwriting them is safe: undoing the undo brings them back."}`,
+              text: `Edited by hand: ${byHand.join(", ")}. ${
+                undo
+                  ? "Overwrite: they go back to how the turn left them, and your edits since the undo are lost for good. Keep: they stay exactly as they are now, with your edits; the other files come back."
+                  : "Overwrite: they go back to before the turn and your edits are lost (redo brings them back). Keep: they stay exactly as they are now, your edits and the agent's changes in them both; the other files go back."
+              }`,
             },
           },
         ],
         rawInput: { command, plan },
       },
       options: [
-        { optionId: HAND_EDIT_OPTIONS.overwrite, name: "Overwrite them", kind: "allow_once" },
-        { optionId: HAND_EDIT_OPTIONS.keep, name: "Keep my edits, restore the rest", kind: "allow_once" },
+        { optionId: HAND_EDIT_OPTIONS.overwrite, name: undo ? "Overwrite them: as the turn left them" : "Overwrite them: back to before the turn", kind: "allow_once" },
+        { optionId: HAND_EDIT_OPTIONS.keep, name: "Keep them exactly as they are now", kind: "allow_once" },
         { optionId: HAND_EDIT_OPTIONS.cancel, name: "Change nothing", kind: "reject_once" },
       ],
       _meta: { [META.capabilities]: { command, plan, handEdited: byHand } },

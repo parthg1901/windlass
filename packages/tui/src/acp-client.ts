@@ -34,6 +34,7 @@
  * - a subagent's question: `session/request_permission` on the parent with
  *   `approval.subagent`; its activity: `child.event` in the events
  */
+import { handEditChoices } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@light-harness/acp/client"
 import { EXT } from "@light-harness/acp/extensions"
 import { type RevertResult, brand } from "@light-harness/core"
@@ -182,12 +183,16 @@ class AcpSession implements BackendSession {
     }
     session.approver = (ask, signal) => backend.onApproval(ask, signal)
     session.handEdits = async (ask) => {
+      // What each answer does to the files edited by hand, as the line CLI says it: keep leaves the agent's changes in them too.
+      const undo = ask.command === "revert"
+      const them = ask.handEdited.length === 1 ? "it" : "them"
+      const [overwrite, keep] = handEditChoices(undo, them).map((line) => line.replace(/^\s+[yk]\s+\w+: /, ""))
       const answer = await backend.onQuestion({
         title: ask.title,
-        detail: [...ask.detail, ...ask.handEdited.map((path) => `· ${path}`)],
+        detail: [...ask.handEdited.map((path) => `· ${path}`), ""],
         options: [
-          { id: "overwrite", label: "Overwrite them", kind: "allow" },
-          { id: "keep", label: "Keep my edits, restore the rest", kind: "allow" },
+          { id: "overwrite", label: `Overwrite: ${overwrite}`, kind: "allow" },
+          { id: "keep", label: `Keep: ${keep}`, kind: "allow" },
           { id: "cancel", label: "Change nothing", kind: "reject" },
         ],
       })

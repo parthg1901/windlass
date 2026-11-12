@@ -10,6 +10,7 @@
 import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
 import type { DiffFile } from "@light-harness/acp/extensions"
+import { type TurnEvent, type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
 import { callArgument, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap } from "./text.ts"
 
@@ -153,11 +154,30 @@ export class PrettyRenderer implements Sink {
     { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string }> }
   >()
 
+  /** The session's turns, as a person counts them: what `/undo` and `/redo` name. */
+  private turns = new TurnTracker()
+  /** The turns a `history.restored` brings back, read before the tracker forgets that they were undone. */
+  private redone: readonly TurnInfo[] = []
+  private lastSeq = 0
+
   constructor(private readonly options: PrettyOptions) {}
 
   event(event: EngineEvent): void {
+    // Counted once each: the stored history may already hold what the stream brings (`primeTurns`).
+    if ("seq" in event && event.seq > this.lastSeq) {
+      this.lastSeq = event.seq
+      if (event.type === "history.restored") this.redone = this.turns.turns.filter((turn) => turn.undoneBy.has(event.data.revertSeq))
+      this.turns.add(event)
+    }
     this.handle(event)
     this.drawStatus()
+  }
+
+  /** The session's stored history, shown nowhere: so that the turns `/undo` names are counted from the first one. */
+  primeTurns(events: readonly TurnEvent[]): void {
+    this.turns = new TurnTracker()
+    for (const item of events) this.turns.add(item)
+    this.lastSeq = Math.max(this.lastSeq, events.at(-1)?.seq ?? 0)
   }
 
   /** A line from the CLI itself: never cut, wrapped under itself when it does not fit. */
@@ -590,13 +610,18 @@ export class PrettyRenderer implements Sink {
       case "history.restored": {
         const undone = event.type === "history.reverted"
         const record = event.data.restore
-        const head = [seg(`${undone ? SYMBOL.undo : SYMBOL.redo} `, "cyan"), seg(undone ? "went back" : "brought back")]
-        if (record === null) this.line("info", [...head, seg(undone ? " · the conversation was rewound; no file was restored" : " · the conversation is as it was; no file was restored", "dim")])
-        else this.line("info", [...head, seg(` · ${plural(record.changed, "file")} restored`), seg(undone ? " · /redo brings it back" : "", "dim")])
+        // Which turns: taken out of the conversation, or put back in it.
+        const turns = undone ? this.turns.turns.filter((turn) => turn.undoneBy.has(event.seq)) : this.redone
+        this.redone = []
+        const which = turnsLabel(turns)
+        const head = [seg(`${undone ? SYMBOL.undo : SYMBOL.redo} `, "cyan"), seg(which === null ? (undone ? "went back" : "brought back") : undone ? `undone: ${which}` : `redone: ${which}`)]
+        const what = which === null ? "" : undone ? " · out of the conversation" : " · back in the conversation"
+        if (record === null) this.lineWrapped([...head, seg(what), seg(undone ? " · no file was restored · /redo brings it back" : " · no file was restored", "dim")])
+        else this.lineWrapped([...head, seg(what), seg(` · ${plural(record.changed, "file")} ${undone ? "restored" : "as the turn left them"}`, "dim"), seg(undone ? " · /redo brings it back" : "", "dim")])
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
-        if (byHand.length > 0) this.lineWithArg("info", [seg("  kept as you edited them: ", "dim")], fileList(byHand, 6), [])
+        if (byHand.length > 0) this.lineWithArg("info", [seg(undone ? "  left as they are now, your edits and the agent's changes both: " : "  left as they are now, with your edits: ", "dim")], fileList(byHand, 6), [])
         if (other.length > 0 || (record?.keptOmitted ?? 0) > 0)
           this.lineWithArg("info", [seg("  left alone (ignored or never recorded): ", "dim")], fileList(other, 6), [seg((record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : "", "dim")])
         return
@@ -982,6 +1007,16 @@ export class PrettyRenderer implements Sink {
     this.uncut("info", displayWidth(path) + indent <= this.width ? `${" ".repeat(indent)}${path}` : path, "dim")
   }
 
+  /** A line that wraps under itself instead of being cut: it says something the user must read whole. */
+  private lineWrapped(segments: readonly Segment[]): void {
+    const tone = segments.findLast((part) => part.tone !== undefined)?.tone
+    const whole = segments.map((part) => flatten(part.text)).join("")
+    if (displayWidth(whole) <= this.width) return this.line("info", segments)
+    const [first = "", ...rest] = wrap(whole, this.width)
+    this.line("info", [seg(first, segments[1]?.tone ?? tone)])
+    for (const line of wrap(rest.join(" "), this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
+  }
+
   /** A whole line that is never shortened, whatever the terminal width. */
   private uncut(kind: Block, text: string, tone?: Tone): void {
     this.endLine()
@@ -1291,6 +1326,16 @@ export function excerpt(text: string, width: number, rows: number): string[] {
   while (displayWidth(`${last} …`) > width && last.includes(" ")) last = last.slice(0, last.lastIndexOf(" "))
   shown[rows - 1] = `${last} …`
   return shown
+}
+
+/** Turns as the user sees them named: `turn 3 "fix the test"`, `turns 2 to 4`; `null` for none. */
+export function turnsLabel(turns: readonly TurnInfo[]): string | null {
+  if (turns.length === 0) return null
+  if (turns.length === 1) {
+    const turn = turns[0]!
+    return `turn ${turn.number}${turn.prompt === "" ? "" : ` "${truncate(flatten(turn.prompt), 40)}"`}`
+  }
+  return `turns ${turns[0]!.number} to ${turns.at(-1)!.number}`
 }
 
 /** In the compact form the summary follows the symbol directly; with no summary the duration does. */

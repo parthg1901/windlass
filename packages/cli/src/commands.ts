@@ -89,11 +89,13 @@ export async function runSessionCommand(command: Command, session: RevertableSes
     let declined = false
     const confirm = async (asked: RevertPlan): Promise<HandEditPolicy | null> => {
       const edited = asked.changes.filter((change) => change.handEdited).map((change) => change.path)
-      io.print([seg(`  you edited ${plural(edited.length, "file")} by hand since then: `, "yellow"), seg(fileList(edited, 6))])
-      // Only an undo keeps a way back: /redo restores the workspace as it was right before it, hand edits included.
-      io.print([seg(undo ? "  overwriting them is safe: /redo brings them back" : "  overwriting them cannot be taken back: /undo returns to before the turn, not to your edits", undo ? "dim" : "yellow")])
-      const answer = (await io.ask("overwrite them? [y]es · [k]eep mine · [N]o › "))?.trim().toLowerCase() ?? ""
-      if (answer === "y" || answer === "yes") return "overwrite"
+      const them = edited.length === 1 ? "it" : "them"
+      io.print([seg(`  you edited ${plural(edited.length, "file")} by hand ${undo ? "since the turn" : "since the /undo"}: `, "yellow"), seg(fileList(edited, 6))])
+      // What each answer does to those files, said before it is asked. Only an undo keeps a way back: /redo restores
+      // the workspace as it was right before it, hand edits included.
+      for (const line of handEditChoices(undo, them)) io.print([seg(line, "dim")])
+      const answer = (await io.ask("[y] overwrite · [k] keep as they are now · [N] change nothing › "))?.trim().toLowerCase() ?? ""
+      if (answer === "y" || answer === "yes" || answer === "overwrite") return "overwrite"
       if (answer === "k" || answer === "keep") return "keep"
       declined = true
       return null
@@ -108,12 +110,39 @@ export async function runSessionCommand(command: Command, session: RevertableSes
   }
 }
 
+/**
+ * What each answer to the hand-edit question does to the files edited by
+ * hand, one line each: the same words the TUI and the server's question use.
+ */
+export function handEditChoices(undo: boolean, them = "them"): string[] {
+  return undo
+    ? [
+        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to before the turn and your edits are lost (/redo brings them back)`,
+        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, your edits and the agent's changes in ${them} both; the other files go back`,
+        "  n  change nothing",
+      ]
+    : [
+        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to how the turn left ${them}, and your edits since the /undo are lost for good`,
+        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, with your edits; the other files come back`,
+        "  n  change nothing",
+      ]
+}
+
 /** Why a command did nothing, as a line for the user. */
 function refusal(command: Command, result: RevertResult): string {
   if (result.kind === "refused" && result.reason === "busy") return `${command} works only while the agent is idle; stop it first (Ctrl-C)`
   if (result.kind === "refused" && result.reason === "nothing_to_revert") return command === "/undo" ? "there is no turn to undo" : "there is nothing to redo"
   if (result.kind === "hand_edited") return "files were edited by hand in the meantime; nothing was changed"
   return `${command}: ${"message" in result ? result.message : "nothing was changed"}`
+}
+
+/**
+ * What a restore does to a file, by its status in the plan: an undo takes the
+ * turn's change back, a redo puts it back in.
+ */
+export function changeLabel(status: string, undo: boolean): string {
+  if (undo) return status === "added" ? "restored (the turn deleted it)" : status === "deleted" ? "removed (the turn created it)" : "changed back to before the turn"
+  return status === "added" ? "brought back (the turn created it)" : status === "deleted" ? "removed again (the turn deleted it)" : "the turn's changes put back"
 }
 
 /** What the command is about to do, in a few lines. */
@@ -124,7 +153,7 @@ function describePlan(plan: RevertPlan, undo: boolean): Segment[][] {
   if (plan.target === null) lines.push([seg(`  files are not restored: ${plan.unrestorable ?? "no snapshot"}`, "yellow")])
   else if (plan.changes.length === 0) lines.push([seg("  no file needs to change", "dim")])
   else {
-    const describe = (status: string) => (status === "added" ? "restored" : status === "deleted" ? "removed" : "changed back")
+    const describe = (status: string) => changeLabel(status, undo)
     const groups = ["modified", "mode_changed", "type_changed", "added", "deleted"].flatMap((status) => {
       const paths = plan.changes.filter((change) => change.status === status).map((change) => change.path)
       return paths.length === 0 ? [] : [[seg(`  ${describe(status)}: `, "dim"), seg(fileList(paths, 6))]]

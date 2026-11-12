@@ -279,7 +279,7 @@ class AcpSession implements Session {
   async describe(): Promise<SessionDescription> {
     const [state, events] = await Promise.all([this.session.state(), this.session.connection.storedEvents(this.id)])
     const turns = turnsOf(events)
-    return { title: state.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length }
+    return { title: state.title ?? titleFromEvents(events), turns: turns.length, undone: turns.filter(isUndone).length, events }
   }
 
   close(): Promise<void> {
