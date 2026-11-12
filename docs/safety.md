@@ -59,8 +59,11 @@ worktrees (also when the working directory is a subdirectory of the repository o
 
 What the protection of the repository's configuration breaks: anything that writes `.git/config` or `.git/hooks`.
 That is `git config` without `--global`, `git remote add`, `git branch --set-upstream-to` (and a checkout that sets
-up tracking), `git submodule init`, and hook installers such as husky. They fail inside the sandbox; run them
-yourself, or approve the command when the agent asks to run it with more access.
+up tracking), `git submodule init`, and hook installers such as husky, pre-commit and lefthook. They fail inside the
+sandbox whatever access you grant: no answer to a question opens these files, because what is written there runs
+later outside the sandbox with your rights. The result tells the agent so. It passes a commit identity on the
+command line instead (`git -c user.name=... -c user.email=... commit`), and for the rest it tells you the command
+to run yourself.
 
 ## What the sandbox does not stop
 

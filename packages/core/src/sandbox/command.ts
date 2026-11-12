@@ -18,7 +18,8 @@
  *   check that runs later outside the sandbox. This is what breaks: anything
  *   that writes the repository's configuration or hooks (`git config`,
  *   `git remote add`, `git branch --set-upstream-to`, `git submodule init`,
- *   a package manager's hook installer such as husky).
+ *   a package manager's hook installer such as husky). No access the user
+ *   grants opens them; `sandboxHint` tells the model so when one is refused.
  * - With the network granted, Bun's install cache in the temp directory: a
  *   download needs a writable cache, and the user's own cache is what later
  *   installs outside the sandbox trust, so it stays read-only.

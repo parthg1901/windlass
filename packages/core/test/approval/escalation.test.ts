@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { type Grant, type HistoryEntry, decide, deriveTaint, escalationFacts, escalationRequest, sandboxHint, stampGrants } from "../../src/approval/index.ts"
+import { brand } from "../../src/brand.ts"
 import { safeDecode } from "../../src/validate.ts"
 import { HOME, NOW, WS, call, input } from "./fixtures.ts"
 
@@ -61,6 +62,22 @@ describe("sandboxHint", () => {
     expect(run("Read-only file system", { sandboxed: false })).toBeNull()
     expect(run("1 test failed: expected 2, got 3")).toBeNull()
     expect(run("Connection refused", { network: true })).toBeNull()
+  })
+
+  test("a refused change to the git configuration, hooks or project directory is named as such, not as a write to ask for", () => {
+    for (const output of [
+      "error: could not write config file .git/config: Device or resource busy",
+      "error: could not write config file /work/.git/config: Device or resource busy\nfatal: could not set 'remote.origin.url' to 'https://example.com/r.git'",
+      "touch: cannot touch '.git/hooks/pre-commit': Read-only file system",
+      `mkdir: cannot create directory '.${brand.directory}/x': Read-only file system`,
+    ]) {
+      const hint = run(output, { exitCode: 4 })
+      expect(hint?.suspects, output).toEqual(["git"])
+      expect(hint?.note).toContain("no `sandbox` argument changes that")
+    }
+    // Another refused write in the same output is still one to ask for.
+    expect(run("touch: cannot touch '.git/hooks/x': Read-only file system\ntouch: cannot touch '/opt/y': Read-only file system")?.suspects).toEqual(["write", "git"])
+    expect(run("error: could not write config file .git/config: Device or resource busy", { exitCode: 0 })).toBeNull()
   })
 })
 

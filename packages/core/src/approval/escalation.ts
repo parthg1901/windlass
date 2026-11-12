@@ -20,6 +20,7 @@
  * (network for sandboxed commands in this session; writes under that path),
  * never the command.
  */
+import { brand } from "../brand.ts"
 import { DecodeError, type Validator, boolean, nonEmptyString } from "../validate.ts"
 import { type PathContext, type PathFact, pathFact } from "./paths.ts"
 
@@ -85,7 +86,12 @@ export interface SandboxRun {
 }
 
 export interface SandboxHint {
-  readonly suspects: readonly ("network" | "write")[]
+  /**
+   * `git`: the command tried to change what the sandbox keeps read-only
+   * whatever access is granted (the repository's git configuration and
+   * hooks, the harness's project directory); no `sandbox` argument helps.
+   */
+  readonly suspects: readonly ("network" | "write" | "git")[]
   /** Appended to the model-facing output, once, before the result is stored. */
   readonly note: string
 }
@@ -93,21 +99,40 @@ export interface SandboxHint {
 const WRITE_MARKERS = /Read-only file system|EROFS|Permission denied|EACCES|Operation not permitted|EPERM/
 const NETWORK_MARKERS =
   /Could not resolve|Temporary failure in name resolution|Name or service not known|nodename nor servname|getaddrinfo|EAI_AGAIN|ENOTFOUND|Network is unreachable|ENETUNREACH|Connection refused|ECONNREFUSED|No route to host|EHOSTUNREACH|Failed to establish a new connection|network is unreachable|Failed to connect to|Couldn't connect to server|ConnectionRefused|DNSResolveFailed/i
+/** A write git or a hook installer reports when the sandbox's read-only git configuration, hooks or project directory refused it. */
+const PROTECTED_MARKERS = new RegExp(
+  [
+    // git writes its configuration through a lock file renamed over it, and the file is a read-only mount point.
+    String.raw`could not write config file [^\n]*: Device or resource busy`,
+    String.raw`could not lock config file [^\n]*(?:Read-only file system|Device or resource busy)`,
+    String.raw`[^\n]*\.git/(?:hooks|config)\b[^\n]*(?:Read-only file system|EROFS|Device or resource busy|EBUSY)`,
+    String.raw`[^\n]*\.${brand.directory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^\n]*(?:Read-only file system|EROFS)`,
+  ].join("|"),
+)
 
-/** A note for a failed sandboxed command whose output shows an error the sandbox causes; null otherwise. */
+/**
+ * A note for a sandboxed command whose output shows an error the sandbox
+ * causes; null otherwise. Only a failed command (exit code not 0) gets one.
+ */
 export function sandboxHint(run: SandboxRun): SandboxHint | null {
-  if (!run.sandboxed || run.exitCode === null || run.exitCode === 0) return null
-  const suspects = [
-    ...(!run.network && NETWORK_MARKERS.test(run.output) ? (["network"] as const) : []),
-    ...(WRITE_MARKERS.test(run.output) ? (["write"] as const) : []),
-  ]
+  if (!run.sandboxed || run.exitCode === null) return null
+  const failed = run.exitCode !== 0
+  const lines = run.output.split("\n")
+  const git = failed && lines.some((line) => PROTECTED_MARKERS.test(line))
+  // A refused write to what stays read-only whatever is granted is not a reason to ask for writes.
+  const write = failed && lines.some((line) => WRITE_MARKERS.test(line) && !PROTECTED_MARKERS.test(line))
+  const network = failed && !run.network && NETWORK_MARKERS.test(run.output)
+  const suspects = [...(network ? (["network"] as const) : []), ...(write ? (["write"] as const) : []), ...(git ? (["git"] as const) : [])]
   if (suspects.length === 0) return null
-  const limits = run.network ? "writes only inside the workspace and the temp directory" : "no network, and writes only inside the workspace and the temp directory"
-  const ask = suspects
-    .map((suspect) => (suspect === "network" ? '`sandbox: { "network": true }`' : '`sandbox: { "write": ["<directory>"] }`'))
-    .join(" or ")
-  return {
-    suspects,
-    note: `[sandbox] This command ran in the sandbox (${limits}), and its output shows an error the sandbox can cause. If it needs that access, run it again with ${ask}; the user will be asked.`,
+  const notes: string[] = []
+  if (network || write) {
+    const limits = run.network ? "writes only inside the workspace and the temp directory" : "no network, and writes only inside the workspace and the temp directory"
+    const ask = [...(network ? ['`sandbox: { "network": true }`'] : []), ...(write ? ['`sandbox: { "write": ["<directory>"] }`'] : [])].join(" or ")
+    notes.push(`[sandbox] This command ran in the sandbox (${limits}), and its output shows an error the sandbox can cause. If it needs that access, run it again with ${ask}; the user will be asked.`)
   }
+  if (git)
+    notes.push(
+      `[sandbox] This command tried to change the repository's git configuration or hooks (\`.git/config\`, \`.git/hooks\`) or the harness's project directory (\`.${brand.directory}/\`). The sandbox keeps these read-only whatever access is granted, because what is written there runs later outside the sandbox; no \`sandbox\` argument changes that. Do not try to work around it. For a commit identity, pass it on the command (\`git -c user.name=<name> -c user.email=<email> commit ...\`). Otherwise tell the user the exact command and ask them to run it themselves.`,
+    )
+  return { suspects, note: notes.join("\n") }
 }
