@@ -20,6 +20,7 @@ import type { CompactionConfig } from "../../src/context/policy.ts"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import type { EngineLimits } from "../../src/engine/constants.ts"
 import type { McpSetup } from "../../src/engine/mcp.ts"
+import type { MemorySetup } from "../../src/engine/memory.ts"
 import type { SkillsSetup } from "../../src/engine/skills.ts"
 import type { SpawnSettings } from "../../src/engine/spawn.ts"
 import type { WakeSetup } from "../../src/engine/wake.ts"
@@ -353,6 +354,8 @@ export interface HarnessOptions {
   readonly mcp?: McpSetup
   /** Wake-ups. Without it the engine offers none; with `run` the engine fires them itself. */
   readonly wake?: WakeSetup
+  /** Memory. Without it the engine offers none; with it a session gets it when its configuration turns the flag on. */
+  readonly memory?: MemorySetup
   /** The user's own configuration file, apart from the project's (`config`): what the engine's features read from each. */
   readonly userConfig?: ConfigFile
   /** The directory the sessions work in. Default `/repo`, which does not exist: a test about real files names a real one. */
@@ -458,6 +461,7 @@ export class Harness {
       ...(this.options.skills === undefined ? {} : { skills: this.options.skills }),
       ...(this.options.mcp === undefined ? {} : { mcp: this.options.mcp }),
       ...(this.options.wake === undefined ? {} : { wake: this.options.wake }),
+      ...(this.options.memory === undefined ? {} : { memory: this.options.memory }),
       ...(this.options.exportSnapshot === undefined ? {} : { exportSnapshot: this.options.exportSnapshot }),
       ...(this.options.refreshAuth === undefined ? {} : { refreshAuth: this.options.refreshAuth }),
       hooks: { probe: (point) => [...this.probes].forEach((probe) => probe(point)) },

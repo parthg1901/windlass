@@ -138,6 +138,9 @@ import {
 } from "./constants.ts"
 import { historyTools } from "./history.ts"
 import { McpHub, type McpServerPlan, type McpSetup, type McpState, type SessionServers, catalogueAppended, engineMcpTools, planServers, serverGrant, serverQuestion, sessionServers } from "./mcp.ts"
+import { type MemorySetup, engineMemoryTools, memoryOutcome, memorySource, openSessionMemory, sessionMemoryConfig } from "./memory.ts"
+import type { MemoryConfig } from "../memory/config.ts"
+import type { MemoryStore } from "../memory/store.ts"
 import { type WakeApi, WakeRuntime, type WakeSetup, engineWakeTools, readUserWakeSection, runAllowedNow, sessionWakeConfig } from "./wake.ts"
 import type { WakeConfig, WakeConfigSection } from "../wake/config.ts"
 import type { Firing } from "../wake/record.ts"
@@ -443,6 +446,15 @@ export interface EngineOptions {
    * `createHarness` switches the tools on; a long-lived process asks for `run`.
    */
   readonly wake?: WakeSetup | null
+  /**
+   * Memory, behind its flag (`engine/memory.ts`): for a session a person
+   * starts while `memory.enabled` is on in its configuration, the memory
+   * tools in its tool list, the notes appended to the conversation, and the
+   * outcome of each turn recorded. With the flag off, and without this
+   * option (or `null`), nothing of memory exists. `createHarness` passes it,
+   * so the flag alone decides.
+   */
+  readonly memory?: MemorySetup | null
 }
 
 /** How a session is forked. */
@@ -693,6 +705,14 @@ export interface EngineSession {
    * the next step boundary. Returns whether such a server was waiting.
    */
   readonly approveMcpServer: (name: string, fingerprint?: string) => boolean
+  /**
+   * The session's memory, for a client that shows the notes, what waits for
+   * the user's confirmation and the review report, and lets the user save,
+   * retract, confirm and renew notes (`memory/README.md`, "The user"):
+   * its settings and the store of the user's notes and the project's.
+   * `null` when the engine offers no memory or the flag is off here.
+   */
+  readonly memory: () => { readonly config: MemoryConfig; readonly store: MemoryStore } | null
   /** Whether an execution is being worked on in this process. */
   readonly working: boolean
   /** Resolves once no execution and no revert is being worked on in this process. */
@@ -845,6 +865,8 @@ interface Core {
    * opened on first use. `null` when the build offers none.
    */
   readonly wake: { readonly tools: readonly AnyTool[]; readonly user: WakeConfigSection | undefined; readonly runtime: () => WakeRuntime } | null
+  /** Memory: the tools. `null` when the build offers none. Whether a session has them is its configuration's flag. */
+  readonly memory: { readonly tools: readonly AnyTool[]; readonly setup: MemorySetup } | null
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -904,7 +926,13 @@ export function createEngine(options: EngineOptions): Engine {
     seqOf: (context) => core.sessions.get(context.sessionId)?.projection().lastSeq ?? null,
     configOf: (context) => core.sessions.get(context.sessionId)?.wakeConfig() ?? null,
   })
-  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset])
+  const memoryToolset = engineMemoryTools({
+    storeOf: (context) => core.sessions.get(context.sessionId)?.memoryStore() ?? null,
+    untrusted: (context) => core.sessions.get(context.sessionId)?.commandsNow()?.tainted ?? false,
+    projectionOf: (context) => core.sessions.get(context.sessionId)?.projection() ?? null,
+    now: () => new Date(clock.now()),
+  })
+  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset, ...memoryToolset])
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
   const core: Core = {
     stores,
@@ -969,6 +997,7 @@ export function createEngine(options: EngineOptions): Engine {
           },
     grantsDir: options.approval?.grantsDir ?? join(options.dataDir, "approvals"),
     wake: options.wake == null ? null : { tools: wakeToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), user: wakeUser, runtime: wakeOf },
+    memory: options.memory == null ? null : { tools: memoryToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), setup: options.memory },
   }
   let closing: Promise<void> | null = null
   const assertOpen = () => {
@@ -1555,6 +1584,7 @@ class LiveSession implements EngineSession {
   write(events: readonly NewEvent[], options?: AppendOptions): readonly StoredEvent[] {
     const stored = this.store.append(this.id, events, options)
     if (this.taintHistory !== null) for (const item of stored) this.taintHistory.add(item)
+    if (this.core.memory !== null) this.recordOutcomes(stored)
     for (const item of stored) this.publish(item)
     // Input arrived: a loop that waits at a boundary for it carries on.
     if (this.arrival !== null && stored.some((item) => item.type === "inbox.enqueued")) this.arrival()
@@ -3593,10 +3623,12 @@ class LiveSession implements EngineSession {
       ...kept(this.core.skills === null ? [] : [this.core.skills.tool], true),
       ...kept(this.core.mcp?.tools ?? [], true),
       ...kept(this.core.wake?.tools ?? [], depth === 0 && (this.wakeConfig()?.enabled ?? false)),
+      // Memory is behind its flag: off unless the configuration read for this execution turns it on.
+      ...kept(this.core.memory?.tools ?? [], depth === 0 && this.memoryConfig().enabled),
     ]
     // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
     const own = new Set(
-      [this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? []), ...(this.core.wake?.tools ?? [])].map((tool) => tool.name),
+      [this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? []), ...(this.core.wake?.tools ?? []), ...(this.core.memory?.tools ?? [])].map((tool) => tool.name),
     )
     const tools = [...this.core.tools.filter((tool) => !own.has(tool.name)), ...this.core.history, ...spawning, ...features]
     return offered ? [...tools, this.core.acknowledge] : tools
@@ -3637,6 +3669,9 @@ class LiveSession implements EngineSession {
     }
     const mcp = this.core.mcp
     if (mcp !== null && mcp.tools.every((tool) => this.offers(projection, tool.name))) sources.push(catalogueAppended(this.mcpServers().servers()))
+    const notes = this.memoryStore(projection)
+    if (notes !== null)
+      sources.push(memorySource({ session: this.id, store: notes, config: this.memoryConfig(), now: new Date(this.core.clock.now()), problem: (message) => this.say("memory", message) }))
     return sources
   }
 
@@ -3645,6 +3680,52 @@ class LiveSession implements EngineSession {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
+  }
+
+  // ---- memory ----
+
+  /** This session's memory settings, from the configuration its latest execution read. Off without one. */
+  memoryConfig(): MemoryConfig {
+    return sessionMemoryConfig(this.files())
+  }
+
+  /** The store of this session's notes, opened on first use and again when the configuration moves it. */
+  private notes: { readonly key: string; readonly store: MemoryStore } | null = null
+
+  /**
+   * The session's notes, or `null` when memory does not exist for it: the
+   * engine offers none, the flag is off now, or its frozen tool list was
+   * set without the memory tools (the flag was off then, or it is a subagent).
+   */
+  memoryStore(projection: Projection = this.projection()): MemoryStore | null {
+    const memory = this.core.memory
+    if (memory === null || !memory.tools.every((tool) => this.offers(projection, tool.name))) return null
+    const config = this.memoryConfig()
+    if (!config.enabled) return null
+    const projectDir = this.config?.projectDir ?? projection.session.cwd
+    const key = `${projectDir}\u0000${config.inRepository}`
+    if (this.notes?.key !== key)
+      this.notes = { key, store: openSessionMemory({ dataDir: this.core.dataDir, projectDir, config, now: () => new Date(this.core.clock.now()), ...(memory.setup.newId === undefined ? {} : { newId: memory.setup.newId }) }) }
+    return this.notes.store
+  }
+
+  memory = (): { readonly config: MemoryConfig; readonly store: MemoryStore } | null => {
+    const store = this.memoryStore()
+    return store === null ? null : { config: this.memoryConfig(), store }
+  }
+
+  /** Records, in memory's usage log, how a turn ended: what the per-note statistics and the A/B comparison are computed from. */
+  private recordOutcomes(stored: readonly StoredEvent[]): void {
+    for (const item of stored) {
+      const outcome = memoryOutcome(item)
+      if (outcome === null) continue
+      try {
+        this.memoryStore()?.recordUsage({ type: "outcome", session: this.id, at: new Date(this.core.clock.now()).toISOString(), turn: item.seq, outcome, entries: null, note: null })
+      } catch (error) {
+        // A usage log that cannot be written costs a statistic, never the turn.
+        this.say("memory", `An outcome could not be recorded in memory's usage log: ${describe(error)}`)
+      }
+    }
   }
 
   // ---- wake-ups ----

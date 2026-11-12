@@ -195,6 +195,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       // Wake-ups: the tools everywhere; the scheduler and the webhook listener only in a process that asks for them
       // (`engine: { wake: { run: true } }`), which is what a long-lived server does and a one-prompt run does not.
       ...(options.engine?.wake === undefined ? { wake: {} } : {}),
+      // Memory is behind its flag: the engine can offer it, and a session gets it only when `memory.enabled` is on.
+      ...(options.engine?.memory === undefined ? { memory: {} } : {}),
       store: sessions,
       provider,
       tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),
