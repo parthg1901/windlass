@@ -820,6 +820,10 @@ export const durableEvents = {
    *   with a summary that was used anyway; `null` when there is nothing to say.
    * - `tokensAfter`: the size the next request is estimated at with the
    *   checkpoint in place. `tokensBefore - tokensAfter` is what was freed.
+   * - `calls`: how many summary requests were sent to the model for this
+   *   compaction, retries and the repair included. A summary call is a model
+   *   request that is no step (it writes no `step.started`), so the model
+   *   requests of a turn are its steps plus the `calls` of its compactions.
    */
   "compaction.ended": define(
     1,
@@ -830,10 +834,14 @@ export const durableEvents = {
       detail: nullable(string),
       tokensAfter: integer(0),
       usage: nullable(usage),
+      calls: optional(integer(1)),
     }),
   ),
-  /** The compaction did not complete. Model history is unchanged. */
-  "compaction.failed": define(1, object({ messageId, error: stepError })),
+  /**
+   * The compaction did not complete. Model history is unchanged. `calls`: how
+   * many summary requests had been sent for it, as on `compaction.ended`.
+   */
+  "compaction.failed": define(1, object({ messageId, error: stepError, calls: optional(integer(0)) })),
 
   // ---- workspace snapshots ----
 

@@ -239,7 +239,11 @@ function isModelOutput(item: InputItem) {
   return item.type === "assistant_text" || item.type === "reasoning" || item.type === "tool_call"
 }
 
+/** The safety margin the policy adds to `estimated` tokens that no provider measured (`ESTIMATOR_ERROR`). */
+export function estimatorMargin(estimated: number): number {
+  return Math.max(ESTIMATOR_ERROR.floorTokens, Math.ceil(estimated * ESTIMATOR_ERROR.relative))
+}
+
 function finish(measured: number, estimated: number, basedOnMeasurement: boolean): SizeEstimate {
-  const margin = Math.max(ESTIMATOR_ERROR.floorTokens, Math.ceil(estimated * ESTIMATOR_ERROR.relative))
-  return { measured, estimated, total: measured + estimated, margin, basedOnMeasurement }
+  return { measured, estimated, total: measured + estimated, margin: estimatorMargin(estimated), basedOnMeasurement }
 }

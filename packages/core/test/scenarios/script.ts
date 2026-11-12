@@ -615,10 +615,14 @@ export function checkpoint(before: readonly NewEvent[], keepFromSeq: number, sum
   const todos = list !== null && list.items.length > 0 && currentTodos(messages.filter((message) => message.seq >= keepFromSeq)) === null ? renderTodos(list) : null
   return buildCheckpoint({ summary, earlier, inProgress, todos }).text
 }
-/** The compaction completes with its checkpoint. `tokensAfter` is a stand-in: the loop records its estimate of the next request. */
-export const compactionEnded = (id: string, checkpointText: string, source: "model" | "repaired" | "fallback" = "model", detail: string | null = null) =>
-  event("compaction.ended", { messageId: m(id), summary: checkpointText, source, detail, tokensAfter: 0, usage: null })
-export const compactionFailed = (id: string, error: StepError) => event("compaction.failed", { messageId: m(id), error })
+/**
+ * The compaction completes with its checkpoint. `tokensAfter` is a stand-in: the loop records its estimate of the
+ * next request. `calls` is how many summary requests it took: one, or two when the model was asked to repair its answer.
+ */
+export const compactionEnded = (id: string, checkpointText: string, source: "model" | "repaired" | "fallback" = "model", detail: string | null = null, calls = source === "model" ? 1 : 2) =>
+  event("compaction.ended", { messageId: m(id), summary: checkpointText, source, detail, tokensAfter: 0, usage: null, calls })
+/** The compaction did not complete, after `calls` summary requests. */
+export const compactionFailed = (id: string, error: StepError, calls = 1) => event("compaction.failed", { messageId: m(id), error, calls })
 /** Why a compaction completed without a summary when both answers were unusable: `compaction.ended.detail`. */
 export const UNUSABLE = (problems: readonly SummaryProblem[]) =>
   `the model's summary was unusable, also after it was asked to fix it: ${problems.slice(0, 2).map(describeProblem).join("; ")}${problems.length > 2 ? `; and ${problems.length - 2} more` : ""}`

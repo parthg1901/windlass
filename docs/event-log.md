@@ -714,6 +714,7 @@ The compaction produced its checkpoint. From now on model history is `summary` (
 - `source`: where the summary part came from. `model`: the first answer; `repaired`: the answer to the repair request; `fallback`: no usable summary could be had, and the checkpoint was built without the model (index, verbatim user messages and a statement that there is no summary).
 - `detail`: for a person, why it is a fallback, or what is still wrong with a summary that was used anyway; `null` when there is nothing to say.
 - `tokensAfter`: the size the next request is estimated at with the checkpoint in place. `tokensBefore - tokensAfter` is what was freed.
+- `calls`: how many summary requests were sent to the model for this compaction, retries and the repair included. A summary call is a model request that is no step (it writes no `step.started`), so the model requests of a turn are its steps plus the `calls` of its compactions.
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -723,17 +724,19 @@ The compaction produced its checkpoint. From now on model history is `summary` (
 | `detail` | string, or `null` | yes |
 | `tokensAfter` | integer ≥ 0 | yes |
 | `usage` | [usage](#usage), or `null` | yes |
+| `calls` | integer ≥ 1 | may be absent |
 
 ### `compaction.failed`
 
 Version 1.
 
-The compaction did not complete. Model history is unchanged.
+The compaction did not complete. Model history is unchanged. `calls`: how many summary requests had been sent for it, as on `compaction.ended`.
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `messageId` | string, not empty | yes |
 | `error` | [stepError](#steperror) | yes |
+| `calls` | integer ≥ 0 | may be absent |
 
 ## Workspace snapshots
 

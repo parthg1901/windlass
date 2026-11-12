@@ -70,7 +70,7 @@ import { type LoadedConfig, loadConfig, loadConfigSync } from "../config/load.ts
 import type { CheckConfig } from "../config/schema.ts"
 import { text } from "../content.ts"
 import { buildCheckpoint } from "../context/checkpoint.ts"
-import { ITEM_OVERHEAD, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool } from "../context/estimate.ts"
+import { ITEM_OVERHEAD, REQUEST_OVERHEAD, type SizeEstimate, estimateNextInput, estimateTokens, estimateTool, estimatorMargin } from "../context/estimate.ts"
 import { HISTORY_READ, HISTORY_SEARCH } from "../context/history-tools.ts"
 import { type CompactionConfig, type CompactionDecision, DEFAULT_COMPACTION_CONFIG, decideAfterOverflow, decideCompaction, tailBudget } from "../context/policy.ts"
 import { type ResolvedSummary, resolveSummary, summaryOutputCapChars, summaryPrompt, summaryRepairPrompt } from "../context/summary.ts"
@@ -1382,12 +1382,14 @@ interface CompactionPlan {
   /** The size estimate of the request that set it off. */
   readonly tokensBefore: number
   /**
-   * For a normal compaction that turns out to have almost nothing to take
-   * out, because what must be kept is most of the context: whether the
-   * request still fits the window (then nothing is done), and the budget of
-   * the aggressive compaction that is made instead when it does not.
+   * For a normal compaction that turns out not to be worth its summary call,
+   * because what must be kept is most of the context: whether the request
+   * still fits the window (then a compaction that would take out almost
+   * nothing is not made), the usable window the request after it is
+   * measured against, and the budget of the aggressive compaction that is
+   * made instead when a normal one cannot help.
    */
-  readonly otherwise?: { readonly fits: boolean; readonly aggressiveBudget: number }
+  readonly otherwise?: { readonly fits: boolean; readonly usable: number; readonly aggressiveBudget: number }
 }
 
 type StepResult =
@@ -2114,7 +2116,9 @@ class LiveSession implements EngineSession {
       return
     }
     const recovery = recover(projection, { crashResumeCap: this.core.limits.crashResumeCap, newMessageId: this.core.ids.message })
-    if (recovery.events.length > 0) this.write(recovery.events, { expectedSeq: projection.lastSeq })
+    // A compaction the dead process left open is closed with the summary requests it had sent, which the ledger knows.
+    const closing = recovery.events.map((item) => (item.type === "compaction.failed" ? event("compaction.failed", { ...item.data, calls: this.summaryCalls(item.data.messageId) }) : item))
+    if (closing.length > 0) this.write(closing, { expectedSeq: projection.lastSeq })
     // What the log says was spawned and nobody here runs was lost with the process that ran it.
     this.reapSpawned()
     if (projection.session.replay !== undefined && this.director === null) {
@@ -2370,7 +2374,7 @@ class LiveSession implements EngineSession {
           mode: decision.mode,
           tailBudget: decision.tailBudget,
           tokensBefore: this.measure(next).total,
-          otherwise: { fits: decision.share <= 1, aggressiveBudget: this.aggressiveBudget(next, window) },
+          otherwise: { fits: decision.share <= 1, usable: this.usableWindow(window), aggressiveBudget: this.aggressiveBudget(next, window) },
         })
         if (outcome === "done") return
         // The baseline is set again and the request rebuilt at the top of the loop.
@@ -2450,6 +2454,12 @@ class LiveSession implements EngineSession {
     // With no known window the only thing known is that the rejected request was too large.
     if (window === null) return { contextWindow: Number.MAX_SAFE_INTEGER, reservedOutput: 0 }
     return { contextWindow: window, reservedOutput: Math.min(this.core.limits.reservedOutputTokens, Math.floor(window / 5)) }
+  }
+
+  /** The part of a window of this size a request may fill: the window less what is kept free for the answer. */
+  private usableWindow(window: number): number {
+    const { contextWindow, reservedOutput } = this.windowInput(window)
+    return contextWindow - reservedOutput
   }
 
   /** Tokens of history an aggressive compaction keeps word for word in a window of this size. */
@@ -3935,7 +3945,12 @@ class LiveSession implements EngineSession {
    *    its request and where the work stands. A normal compaction that would
    *    take out less than a quarter of what is in view is not made: either
    *    nothing happens (the request still fits) or the compaction is
-   *    aggressive straight away (it does not).
+   *    aggressive straight away (it does not). Nor is one whose result is
+   *    known beforehand not to fit: the size after it is predicted from what
+   *    cannot be removed, the bounds of the summary and the checkpoint, and
+   *    the tail it would keep, and when the policy would find that too large
+   *    for the window at the next boundary, the compaction is aggressive at
+   *    once, so the turn pays for one summary call and not for two.
    * 2. `compaction.started` records the cut, the mode, the size and the
    *    prompt before anything is sent, so the summary request is a function
    *    of the log.
@@ -3965,13 +3980,25 @@ class LiveSession implements EngineSession {
     const view = selectModelHistory(start).messages
     let mode = plan.mode
     let tail = chooseTail(view, { budget: plan.tailBudget, mandatory: mode === "aggressive" ? "if_fits" : "always" })
-    if (mode === "normal" && plan.otherwise !== undefined && tail.removedTokens < config.minFreedRatio * (tail.removedTokens + tail.keptTokens)) {
+    if (mode === "normal" && plan.otherwise !== undefined) {
       // What must be kept (one large tool result, say) is most of the context: a normal compaction would cost a
       // summary call and free too little. While the request still fits, nothing is done; when it does not, the
       // compaction is aggressive at once instead of after a normal one that could not have helped.
-      if (plan.otherwise.fits) return "nothing"
-      mode = "aggressive"
-      tail = chooseTail(view, { budget: plan.otherwise.aggressiveBudget, mandatory: "if_fits" })
+      const freesTooLittle = tail.removedTokens < config.minFreedRatio * (tail.removedTokens + tail.keptTokens)
+      if (freesTooLittle && plan.otherwise.fits) return "nothing"
+      // Or it frees enough and what it keeps is still too much. The request after it is known before the summary
+      // is asked for, up to the size of the checkpoint: it cannot fit when it is larger than the usable window with
+      // the summary and the checkpoint at their bounds, and the policy will find it too large at the next boundary,
+      // whatever the checkpoint's size, when what is kept alone is, as an estimate with its margin. Either way a
+      // normal compaction would be followed at once by an aggressive one, for a second summary call; that one is
+      // made now instead.
+      const largest = this.sizeAfterCompaction(start.baseline, config.summaryMaxTokens + config.checkpointExtraMaxTokens, tail.keptTokens)
+      const smallest = this.sizeAfterCompaction(start.baseline, 0, tail.keptTokens)
+      const cannotFit = largest > plan.otherwise.usable || smallest + estimatorMargin(smallest) > plan.otherwise.usable
+      if (freesTooLittle || cannotFit) {
+        mode = "aggressive"
+        tail = chooseTail(view, { budget: plan.otherwise.aggressiveBudget, mandatory: "if_fits" })
+      }
     }
     if (tail.nothingToRemove) return "nothing"
     const messageId = ids.message()
@@ -3985,7 +4012,7 @@ class LiveSession implements EngineSession {
 
     const failed = (error: ProviderError, reason: string): "done" => {
       this.write([
-        event("compaction.failed", { messageId, error: { kind: "provider", error } }),
+        event("compaction.failed", { messageId, error: { kind: "provider", error }, calls: attempt - 1 }),
         event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.compaction(reason) }),
       ])
       return "done"
@@ -4067,12 +4094,29 @@ class LiveSession implements EngineSession {
     // The request is not in the kept tail. That is work in progress only while something is still unanswered: a
     // compaction the user asks for after the model's answer cut a turn that is over.
     const checkpoint = buildCheckpoint({ summary: chosen.summary, earlier, inProgress: tail.midTurn && !wouldGoIdle(start), todos })
-    const envelope = estimateTokens(`${harnessOpen(CHECKPOINT_ORIGIN)}\n\n${HARNESS_CLOSE}`)
-    const fixed = baseline === null ? 0 : estimateTokens(baseline.instructions) + baseline.tools.reduce((sum, tool) => sum + estimateTool(tool), 0)
-    const tokensAfter = REQUEST_OVERHEAD + fixed + ITEM_OVERHEAD + envelope + checkpoint.tokens + tail.keptTokens
-    this.write([event("compaction.ended", { messageId, summary: checkpoint.text, source: chosen.source, detail: chosen.detail, tokensAfter, usage })])
+    const tokensAfter = this.sizeAfterCompaction(baseline, checkpoint.tokens, tail.keptTokens)
+    // Every summary request counted up `attempt`: the retries of one that failed and the repair are requests too.
+    this.write([event("compaction.ended", { messageId, summary: checkpoint.text, source: chosen.source, detail: chosen.detail, tokensAfter, usage, calls: attempt - 1 })])
     this.probe("compaction.ended")
     return "compacted"
+  }
+
+  /** How many summary requests the ledger has for a compaction: one row per request, written before it is sent. */
+  private summaryCalls(messageId: MessageId): number {
+    return this.store.readRequests(this.id).filter((row) => row.purpose === "compaction" && row.messageId === messageId).length
+  }
+
+  /**
+   * The estimated size of the first request after a compaction: what no
+   * compaction removes (the instructions and the tool list of `baseline`),
+   * the checkpoint in its envelope, and the kept tail. With the checkpoint
+   * at its bounds it is the largest that request can be, known before the
+   * summary is asked for.
+   */
+  private sizeAfterCompaction(baseline: Projection["baseline"], checkpointTokens: number, keptTokens: number): number {
+    const envelope = estimateTokens(`${harnessOpen(CHECKPOINT_ORIGIN)}\n\n${HARNESS_CLOSE}`)
+    const fixed = baseline === null ? 0 : estimateTokens(baseline.instructions) + baseline.tools.reduce((sum, tool) => sum + estimateTool(tool), 0)
+    return REQUEST_OVERHEAD + fixed + ITEM_OVERHEAD + envelope + checkpointTokens + keptTokens
   }
 
   /**
@@ -4116,7 +4160,7 @@ class LiveSession implements EngineSession {
       cutShort = true
     }
     const open = projection.session.open
-    if (open?.kind === "compaction") events.push(event("compaction.failed", { messageId: open.messageId, error }))
+    if (open?.kind === "compaction") events.push(event("compaction.failed", { messageId: open.messageId, error, calls: this.summaryCalls(open.messageId) }))
     // A run of checks that was stopped says nothing about the code.
     if (open?.kind === "checks") events.push(event("checks.failed", { run: open.run, error }))
     if (cutShort || reason === "user")
@@ -4150,7 +4194,7 @@ class LiveSession implements EngineSession {
       const step = openStep(projection)
       if (step !== null) events.push(...settleUnsettled(step, STOPPED), event("step.failed", { messageId: step.id, error: failure, usage: null }))
       const open = projection.session.open
-      if (open?.kind === "compaction") events.push(event("compaction.failed", { messageId: open.messageId, error: failure }))
+      if (open?.kind === "compaction") events.push(event("compaction.failed", { messageId: open.messageId, error: failure, calls: this.summaryCalls(open.messageId) }))
       if (open?.kind === "checks") events.push(event("checks.failed", { run: open.run, error: failure }))
       if (owesMarker(projection)) events.push(note(this.core.ids.message(), HARNESS_ORIGIN.interrupt, NOTE_TEXT.interruptedByRestart))
       events.push(event("execution.failed", { executionId: execution.id, message: FAILURE_TEXT.internal(describe(error)) }))

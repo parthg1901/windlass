@@ -391,7 +391,8 @@ export const crashedCompaction: Scenario = {
     {
       label: "at the next start: recovery closes it, and the loop compacts again",
       events: [
-        compactionFailed("c1", { kind: "crashed" }),
+        // The process died before the summary request was sent: the ledger has no call for it.
+        compactionFailed("c1", { kind: "crashed" }, 0),
         executionResumed(),
         compactionStarted("c2", 6),
         compactionEnded("c2", checkpoint(oneBigStep, 6, SUMMARY, true)),

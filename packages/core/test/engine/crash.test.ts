@@ -224,7 +224,7 @@ describe("a process killed inside a compaction", () => {
 
   test("compaction.started #1: the cut and the prompt are durable and the summary was never asked for; the next process closes it and compacts again", async () => {
     const where = await crashAt("compaction", "compaction.started", 1)
-    const result = await recoverAndContinue(where, 10_000)
+    const result = await recoverAndContinue(where, 20_000)
     expect(types(result.died).at(-1)).toBe("compaction.started")
     // No step was cut short, so there is no marker: the compaction is closed as crashed and the execution taken up again.
     expect(types(result.recovered)).toEqual(["compaction.failed", "execution.resumed"])
@@ -241,7 +241,7 @@ describe("a process killed inside a compaction", () => {
 
   test("compaction.ended #1: the checkpoint is durable and the baseline was not set again; the next process sets it and carries on", async () => {
     const where = await crashAt("compaction", "compaction.ended", 1)
-    const result = await recoverAndContinue(where, 10_000)
+    const result = await recoverAndContinue(where, 20_000)
     expect(types(result.died).at(-1)).toBe("compaction.ended")
     expect(types(result.recovered)).toEqual(["execution.resumed"])
     const after = types(result.log.slice(result.died.length))

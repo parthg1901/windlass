@@ -16,9 +16,11 @@
  *   checks     a write and an answer, in a project whose configuration declares
  *              a check; the real snapshot module and the real check runner
  *   revert     as `checks`, then the turn is reverted
- *   compaction a read the provider measures at 6,000 tokens of a 10,000-token
- *              window, so the loop compacts before the next step; then a
- *              summary and an answer
+ *   compaction a read the provider measures at 13,000 tokens of a 20,000-token
+ *              window, so the loop compacts before the next step (a normal
+ *              compaction: what it keeps, with the summary and the checkpoint
+ *              at their bounds, fits a window of that size); then a summary
+ *              and an answer
  *   approval   with the approval layer on, a person present and the real
  *              sandbox: a command that asks for the network, so the user is asked
  *   sandboxed  with the approval layer on: one long-running command, which
@@ -48,7 +50,7 @@ const scripts: Record<string, ScriptedResponse[]> = {
   shell: [[script.toolCall("call_1", "shell", { command: "echo $$ > tool.pid; sleep 300 & echo $! > background.pid; wait" })]],
   checks: [[script.toolCall("call_1", "write", { path: "b.txt", content: "new\n" })], [script.text("Changed b.txt.")]],
   compaction: [
-    [script.toolCall("call_1", "read", { path: "a.txt" }), script.usage({ inputTokens: 6000, cachedInputTokens: 5000, outputTokens: 50, reasoningTokens: 0 })],
+    [script.toolCall("call_1", "read", { path: "a.txt" }), script.usage({ inputTokens: 13_000, cachedInputTokens: 12_000, outputTokens: 50, reasoningTokens: 0 })],
     [script.text(SUMMARY)],
     [script.text("All done.")],
   ],
@@ -78,7 +80,7 @@ const engine = createEngine({
     ? { dataDir: join(root, "data"), loadConfig: (cwd: string) => loadConfig({ cwd, env: {}, home: join(root, "home") }) }
     : { dataDir: workspace, snapshots: null, loadConfig: null }),
   log: () => {},
-  ...(name === "compaction" ? { contextWindow: () => 10_000 } : {}),
+  ...(name === "compaction" ? { contextWindow: () => 20_000 } : {}),
   hooks: {
     probe: (at: ProbePoint) => {
       if (name === "interrupt" && at === "tool.started") session.interrupt()
