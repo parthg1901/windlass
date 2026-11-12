@@ -193,7 +193,7 @@ never disagree. The loop needs no new writes for it.
   `mapSession` for the child, with the context `mapSession` returned for the parent's spawn (`SpawnRef.context`).
   `mapSessionTree` shows the rule (the latest spawn of that child that started no later than the execution).
 - **New events.** An event type the mapping has no rule for is counted in `MapResult.unknownEvents` and otherwise
-  ignored. When an event is added to the schema, either give it a rule in `map.ts` or list it in `IGNORED`.
+  ignored. When an event is added to the schema, either give it a rule in `map.ts` or list it in `IGNORED_EVENTS`.
 
 ### What the log cannot provide today
 

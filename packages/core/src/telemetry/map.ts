@@ -81,7 +81,7 @@ export interface MapResult {
 }
 
 /** Event types the log has that carry nothing a span needs. Listed, so that an event type nobody thought about is counted. */
-const IGNORED = new Set([
+export const IGNORED_EVENTS: ReadonlySet<string> = new Set([
   "session.renamed",
   "session.archived",
   "session.unarchived",
@@ -501,7 +501,7 @@ export function mapSession(input: SessionInput, options: MapOptions = {}): MapRe
         break
       }
       default:
-        if (!IGNORED.has(event.type)) unknownEvents[event.type] = (unknownEvents[event.type] ?? 0) + 1
+        if (!IGNORED_EVENTS.has(event.type)) unknownEvents[event.type] = (unknownEvents[event.type] ?? 0) + 1
     }
   }
 

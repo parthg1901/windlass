@@ -81,7 +81,7 @@ function walk(read: SessionReader, input: SessionInput, placement: Placement, op
  * spawn of that child that started no later than the execution did (a
  * follow-up to a finished subagent is a new piece of spawned work).
  */
-function placementIn(parent: MapResult, childId: string): Placement {
+export function placementIn(parent: MapResult, childId: string): Placement {
   const pieces = parent.spawns.filter((spawn) => spawn.childSessionId === childId).toSorted((a, b) => a.startMs - b.startMs)
   if (pieces.length === 0) return undefined
   return (execution): SpanContext => {
