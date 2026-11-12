@@ -117,7 +117,7 @@ const firstTurn = [...opening("Why does the test fail?"), stepStarted("a1"), say
 export const switchedMidSession: Scenario = {
   title: "The user switches the agent in the middle of a session: an appended message, never a new baseline",
   description:
-    "The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: when the next turn starts, the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.",
+    "The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The session is idle, so both are recorded the moment the user selects the agent, before any turn: a process that dies afterwards has not lost the choice. (They are the one kind of message that enters history without a running execution. A switch asked for while a turn runs is made at that turn's next step boundary.) The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.",
   provider: "turn 1 answers. Turn 2 (as the reviewer): a write, refused, then an answer. Turn 3 (as the captain, on the other model): a write that runs, then an answer. Turn 4 (no agent): an answer",
   features: { agents: true },
   phases: [
@@ -127,12 +127,16 @@ export const switchedMidSession: Scenario = {
       expect: { history: ["u1", "a1"], execution: null },
     },
     {
-      label: "the user selected the reviewer: the next turn starts with the message and the record, and a write is refused",
+      label: "the user selects the reviewer while the session is idle: the message and the record are written at once",
+      events: [announced("i1", null, REVIEWER), switched("i1", null, REVIEWER)],
+      expect: { history: ["u1", "a1", "i1"], execution: null },
+      rejects: [{ event: event("instruction.appended", { messageId: m("i9"), source: "skills", text: "No skills are available.", fingerprint: null }), code: "invalid_transition", why: "any other message enters history only under a running execution" }],
+    },
+    {
+      label: "the next turn runs as the reviewer, and a write is refused",
       events: [
         enqueue("u2", "Fix it."),
         executionStarted("exe_2"),
-        announced("i1", null, REVIEWER),
-        switched("i1", null, REVIEWER),
         deliver("u2"),
         stepStarted("a2"),
         called("a2", "call_1", "write", WRITE_FIX),
@@ -152,11 +156,11 @@ export const switchedMidSession: Scenario = {
     {
       label: "the user selected the captain, which names another model: the message, the record and the settings change at one boundary",
       events: [
-        enqueue("u3", "Then prepare the release."),
-        executionStarted("exe_3"),
         announced("i2", REVIEWER, CAPTAIN),
         switched("i2", "reviewer", CAPTAIN),
         settingsChanged("gpt-other", "high"),
+        enqueue("u3", "Then prepare the release."),
+        executionStarted("exe_3"),
         deliver("u3"),
         stepStarted("a4", 1, "gpt-other"),
         ...ran("a4", "call_1", "write", WRITE_FIX, "Wrote a.test.ts"),
@@ -170,7 +174,7 @@ export const switchedMidSession: Scenario = {
     },
     {
       label: "the user switched the agent off: one line, and its restrictions no longer apply",
-      events: [enqueue("u4", "Thanks."), executionStarted("exe_4"), announced("i3", CAPTAIN, null), switched("i3", "captain", null), deliver("u4"), stepStarted("a6", 1, "gpt-other"), say("a6", "You are welcome."), stepEnded("a6"), executionSucceeded("exe_4")],
+      events: [announced("i3", CAPTAIN, null), switched("i3", "captain", null), enqueue("u4", "Thanks."), executionStarted("exe_4"), deliver("u4"), stepStarted("a6", 1, "gpt-other"), say("a6", "You are welcome."), stepEnded("a6"), executionSucceeded("exe_4")],
       expect: { history: ["u1", "a1", "i1", "u2", "a2", "a3", "i2", "u3", "a4", "a5", "i3", "u4", "a6"], execution: null },
       rejects: [{ event: switched(null, null, REVIEWER), code: "invalid_transition", why: "the baseline is frozen: a switch is announced by an instruction message" }],
     },

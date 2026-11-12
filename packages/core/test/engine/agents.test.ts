@@ -145,6 +145,81 @@ describe("the agent a session starts as", () => {
   })
 })
 
+describe("a switch made while the session is idle", () => {
+  test("is recorded when it is made, so a process that dies right after has not lost it", async () => {
+    const files = project({ reviewer: REVIEWER })
+    const h = harness(files)
+    try {
+      h.provider.enqueue(answer("Hello."), [call("write", { path: "a.ts", content: "x" }), U], answer("As the reviewer I may not."))
+      h.create().send("Hi.")
+      await h.settled()
+      const before = h.log().length
+      h.session.setAgent("reviewer")
+      // Durable at once: the message that tells the model and the record, with no execution around them.
+      expect(h.log().slice(before).map((item) => item.type)).toEqual(["instruction.appended", "agent.switched"])
+      expect(h.session.projection().session.execution).toBeNull()
+      // The process dies before the next prompt. The next one reads the switch from the log.
+      h.kill()
+      const reopened = h.restart()
+      expect(reopened.agent()?.name).toBe("reviewer")
+      expect(reopened.projection().session.agent?.name).toBe("reviewer")
+      reopened.send("Change a.ts.")
+      await h.settled()
+      // The turn ran as the reviewer, was told so by the message already in history, and nothing was announced twice.
+      expect(denials(h).map((item) => item.data.agent)).toEqual(["reviewer"])
+      expect(switches(h)).toHaveLength(1)
+      expect(h.log().filter((item) => item.type === "instruction.appended" && item.data.source === "agent")).toHaveLength(1)
+      // The request after the switch is the one before it plus the message and the prompt: the cached prefix is kept.
+      expect(h.provider.prefixBreaks()).toEqual([])
+      expect(JSON.stringify(h.provider.requests[1]!.input)).toContain("The user switched you to the agent")
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("with another model it changes the settings in the same breath; switched off again it says so in one line", async () => {
+    const files = project({ pinned: PINNED.replace("gpt-unlisted", "gpt-other") })
+    const h = harness(files)
+    try {
+      h.provider.enqueue(answer("Hello."))
+      h.create().send("Hi.")
+      await h.settled()
+      const before = h.log().length
+      h.session.setAgent("pinned")
+      expect(h.log().slice(before).map((item) => item.type)).toEqual(["instruction.appended", "agent.switched", "settings.changed"])
+      expect(h.session.projection().session.settings.model).toBe("gpt-other")
+      h.session.setAgent("none")
+      expect(h.log().slice(before + 3).map((item) => item.type)).toEqual(["instruction.appended", "agent.switched"])
+      expect(h.session.projection().session.agent ?? null).toBeNull()
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  test("while a step runs it waits for the boundary, as before", async () => {
+    const files = project({ reviewer: REVIEWER })
+    const h = harness(files)
+    try {
+      h.provider.enqueue([call("read", { path: "a.ts" }), U], answer("Read it."))
+      h.tools.on("read", () => {
+        // Asked for in the middle of the step: nothing may be appended inside it.
+        h.session.setAgent("reviewer")
+        return "x"
+      })
+      h.create().send("Read a.ts.")
+      await h.settled()
+      const types = h.log().map((item) => item.type)
+      expect(types.indexOf("agent.switched")).toBeGreaterThan(types.indexOf("step.ended"))
+      expect(types.indexOf("agent.switched")).toBeLessThan(types.lastIndexOf("step.started"))
+      h.verify()
+    } finally {
+      await h.dispose()
+    }
+  })
+})
+
 describe("what an agent's session keeps", () => {
   test("after a compaction the new baseline carries the agent from the record, not the file; a restart and a fork keep it", async () => {
     const files = project({ reviewer: REVIEWER })

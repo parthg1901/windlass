@@ -428,7 +428,9 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       }
     }
     case "instruction.appended":
-      claimed()
+      // A message enters history under a running claim. The one exception is the message that announces a switch
+      // of agent: the user makes one between two turns too, and it is recorded when it is made, at a boundary.
+      if (event.data.source !== AGENT_KEY) claimed()
       return add({
         kind: "instruction",
         id: event.data.messageId,
@@ -448,7 +450,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         // Before the first baseline the agent's instructions become a section of it; later only a message can say them.
         if (state.baseline !== null) fail("invalid_transition", "the baseline is frozen: a switch is announced by an instruction message (instruction.appended with source agent comes first)")
       } else {
-        claimed()
+        // No claim is needed: the message it follows was accepted where a switch may be made (see `instruction.appended`).
         const announced = state.messages.at(-1)
         if (announced === undefined || announced.id !== event.data.messageId || announced.kind !== "instruction" || announced.source !== AGENT_KEY || announced.seq !== event.seq - 1)
           fail("invalid_transition", `a switch follows at once the instruction message that announces it, and ${event.data.messageId} is not that message`)

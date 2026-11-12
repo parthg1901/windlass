@@ -1384,11 +1384,16 @@ Object.assign(PLAYS, {
     h.create().send(say[0]!)
     await h.settled()
     expect(h.session.agent()).toBeNull()
-    // Selected while idle: it is what the next turn runs as, and nothing is written until that turn starts.
+    // Selected while idle: it is recorded at once, the message that tells the model and the record, with no execution.
     const before = h.log().length
     expect(h.session.setAgent("reviewer")?.name).toBe("reviewer")
     expect(h.session.agent()?.name).toBe("reviewer")
-    expect(h.log()).toHaveLength(before)
+    expect(h.log().slice(before).map((item) => item.type)).toEqual(["instruction.appended", "agent.switched"])
+    expect(h.session.projection().session.agent?.name).toBe("reviewer")
+    expect(h.session.projection().session.execution).toBeNull()
+    // Selecting it again changes nothing and writes nothing.
+    h.session.setAgent("reviewer")
+    expect(h.log().slice(before)).toHaveLength(2)
     expect(() => h.session.setAgent("reviewr")).toThrow('There is no agent named "reviewr". Did you mean "reviewer"? Agents: captain, reviewer.')
     h.session.send(say[1]!)
     await h.settled()

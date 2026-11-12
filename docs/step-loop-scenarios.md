@@ -3278,7 +3278,7 @@ The user starts the session as the agent `reviewer`, whose definition allows onl
 
 #### 95. The user switches the agent in the middle of a session: an appended message, never a new baseline
 
-The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: when the next turn starts, the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.
+The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The session is idle, so both are recorded the moment the user selects the agent, before any turn: a process that dies afterwards has not lost the choice. (They are the one kind of message that enters history without a running execution. A switch asked for while a turn runs is made at that turn's next step boundary.) The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.
 
 *Provider:* turn 1 answers. Turn 2 (as the reviewer): a write, refused, then an answer. Turn 3 (as the captain, on the other model): a write that runs, then an answer. Turn 4 (no agent): an answer.
 
@@ -3291,11 +3291,12 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
   7  text.ended a1 "The expectation is wrong: 1 + 1 is 2."
   8  step.ended a1 finish=stop
   9  execution.succeeded exe_1
--- the user selected the reviewer: the next turn starts with the message and the record, and a write is refused
- 10  inbox.enqueued u2 steer "Fix it."
- 11  execution.started exe_2
- 12  instruction.appended i1 source=agent "The user switched you to the agent \"reviewer\". From this ..."
- 13  agent.switched i1
+-- the user selects the reviewer while the session is idle: the message and the record are written at once
+ 10  instruction.appended i1 source=agent "The user switched you to the agent \"reviewer\". From this ..."
+ 11  agent.switched i1
+-- the next turn runs as the reviewer, and a write is refused
+ 12  inbox.enqueued u2 steer "Fix it."
+ 13  execution.started exe_2
  14  inbox.delivered u2
  15  step.started a2 attempt=1
  16  tool.called a2/call_1 write {"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}
@@ -3307,11 +3308,11 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
  22  step.ended a3 finish=stop
  23  execution.succeeded exe_2
 -- the user selected the captain, which names another model: the message, the record and the settings change at one boundary
- 24  inbox.enqueued u3 steer "Then prepare the release."
- 25  execution.started exe_3
- 26  instruction.appended i2 source=agent "The user switched you from the agent \"reviewer\" to the ag..."
- 27  agent.switched i2
- 28  settings.changed model=gpt-other reasoningEffort=high
+ 24  instruction.appended i2 source=agent "The user switched you from the agent \"reviewer\" to the ag..."
+ 25  agent.switched i2
+ 26  settings.changed model=gpt-other reasoningEffort=high
+ 27  inbox.enqueued u3 steer "Then prepare the release."
+ 28  execution.started exe_3
  29  inbox.delivered u3
  30  step.started a4 attempt=1 model=gpt-other
  31  tool.called a4/call_1 write {"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}
@@ -3323,10 +3324,10 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
  37  step.ended a5 finish=stop
  38  execution.succeeded exe_3
 -- the user switched the agent off: one line, and its restrictions no longer apply
- 39  inbox.enqueued u4 steer "Thanks."
- 40  execution.started exe_4
- 41  instruction.appended i3 source=agent "The user switched off the agent \"captain\". From this poin..."
- 42  agent.switched i3
+ 39  instruction.appended i3 source=agent "The user switched off the agent \"captain\". From this poin..."
+ 40  agent.switched i3
+ 41  inbox.enqueued u4 steer "Thanks."
+ 42  execution.started exe_4
  43  inbox.delivered u4
  44  step.started a6 attempt=1 model=gpt-other
  45  text.ended a6 "You are welcome."
@@ -3339,8 +3340,9 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
 *Model sees next:* u1, a1, i1, u2, a2, a3, i2, u3, a4, a5, i3, u4, a6.
 
 *The reducer rejects:*
-- after "the user selected the reviewer: the next turn starts with the message and the record, and a write is refused": `baseline.set` (invalid_transition). The baseline is frozen until the next compaction: a switch is appended, never folded in.
-- after "the user selected the reviewer: the next turn starts with the message and the record, and a write is refused": `agent.switched i1` (invalid_transition). A switch follows at once the instruction message that announces it.
+- after "the user selects the reviewer while the session is idle: the message and the record are written at once": `instruction.appended i9 source=skills "No skills are available."` (invalid_transition). Any other message enters history only under a running execution.
+- after "the next turn runs as the reviewer, and a write is refused": `baseline.set` (invalid_transition). The baseline is frozen until the next compaction: a switch is appended, never folded in.
+- after "the next turn runs as the reviewer, and a write is refused": `agent.switched i1` (invalid_transition). A switch follows at once the instruction message that announces it.
 - after "the user switched the agent off: one line, and its restrictions no longer apply": `agent.switched null` (invalid_transition). The baseline is frozen: a switch is announced by an instruction message.
 
 #### 96. A subagent is run as an agent the list of agents names

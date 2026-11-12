@@ -723,12 +723,13 @@ export interface EngineSession {
   /**
    * Switches the session to the agent of that name, or to none with
    * `"none"`. The definition is read now, once, and is what the session
-   * runs as until the next switch. Before the session's first baseline the
-   * switch is recorded at once and the baseline will carry the agent's
-   * instructions; later it takes effect at the next step boundary under a
-   * running execution, as an appended instruction message (while idle: when
-   * the next turn starts), with `settings.changed` at the same boundary when
-   * the agent names another model or effort. Returns the record selected.
+   * runs as until the next switch. While the session is idle the switch is
+   * recorded at once (so a crash cannot lose it): before the session's
+   * first baseline as the record alone, and the baseline will carry the
+   * agent's instructions; later as an appended instruction message and the
+   * record. While a turn runs it is made at the next step boundary. Either
+   * way `settings.changed` follows at the same boundary when the agent names
+   * another model or effort. Returns the record selected.
    * Throws `EngineError` `invalid_request` with a message for the user when
    * there is no such agent (it suggests close names), the engine offers no
    * agents, or the session is a subagent or a replay, which keep what they
@@ -1896,8 +1897,11 @@ class LiveSession implements EngineSession {
     }
     this.pendingAgent = next
     this.agentDecided = true
-    // Nothing is frozen yet and nothing runs: recorded now, and the first baseline carries it.
-    if (projection.baseline === null && projection.session.execution === null && this.run === null) this.applyAgentSwitch()
+    // The session is idle: the switch is recorded now, so that it is in the log whatever happens to this process.
+    // Before the first baseline that is the record alone, and the baseline will carry the agent; after it, the
+    // message that tells the model and the record. While a turn runs (or a claim waits to be taken up again), the
+    // loop makes the switch at its next step boundary.
+    if (this.run === null && this.restoring === null && projection.session.open === null && projection.session.execution === null) this.applyAgentSwitch()
     return next
   }
 
@@ -1911,8 +1915,8 @@ class LiveSession implements EngineSession {
    * Makes the switch that waits: `agent.switched`, and, once the baseline is
    * frozen, the instruction message that tells the model, in one append;
    * then the agent's model and effort, as a settings change at the same
-   * boundary. With a baseline it needs a running execution (the loop calls
-   * it at a step boundary); before the first baseline it needs none.
+   * boundary. It is made at a step boundary: by `setAgent` itself while
+   * nothing is being worked on, by the loop while a turn runs.
    */
   private applyAgentSwitch(): void {
     const next = this.pendingAgent
