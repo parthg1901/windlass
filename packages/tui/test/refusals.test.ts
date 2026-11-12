@@ -32,14 +32,15 @@ test("a hook's refusal and an agent's refusal are both drawn as refused, with wh
     event("hook.ran", ran()),
     settle("a1", "c1", "error", 'This call was not run: the hook "no-push" refused it.\nPushing is not allowed here.'),
     call("a1", "c2", "write", { path: "note.txt", content: "x" }),
-    event("approval.denied", { messageId: m("a1"), callId: c("c2"), mode: "auto", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer" }),
+    event("approval.denied", { messageId: m("a1"), callId: c("c2"), mode: "auto", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer", refusal: { rule: "effect", effect: "write", text: 'The agent "reviewer" may use only tools that read. "write" changes files.' } }),
     settle("a1", "c2", "error", 'Not run: you are working as the agent "reviewer", which may use only tools that read.'),
   )
   await mounted!.settle()
   const frame = flat(await mounted!.frame())
   expect(frame).toContain('⊘ shell git push · refused by the hook "no-push"')
   expect(frame).toContain("Pushing is not allowed here.")
-  expect(frame).toContain("⊘ write note.txt · refused by the reviewer agent: it may not change files")
+  expect(frame).toContain("⊘ write note.txt · refused by the reviewer agent")
+  expect(frame).toContain('The agent "reviewer" may use only tools that read. "write" changes files.')
   expect(frame).not.toContain("✗")
 })
 
@@ -48,7 +49,7 @@ test("a subagent's row names the agent it runs as", async () => {
   session.emit(
     started(),
     event("step.started", { messageId: m("a1"), attempt: 1, model: "gpt-test" }),
-    call("a1", "c1", "subagent", { task: "Review the change", agent: "reviewer" }),
+    call("a1", "c1", "subagent", { task: "Review the change", agent: "reviewer", refusal: { rule: "effect", effect: "write", text: 'The agent "reviewer" may use only tools that read. "write" changes files.' } }),
     event("spawn.started", { spawnId: "sp_1", messageId: m("a1"), callId: c("c1"), background: false, work: { kind: "subagent", sessionId: "ses_child000000000000000000" as SessionId, worktree: null, agent: "reviewer" } }),
     call("a1", "c2", "subagent", { task: "Count the files" }),
     event("spawn.started", { spawnId: "sp_2", messageId: m("a1"), callId: c("c2"), background: false, work: { kind: "subagent", sessionId: "ses_child000000000000000001" as SessionId, worktree: null } }),

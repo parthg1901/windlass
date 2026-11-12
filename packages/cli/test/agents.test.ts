@@ -9,7 +9,7 @@ import { FakeProvider, script } from "@windlass/core/testing"
 import { c, executionStarted, m, opening, stepEnded, stepStarted } from "@windlass/core/testing/scenarios"
 import { SUMMARY } from "../../core/test/scenarios/script.ts"
 import { createAcpEngine } from "../src/acp-engine.ts"
-import { UNVERIFIED_HINT, agentRefusal } from "../src/agents.ts"
+import { UNVERIFIED_HINT } from "../src/agents.ts"
 import { helpText, parseArgs } from "../src/args.ts"
 import { JsonSink } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
@@ -25,7 +25,7 @@ describe("what the renderer says", () => {
         event("agent.switched", { messageId: null, from: null, to: REVIEWER }),
         stepStarted("a1"),
         call("a1", "c1", "write", { path: "note.txt", content: "x" }),
-        event("approval.denied", { messageId: m("a1"), callId: c("c1"), mode: "auto", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer" }),
+        event("approval.denied", { messageId: m("a1"), callId: c("c1"), mode: "auto", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer", refusal: { rule: "effect", effect: "write", text: 'The agent "reviewer" may use only tools that read. "write" changes files.' } }),
         settle("a1", "c1", "error", 'Not run: you are working as the agent "reviewer", which may use only tools that read. "write" changes files. Carry on without it, or tell the user what you would need and why.'),
         stepEnded("a1", "tool_calls"),
         event("agent.switched", { messageId: m("i1"), from: "reviewer", to: null }),
@@ -33,14 +33,10 @@ describe("what the renderer says", () => {
       { columns: () => 120 },
     )
     expect(out).toContain("⇄ working as the agent reviewer (read only)\n  Only tools that read (effects: read).\n")
-    expect(out).toContain("▸ write note.txt\n  ⊘ refused by the reviewer agent: it may not change files\n")
+    expect(out).toContain('▸ write note.txt\n  ⊘ refused by the reviewer agent\n    The agent "reviewer" may use only tools that read. "write" changes files.\n')
     expect(out).not.toContain("approval policy")
     expect(out).not.toContain("you are working as")
     expect(out).toContain("⇄ no agent: the instructions and restrictions of reviewer no longer apply · from the next step\n")
-    // The rule that refused is named when it is about the tool rather than what the tool does.
-    expect(agentRefusal("docs", { effects: null, tools: ["read", "write"], deniedTools: [], approval: null }, "shell")).toBe("the docs agent may use only read, write, not shell")
-    expect(agentRefusal("careful", { effects: null, tools: null, deniedTools: ["shell"], approval: null }, "shell")).toBe("the careful agent may not use shell")
-    expect(agentRefusal("reviewer", null, "shell")).toBe("the reviewer agent may not run commands")
   })
 })
 
@@ -73,7 +69,9 @@ describe("as a user types them", () => {
       await waitFor("Definitions with problems:")
       await waitFor(/broken\.md\n\s+not loaded: .*description/)
       type("write note.txt\r")
-      await waitFor("⊘ refused by the reviewer agent: it may not change files")
+      await waitFor("⊘ refused by the reviewer agent")
+      // The engine's own sentence about the rule, as its log has it.
+      await waitFor('The agent "reviewer" may use only tools that read. "write" changes files.')
       await waitFor("I may not write as the reviewer.")
       await waitFor(/✓ done/)
       type("/agent docs\r")

@@ -154,8 +154,8 @@ function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[
     else if (approval?.state === "declined") lines.push([span(`${INDENT}the agent was told you declined`, "dim")])
     else if (approval?.state === "denied" && approval.reason === "unattended")
       lines.push(...wrapLine([span(`${INDENT}it needs ${approval.needs.join(", ")}${approval.stop ? "; the run ends here" : ""}`, "warn")], columns, [span(INDENT)]))
-    // The agent's rule is on the row itself; the text the model was given says the same to the model.
-    else if (approval?.state === "denied" && approval.refusal != null) return lines
+    // The agent's rule, whole, in the engine's sentence for the user, instead of the text the model was given.
+    else if (approval?.state === "denied" && approval.refusal != null) return [...lines, ...wrapLine([span(`${INDENT}${approval.refusal.reason}`)], columns, [span(INDENT)])]
     // A hook kept the call from running: its reason, in a few whole lines, instead of the text the model was given.
     else if (hookRefused(row) !== null) {
       const reason = hookRefused(row)!.reason
@@ -320,7 +320,7 @@ function describeOutcome(row: ToolRow): { symbol: string; role: Role; text: stri
   const data = settledData(row)
   const approval = row.approval
   if (approval?.state === "declined") return { symbol: "⊘", role: "warn", text: "not allowed by you" }
-  if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: approval.refusal }
+  if (approval?.state === "denied" && approval.refusal != null) return { symbol: "⊘", role: "warn", text: approval.refusal.head }
   if (approval?.state === "denied") return { symbol: "⊘", role: "warn", text: approval.reason === "policy" ? "refused by the approval policy" : "refused: nobody was there to approve it" }
   // A before hook kept the call from running: the hook's name, instead of the text the model was given.
   const refused = hookRefused(row)

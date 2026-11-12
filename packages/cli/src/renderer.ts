@@ -7,7 +7,7 @@
  * - `JsonSink`: every event as one JSON line, nothing else on stdout.
  * - `QuietSink`: only the final assistant text of each turn, for pipelines.
  */
-import { type AgentRecord, type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
+import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@windlass/core"
 import { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentRefused, agentSwitchText, requestsText, tasksOf, tasksProgress } from "./agents.ts"
 import type { EngineEvent } from "./engine.ts"
 import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
@@ -175,17 +175,15 @@ export class PrettyRenderer implements Sink {
    */
   private readonly spawned = new Map<
     string,
-    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; readonly background: boolean; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string; started?: boolean; hooks?: HookRecord[]; refused?: string }> }
+    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; readonly background: boolean; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string; started?: boolean; hooks?: HookRecord[]; refused?: { readonly head: string; readonly reason: string } }> }
   >()
   /** How the latest spawned work ended, for the line about the message that tells the agent. */
   private lastSpawnEnd: { readonly outcome: string; readonly detail: string } | null = null
 
   /** The session's turns, as a person counts them: what `/undo` and `/redo` name. */
   private turns = new TurnTracker()
-  /** The agent the session runs as (`agent.switched`), for the words of a call it refuses. */
-  private agent: AgentRecord | null = null
-  /** Calls the agent's restrictions refused, with why in the user's words: said on the call's own line when it settles. */
-  private readonly agentRefusals = new Map<string, string>()
+  /** Calls the agent's restrictions refused, with why in the engine's sentence: said on the call's own line when it settles. */
+  private readonly agentRefusals = new Map<string, { readonly head: string; readonly reason: string }>()
   /** The hooks that applied to a call that has not settled yet (`hook.ran` comes before its result), by call. */
   private readonly hookRuns = new Map<string, HookRecord[]>()
   /** The stop hooks that objected when the turn last tried to end: said when the agent is sent back, or on the ending. */
@@ -448,9 +446,8 @@ export class PrettyRenderer implements Sink {
         // Refused without a question. An unattended run says so: nothing waited, and this is what became of the call.
         const needs = event.data.needs.map(describeNeed)
         // The agent's own rule, not the approval policy: said on the call's line, which follows.
-        if (event.data.agent !== undefined) {
-          const id = key(event.data.messageId, event.data.callId)
-          this.agentRefusals.set(id, agentRefused(event.data.agent, this.agent?.name === event.data.agent ? this.agent.restrictions : null, this.calls.get(id)?.name ?? "this tool"))
+        if (event.data.agent !== undefined && event.data.refusal !== undefined) {
+          this.agentRefusals.set(key(event.data.messageId, event.data.callId), agentRefused(event.data.agent, event.data.refusal))
           return
         }
         if (event.data.reason === "unattended" && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
@@ -782,7 +779,6 @@ export class PrettyRenderer implements Sink {
         return
       case "agent.switched": {
         // What the session runs as from here on: said once, with what the agent may do.
-        this.agent = event.data.to
         const said = agentSwitchText(event.data.from, event.data.to)
         this.lineWrapped([seg(`${SYMBOL.settings} `, "cyan"), seg(said.head), seg(event.data.messageId === null ? "" : " · from the next step", "dim")])
         if (said.detail !== null) for (const line of wrap(said.detail, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
@@ -911,16 +907,18 @@ export class PrettyRenderer implements Sink {
       this.hookLines(hooks, false)
       return
     }
-    // Refused by the agent the session runs as: the agent's rule, in the user's words, instead of the text the model got.
+    // Refused by the agent the session runs as: the agent's rule, in the engine's sentence for the user, instead of the text the model got.
     // Drawn as a hook's refusal is: refused, and by whom.
     const refusal = this.agentRefusals.get(id)
     if (refusal !== undefined) {
       this.agentRefusals.delete(id)
-      if (adjacent) wrap(refusal, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.refused} ` : "    ", "yellow"), seg(line, "yellow")]))
+      if (adjacent) wrap(refusal.head, this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.refused} ` : "    ", "yellow"), seg(line, "yellow")]))
       else {
         this.lineWithArg("info", [seg(`  ${SYMBOL.refused} `, "yellow"), seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [])
-        for (const line of wrap(refusal, this.width - 4)) this.line("info", [seg(`    ${line}`, "yellow")])
+        for (const line of wrap(refusal.head, this.width - 4)) this.line("info", [seg(`    ${line}`, "yellow")])
       }
+      // The rule, whole: it is why the call did not run.
+      for (const line of wrap(flatten(refusal.reason), this.width - 4)) this.line("info", [seg(`    ${line}`)])
       return
     }
     // A subagent's answer is prose, said in a few whole lines under its row; its task was said when it started.
@@ -1098,15 +1096,15 @@ export class PrettyRenderer implements Sink {
       const call = child.calls.get(key(event.data.messageId, event.data.callId))
       if (call !== undefined) call.hooks = [...(call.hooks ?? []), event.data]
     }
-    if (event.type === "approval.denied" && event.data.agent !== undefined) {
+    if (event.type === "approval.denied" && event.data.agent !== undefined && event.data.refusal !== undefined) {
       const call = child.calls.get(key(event.data.messageId, event.data.callId))
-      if (call !== undefined) call.refused = agentRefused(event.data.agent, null, call.name)
+      if (call !== undefined) call.refused = agentRefused(event.data.agent, event.data.refusal)
     }
     if (event.type === "tool.settled") {
       const id = key(event.data.messageId, event.data.callId)
       const call = child.calls.get(id) ?? { name: "tool", arg: "" }
       child.calls.delete(id)
-      const refused = call.refused ?? (event.data.outcome === "error" ? (hookRefusal(call.hooks ?? [], call.started === true, event.data.output)?.head ?? null) : null)
+      const refused = call.refused?.head ?? (event.data.outcome === "error" ? (hookRefusal(call.hooks ?? [], call.started === true, event.data.output)?.head ?? null) : null)
       const outcome = refused == null ? describeOutcome(call.name, event.data) : { symbol: SYMBOL.refused, tone: "yellow" as const, text: refused }
       this.lineWithArg(
         "info",
@@ -1114,6 +1112,8 @@ export class PrettyRenderer implements Sink {
         call.arg,
         outcome.text === "" ? [] : [seg(" · ", "dim"), seg(outcome.text, outcome.tone === "green" ? "dim" : outcome.tone)],
       )
+      // The agent's rule that refused it, whole, under its line.
+      if (call.refused !== undefined) for (const line of wrap(flatten(call.refused.reason), this.width - 8)) this.line("info", [seg(`        ${line}`, "dim")])
     }
     if (event.type === "approval.requested") {
       child.asking = true

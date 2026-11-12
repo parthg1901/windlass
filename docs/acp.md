@@ -105,8 +105,10 @@ session as one; the `agent` config option switches (`none` switches it off). The
 session is idle and at the next step boundary while a turn runs; its record is the `agent.switched` event
 (`{ messageId, from, to }`, `to` being the definition as it was selected), and `config_option_update` follows it.
 A call the agent's restrictions refuse fails like any refused call; for a client that takes the events it is
-`approval.denied` with `reason: "policy"` and `agent: <name>`, which a client words as the agent's rule ("the
-reviewer agent may not change files") rather than as the approval policy. Definitions that could not be used are
+`approval.denied` with `reason: "policy"`, `agent: <name>` and `refusal: { rule, effect, text }`: which rule of the
+agent refused it, the effect class the tool declares, and the engine's sentence for the user (`The agent "reviewer"
+may use only tools that read. "write" changes files.`), which a client shows as it is rather than the approval
+policy's words. The call's part in the session's state carries the same `refusal`. Definitions that could not be used are
 in `_windlass/agents` (`problems`) and arrive as `diagnostic`s of kind `agents`. What the engine says about agents
 while it creates the session (an agent that names a tool that does not exist, a project's `agents.default` that
 was not followed) is kept for the session's first listener, so a client that subscribes after `session/new` gets it.
@@ -202,7 +204,7 @@ aarch64 machine: a median of 190–250 ms to the first event directly against 36
 | A new session with `--model`, `--effort`, `--agent` | `session/new` with `_meta["windlass"] = { model, effort, agent }` |
 | `--session <id or start of one>`, `--continue` | `_windlass/resolve`, then `session/resume` with `_meta["windlass"] = { model, effort, agent, archived: true }` |
 | `/agent`, `/agent <name\|none>`, the agent on the session line | `_windlass/agents`; `session/set_config_option` `agent`; the switch is drawn from `agent.switched`; `agent` in `_windlass/session` |
-| A call an agent refuses, in the agent's words | `approval.denied` with `agent` in the events |
+| A call an agent refuses, with the engine's sentence about the agent's rule | `approval.denied` with `agent` and `refusal.text` in the events |
 | The task list as a checklist; the current list of a resumed session | `tool.settled`'s `display.todo` in the events; `todos` in `_windlass/session` |
 | `/rename <title>` | `_windlass/rename` |
 | `/compact` | `_windlass/compact`; a compaction that was made is drawn from its `compaction.*` events, and the execution it ran under is not drawn as a turn |

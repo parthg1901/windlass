@@ -63,7 +63,7 @@ describe("agents", () => {
       started(),
       event("step.started", { messageId: m("a1"), attempt: 1, model: "gpt-test" }),
       call("a1", "c1", "write", { path: "note.txt", content: "x" }),
-      event("approval.denied", { messageId: m("a1"), callId: c("c1"), mode: "auto", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer" }),
+      event("approval.denied", { messageId: m("a1"), callId: c("c1"), mode: "auto", paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: "reviewer", refusal: { rule: "effect", effect: "write", text: 'The agent "reviewer" may use only tools that read. "write" changes files.' } }),
       settle("a1", "c1", "error", 'Not run: you are working as the agent "reviewer", which may use only tools that read. "write" changes files. Carry on without it.'),
     )
     await mounted!.settle()
@@ -71,7 +71,8 @@ describe("agents", () => {
     expect(frame).toContain("⇄ working as the agent reviewer (read only)")
     expect(frame).toContain("Only tools that read (effects: read).")
     expect(frame).toContain("agent reviewer")
-    expect(frame).toContain("⊘ write note.txt · refused by the reviewer agent: it may not change files")
+    expect(frame).toContain("⊘ write note.txt · refused by the reviewer agent")
+    expect(frame).toContain('The agent "reviewer" may use only tools that read. "write" changes files.')
     expect(frame).not.toContain("approval policy")
     expect(frame).not.toContain("you are working as")
     session.emit(event("agent.switched", { messageId: m("i1"), from: "reviewer", to: null }))

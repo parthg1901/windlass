@@ -5,7 +5,7 @@
  * same things.
  */
 import type { AgentsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
-import { type AgentRecord, type AgentRestrictions, type Json, describeRestrictions, restrictionTag } from "@windlass/core"
+import { type AgentRecord, type Json, describeRestrictions, restrictionTag } from "@windlass/core"
 import { type Line, type LineTone, pathLine } from "./features.ts"
 import { plural } from "./text.ts"
 
@@ -14,36 +14,17 @@ const line = (text: string, tone: LineTone = "plain", indent = 0): Line => ({ te
 /** The name of the tool the model keeps its task list with (`TODO_TOOL_NAME` in the engine). */
 export const TASK_TOOL = "todo"
 
-/** The built-in tools by what they do, for a refusal in the user's words. Any other tool is named. */
-const CHANGES_FILES = new Set(["write", "edit"])
-const RUNS_COMMANDS = new Set(["shell"])
-
 /**
- * Why an agent's restrictions refused a call, as the agent's own rule:
- * "the reviewer agent may not change files". `restrictions` are the ones of
- * the record in force (`agent.switched`), when the client has seen it.
+ * What a call's row says when the restrictions of the agent the session
+ * runs as refused it: that it was refused and by whom, and under it why, in
+ * the engine's own sentence about the agent's rule (`refusal.text` of
+ * `approval.denied`: `The agent "reviewer" may use only tools that read.
+ * "write" changes files.`). Nothing is worked out here from the tool's
+ * name. The same shape as a hook's refusal, so both read as what they are:
+ * a call somebody did not let run, never a failure.
  */
-export function agentRefusal(agent: string, restrictions: AgentRestrictions | null, tool: string): string {
-  const who = `the ${agent} agent`
-  const named = (names: readonly string[]) => names.some((name) => name.toLowerCase() === tool.toLowerCase())
-  if (restrictions !== null) {
-    if (named(restrictions.deniedTools)) return `${who} may not use ${tool}`
-    if (restrictions.tools !== null && !named(restrictions.tools)) return `${who} may use only ${restrictions.tools.join(", ")}, not ${tool}`
-  }
-  if (CHANGES_FILES.has(tool)) return `${who} may not change files`
-  if (RUNS_COMMANDS.has(tool)) return `${who} may not run commands`
-  return `${who} may not use ${tool}`
-}
-
-/**
- * What a call's row says when the agent's restrictions refused it: that it
- * was refused, by whom, and the rule ("refused by the reviewer agent: it may
- * not change files"). The same shape as a hook's refusal, so both read as
- * what they are: a call somebody did not let run, never a failure.
- */
-export function agentRefused(agent: string, restrictions: AgentRestrictions | null, tool: string): string {
-  const who = `the ${agent} agent`
-  return `refused by ${who}: it${agentRefusal(agent, restrictions, tool).slice(who.length)}`
+export function agentRefused(agent: string, refusal: { readonly text: string }): { readonly head: string; readonly reason: string } {
+  return { head: `refused by the ${agent} agent`, reason: refusal.text }
 }
 
 /** The switch of the agent a session runs as, for the transcript: the line, and what the new agent may do. */
