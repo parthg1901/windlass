@@ -1612,6 +1612,10 @@ Object.assign(PLAYS, {
     h.session.send(say[2]!)
     await h.settled()
     h.session.setAgent("none")
+    // The captain's model and effort stay, and the user is told so in words (taken off the list the harness expects to be empty).
+    expect(h.diagnostics.splice(0).map((diagnostic) => `${diagnostic.kind}: ${diagnostic.message}`)).toEqual([
+      'agents: The session keeps the model "gpt-other" and the reasoning effort "high", which the agent "captain" set: switching the agent off does not put back what the session ran with before. Change the session\'s model or effort to use another.',
+    ])
     h.session.send(say[3]!)
     await h.settled()
     // The only prefix break is the model change the captain brings; the tool list and the instructions never changed.

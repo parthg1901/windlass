@@ -209,7 +209,11 @@ and, when you switch it off,
 - **The earlier agent's instructions stay in the conversation**, with the statement that they are replaced. An
   agent that must never have seen another's instructions needs a new session.
 - **An agent that names a `model` or `effort` changes the session's**, from the same step. Switching the agent off
-  afterwards does not change them back.
+  afterwards, or to an agent that names none, does not change them back: a session that started as the agent never
+  had other settings, and a change of model costs the cache, so nothing is guessed. You are told each time,
+  `⚠ agents: The session keeps the model "<model>", which the agent "<name>" set: switching the agent off does not put back what the session ran with before. Change the session's model or effort to use another.`
+  Use `-m <model>` (or `/model` in `windlass tui`) to choose another. Settings you changed yourself while the agent
+  was on are yours, and nothing is said about them.
 - **The file is read when the agent is selected.** Editing the definition during the session changes nothing,
   restrictions included, until you select the agent again; then the line reads
   `⇄ the agent reviewer (restricted) was selected again with its changed definition`.

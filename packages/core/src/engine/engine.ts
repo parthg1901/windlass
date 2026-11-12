@@ -1697,6 +1697,13 @@ interface TurnEnding {
   readonly hooks?: HookEnding
 }
 
+/** What the user is told about an agent's settings. */
+const AGENT_TEXT = {
+  /** `kept`: the settings the agent `left` named that the session still runs with; `next`: the agent it switched to, `null` for none. */
+  settingsKept: (left: string, kept: readonly string[], next: string | null) =>
+    `The session keeps ${kept.join(" and ")}, which the agent "${left}" set: ${next === null ? "switching the agent off" : `the agent "${next}" names none, and switching to it`} does not put back what the session ran with before. Change the session's model or effort to use another.`,
+}
+
 /** What the user is told about history that cannot be read. */
 const HISTORY_TEXT = {
   /** `reason`: the store's words, which name the session the history was inherited from and the file that is missing. */
@@ -2357,15 +2364,36 @@ class LiveSession implements EngineSession {
         event("agent.switched", { messageId, from, to: next }),
       ])
     }
-    if (next === null) return
-    for (const warning of agentWarnings(this.core, next)) this.say("agents", warning)
-    const models = this.core.offered()
-    const settings = agentSettings(next, this.projection().session.settings, models?.map((model) => model.id))
-    for (const note of settings.notes) this.say("agents", note)
-    if (!settings.changed) return
-    const problem = models === null ? null : settingsProblem(settings.settings, models)
-    if (problem !== null) return this.say("agents", `The agent "${next.name}" was selected with the session's own settings: ${problem.message}.`)
-    this.changeSettings(settings.settings)
+    if (next !== null) {
+      for (const warning of agentWarnings(this.core, next)) this.say("agents", warning)
+      const models = this.core.offered()
+      const settings = agentSettings(next, this.projection().session.settings, models?.map((model) => model.id))
+      for (const note of settings.notes) this.say("agents", note)
+      const problem = !settings.changed || models === null ? null : settingsProblem(settings.settings, models)
+      if (problem !== null) this.say("agents", `The agent "${next.name}" was selected with the session's own settings: ${problem.message}.`)
+      else if (settings.changed) this.changeSettings(settings.settings)
+    }
+    this.saySettingsKept(current, next)
+  }
+
+  /**
+   * Tells the user what stays of the agent the session just left. An agent
+   * that names a model or an effort changes the session's, and leaving it
+   * does not change them back: what the session ran with before is not
+   * always in its log (one that started as the agent never had other
+   * settings), and a change of model costs the provider's cache, so the
+   * engine does not guess. It says so each time, since the user asked for
+   * the switch each time.
+   */
+  private saySettingsKept(left: AgentRecord | null, next: AgentRecord | null): void {
+    if (left === null) return
+    const settings = this.projection().session.settings
+    const kept = [
+      ...(left.model !== null && settings.model === left.model && (next === null || next.model === null) ? [`the model "${left.model}"`] : []),
+      ...(left.effort !== null && settings.reasoningEffort === left.effort && (next === null || next.effort === null) ? [`the reasoning effort "${left.effort}"`] : []),
+    ]
+    if (kept.length === 0) return
+    this.core.report({ kind: "agents", sessionId: this.id, message: AGENT_TEXT.settingsKept(left.name, kept, next?.name ?? null) })
   }
 
   /**

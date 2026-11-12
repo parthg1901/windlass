@@ -230,6 +230,50 @@ describe("a switch made while the session is idle", () => {
     }
   })
 
+  test("leaving an agent that set the model and the effort keeps them, and the user is told so in words, each time", async () => {
+    const files = project({
+      captain: "---\nname: captain\ndescription: Releases.\nmodel: gpt-other\neffort: high\n---\nRelease.\n",
+      reviewer: REVIEWER,
+      pinned: PINNED.replace("gpt-unlisted", "gpt-third"),
+    })
+    const h = harness(files)
+    try {
+      // A session that starts as the agent never had other settings in its log: there is nothing to put back.
+      const session = h.create({ model: "gpt-test", reasoningEffort: "medium" }, "captain")
+      const said = () => h.seenEvents.flatMap((item) => (item.type === "diagnostic" && item.kind === "agents" ? [item.message] : []))
+      const off = 'The session keeps the model "gpt-other" and the reasoning effort "high", which the agent "captain" set: switching the agent off does not put back what the session ran with before. Change the session\'s model or effort to use another.'
+      session.setAgent("none")
+      expect(session.projection().session.settings).toEqual({ model: "gpt-other", reasoningEffort: "high" })
+      expect(said()).toEqual([off])
+      expect(h.log().map((item) => item.type)).not.toContain("settings.changed")
+      // Said again when it happens again: the user asked for each switch.
+      session.setAgent("captain")
+      session.setAgent("none")
+      expect(said()).toEqual([off, off])
+      // To an agent that names no model the settings stay too; to one that names a model only the effort does.
+      session.setAgent("captain")
+      session.setAgent("reviewer")
+      expect(said().at(-1)).toBe('The session keeps the model "gpt-other" and the reasoning effort "high", which the agent "captain" set: the agent "reviewer" names none, and switching to it does not put back what the session ran with before. Change the session\'s model or effort to use another.')
+      session.setAgent("captain")
+      session.setAgent("pinned")
+      expect(session.projection().session.settings).toEqual({ model: "gpt-third", reasoningEffort: "high" })
+      expect(said().at(-1)).toBe('The session keeps the reasoning effort "high", which the agent "captain" set: the agent "pinned" names none, and switching to it does not put back what the session ran with before. Change the session\'s model or effort to use another.')
+      // Settings the user chose since are the user's: leaving the agent says nothing about them.
+      session.setAgent("captain")
+      session.setSettings({ model: "gpt-test", reasoningEffort: "low" })
+      const before = said().length
+      session.setAgent("none")
+      expect(said()).toHaveLength(before)
+      expect(session.projection().session.settings).toEqual({ model: "gpt-test", reasoningEffort: "low" })
+      // An agent without a model or an effort leaves nothing behind.
+      session.setAgent("reviewer")
+      session.setAgent("none")
+      expect(said()).toHaveLength(before)
+    } finally {
+      await h.dispose()
+    }
+  })
+
   test("while a step runs it waits for the boundary, as before", async () => {
     const files = project({ reviewer: REVIEWER })
     const h = harness(files)
