@@ -60,6 +60,8 @@ describe("commands", () => {
     expect(result.code).toBe(0)
     expect(result.out).toContain("Showcase\n   1  find-and-fix-a-failing-test\n")
     expect(result.out).toContain("   3  a-plain-answer\n")
+    // It ends with how to play one.
+    expect(result.out).toEndWith(`\n\nPlay one with ${brand.binary} --demo <number or name>, such as ${brand.binary} --demo 1;\nin the full-screen interface with ${brand.binary} tui --demo <number>.\n`)
     expect(findScenario("3")?.name).toBe("a-plain-answer")
     expect(findScenario("a-plain")?.name).toBe("a-plain-answer")
   })

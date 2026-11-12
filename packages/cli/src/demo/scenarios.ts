@@ -1,4 +1,5 @@
 /** Every scenario `--demo` can play: the CLI's showcase first, then the step-loop scenarios from core, numbered. */
+import { brand } from "@windlass/core"
 import { type Scenario, families } from "@windlass/core/testing/scenarios"
 import { showcase } from "./showcase.ts"
 
@@ -37,6 +38,8 @@ export function listScenarios(): string {
     }
     out.push(`  ${String(entry.number).padStart(2)}  ${entry.name}`)
   }
+  // Last, where the list ends on the screen: how to play one.
+  out.push("", `Play one with ${brand.binary} --demo <number or name>, such as ${brand.binary} --demo 1;`, `in the full-screen interface with ${brand.binary} tui --demo <number>.`)
   return `${out.join("\n")}\n`
 }
 
