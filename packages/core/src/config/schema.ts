@@ -14,6 +14,7 @@
  * it impossible for a project to drop a user-level check, and would make the
  * order and name uniqueness of checks depend on two files at once.
  */
+import { type AgentsConfigSection, parseAgentsSection } from "../agents/config.ts"
 import { approvalSection } from "../approval/policy.ts"
 import { type McpConfigSection, parseMcpSection } from "../mcp/config.ts"
 import { type MemoryConfigSection, parseMemorySection } from "../memory/config.ts"
@@ -111,7 +112,7 @@ const checks: Validator<readonly ReturnType<typeof check>[]> = (input, path) => 
 
 /**
  * The sections other modules define (`mcp/config.ts`, `skills/config.ts`,
- * `wake/config.ts`, `memory/config.ts`). Each is validated by its own module,
+ * `wake/config.ts`, `memory/config.ts`, `agents/config.ts`). Each is validated by its own module,
  * which names the file and the path of a bad value, in `parseConfigFile`;
  * here they are only known keys. None of them is merged like the other keys
  * where it matters who wrote it: `load.ts` hands on both files as written.
@@ -121,6 +122,7 @@ const FEATURE_SECTIONS = {
   skills: parseSkillsSection,
   wake: parseWakeSection,
   memory: parseMemorySection,
+  agents: parseAgentsSection,
 } as const
 const passed: Validator<unknown> = (input) => input
 
@@ -143,6 +145,7 @@ const baseFile = section({
   skills: passed,
   wake: passed,
   memory: passed,
+  agents: passed,
 })
 
 /** One configuration file, as written. */
@@ -155,17 +158,20 @@ export type ConfigFile = Omit<Infer<typeof baseFile>, keyof typeof FEATURE_SECTI
   readonly wake?: WakeConfigSection
   /** Memory (`memory/config.ts`). Off unless a file turns it on. */
   readonly memory?: MemoryConfigSection
+  /** Agents (`agents/config.ts`). The default agent is read from the user's own file only. */
+  readonly agents?: AgentsConfigSection
 }
 
 /** Validates one file's parsed JSON. Throws `DecodeError` (this file's keys) or `ConfigError` (a feature's section), without a file name in the former. */
 export function configFile(input: unknown, path: string, file = "configuration"): ConfigFile {
-  const { mcp, skills, wake, memory, ...rest } = baseFile(input, path)
+  const { mcp, skills, wake, memory, agents, ...rest } = baseFile(input, path)
   return {
     ...rest,
     ...(mcp === undefined ? {} : { mcp: FEATURE_SECTIONS.mcp(mcp, file) }),
     ...(skills === undefined ? {} : { skills: FEATURE_SECTIONS.skills(skills, file) }),
     ...(wake === undefined ? {} : { wake: FEATURE_SECTIONS.wake(wake, file) }),
     ...(memory === undefined ? {} : { memory: FEATURE_SECTIONS.memory(memory, file) }),
+    ...(agents === undefined ? {} : { agents: FEATURE_SECTIONS.agents(agents, file) }),
   }
 }
 

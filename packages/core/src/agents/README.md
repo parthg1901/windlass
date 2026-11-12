@@ -5,9 +5,10 @@ a reasoning effort and restrictions, and a body that is its instructions. A sess
 subagent can be run as one, and the user can switch the agent of a running session. A definition is data: nothing
 in it runs anything, and what an agent changes, and when, is recorded.
 
-A leaf module: nothing in core imports it, and it defines no durable events (it lists below what to record). It
-imports only `brand`, `validate`, `config/schema.ts` (`ConfigError`), `instructions/source.ts` (`fingerprint`),
-`skills/frontmatter.ts` and the tool contract's types.
+The module itself is pure: it reads files and returns values. It is wired into the loop by `engine/agents.ts`
+and `engine/engine.ts` (see "As wired" below), which own the durable record: the `agent.switched` event and the
+`agent` field of an `approval.denied`. It imports only `brand`, `validate`, `config/schema.ts` (`ConfigError`),
+`instructions/source.ts` (`fingerprint`), `skills/frontmatter.ts` and the tool contract's types.
 
 | File | What |
 | --- | --- |
@@ -194,61 +195,46 @@ from your own configuration only: a project file setting it is reported in `igno
 choose the instructions and model of every session started in it. A default that cannot be found fails the start
 with the reason (`resolveStartAgent`), rather than starting a session without the restrictions you chose.
 
-## For the integrator
+## As wired (the engine)
 
-### Engine (the spine pass)
+What the spine pass built, where it differs from what this page first proposed, and what a client calls.
 
-1. **Durable record.** One new event, `agent.switched`, data `{ messageId: MessageId | null, from: string | null,
-   to: AgentRecord | null }` (`agentRecord` in `use.ts` is the validator, ready for `event/durable.ts`). The reducer
-   folds it into `projection.session.agent: AgentRecord | null`. Written:
-   - at session creation, in the same transaction as `session.created` and before the first `baseline.set`, with
-     `messageId: null` (`from: null`) for a session started as an agent, a child included;
-   - for a switch, in the same transaction as the `instruction.appended` it announces, with that message's ID.
-   `AgentRecord` holds the name, path, scope, `definition` (the definition's fingerprint), `instructions` (the
-   source value), the restrictions in force, model and effort. A fork inherits it with the history. Nothing reads
-   the file again for the session.
-2. **Starting a session.** `createSession({ agent?: string })`: `discoverAgents({ cwd, configDir, extraPaths,
-   disabled })`, then `resolveStartAgent(set, requested, config)`; on failure reject with the message. Settings:
-   `agentSettings(record, requestedOrDefaultSettings, offeredModels)`; a non-empty `notes` should reject the start
-   (the user asked for that agent). The first baseline's sources are `[...discoverSources(...), agentSource(record)]`.
-3. **Instruction source key `agent`.** `instructions/source.ts` must render it: in `tag()`, `if (key === "agent")
-   return { name: "agent", attribute: "" }`, and add `agent` to `HEADER`'s first alternation
-   (`(environment|date|agent)`), so `parseSections` reads it back. `renderAgentSection` here produces the same text.
-   `notice()` needs no case: the engine appends the switch text from `agentSwitch`, not through `renderUpdate`.
-   Never pass `agentSource` to `prepareInstructions` between compactions (that would re-render it as an AGENTS.md
-   style "replaced" message on every boundary where it differs); add it to `sources` only when a baseline is being
-   built (the first, and after a compaction, from `projection.session.agent`). `instructionState` then tracks the
-   `agent` key by itself, from the baseline's fingerprint and the switch messages.
-4. **Switching.** `session.setAgent(name | "none")`: look up with `findAgent`, build `agentRecordOf(agent)`; at the
-   next step boundary under a running execution (as for any instruction message; a switch while idle waits for the
-   next execution's first boundary) append `agent.switched` + `instruction.appended { source: "agent", text,
-   fingerprint }` from `agentSwitch(current, next)`, and, when `agentSettings(next, current settings).changed`,
-   `settings.changed` at the same boundary. `agentSwitch` returning `null` means append nothing. Switching to
-   `none` appends the withdrawal with fingerprint `null`. The session's settings before the switch are not
-   restored on switching off; the user changes them with `/model`.
-5. **Enforcing restrictions.** In the step loop, before the approval decision of each call (with the calls the loop
-   itself refuses, which are settled first): `checkAgentCall(session.agent, { name, effect: tool.effect, origin:
-   tool.origin }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })`. `refuse` settles the call as not started with `reason` as
-   its output; record it as `approval.denied` with a new `reason: "agent"` (and `stop: false`), so the log says
-   which rule refused it. `pass` goes on to `decide` unchanged. The approval mode passed to `decide` is
-   `effectiveApprovalMode(policy.mode, session.agent).mode`; show `ignored` once as a diagnostic. An unknown tool
-   name (`checkAgentCall` gets the model's raw name) is refused by the allowlist, which is what it should be.
-6. **Subagents.** `engine/spawn.ts`: add `SUBAGENT_AGENT_PROPERTY` to the `subagent` input schema (optional) and
-   `agent?: string` to `SubagentInput`, for every session from its first baseline (a tool's spec must not depend on
-   what agents exist). When the call runs: `findAgent(discoverAgents({ cwd: child cwd, ... }), input.agent)`; a miss
-   is an error result with its message and starts nothing. `childAgent(parent.agent, found)` is the child's record
-   (written with its `session.created`, as in 2); `agentSettings(child, parent settings, offered)` its settings (a
-   note is shown, not fatal); its baseline gets `agentSource(child)`. `agent` on a follow-up (`session`) is
-   refused: a child keeps the agent it started as. `spawn.started` can carry the agent's name for display.
-7. **The index.** At every step boundary of a session that is offered `subagent`:
-   `agentIndexUpdate(state.get(AGENT_INDEX_KEY), agentIndexSource(discoverAgents(...).agents))`, appended as
-   `instruction.appended` with source `AGENT_INDEX_KEY` (`"agent-index"`, deliberately not `agents:`). As for the
-   skills index, `state.ts` withdraws only `agents:` keys and `renderSection` does not know this key; the engine
-   routes it here. Keep it out of the baseline.
-8. **Problems.** `AgentSet.problems`, `unknownToolNames(record.restrictions, toolNames)` and `agentSettings` notes
-   go to the user (a `diagnostic`, the `/agents` listing), never to the model.
-9. **Configuration.** Add `agents` to `configFile` with `parseAgentsSection`, and resolve with
-   `resolveAgentsConfig(user, project)` rather than `mergeConfigFiles`, as `approval` is.
+- **Durable record.** `agent.switched { messageId, from, to }` (`event/durable.ts`), folded into
+  `projection.session.agent` (`AgentRecord | null`; absent for a session that never ran as one). With
+  `messageId: null` before the first baseline (a session started as an agent, a child, a switch before the first
+  turn); otherwise right after the `instruction.appended` (source `agent`) that announces it, in the same append,
+  naming that message. The reducer rejects anything else. A fork inherits the record.
+- **A refusal** is `approval.denied` with `reason: "policy"` and a new field `agent: <name>` (not a new `reason`
+  value, so existing clients keep rendering it), `paths: []`, `stop: false`, followed in the same append by
+  `tool.settled` (`error`) with the sentence. The check runs for every session, with or without the approval layer,
+  before the approval decision; `report_check_failure` is exempt.
+- **The approval mode** in force is `effectiveApprovalMode(the resolved mode, session.agent)`; a looser one is
+  said once as a `diagnostic` of kind `agents`.
+- **Starting.** `Engine.createSession({ cwd, settings, title?, agent? })`: `agent` is a name, `"none"`, or absent
+  (the user's `agents.default`). It throws `EngineError` and creates nothing when the agent cannot be found
+  (`invalid_request`, the message suggests close names) or names a model the provider's listing lacks
+  (`unknown_model`). The agent's model and effort are in `session.created.settings`. The configuration is read
+  without waiting (`loadConfigSync`); when it cannot be read and no agent was named, the session is created and
+  the default is looked up when its first execution has read the files (which fails that execution if it cannot
+  be found).
+- **Switching.** `EngineSession.setAgent(name | "none")` reads the definition now and returns the record;
+  `EngineSession.agent()` is what the next step runs as. Before the first baseline the switch is recorded at
+  once; later it is applied at the next step boundary under a running execution (while idle: when the next turn
+  starts; it is kept in memory until then and lost if the process ends first), with `settings.changed` at the
+  same boundary when the agent names another model or effort. A subagent and a replay cannot be switched.
+- **Listing.** `Engine.listAgents(cwd)` and `EngineSession.agents()`: the definitions, the problems (skipped,
+  shadowed, warnings), the configured default, and what of the project's file was not followed.
+- **Subagents.** `subagent` has the optional `agent` property in every session (`SUBAGENT_AGENT_PROPERTY`). A
+  miss is an error result and starts nothing; `agent` with `session` is refused; `spawn.started.work.agent` names
+  the agent; the child's record is `childAgent(parent, chosen)` and is written with its `session.created`.
+- **The index** is appended under `agent-index` to sessions whose frozen tool list has `subagent`, with
+  `detail: { kind: "agents", agents: [{ name, path }] }`.
+- **Problems** (definitions that could not be used, unknown tool names in restrictions, a model that is not
+  offered, a project's `agents.default`) are `diagnostic` events of kind `agents`, never model input.
+- **Configuration.** The `agents` section is a known key of both files; the engine resolves it with
+  `resolveAgentsConfig(user, project)`.
+
+## For the clients (still to do)
 
 ### ACP server
 
@@ -257,9 +243,9 @@ the `mode` category), so the agent is a fourth one rather than an ACP session mo
 - a select option `agent`, values `none` plus one per agent (`value` = name, `name` = name, `description`), with the
   current one from `projection.session.agent`, on `session/new`, `session/load` and `session/resume`. A shadowed or
   broken definition is not a value; the listing extension below shows them.
-- `session/new` takes the starting agent in `_meta[<META_NAMESPACE>].agent` (absent: the configured default; a
-  failed `resolveStartAgent` is `-32602` with its message).
-- `session/set_config_option` with `agent` is the switch (4); the server sends `config_option_update` when the
+- `session/new` takes the starting agent in `_meta[<META_NAMESPACE>].agent` and passes it to `createSession`
+  (absent: the configured default; an `EngineError` `invalid_request` from it is `-32602` with its message).
+- `session/set_config_option` with `agent` is the switch (`setAgent`); the server sends `config_option_update` when the
   `agent.switched` event is durable, not when the request arrives (with the model and effort options too when the
   switch changed them).
 - An extension request `<prefix>/agents` → `{ agents: [{ name, description, path, scope, model, effort,

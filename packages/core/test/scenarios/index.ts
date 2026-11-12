@@ -3,6 +3,7 @@
  * lists them, together with the vocabulary they are written in. Other
  * packages import this module as `@light-harness/core/testing/scenarios`.
  */
+import { agentScenarios } from "./agents.ts"
 import { approvalScenarios } from "./approval.ts"
 import { cancelScenarios } from "./cancel.ts"
 import { compactionScenarios } from "./compaction.ts"
@@ -34,6 +35,7 @@ export const families: Record<string, readonly Scenario[]> = {
   "Approval and the sandbox": approvalScenarios,
   "Replays, subagents and background work": lineageScenarios,
   "Skills, MCP servers and wake-ups": featureScenarios,
+  Agents: agentScenarios,
 }
 
 /**

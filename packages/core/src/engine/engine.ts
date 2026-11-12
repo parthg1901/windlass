@@ -49,6 +49,10 @@ import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
+import type { AgentDefinition } from "../agents/discover.ts"
+import { NO_AGENT } from "../agents/definition.ts"
+import { checkAgentCall, effectiveApprovalMode, unknownToolNames } from "../agents/restrictions.ts"
+import { AGENT_KEY, type AgentRecord, agentRecordOf, agentSettings, agentSource, agentSwitch, childAgent, findAgent, resolveStartAgent } from "../agents/use.ts"
 import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
 import { type Grant, stampGrants } from "../approval/grants.ts"
 import type { McpRegistry } from "../mcp/registry.ts"
@@ -62,7 +66,7 @@ import { redact } from "../approval/redact.ts"
 import { type TaintState, deriveTaint, describeTaint } from "../approval/taint.ts"
 import { approvedNote, declinedMessage } from "../approval/texts.ts"
 import { brand } from "../brand.ts"
-import { type LoadedConfig, loadConfig } from "../config/load.ts"
+import { type LoadedConfig, loadConfig, loadConfigSync } from "../config/load.ts"
 import type { CheckConfig } from "../config/schema.ts"
 import { text } from "../content.ts"
 import { buildCheckpoint } from "../context/checkpoint.ts"
@@ -123,6 +127,7 @@ import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
 import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, effectivePolicy, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
+import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents } from "./agents.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
 import { type Clock, systemClock } from "./clock.ts"
 import {
@@ -146,7 +151,7 @@ import { type WakeApi, WakeRuntime, type WakeSetup, engineWakeTools, readUserWak
 import type { WakeConfig, WakeConfigSection } from "../wake/config.ts"
 import type { Firing } from "../wake/record.ts"
 import type { DeliverResult } from "../wake/scheduler.ts"
-import { type SkillPlaces, type SkillsSetup, describeSkillProblem, engineSkillTool, findSkills, skillPlaces, skillsSource } from "./skills.ts"
+import { type ConfigFiles, type SkillPlaces, type SkillsSetup, describeSkillProblem, engineSkillTool, findSkills, skillPlaces, skillsSource } from "./skills.ts"
 import { recover } from "./recovery.ts"
 import { DEFAULT_NORMALISERS, REPLAY_TEXT, type ReplayOutcome, type ReplayRequest, type ReplayRun, changedBaseline, snapshotAtDivergence } from "./replay.ts"
 import {
@@ -271,10 +276,11 @@ export interface EngineHooks {
 /** Something the engine noticed that is not part of any session's log. Shown or logged, never stored. */
 export interface Diagnostic {
   /**
-   * `skills`, `mcp`, `wake` and `memory` are about those features and are for the user to read, never the model: a
-   * skill that could not be loaded, a server of the project's that waits for approval, a note file that is invalid.
+   * `skills`, `mcp`, `wake`, `memory` and `agents` are about those features and are for the user to read, never the
+   * model: a skill that could not be loaded, a server of the project's that waits for approval, a note file that is
+   * invalid, an agent definition that was skipped or names a tool that does not exist.
    */
-  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory"
+  readonly kind: "prefix_violation" | "internal_error" | "tool_crashed" | "listener_failed" | "skills" | "mcp" | "wake" | "memory" | "agents"
   readonly sessionId: SessionId | null
   readonly message: string
   readonly cause?: unknown
@@ -300,16 +306,24 @@ export class EngineError extends Error {
      * - `session_in_use`: another live process holds the session; `holderPid` names it when it could be told.
      * - `closed`: the engine or the session was closed.
      * - `unknown_model`: the provider does not offer the model.
+     * - `unknown_effort`: the model does not offer the reasoning effort; the message names the ones it accepts.
      * - `invalid_request`: what was asked for cannot be done as asked (a fork point inside a step, a replay of a
      *   recording without a step, a prompt for a replay session); the message says why.
      */
-    readonly code: "session_not_found" | "ambiguous_session" | "session_in_use" | "closed" | "unknown_model" | "invalid_request",
+    readonly code: "session_not_found" | "ambiguous_session" | "session_in_use" | "closed" | "unknown_model" | "unknown_effort" | "invalid_request",
     message: string,
     readonly holderPid: number | null = null,
   ) {
     super(message)
     this.name = "EngineError"
   }
+}
+
+/** One model the provider offers, as `EngineOptions.listModels` reports it. */
+export interface ModelOffer {
+  readonly id: string
+  /** The reasoning efforts the model accepts. Absent or empty: not known, and an effort is not checked. */
+  readonly efforts?: readonly string[]
 }
 
 export interface EngineOptions {
@@ -396,10 +410,21 @@ export interface EngineOptions {
   /** Runs checks. Defaults to the verification module's runner, which uses the shell tool. */
   readonly runChecks?: (checks: readonly CheckConfig[], options: RunCheckOptions) => Promise<CheckResult[]>
   /**
-   * The models the provider offers, for `validateSettings`. Without it, or
-   * when the listing fails, a model is not checked before the first call.
+   * The models the provider offers, each by its name or with the reasoning
+   * efforts it accepts, for `validateSettings`, `setSettings` and the check
+   * the loop makes before it sends a request. Without it, or when the
+   * listing fails, a model and an effort are not checked before the first call.
    */
-  readonly listModels?: () => Promise<readonly string[]>
+  readonly listModels?: () => Promise<readonly (string | ModelOffer)[]>
+  /**
+   * `loadConfig` without waiting, for the two things that cannot wait for an
+   * execution to read the files: how a session's calls are decided, asked
+   * before its first turn (`EngineSession.approval`), and the agent a new
+   * session starts as. Defaults to the configuration files when
+   * `loadConfig` is the default too; with a `loadConfig` of the caller's and
+   * none here (or `null`), nothing is read that way.
+   */
+  readonly loadConfigSync?: ((cwd: string) => SessionConfig) | null
   /**
    * The context window of a model, in input tokens, or `null` when nobody
    * knows. Asked once per model. The compaction policy measures the next
@@ -456,6 +481,15 @@ export interface EngineOptions {
    * so the flag alone decides.
    */
   readonly memory?: MemorySetup | null
+  /**
+   * Agents (`engine/agents.ts`): a session can be started as one, switched
+   * to one, and can run a subagent as one; the list of agents is appended
+   * to the conversation of a session that is offered `subagent`. Without it
+   * (or `null`) the engine offers none: the `subagent` tool's `agent`
+   * argument, which is in its spec whatever this says, is answered with
+   * that. `createHarness` switches it on.
+   */
+  readonly agents?: AgentsSetup | null
 }
 
 /** How a session is forked. */
@@ -621,8 +655,40 @@ export interface EngineSession {
   readonly start: () => void
   /** Asks the running execution to stop, as the user. The request is durable before anything stops. A no-op when idle. */
   readonly interrupt: () => void
-  /** Changes the model or the reasoning effort. Takes effect at the next step boundary. */
+  /**
+   * Changes the model or the reasoning effort. Takes effect at the next step
+   * boundary. Throws `EngineError` (`unknown_model`, `unknown_effort`) when
+   * the provider's listing is known and does not offer them: nothing is
+   * written and nothing is sent.
+   */
   readonly setSettings: (settings: SessionSettings) => void
+  /**
+   * The agent the session runs as, or will from its next step on when a
+   * switch was asked for and is not applied yet; `null`: none. What the log
+   * records is `projection().session.agent`, changed by `agent.switched`.
+   */
+  readonly agent: () => AgentRecord | null
+  /**
+   * The agents that can be selected here as they are now, with what
+   * discovery could not use and the configured default (for an `/agents`
+   * listing). `null` when the engine offers no agents.
+   */
+  readonly agents: () => AgentListing | null
+  /**
+   * Switches the session to the agent of that name, or to none with
+   * `"none"`. The definition is read now, once, and is what the session
+   * runs as until the next switch. Before the session's first baseline the
+   * switch is recorded at once and the baseline will carry the agent's
+   * instructions; later it takes effect at the next step boundary under a
+   * running execution, as an appended instruction message (while idle: when
+   * the next turn starts), with `settings.changed` at the same boundary when
+   * the agent names another model or effort. Returns the record selected.
+   * Throws `EngineError` `invalid_request` with a message for the user when
+   * there is no such agent (it suggests close names), the engine offers no
+   * agents, or the session is a subagent or a replay, which keep what they
+   * started as.
+   */
+  readonly setAgent: (name: string) => AgentRecord | null
   /**
    * Admits input from a harness component (a wake-up's firing) under the
    * message ID it is given. `duplicate`: the session's log already has that
@@ -729,8 +795,27 @@ export interface EngineSession {
 }
 
 export interface Engine {
-  /** Creates a session. Its baseline is frozen when its first execution starts. */
-  readonly createSession: (input: { readonly cwd: string; readonly settings: SessionSettings; readonly title?: string | null }) => EngineSession
+  /**
+   * Creates a session. Its baseline is frozen when its first execution starts.
+   *
+   * `agent` is the agent it starts as, by name; `"none"` is no agent; absent
+   * (or `null`) is the default of the user's own configuration
+   * (`agents.default`), if any. The session is created as that agent: its
+   * `session.created` has the agent's model and effort where it names them,
+   * `agent.switched` follows in the same append, and its first baseline will
+   * carry the agent's instructions. Throws `EngineError` and creates nothing
+   * when the agent cannot be found or used (`invalid_request`, with a message
+   * that suggests close names), or when the provider's listing is known and
+   * does not offer the model or the effort (`unknown_model`, `unknown_effort`).
+   */
+  readonly createSession: (input: { readonly cwd: string; readonly settings: SessionSettings; readonly title?: string | null; readonly agent?: string | null }) => EngineSession
+  /**
+   * The agents a session in `cwd` could run as, as they are now: the
+   * definitions, what could not be used (skipped, shadowed, warnings) and
+   * the configured default. Reads the directories and the configuration
+   * files; opens nothing. `null` when the engine offers no agents.
+   */
+  readonly listAgents: (cwd: string) => AgentListing | null
   /**
    * Opens an existing session. If it holds a claim from a process that died
    * or shut down, it is recovered here, and what happens next is `resume`.
@@ -785,9 +870,12 @@ export interface Engine {
   /**
    * Checks settings before a session is created with them or switched to
    * them: rejects with `EngineError` `unknown_model`, naming the models the
-   * provider offers, when `settings.model` is not one of them. Resolves when
-   * the model is offered, and also when the engine has no listing or the
-   * listing cannot be fetched: then the first model call says what is wrong.
+   * provider offers, when `settings.model` is not one of them, and with
+   * `unknown_effort`, naming the efforts the model accepts, when it does not
+   * offer `settings.reasoningEffort`. Resolves when both are offered, and
+   * also when the engine has no listing or the listing cannot be fetched:
+   * then the first model call says what is wrong. The listing is kept, and
+   * `createSession` and `setSettings` refuse the same things from it.
    */
   readonly validateSettings: (settings: SessionSettings) => Promise<void>
   /**
@@ -868,6 +956,16 @@ interface Core {
   readonly wake: { readonly tools: readonly AnyTool[]; readonly user: WakeConfigSection | undefined; readonly runtime: () => WakeRuntime } | null
   /** Memory: the tools. `null` when the build offers none. Whether a session has them is its configuration's flag. */
   readonly memory: { readonly tools: readonly AnyTool[]; readonly setup: MemorySetup } | null
+  /** Agents: where the user's own definitions are kept. `null` when the build offers none. */
+  readonly agents: { readonly configDir: string; readonly home: string | undefined } | null
+  /** By tool name: the tools that come from an MCP server (`Tool.origin`), whose declared effect an agent's restrictions do not trust. */
+  readonly origins: ReadonlyMap<string, "builtin" | "mcp">
+  /** Reads the configuration that applies in a directory without waiting; `null` when nothing can be read that way. */
+  readonly loadConfigSync: ((cwd: string) => SessionConfig) | null
+  /** The provider's models as they were last listed; `null` before the first listing, or without one. */
+  readonly offered: () => readonly ModelOffer[] | null
+  /** Lists the provider's models and keeps the listing; the last one when that fails. `null`: nobody knows. */
+  readonly listOffered: (() => Promise<readonly ModelOffer[] | null>) | null
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -937,6 +1035,13 @@ export function createEngine(options: EngineOptions): Engine {
     now: () => new Date(clock.now()),
   })
   const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset, ...memoryToolset])
+  // The provider's models, as last listed: what settings are checked against without another request.
+  let offered: readonly ModelOffer[] | null = null
+  const listOffered = async (): Promise<readonly ModelOffer[] | null> => {
+    const listed = await options.listModels!().catch(() => null)
+    if (listed !== null && listed.length > 0) offered = listed.map((entry) => (typeof entry === "string" ? { id: entry } : entry))
+    return offered
+  }
   const runnable = [...options.tools.filter((tool) => tool !== acknowledge), ...history, ...own, ...features, acknowledge]
   const core: Core = {
     stores,
@@ -1002,6 +1107,12 @@ export function createEngine(options: EngineOptions): Engine {
     grantsDir: options.approval?.grantsDir ?? join(options.dataDir, "approvals"),
     wake: options.wake == null ? null : { tools: wakeToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), user: wakeUser, runtime: wakeOf },
     memory: options.memory == null ? null : { tools: memoryToolset.map((tool) => runnable.find((other) => other.name === tool.name)!), setup: options.memory },
+    // As for skills: a caller that supplies the instruction sources itself and names no directory reads none of this machine's.
+    agents: options.agents == null ? null : { configDir: options.agents.configDir ?? (options.discover === undefined ? configDirectory() : join(options.dataDir, "no-user-config")), home: options.agents.home },
+    origins: new Map(runnable.flatMap((tool) => (tool.origin === undefined ? [] : [[tool.name, tool.origin] as const]))),
+    loadConfigSync: options.loadConfigSync !== undefined ? options.loadConfigSync : options.loadConfig === undefined ? (cwd) => loadConfigSync({ cwd }) : null,
+    offered: () => offered,
+    listOffered: options.listModels === undefined ? null : listOffered,
   }
   let closing: Promise<void> | null = null
   const assertOpen = () => {
@@ -1085,17 +1196,30 @@ export function createEngine(options: EngineOptions): Engine {
   return {
     createSession: (input) => {
       assertOpen()
+      // Decided before anything exists: an agent that cannot be used, or settings the provider does not offer, create nothing.
+      const start = startAs(core, input)
       const id = core.ids.session()
       const store = storeErrors(() => core.stores.create(id))
       const session = new LiveSession(core, id, store)
       try {
-        session.write([event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, settings: input.settings })])
+        session.write([
+          event("session.created", { cwd: input.cwd, title: input.title ?? null, lineage: null, settings: start.settings }),
+          // The session starts as the agent: recorded with it, before its first baseline, which will carry the instructions.
+          ...(start.agent === null ? [] : [event("agent.switched", { messageId: null, from: null, to: start.agent })]),
+        ])
       } catch (error) {
         store.close()
         throw error
       }
+      session.agentDecided = start.decided
       core.sessions.set(id, session)
+      for (const warning of start.warnings) session.say("agents", warning)
       return session
+    },
+    listAgents: (cwd) => {
+      if (core.agents === null) return null
+      const places = agentPlaces(configFilesNow(core, cwd).files, core.agents)
+      return { ...findAgents(cwd, places), default: places.default, ignored: places.ignored }
     },
     openSession: (id, options$ = {}) => {
       assertOpen()
@@ -1121,9 +1245,9 @@ export function createEngine(options: EngineOptions): Engine {
     unarchiveSession: (id) => setArchived(id, false),
     validateSettings: async (settings) => {
       if (options.listModels === undefined) return
-      const models = await options.listModels().catch(() => null)
-      if (models === null || models.length === 0 || models.includes(settings.model)) return
-      throw new EngineError("unknown_model", `model ${settings.model} is not available; choose one of: ${models.join(", ")}`)
+      const models = await listOffered()
+      const problem = models === null ? null : settingsProblem(settings, models)
+      if (problem !== null) throw problem
     },
     wake: () => (core.wake === null ? null : core.wake.runtime()),
     close: () => {
@@ -1333,6 +1457,19 @@ class LiveSession implements EngineSession {
   private mcpPlan: readonly McpServerPlan[] = []
   /** The session's servers as its bridge tools and its catalogue read them. Rebuilt when the held servers change. */
   private mcpBackend: SessionServers | null = null
+  /**
+   * Whether the agent this session starts as is decided: when it was
+   * created here with its configuration readable, or once its first
+   * execution has looked. Until then the default agent of the user's
+   * configuration still applies (`startAgent`).
+   */
+  agentDecided = false
+  /** A switch of agent that was asked for and waits for a step boundary: the record to switch to, `null` for none. */
+  private pendingAgent: AgentRecord | null | undefined = undefined
+  /** Whether an execution of this process has read the configuration, or it was looked at ahead of one. */
+  private configRead = false
+  /** The settings the loop last checked against the provider's listing, so each is checked once. */
+  private checkedSettings: string | null = null
 
   constructor(
     private readonly core: Core,
@@ -1464,6 +1601,10 @@ class LiveSession implements EngineSession {
 
   setSettings = (settings: SessionSettings): void => {
     this.assertOpen()
+    // What the provider is known not to offer is refused here: nothing is written, and no request is spent on it.
+    const models = this.core.offered()
+    const problem = models === null ? null : settingsProblem(settings, models)
+    if (problem !== null) throw problem
     // A request in flight was built from the settings it started with: the change waits for the boundary.
     if (this.projection().session.open !== null) this.pendingSettings = settings
     else this.changeSettings(settings)
@@ -1560,6 +1701,105 @@ class LiveSession implements EngineSession {
     if (this.projection().session.approval?.taint == null) return false
     this.write([event("taint.cleared", {})])
     return true
+  }
+
+  agent = (): AgentRecord | null => (this.pendingAgent !== undefined ? this.pendingAgent : (this.projection().session.agent ?? null))
+
+  agents = (): AgentListing | null => {
+    if (this.core.agents === null) return null
+    const places = this.agentPlaces()
+    return { ...findAgents(this.projection().session.cwd, places), default: places.default, ignored: places.ignored }
+  }
+
+  setAgent = (name: string): AgentRecord | null => {
+    this.assertOpen()
+    const projection = this.projection()
+    if (projection.session.replay !== undefined) throw new EngineError("invalid_request", "a replay session runs as its recording did: its agent is not switched")
+    if (projection.session.lineage?.kind === "spawn") throw new EngineError("invalid_request", "a subagent keeps the agent it started as")
+    if (this.core.agents === null) throw new EngineError("invalid_request", "this engine offers no agents")
+    let next: AgentRecord | null = null
+    if (name.trim().toLowerCase() !== NO_AGENT) {
+      const places = this.agentPlaces()
+      const found = findAgent(findAgents(projection.session.cwd, places), name, places.disabled)
+      if (!found.ok) throw new EngineError("invalid_request", found.message)
+      next = agentRecordOf(found.agent)
+    }
+    this.pendingAgent = next
+    this.agentDecided = true
+    // Nothing is frozen yet and nothing runs: recorded now, and the first baseline carries it.
+    if (projection.baseline === null && projection.session.execution === null && this.run === null) this.applyAgentSwitch()
+    return next
+  }
+
+  /** Where this session's agents are looked for, and what its configuration says about them. */
+  private agentPlaces(): AgentPlaces {
+    const agents = this.core.agents
+    return agentPlaces(this.files(), { configDir: agents?.configDir ?? configDirectory(), ...(agents?.home === undefined ? {} : { home: agents.home }) })
+  }
+
+  /**
+   * Makes the switch that waits: `agent.switched`, and, once the baseline is
+   * frozen, the instruction message that tells the model, in one append;
+   * then the agent's model and effort, as a settings change at the same
+   * boundary. With a baseline it needs a running execution (the loop calls
+   * it at a step boundary); before the first baseline it needs none.
+   */
+  private applyAgentSwitch(): void {
+    const next = this.pendingAgent
+    this.pendingAgent = undefined
+    if (next === undefined) return
+    const projection = this.projection()
+    const current = projection.session.agent ?? null
+    const from = current?.name ?? null
+    if (projection.baseline === null) {
+      if (canonicalJson(current) === canonicalJson(next)) return
+      this.write([event("agent.switched", { messageId: null, from, to: next })])
+    } else {
+      const update = agentSwitch(current, next)
+      // The same agent with the same definition: nothing to tell the model, nothing to record.
+      if (update === null) return
+      const messageId = this.core.ids.message()
+      this.write([
+        event("instruction.appended", { messageId, source: AGENT_KEY, text: update.text, fingerprint: update.fingerprint }),
+        event("agent.switched", { messageId, from, to: next }),
+      ])
+    }
+    if (next === null) return
+    for (const warning of agentWarnings(this.core, next)) this.say("agents", warning)
+    const models = this.core.offered()
+    const settings = agentSettings(next, this.projection().session.settings, models?.map((model) => model.id))
+    for (const note of settings.notes) this.say("agents", note)
+    if (!settings.changed) return
+    const problem = models === null ? null : settingsProblem(settings.settings, models)
+    if (problem !== null) return this.say("agents", `The agent "${next.name}" was selected with the session's own settings: ${problem.message}.`)
+    this.changeSettings(settings.settings)
+  }
+
+  /**
+   * The agent a session a person started runs as when nobody chose one: the
+   * default of the user's configuration, looked up when the first execution
+   * has read it, for a session whose creation could not decide (its
+   * configuration could not be read then, or another process created it and
+   * it never ran). Returns why the execution cannot start, or `null`.
+   */
+  private startAgent(): string | null {
+    const projection = this.projection()
+    const undecided = this.core.agents !== null && !this.agentDecided && projection.baseline === null && projection.session.lineage === null && projection.session.agent === undefined
+    this.agentDecided = true
+    if (!undecided) return null
+    const places = this.agentPlaces()
+    const chosen = resolveStartAgent(findAgents(projection.session.cwd, places), null, places)
+    if (!chosen.ok) return FAILURE_TEXT.agent(chosen.message)
+    if (chosen.agent === null) return null
+    const record = agentRecordOf(chosen.agent)
+    const models = this.core.offered()
+    const settings = agentSettings(record, projection.session.settings, models?.map((model) => model.id))
+    const problem = settings.notes[0] ?? (models === null ? null : (settingsProblem(settings.settings, models)?.message ?? null))
+    if (problem !== null) return FAILURE_TEXT.agent(problem)
+    this.write([event("agent.switched", { messageId: null, from: null, to: record })])
+    if (settings.changed) this.changeSettings(settings.settings)
+    for (const warning of agentWarnings(this.core, record)) this.say("agents", warning)
+    return null
   }
 
   revert = (options: RevertOptions = {}): Promise<RevertResult> => this.whileIdle(() => this.revertTo(options))
@@ -1766,17 +2006,26 @@ class LiveSession implements EngineSession {
   private async configure(run: Run): Promise<boolean> {
     // A replay reads nothing of the workspace: no checks, and the approval settings are its own.
     const load = this.director === null ? this.core.loadConfig : null
+    const asAgent = (): boolean => {
+      // A replay runs as its recording did. Anything else that never chose an agent gets the user's default now.
+      const refused = this.director === null ? this.startAgent() : null
+      if (refused === null) return true
+      this.write([event("execution.failed", { executionId: run.executionId, message: refused })])
+      return false
+    }
     if (load === null) {
       this.config = null
+      this.configRead = true
       this.announcePolicy()
-      return true
+      return asAgent()
     }
     try {
       this.config = await load(this.projection().session.cwd)
+      this.configRead = true
       this.announcePolicy()
       // The servers this configuration names are started now, in the background: nothing waits for one here.
       this.attachMcp()
-      return true
+      return run.interrupt.signal.aborted ? true : asAgent()
     } catch (error) {
       if (run.interrupt.signal.aborted) this.finishInterrupt(run)
       else this.write([event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.config(describe(error)) })])
@@ -1796,6 +2045,9 @@ class LiveSession implements EngineSession {
         this.pendingSettings = null
         this.changeSettings(settings)
       }
+      // A switch of agent that was asked for is made here: the instruction message that tells the model is appended
+      // at a boundary, under the claim. (A replay runs as its recording did.)
+      if (this.pendingAgent !== undefined && this.director === null) this.applyAgentSwitch()
 
       // A replay that left its recording and then had to stop (a call its policy does not run) ends here.
       const replayed = this.director?.replay
@@ -1868,14 +2120,22 @@ class LiveSession implements EngineSession {
       // The turn may end and what waited behind it is gone: nothing follows, so the gate decides again, now alone.
       if (ended !== null && steers.length === 0 && handover === undefined) continue
       // Instructions first, then the waiting input, so the request carries both. A replay's instructions are its recording's.
+      // The agent the session runs as is a section of a baseline that is being built (the first, and the one after
+      // a compaction, from the record and never from the file). Between them it is not among the sources: a switch
+      // is its own message, and the fold of the instruction state follows it by itself.
+      const building = waiting.baseline === null || (waiting.session.compaction?.seq ?? 0) > waiting.baseline.seq
+      const runsAs = waiting.session.agent ?? null
       const prepared = waiting.session.replay !== undefined ? [] : prepareInstructions(waiting, {
         ...(this.core.prompt === undefined ? {} : { prompt: this.core.prompt }),
         tools: this.offeredTools(waiting),
-        sources: this.core.discover({
-          cwd: waiting.session.cwd,
-          known: knownAgentsFiles(instructionState(selectModelHistory(waiting))),
-          directories: this.workedDirectories(waiting),
-        }),
+        sources: [
+          ...this.core.discover({
+            cwd: waiting.session.cwd,
+            known: knownAgentsFiles(instructionState(selectModelHistory(waiting))),
+            directories: this.workedDirectories(waiting),
+          }),
+          ...(building && runsAs !== null ? [agentSource(runsAs)] : []),
+        ],
         newMessageId: ids.message,
       })
       if (prepared.length > 0) this.write(prepared)
@@ -1910,6 +2170,17 @@ class LiveSession implements EngineSession {
       }
       // The tool list stays; only the choice changes, which is not part of the cached prefix.
       const toolChoice = forbidden ? "none" : "auto"
+      // An effort the model does not offer is refused here, before a request is spent on it. (No await once these
+      // settings were looked at: the loop goes straight on.)
+      const checking = this.settingsToCheck(ready.session.settings)
+      if (checking !== null) {
+        const unusable = await checking
+        if (signal.aborted) return this.finishInterrupt(run)
+        if (unusable !== null) {
+          this.write([event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.settings(unusable) })])
+          return
+        }
+      }
       // How large would this request be? The policy decides from the estimate whether history is compacted first.
       const window = await this.contextWindow(ready.session.settings.model)
       if (signal.aborted) return this.finishInterrupt(run)
@@ -1930,6 +2201,26 @@ class LiveSession implements EngineSession {
       }
       if ((await this.step(run, next)) === "done") return
     }
+  }
+
+  /**
+   * The check of `settings` against the provider's listing, when they were
+   * not looked at yet and a listing can be had: resolves with what is wrong
+   * (an effort the model does not offer) or `null`. `null` at once when
+   * there is nothing to wait for. Only the effort is refused here: a model
+   * the listing lacks may still be one the provider serves.
+   */
+  private settingsToCheck(settings: SessionSettings): Promise<string | null> | null {
+    const key = `${settings.model}\u0000${settings.reasoningEffort ?? ""}`
+    if (this.checkedSettings === key || this.director !== null || settings.reasoningEffort === null) return null
+    const list = this.core.listOffered
+    const known = this.core.offered()
+    if (known === null && list === null) return null
+    return (known !== null ? Promise.resolve(known) : list!()).then((models) => {
+      this.checkedSettings = key
+      const problem = models === null ? null : settingsProblem(settings, models)
+      return problem !== null && problem.code === "unknown_effort" ? problem.message : null
+    })
   }
 
   // ---- the context window ----
@@ -2427,6 +2718,14 @@ class LiveSession implements EngineSession {
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output, truncation: null, attachments: [], display: null }),
       ])
     this.decided.clear()
+    // The agent the session runs as, as of this step: a switch is made at a boundary, never between two calls.
+    const runsAs = before.session.agent ?? null
+    /** A call the agent may not make: refused before anything about it is decided, and recorded as the agent's refusal. */
+    const refuseAsAgent = (call: ToolCallPart, agent: AgentRecord, reason: string) =>
+      this.write([
+        event("approval.denied", { messageId, callId: call.callId, mode: approvals === null ? "full" : this.policy().policy.mode, paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: agent.name }),
+        event("tool.settled", { messageId, callId: call.callId, outcome: "error", output: reason, truncation: null, attachments: [], display: null }),
+      ])
     const place = this.tempContext()
     // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it too.
     const extras = approvals === null ? {} : { ...place, ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }), redact: redactor(approvals.secrets) }
@@ -2514,6 +2813,12 @@ class LiveSession implements EngineSession {
       if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
       if (repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
       const effect = effects.get(call.name)
+      // The agent's restrictions come before the approval layer, and only take away: a call they let through is
+      // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
+      if (runsAs !== null && effect !== undefined) {
+        const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+        if (verdict.kind === "refuse") return refuseAsAgent(call, runsAs, verdict.reason) && []
+      }
       // A read changes nothing, and a tool nobody knows is refused before it could: both go at once. So does a
       // call that hands its work to a subagent: several of them in one response are meant to run side by side.
       if (approvals === null || effect === undefined || effect === "read" || this.core.delegating.has(call.name)) return [launch(call)]
@@ -2657,10 +2962,32 @@ class LiveSession implements EngineSession {
     if (settings === null) return toolResult("error", "Subagents are not available here.")
     if (context.signal.aborted) return toolResult("error", "Not started: the session was interrupted.")
     const projection = this.projection()
-    if (input.session !== undefined) return this.followUp(input, context, projection)
+    if (input.session !== undefined) {
+      if (input.agent !== undefined) return toolResult("error", "Not sent: a subagent keeps the agent it started as, so `agent` cannot be given together with `session`. Send the follow-up without `agent`, or start a new subagent as that agent.")
+      return this.followUp(input, context, projection)
+    }
     const depth = this.depth()
     if (depth >= settings.maxDepth)
       return toolResult("error", `Not started: a subagent ${settings.maxDepth === 1 ? "cannot start subagents of its own" : `at depth ${depth} cannot start another (the limit is ${settings.maxDepth} levels)`}. Do the work yourself.`)
+    // The agent it runs as: the one the call names, looked up now (a wrong name starts nothing), with its
+    // restrictions combined with this session's; without a name, this session's own agent, so that a restricted
+    // session cannot hand its work to an unrestricted child.
+    let chosen: AgentDefinition | null = null
+    if (input.agent !== undefined) {
+      if (this.core.agents === null) return toolResult("error", "The subagent was not started: agents are not available here. Call subagent without `agent`.")
+      const places = this.agentPlaces()
+      const found = findAgent(findAgents(projection.session.cwd, places), input.agent, places.disabled)
+      if (!found.ok) return toolResult("error", `The subagent was not started: ${found.message}`)
+      chosen = found.agent
+    }
+    const runsAs = childAgent(projection.session.agent ?? null, chosen)
+    const models = this.core.offered()
+    const asked = chosen === null ? null : agentSettings(runsAs, projection.session.settings, models?.map((model) => model.id))
+    for (const note of asked?.notes ?? []) this.say("agents", note)
+    // An effort the agent names that the model does not offer is not sent: the child then runs with this session's settings.
+    const usable = asked !== null && (models === null || settingsProblem(asked.settings, models) === null)
+    if (asked !== null && !usable) this.say("agents", `The agent "${runsAs!.name}" names settings the provider does not offer; its subagent runs with this session's.`)
+    const childSettings = asked !== null && usable ? asked.settings : projection.session.settings
     const childId = this.core.ids.session()
     const spawnId = this.core.ids.spawn()
     const title = taskTitle(input.task)
@@ -2680,7 +3007,7 @@ class LiveSession implements EngineSession {
     if (context.signal.aborted) return discard("the session was interrupted")
     try {
       // Write-ahead: the parent's log names the child before the child exists.
-      this.write([event("spawn.started", { spawnId, messageId: context.messageId, callId: context.callId, background, work: { kind: "subagent", sessionId: childId, worktree } })])
+      this.write([event("spawn.started", { spawnId, messageId: context.messageId, callId: context.callId, background, work: { kind: "subagent", sessionId: childId, worktree, ...(runsAs === null ? {} : { agent: runsAs.name }) } })])
     } catch (error) {
       return discard(error)
     }
@@ -2690,7 +3017,12 @@ class LiveSession implements EngineSession {
       const store = storeErrors(() => this.core.stores.create(childId))
       child = new LiveSession(this.core, childId, store)
       try {
-        child.write([event("session.created", { cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: projection.session.settings })])
+        child.write([
+          event("session.created", { cwd, title, lineage: { kind: "spawn", parentSessionId: this.id, spawnId, depth: depth + 1, worktree }, settings: childSettings }),
+          // What it runs as is recorded with it, before its first baseline, which carries the instructions.
+          ...(runsAs === null ? [] : [event("agent.switched", { messageId: null, from: null, to: runsAs })]),
+        ])
+        child.agentDecided = true
       } catch (error) {
         store.close()
         throw error
@@ -3243,12 +3575,39 @@ class LiveSession implements EngineSession {
 
   /** The policy in force: the user's settings (their file, the process's flags, this session's own choice), tightened by the project's file. */
   private policy(): ResolvedApproval {
-    return effectivePolicy({
-      file: this.config?.approval?.user ?? null,
+    const config = this.currentConfig()
+    const resolved = effectivePolicy({
+      file: config?.approval?.user ?? null,
       process: this.core.approvals?.user ?? null,
       session: this.override,
-      project: this.config?.approval?.project ?? null,
+      project: config?.approval?.project ?? null,
     })
+    // The agent the session runs as can only tighten the mode, whoever wrote its definition.
+    const agent = this.store.getProjection(this.id)?.session.agent ?? null
+    if (agent === null || agent.restrictions.approval === null) return resolved
+    const tightened = effectiveApprovalMode(resolved.policy.mode, agent)
+    if (tightened.ignored !== null) this.say("agents", tightened.ignored)
+    return tightened.mode === resolved.policy.mode ? resolved : { ...resolved, policy: { ...resolved.policy, mode: tightened.mode } }
+  }
+
+  /**
+   * The configuration this session's decisions are made under. An execution
+   * reads it when it starts; before the first one of this process it is
+   * read here, once and without waiting, so that a client that asks how
+   * calls are decided before the first turn is told what the files say. A
+   * file that cannot be read says so when the execution starts, as always.
+   */
+  private currentConfig(): SessionConfig | null {
+    if (this.configRead || this.director !== null) return this.config
+    this.configRead = true
+    const load = this.core.loadConfigSync
+    if (load === null) return this.config
+    try {
+      this.config = load(this.projection().session.cwd)
+    } catch {
+      this.config = null
+    }
+    return this.config
   }
 
   private sandboxState(): SandboxState {
@@ -3649,9 +4008,9 @@ class LiveSession implements EngineSession {
     return projection.baseline?.tools.some((known) => known.name === tool) ?? false
   }
 
-  /** The two configuration files the execution in progress (or the latest one) read. */
+  /** The two configuration files the execution in progress (or the latest one) read, or, before the first one, as they are now. */
   private files() {
-    return this.config?.files ?? null
+    return this.currentConfig()?.files ?? null
   }
 
   /** Where this session's skills are looked for besides its working directory. */
@@ -3677,6 +4036,12 @@ class LiveSession implements EngineSession {
     }
     const mcp = this.core.mcp
     if (mcp !== null && mcp.tools.every((tool) => this.offers(projection, tool.name))) sources.push(catalogueAppended(this.mcpServers().servers()))
+    // The list of agents, for a session that can run a subagent as one.
+    if (this.core.agents !== null && this.offers(projection, SUBAGENT_TOOL)) {
+      const set = findAgents(projection.session.cwd, this.agentPlaces())
+      for (const problem of set.problems) this.say("agents", describeAgentProblem(problem))
+      sources.push(agentIndexAppended(set))
+    }
     const notes = this.memoryStore(projection)
     if (notes !== null)
       sources.push(memorySource({ session: this.id, store: notes, config: this.memoryConfig(), now: new Date(this.core.clock.now()), problem: (message) => this.say("memory", message) }))
@@ -3684,7 +4049,7 @@ class LiveSession implements EngineSession {
   }
 
   /** Says something about a feature to the user, once per process. */
-  private say(kind: "skills" | "mcp" | "wake" | "memory", message: string): void {
+  say(kind: "skills" | "mcp" | "wake" | "memory" | "agents", message: string): void {
     if (this.noticed.has(`${kind}:${message}`)) return
     this.noticed.add(`${kind}:${message}`)
     this.core.report({ kind, sessionId: this.id, message })
@@ -4464,6 +4829,71 @@ class LiveSession implements EngineSession {
     if (message?.kind !== "assistant") throw new Error(`step ${messageId} has no assistant message`)
     return message
   }
+}
+
+/** What is wrong with `settings`, going by the provider's listing: a model it does not offer, or an effort that model does not. */
+function settingsProblem(settings: SessionSettings, models: readonly ModelOffer[]): EngineError | null {
+  if (models.length === 0) return null
+  const model = models.find((entry) => entry.id === settings.model)
+  if (model === undefined) return new EngineError("unknown_model", `model ${settings.model} is not available; choose one of: ${models.map((entry) => entry.id).join(", ")}`)
+  const efforts = model.efforts ?? []
+  if (settings.reasoningEffort === null || efforts.length === 0 || efforts.includes(settings.reasoningEffort)) return null
+  return new EngineError("unknown_effort", `model ${settings.model} does not offer the reasoning effort "${settings.reasoningEffort}"; it accepts: ${efforts.join(", ")}`)
+}
+
+/** The configuration files that apply in `cwd` as they are now, read without waiting; `error` when they cannot be read. */
+function configFilesNow(core: Core, cwd: string): { readonly files: ConfigFiles | null; readonly error: string | null } {
+  if (core.loadConfigSync === null) return { files: null, error: null }
+  try {
+    return { files: core.loadConfigSync(cwd).files ?? null, error: null }
+  } catch (error) {
+    return { files: null, error: describe(error) }
+  }
+}
+
+/** What the user should know about an agent that was selected: restrictions that name tools this build does not have. */
+function agentWarnings(core: Core, agent: AgentRecord): string[] {
+  const unknown = unknownToolNames(agent.restrictions, [...core.effects.keys()])
+  return unknown.length === 0 ? [] : [`The agent "${agent.name}" (${agent.path}) names ${unknown.length === 1 ? "a tool" : "tools"} that ${unknown.length === 1 ? "does" : "do"} not exist here, which therefore restrict nothing: ${unknown.join(", ")}.`]
+}
+
+/**
+ * What a new session starts as: the agent the caller names, else the
+ * default of the user's own configuration, else none; and the settings it
+ * is created with (the agent's model and effort where it names them).
+ * Throws before anything exists: a named or default agent that cannot be
+ * found is an error for the user, never a session that runs without the
+ * restrictions they asked for, and so are settings the provider's listing
+ * is known not to offer.
+ */
+function startAs(core: Core, input: { readonly cwd: string; readonly settings: SessionSettings; readonly agent?: string | null }): { readonly settings: SessionSettings; readonly agent: AgentRecord | null; readonly decided: boolean; readonly warnings: readonly string[] } {
+  const models = core.offered()
+  const usable = (settings: SessionSettings) => {
+    const problem = models === null ? null : settingsProblem(settings, models)
+    if (problem !== null) throw problem
+    return settings
+  }
+  const asked = input.agent === undefined || input.agent === null ? null : input.agent.trim()
+  const none = asked !== null && asked.toLowerCase() === NO_AGENT
+  if (core.agents === null) {
+    if (asked !== null && !none) throw new EngineError("invalid_request", `this engine offers no agents, so a session cannot start as "${asked}"`)
+    return { settings: usable(input.settings), agent: null, decided: true, warnings: [] }
+  }
+  const config = configFilesNow(core, input.cwd)
+  if (config.error !== null) {
+    // The first execution fails with the configuration's error, as it always has. A session that was asked to start
+    // as an agent is not created without it; one that was not looks for the default when that execution has read the files.
+    if (asked !== null && !none) throw new EngineError("invalid_request", `the session cannot start as the agent "${asked}": ${FAILURE_TEXT.config(config.error)}`)
+    return { settings: usable(input.settings), agent: null, decided: none, warnings: [] }
+  }
+  const places = agentPlaces(config.files, core.agents)
+  const chosen = resolveStartAgent(findAgents(input.cwd, places), asked, places)
+  if (!chosen.ok) throw new EngineError("invalid_request", chosen.message)
+  if (chosen.agent === null) return { settings: usable(input.settings), agent: null, decided: true, warnings: places.ignored }
+  const record = agentRecordOf(chosen.agent)
+  const settings = agentSettings(record, input.settings, models?.map((model) => model.id))
+  if (settings.notes.length > 0) throw new EngineError("unknown_model", settings.notes.join(" "))
+  return { settings: usable(settings.settings), agent: record, decided: true, warnings: [...places.ignored, ...agentWarnings(core, record)] }
 }
 
 /**

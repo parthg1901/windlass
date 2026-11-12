@@ -22,6 +22,7 @@ import type { EngineLimits } from "../../src/engine/constants.ts"
 import type { McpSetup } from "../../src/engine/mcp.ts"
 import type { MemorySetup } from "../../src/engine/memory.ts"
 import type { SkillsSetup } from "../../src/engine/skills.ts"
+import type { AgentsSetup } from "../../src/engine/agents.ts"
 import type { SpawnSettings } from "../../src/engine/spawn.ts"
 import type { WakeSetup } from "../../src/engine/wake.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
@@ -30,6 +31,7 @@ import {
   type Diagnostic,
   type Engine,
   type EngineSession,
+  type ModelOffer,
   type ProbePoint,
   type ResumeMode,
   createEngine,
@@ -362,6 +364,10 @@ export interface HarnessOptions {
   readonly cwd?: string
   /** Real tools beside the scripted ones (the `todo` tool, which keeps no state and touches nothing). */
   readonly extraTools?: readonly AnyTool[]
+  /** Agents. Without it the engine offers none, as in every scenario that is not about them. */
+  readonly agents?: AgentsSetup
+  /** The models the provider lists, with the efforts each accepts, for the tests about settings. Without it nothing is checked. */
+  readonly models?: readonly (string | ModelOffer)[]
 }
 
 export class Harness {
@@ -440,6 +446,13 @@ export class Harness {
         this.options.config === undefined && this.options.userConfig === undefined
           ? null
           : async () => ({ config: this.config ?? resolveConfig({}), projectDir: this.cwd, files: this.files }),
+      // The same files, for what is read without waiting: the agent a session starts as, the approval mode before a first turn.
+      loadConfigSync:
+        this.options.config === undefined && this.options.userConfig === undefined
+          ? null
+          : () => ({ config: this.config ?? resolveConfig({}), projectDir: this.cwd, files: this.files, approval: { user: this.files.user?.approval ?? null, project: this.files.project?.approval ?? null } }),
+      ...(this.options.agents === undefined ? {} : { agents: this.options.agents }),
+      ...(this.options.models === undefined ? {} : { listModels: async () => this.options.models! }),
       runChecks: this.checks.run,
       prompt: "You are a coding agent.",
       discover: (input): InstructionSource[] => [
@@ -474,8 +487,8 @@ export class Harness {
   }
 
   /** Creates the session every test works in. */
-  create(settings: SessionSettings = this.options.settings ?? { model: "gpt-test", reasoningEffort: "medium" }): EngineSession {
-    return this.adopt(this.engine.createSession({ cwd: this.cwd, settings }))
+  create(settings: SessionSettings = this.options.settings ?? { model: "gpt-test", reasoningEffort: "medium" }, agent?: string | null): EngineSession {
+    return this.adopt(this.engine.createSession({ cwd: this.cwd, settings, ...(agent === undefined ? {} : { agent }) }))
   }
 
   /** Opens the session again, in the running process or after `boot`. */
@@ -747,7 +760,9 @@ function label(events: readonly NewEvent[]): Plain[] {
     if (item.type === "approval.answered") data.grants = item.data.grants.map((grant) => ({ ...grant, grantedAt: 0 }))
     if (item.type === "compaction.started") data.tokensBefore = 0
     if (item.type === "compaction.ended") data.tokensAfter = 0
-    if (item.type === "baseline.set") return { type: item.type, data: { sources: data.sources } }
+    // The agent's instructions name the file that defines it, which is a real path in the loop and `/repo/...` in a
+    // scenario, so its fingerprint is a stand-in here; a test compares it with the record.
+    if (item.type === "baseline.set") return { type: item.type, data: { sources: item.data.sources.map((entry) => (entry.source === "agent" ? { ...entry, fingerprint: "<agent>" } : entry)) } }
     if (item.type === "instruction.appended") return { type: item.type, data: { messageId: data.messageId, source: data.source } }
     return { type: item.type, data }
   })

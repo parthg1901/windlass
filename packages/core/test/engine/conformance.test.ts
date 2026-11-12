@@ -55,6 +55,8 @@ import { ACKNOWLEDGEMENT, FIRST_FIX, SECOND_FIX } from "../scenarios/verificatio
 import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
 import { TODO_INPUT } from "../scenarios/compaction.ts"
+import { CAPTAIN_FILE, DELEGATE_AS, REVIEWER_FILE, WRITE_FIX } from "../scenarios/agents.ts"
+import { fingerprint as fingerprintOf } from "../../src/instructions/source.ts"
 import { HARNESS_ORIGIN } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
 import { fixtureServer, waitFor } from "../mcp/helpers.ts"
@@ -84,6 +86,13 @@ function writeSkill(cwd: string, name: string, description: string): void {
   const path = join(cwd, ".claude", "skills", name, "SKILL.md")
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `---\nname: ${name}\ndescription: ${description}\n---\nTag, then push the tag.\n`)
+}
+
+/** An agent definition of the scenario's project. */
+function writeAgent(cwd: string, name: string, text: string): void {
+  const path = join(cwd, ".claude", "agents", `${name}.md`)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, text)
 }
 
 /** The log with the scenario's stand-in for the working directory. */
@@ -1293,6 +1302,91 @@ Object.assign(PLAYS, {
     expect(h.session.approval()!.taint).toMatchObject({ tainted: true, sources: [{ kind: "wake-up", path: "webhook_body" }] })
     expect(h.provider.prefixBreaks()).toEqual([])
   },
+
+  // ---------------------------------------------------------------- agents
+
+  "A session starts as a read-only agent, and a write is refused with the reason": async (h, say) => {
+    writeAgent(h.cwd, "reviewer", REVIEWER_FILE)
+    h.provider.enqueue([call("call_1", "write", JSON.parse(WRITE_FIX) as Json), U], answer("As the reviewer I may not edit files. The expectation should be 2."))
+    h.create(undefined, "reviewer").send(say[0]!)
+    await h.settled()
+    // The write never ran, and the model was told why in the call's result.
+    expect(h.tools.ran).toEqual([])
+    expect(JSON.stringify(h.provider.requests[1]!.input)).toContain('Not run: you are working as the agent \\"reviewer\\", which may use only tools that read.')
+    // The agent's instructions are the last section of the baseline, under the fingerprint the baseline records for them.
+    const projection = h.session.projection()
+    const record = projection.session.agent!
+    expect(projection.baseline!.instructions.endsWith(`<agent lines="${record.instructions.split("\n").length}">\n${record.instructions}\n</agent>`)).toBe(true)
+    expect(projection.baseline!.sources.at(-1)).toEqual({ source: "agent", fingerprint: fingerprintOf(record.instructions) })
+    expect(h.session.agent()?.name).toBe("reviewer")
+  },
+
+  "The user switches the agent in the middle of a session: an appended message, never a new baseline": async (h, say) => {
+    writeAgent(h.cwd, "reviewer", REVIEWER_FILE)
+    writeAgent(h.cwd, "captain", CAPTAIN_FILE)
+    h.provider.enqueue(
+      answer("The expectation is wrong: 1 + 1 is 2."),
+      [call("call_1", "write", JSON.parse(WRITE_FIX) as Json), U],
+      answer("As the reviewer I may not edit files."),
+      [call("call_1", "write", JSON.parse(WRITE_FIX) as Json), U],
+      answer("Fixed the expectation on the release branch."),
+      answer("You are welcome."),
+    )
+    h.tools.on("write", "Wrote a.test.ts")
+    h.create().send(say[0]!)
+    await h.settled()
+    expect(h.session.agent()).toBeNull()
+    // Selected while idle: it is what the next turn runs as, and nothing is written until that turn starts.
+    const before = h.log().length
+    expect(h.session.setAgent("reviewer")?.name).toBe("reviewer")
+    expect(h.session.agent()?.name).toBe("reviewer")
+    expect(h.log()).toHaveLength(before)
+    expect(() => h.session.setAgent("reviewr")).toThrow('There is no agent named "reviewr". Did you mean "reviewer"? Agents: captain, reviewer.')
+    h.session.send(say[1]!)
+    await h.settled()
+    h.session.setAgent("captain")
+    h.session.send(say[2]!)
+    await h.settled()
+    h.session.setAgent("none")
+    h.session.send(say[3]!)
+    await h.settled()
+    // The only prefix break is the model change the captain brings; the tool list and the instructions never changed.
+    expect(h.provider.prefixBreaks().map((entry) => (entry.comparison.extension ? null : entry.comparison.kind))).toEqual(["params"])
+    for (const request of h.provider.requests) {
+      expect(request.tools).toEqual(h.provider.requests[0]!.tools)
+      expect(request.instructions).toBe(h.provider.requests[0]!.instructions)
+    }
+    expect(h.provider.requests.map((request) => request.params.model)).toEqual(["gpt-test", "gpt-test", "gpt-test", "gpt-other", "gpt-other", "gpt-other"])
+    expect(h.session.projection().session.agent).toBeNull()
+  },
+
+  "A subagent is run as an agent the list of agents names": async (h, say) => {
+    writeAgent(h.cwd, "reviewer", REVIEWER_FILE)
+    writeAgent(h.cwd, "captain", CAPTAIN_FILE)
+    converse(h.provider, { [say[0]!]: [[call("call_1", "subagent", JSON.parse(DELEGATE_AS) as Json), U], answer("The reviewer found nothing wrong in module a.")], "Review module a": [answer("Module a is fine.")] })
+    h.create().send(say[0]!)
+    await h.settled()
+    // The spec of `subagent` names no agent; the list is a message.
+    const spec = h.provider.requests[0]!.tools.find((tool) => tool.name === "subagent")!
+    expect(JSON.stringify(spec)).not.toContain("reviewer")
+    expect(JSON.stringify(h.provider.requests[0]!.input)).toContain("- reviewer (read only): Reviews a change without editing anything.")
+    // The parent's two requests (the child's, between them, is another session's): the second extends the first.
+    expect(h.provider.requests[2]!.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(h.provider.requests[2]!.input.slice(0, h.provider.requests[0]!.input.length)).toEqual([...h.provider.requests[0]!.input])
+  },
+
+  "The log of a subagent that runs as an agent": async (h) => {
+    writeAgent(h.cwd, "reviewer", REVIEWER_FILE)
+    converse(h.provider, {
+      "Delegate": [[call("call_1", "subagent", JSON.parse(DELEGATE_AS) as Json), U], answer("Reviewed.")],
+      "Review module a": [[call("call_1", "write", JSON.parse(WRITE_FIX) as Json), U], answer("Module a is fine.")],
+    })
+    h.create().send("Delegate the review of module a.")
+    await h.settled()
+    expect(h.tools.ran).toEqual([])
+    // The child: the second session of this engine.
+    h.session = h.engine.openSession(h.session.projection().session.spawned!.children[0]!)
+  },
 } satisfies Record<string, Play>)
 
 const scenarios = Object.entries(families).flatMap(([family, list]) => list.map((scenario) => ({ family, scenario })))
@@ -1308,7 +1402,7 @@ describe("the loop writes each scenario's events", () => {
       const setup = scenario.setup
       const features = scenario.features
       // Skills and MCP servers are read from a real directory, which then stands for the scenarios' `/repo`.
-      const cwd = features?.skills === true || features?.mcp === true ? projectDirectory() : undefined
+      const cwd = features?.skills === true || features?.mcp === true || features?.agents === true ? projectDirectory() : undefined
       const h = new Harness({
         ...(cwd === undefined ? {} : { cwd }),
         ...(features?.skills === true ? { skills: { configDir: join(dirname(cwd!), "config") } } : {}),
@@ -1318,6 +1412,7 @@ describe("the loop writes each scenario's events", () => {
           : {}),
         ...(features?.wake === true ? { wake: {} } : {}),
         ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
+        ...(features?.agents === true ? { agents: { configDir: join(dirname(cwd!), "config") } } : {}),
         tools,
         limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET },
         ...(setup === undefined ? {} : { workspace: new FakeWorkspace(setup.files) }),
@@ -1357,7 +1452,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(91)
+    expect(scenarios).toHaveLength(95)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

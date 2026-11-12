@@ -16,10 +16,13 @@
  * - A command started with the shell tool's `background` argument is spawned
  *   work of the same kind: its exit arrives as a message (`background_command`).
  * - `background_output` and `background_stop` read and stop either.
+ * - `subagent` takes an optional `agent`: the child then runs as that agent
+ *   (`engine/agents.ts`), with its restrictions combined with its parent's.
  * - Depth: a child may itself spawn only while its depth is below the limit
  *   (one level by default), and a session at the limit is not offered the
  *   `subagent` tool at all.
  */
+import { SUBAGENT_AGENT_PROPERTY } from "../agents/use.ts"
 import type { StoredEvent, WorktreeRecord } from "../event/durable.ts"
 import type { CallId, MessageId, SessionId } from "../id.ts"
 import type { Usage } from "../provider/usage.ts"
@@ -37,6 +40,8 @@ export interface SubagentInput {
   readonly session?: string
   readonly background?: boolean
   readonly worktree?: boolean
+  /** The agent the new subagent runs as, by name. Not with `session`: a subagent keeps the agent it started as. */
+  readonly agent?: string
 }
 
 export interface SpawnSettings {
@@ -69,6 +74,8 @@ export function spawnTools(hostOf: (sessionId: SessionId) => SpawnHost | null): 
         session: { type: "string", minLength: 1, description: "The session ID of a subagent this session started earlier: send it `task` as a follow-up instead of starting a new one." },
         background: { type: "boolean", description: "Return at once; the answer arrives as a message when the subagent finishes." },
         worktree: { type: "boolean", description: "Give it its own git worktree, for subagents that edit the same files in parallel." },
+        // The same in every session: it names no agent. Which agents exist is told in a message, and the name is checked when the call runs.
+        ...SUBAGENT_AGENT_PROPERTY,
       },
       required: ["task"],
       additionalProperties: false,
@@ -108,7 +115,7 @@ export const SPAWN_TEXT = {
 
 /** What a subagent is told besides its task: who reads its answer. */
 export const SUBAGENT_NOTE =
-  "(You are a subagent. Another agent gave you this task and will read only your final message, so end with a complete answer: what you did, what you found, what is left. Nobody can answer questions while you work.)"
+  "(You are a subagent. Another agent gave you this task and will read only your final message, so end with a complete answer: what you did, what you found, what is left. You cannot ask it or the user a question while you work: decide what you can yourself, and say in your answer what you could not. A call that needs the user's approval may be put to the user, or refused when nobody is there to ask; either way its result tells you.)"
 
 export function taskMessage(task: string): string {
   return `${task.trim()}\n\n${SUBAGENT_NOTE}`

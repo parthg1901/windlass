@@ -36,10 +36,13 @@
  *   announced first and closed by exactly one event. Only the latest revert
  *   can be undone, and only until new work starts.
  * - A session is archived once and unarchived once: each event changes something.
+ * - The agent a session runs as changes before its first baseline, or right
+ *   after the instruction message that tells the model, and never otherwise.
  *
  * Structure is shared: parts of the state an event does not touch are returned
  * as the same objects, so `projectionChanges` can find what to write.
  */
+import { AGENT_KEY } from "../agents/use.ts"
 import { type StepError, type StoredEvent, HARNESS_ORIGIN } from "../event/durable.ts"
 import type { MessageId } from "../id.ts"
 import { releasesClaim } from "../interrupt.ts"
@@ -124,6 +127,8 @@ function create(state: Projection | null, event: StoredEvent<"session.created">)
     ...INITIAL_TRACKING,
     // It starts with no approvals of its own, and with its parent's taint: the content came with the history.
     ...(event.data.lineage?.kind === "fork" && state?.session.approval?.taint != null ? { approval: { grants: [], taint: state.session.approval.taint } } : {}),
+    // The agent it runs as came with the history too: its instructions are in the inherited baseline or messages.
+    ...(event.data.lineage?.kind === "fork" && state?.session.agent !== undefined ? { agent: state.session.agent } : {}),
   }
   const lineage = event.data.lineage
   if (lineage === null || lineage.kind !== "fork") {
@@ -180,6 +185,7 @@ const SCOPE = {
   "execution.interrupted": "wind_down",
   "baseline.set": "work",
   "instruction.appended": "work",
+  "agent.switched": "work",
   "inbox.delivered": "work",
   "turn.ended": "work",
   "execution.started": "work",
@@ -421,6 +427,25 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         text: event.data.text,
         fingerprint: event.data.fingerprint,
       })
+
+    case "agent.switched": {
+      atBoundary()
+      const current = state.session.agent ?? null
+      const next = event.data.to
+      if (event.data.from !== (current?.name ?? null)) fail("invalid_transition", `the session runs as ${current === null ? "no agent" : `the agent "${current.name}"`}, and the switch must say so`)
+      if (current === null && next === null) fail("invalid_transition", "the session runs as no agent: there is nothing to switch off")
+      if (event.data.messageId === null) {
+        // Before the first baseline the agent's instructions become a section of it; later only a message can say them.
+        if (state.baseline !== null) fail("invalid_transition", "the baseline is frozen: a switch is announced by an instruction message (instruction.appended with source agent comes first)")
+      } else {
+        claimed()
+        const announced = state.messages.at(-1)
+        if (announced === undefined || announced.id !== event.data.messageId || announced.kind !== "instruction" || announced.source !== AGENT_KEY || announced.seq !== event.seq - 1)
+          fail("invalid_transition", `a switch follows at once the instruction message that announces it, and ${event.data.messageId} is not that message`)
+        else if ((announced.fingerprint === null) !== (next === null)) fail("invalid_transition", "the message that announces a switch carries the new agent's instructions, or withdraws the old one's")
+      }
+      return session({ agent: next })
+    }
 
     case "inbox.enqueued": {
       unused(event.data.messageId)
@@ -737,7 +762,10 @@ function apply(state: Projection, event: AppliedEvent): Projection {
         if (part.state.status !== "pending") fail("invalid_transition", `tool call ${part.callId} is ${part.state.status}: it is denied before it starts`)
         if (part.approval !== undefined) fail("invalid_transition", `tool call ${part.callId} was already ${part.approval.kind}`)
         if (event.data.stop && event.data.reason !== "unattended") fail("invalid_transition", "only a call nobody could approve ends the run")
-        return { ...part, approval: { kind: "denied", seq: event.seq, reason: event.data.reason, stop: event.data.stop } }
+        const agent = event.data.agent
+        if (agent !== undefined && (event.data.reason !== "policy" || agent !== state.session.agent?.name))
+          fail("invalid_transition", `a call is refused by the restrictions of the agent the session runs as, which is ${state.session.agent == null ? "none" : `"${state.session.agent.name}"`}`)
+        return { ...part, approval: { kind: "denied", seq: event.seq, reason: event.data.reason, stop: event.data.stop, ...(agent === undefined ? {} : { agent }) } }
       })
     case "taint.noticed": {
       const approval = state.session.approval ?? { grants: [], taint: null }

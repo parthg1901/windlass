@@ -23,7 +23,8 @@ import { createHash } from "node:crypto"
 export interface InstructionSource {
   /**
    * Stable identity, and the `source` of the `instruction.appended` events
-   * about it: `environment`, `date`, or `agents:<absolute path>`. Other keys
+   * about it: `environment`, `date`, `agent` (the instructions of the agent the
+   * session runs as) or `agents:<absolute path>`. Other keys
    * (`mcp`, `skills`, `memory`) belong to sources that are never part of the
    * baseline and are rendered by their own modules: see `AppendedSource` in
    * `state.ts`. `renderSection` refuses them, so one can never be folded
@@ -36,6 +37,13 @@ export interface InstructionSource {
 
 export const ENVIRONMENT_KEY = "environment"
 export const DATE_KEY = "date"
+/**
+ * The instructions of the agent a session runs as (`agents/use.ts`,
+ * `AGENT_KEY`): a section of the baseline, the last one. Between
+ * compactions it is never among the discovered sources: a switch is its own
+ * message, written by the agents module.
+ */
+export const AGENT_SOURCE_KEY = "agent"
 const AGENTS_PREFIX = "agents:"
 
 export function agentsKey(path: string) {
@@ -89,6 +97,7 @@ export function fingerprint(value: string) {
 function tag(key: string) {
   if (key === ENVIRONMENT_KEY) return { name: "environment", attribute: "" }
   if (key === DATE_KEY) return { name: "date", attribute: "" }
+  if (key === AGENT_SOURCE_KEY) return { name: "agent", attribute: "" }
   const path = agentsPath(key)
   if (path === null || path.includes("\n")) throw new Error(`"${key}" is not an instruction source key`)
   return { name: "instructions", attribute: ` path="${path}"` }
@@ -100,7 +109,7 @@ export function renderSection(source: InstructionSource): string {
   return [`<${name}${attribute} lines="${source.value.split("\n").length}">`, source.value, `</${name}>`].join("\n")
 }
 
-const HEADER = /^<(?:(environment|date)|instructions path="(.+)") lines="(\d+)">$/
+const HEADER = /^<(?:(environment|date|agent)|instructions path="(.+)") lines="(\d+)">$/
 
 /**
  * Reads back every section in `text`, in order. The inverse of

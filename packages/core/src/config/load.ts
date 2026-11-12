@@ -13,6 +13,7 @@
  * Both files are optional. Checks run in the project directory: the directory
  * that contains the project file, else the repository root, else the working directory.
  */
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
@@ -63,6 +64,60 @@ export async function loadConfig(options: LoadOptions): Promise<LoadedConfig> {
   const user = await readConfigFile(locations.userFile)
   const project = locations.projectFile === null ? null : await readConfigFile(locations.projectFile)
   // A server that is neither started nor reached is an error of the file that completes it, said now and not at the first call.
+  resolveMcpConfig(mergeConfigFiles(user, project).mcp, project?.mcp === undefined ? locations.userFile : locations.projectFile!)
+  return {
+    ...locations,
+    config: resolveConfig(mergeConfigFiles(user, project)),
+    sources: [user === null ? null : locations.userFile, project === null ? null : locations.projectFile].filter((file) => file !== null),
+    approval: { user: user?.approval ?? null, project: project?.approval ?? null },
+    files: { user, project },
+  }
+}
+
+/**
+ * `loadConfig` without a turn of the event loop, for the two places that
+ * cannot wait: a client asks how a session's calls are decided before its
+ * first turn has read the files, and a session is created as an agent. The
+ * same files, the same validation, the same result; it throws the same
+ * `ConfigError`.
+ */
+export function loadConfigSync(options: LoadOptions): LoadedConfig {
+  const env = options.env ?? process.env
+  const home = options.home ?? homedir()
+  const xdg = env.XDG_CONFIG_HOME
+  const configHome = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config")
+  const cwd = resolve(options.cwd)
+  const present = (path: string) => statSync(path, { throwIfNoEntry: false }) !== undefined
+  let repoRoot: string | null = null
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    if (present(join(dir, ".git"))) {
+      repoRoot = dir
+      break
+    }
+    if (dirname(dir) === dir) break
+  }
+  let projectFile: string | null = null
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    const candidate = join(dir, `.${brand.directory}`, "config.json")
+    if (statSync(candidate, { throwIfNoEntry: false })?.isFile() === true) {
+      projectFile = candidate
+      break
+    }
+    if (repoRoot === null || dir === repoRoot || dirname(dir) === dir) break
+  }
+  const read = (path: string): ConfigFile | null => {
+    if (!existsSync(path) || statSync(path, { throwIfNoEntry: false })?.isFile() !== true) return null
+    let text: string
+    try {
+      text = readFileSync(path, "utf8")
+    } catch (error) {
+      throw new ConfigError(path, "", `could not be read (${error instanceof Error ? error.message : String(error)})`)
+    }
+    return parseConfigFile(text, path)
+  }
+  const locations: ConfigLocations = { userFile: join(configHome, brand.directory, "config.json"), projectFile, projectDir: projectFile !== null ? dirname(dirname(projectFile)) : (repoRoot ?? cwd) }
+  const user = read(locations.userFile)
+  const project = locations.projectFile === null ? null : read(locations.projectFile)
   resolveMcpConfig(mergeConfigFiles(user, project).mcp, project?.mcp === undefined ? locations.userFile : locations.projectFile!)
   return {
     ...locations,

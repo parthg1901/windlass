@@ -3109,9 +3109,179 @@ A webhook wake-up fires with the body of the request in its message. The body is
 
 *Model sees next:* u1, a1, msg_wk_5c3a9e21b7d4_1, a2.
 
+### Agents
+
+#### 91. A session starts as a read-only agent, and a write is refused with the reason
+
+The user starts the session as the agent `reviewer`, whose definition allows only tools that read. The definition is read once, when the session is created: `agent.switched` records it right after `session.created` (its instructions, its restrictions, the fingerprint of the file), and the session never reads the file again. The first baseline carries the agent's instructions as its last section, so nothing about this differs in cache terms from a session without an agent, and the tool list is the same as every other session's: every tool stays offered. When the model calls `write`, the loop refuses the call before the approval layer looks at it: `approval.denied` names the agent whose restrictions refused it, and the call's result is the sentence that says so and what to do instead. The model reads it and answers.
+
+*Provider:* step 1 calls write; step 2 answers.
+
+*Engine:* offers .
+
+```
+-- the session is created as the agent, and its first baseline carries the agent's instructions
+  1  session.created
+  2  agent.switched null
+  3  inbox.enqueued u1 steer "Fix the failing test."
+  4  execution.started exe_1
+  5  baseline.set
+  6  inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}
+-- the write is refused with the sentence, and the model answers
+  9  approval.denied a1/call_1 policy
+ 10  tool.settled a1/call_1 error "Not run: you are working as the agent \"reviewer\", which m..."
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "As the reviewer I may not edit files. The expectation sho..."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [write error] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the session is created as the agent, and its first baseline carries the agent's instructions": `agent.switched null` (invalid_transition). The baseline is frozen: from here a switch is announced by an instruction message.
+- after "the session is created as the agent, and its first baseline carries the agent's instructions": `approval.denied a1/call_1 policy` (invalid_transition). A call is refused by the restrictions of the agent the session runs as, and that is the reviewer.
+
+#### 92. The user switches the agent in the middle of a session: an appended message, never a new baseline
+
+The session has run a turn without an agent. The user selects `reviewer`. The baseline is frozen, so nothing is rewritten: when the next turn starts, the switch is appended as an instruction message (source `agent`) that carries the agent's instructions, and `agent.switched` follows it in the same append, naming that message. The next request is the previous one plus that message and the user's: the whole cached prefix is kept. From the switch on every call is checked against the agent's restrictions. Then the user selects `captain`, which names another model and effort: the message says that its instructions replace the reviewer's, and `settings.changed` follows at the same boundary, which is the one thing here that costs the cache (once, as a model change always does). Switching the agent off is a one-line message whose fingerprint is `null`.
+
+*Provider:* turn 1 answers. Turn 2 (as the reviewer): a write, refused, then an answer. Turn 3 (as the captain, on the other model): a write that runs, then an answer. Turn 4 (no agent): an answer.
+
+*Engine:* offers .
+
+```
+-- a turn without an agent
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "The expectation is wrong: 1 + 1 is 2."
+  8  step.ended a1 finish=stop
+  9  execution.succeeded exe_1
+-- the user selected the reviewer: the next turn starts with the message and the record, and a write is refused
+ 10  inbox.enqueued u2 steer "Fix it."
+ 11  execution.started exe_2
+ 12  instruction.appended i1 source=agent "The user switched you to the agent \"reviewer\". From this ..."
+ 13  agent.switched i1
+ 14  inbox.delivered u2
+ 15  step.started a2 attempt=1
+ 16  tool.called a2/call_1 write {"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}
+ 17  approval.denied a2/call_1 policy
+ 18  tool.settled a2/call_1 error "Not run: you are working as the agent \"reviewer\", which m..."
+ 19  step.ended a2 finish=tool_calls
+ 20  step.started a3 attempt=1
+ 21  text.ended a3 "As the reviewer I may not edit files."
+ 22  step.ended a3 finish=stop
+ 23  execution.succeeded exe_2
+-- the user selected the captain, which names another model: the message, the record and the settings change at one boundary
+ 24  inbox.enqueued u3 steer "Then prepare the release."
+ 25  execution.started exe_3
+ 26  instruction.appended i2 source=agent "The user switched you from the agent \"reviewer\" to the ag..."
+ 27  agent.switched i2
+ 28  settings.changed model=gpt-other reasoningEffort=high
+ 29  inbox.delivered u3
+ 30  step.started a4 attempt=1 model=gpt-other
+ 31  tool.called a4/call_1 write {"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}
+ 32  tool.started a4/call_1 effect=write
+ 33  tool.settled a4/call_1 success "Wrote a.test.ts"
+ 34  step.ended a4 finish=tool_calls
+ 35  step.started a5 attempt=1 model=gpt-other
+ 36  text.ended a5 "Fixed the expectation on the release branch."
+ 37  step.ended a5 finish=stop
+ 38  execution.succeeded exe_3
+-- the user switched the agent off: one line, and its restrictions no longer apply
+ 39  inbox.enqueued u4 steer "Thanks."
+ 40  execution.started exe_4
+ 41  instruction.appended i3 source=agent "The user switched off the agent \"captain\". From this poin..."
+ 42  agent.switched i3
+ 43  inbox.delivered u4
+ 44  step.started a6 attempt=1 model=gpt-other
+ 45  text.ended a6 "You are welcome."
+ 46  step.ended a6 finish=stop
+ 47  execution.succeeded exe_4
+```
+
+*UI:* u1 user · a1 completed · i1 instruction · u2 user · a2 completed [write error] · a3 completed · i2 instruction · u3 user · a4 completed [write success] · a5 completed · i3 instruction · u4 user · a6 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, i1, u2, a2, a3, i2, u3, a4, a5, i3, u4, a6.
+
+*The reducer rejects:*
+- after "the user selected the reviewer: the next turn starts with the message and the record, and a write is refused": `baseline.set` (invalid_transition). The baseline is frozen until the next compaction: a switch is appended, never folded in.
+- after "the user selected the reviewer: the next turn starts with the message and the record, and a write is refused": `agent.switched i1` (invalid_transition). A switch follows at once the instruction message that announces it.
+- after "the user switched the agent off: one line, and its restrictions no longer apply": `agent.switched null` (invalid_transition). The baseline is frozen: a switch is announced by an instruction message.
+
+#### 93. A subagent is run as an agent the list of agents names
+
+The `subagent` tool has an optional `agent` argument in every session: its spec is a constant that names no agent, so the tool list never depends on which agents exist. Which ones do is told in a message: a session that is offered `subagent` gets the list of agents (name, a tag for its restrictions, one line of description) appended after its baseline, and again when the list changes. The model runs a subagent as `reviewer`. The name is checked when the call runs (a wrong one is an error result with close names, and starts nothing); `spawn.started` names the agent, and the child session is created as it. The child's result comes back like any subagent's.
+
+*Provider:* step 1 calls subagent with `agent`; the child answers in one step; step 2 answers.
+
+*Engine:* offers .
+
+```
+-- the list of agents is appended after the baseline, and the model delegates to one
+  1  session.created
+  2  inbox.enqueued u1 steer "Have module a reviewed."
+  3  execution.started exe_1
+  4  baseline.set
+  5  instruction.appended i1 source=agent-index "Agents you can run a subagent as:\n<agents lines=\"4\">\nAn a..."
+  6  inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 subagent {"task":"Review module a","agent":"reviewer"}
+  9  tool.started a1/call_1 effect=exec
+ 10  spawn.started bg_1 by a1/call_1 subagent ses_other
+-- the child ends; its answer is the call's result
+ 11  spawn.ended bg_1 completed usage=1000in/50out
+ 12  tool.settled a1/call_1 success "Module a is fine.\n\n[subagent ses_other: finished after 1 ..."
+ 13  step.ended a1 finish=tool_calls
+ 14  step.started a2 attempt=1
+ 15  text.ended a2 "The reviewer found nothing wrong in module a."
+ 16  step.ended a2 finish=stop
+ 17  execution.succeeded exe_1
+```
+
+*UI:* i1 instruction · u1 user · a1 completed [subagent success] · a2 completed. *Claim:* released.
+
+*Model sees next:* i1, u1, a1, a2.
+
+#### 94. The log of a subagent that runs as an agent
+
+The same situation from the child's side. The child is created as the agent: `agent.switched` follows its `session.created` in the same append, and its own fresh baseline carries the agent's instructions. Its restrictions are the agent's combined with its parent's (the stricter of each), and a child started without `agent` by a parent that runs as an agent runs as the parent's agent, so a restricted session cannot get around its restrictions by handing the work to a child. Here the child tries to edit a file: the call is refused with the sentence, in its own log, and it answers. At the depth limit it is not offered `subagent`, so it is not given the list of agents.
+
+*Provider:* the child calls write, which is refused, then answers.
+
+*Engine:* offers .
+
+```
+-- the child is created as the agent, is refused a write, and answers
+  1  session.created subagent of ses_other (bg_1, depth 1) "Review module a"
+  2  agent.switched null
+  3  inbox.enqueued u1 steer "Review module a\n\n(You are a subagent. Another agent gave ..."
+  4  execution.started exe_1
+  5  baseline.set
+  6  inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  tool.called a1/call_1 write {"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}
+  9  approval.denied a1/call_1 policy
+ 10  tool.settled a1/call_1 error "Not run: you are working as the agent \"reviewer\", which m..."
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "Module a is fine."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [write error] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
 ### Forks
 
-#### 91. A fork continues from its parent's history
+#### 95. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 

@@ -23,6 +23,7 @@
  * decoder for the old version, and converting old to new in `decodeEvent`.
  * Adding a value to an enum or adding a new event type needs no version bump.
  */
+import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
 import { approvalMode } from "../approval/policy.ts"
 import { callRun, choiceId, storedEscalation, storedNeed, storedPathFact, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
@@ -159,11 +160,14 @@ export type InstructionFingerprint = Infer<typeof instructionFingerprint>
  * - `memory`: the notes the model holds once the message is in its history,
  *   each by its ID and the hash of the line it was shown as.
  * - `skills`: the skills the index lists, each with the file it comes from.
+ * - `agents`: the agents the list of agents names (source `agent-index`), each
+ *   with the file that defines it.
  */
 export const instructionDetail = variant("kind", {
   mcp: object({ kind: literal("mcp"), servers: array(object({ name: nonEmptyString, tools: integer(0), untrusted: boolean })) }),
   memory: object({ kind: literal("memory"), notes: array(object({ id: nonEmptyString, hash: nonEmptyString })) }),
   skills: object({ kind: literal("skills"), skills: array(object({ name: nonEmptyString, path: nonEmptyString })) }),
+  agents: object({ kind: literal("agents"), agents: array(object({ name: nonEmptyString, path: nonEmptyString })) }),
 })
 export type InstructionDetail = Infer<typeof instructionDetail>
 
@@ -378,6 +382,24 @@ export const durableEvents = {
     1,
     object({ messageId, source: nonEmptyString, text: string, fingerprint: nullable(nonEmptyString), detail: optional(instructionDetail) }),
   ),
+  /**
+   * The agent the session runs as changed: a role kept as a file, with
+   * instructions, restrictions and sometimes a model (`agents/`). `to` is the
+   * definition as it was when it was selected (its instructions, the
+   * restrictions in force, its fingerprint), so the session never reads the
+   * file again; `null` switches the agent off. `from` names the agent before.
+   *
+   * Written in two places. With `messageId: null`, before the session's
+   * first baseline: the session starts as the agent, whose instructions are
+   * then a section of that baseline (a subagent started as an agent, or
+   * under a parent that runs as one, has it from its creation). Otherwise at
+   * a step boundary, right after the `instruction.appended` message (source
+   * `agent`) that gives the model the new instructions, and `messageId` is
+   * that message: the baseline is frozen, so a switch is an appended message.
+   * From this event on every call is checked against `to.restrictions`
+   * before the approval layer decides it.
+   */
+  "agent.switched": define(1, object({ messageId: nullable(messageId), from: nullable(nonEmptyString), to: nullable(agentRecord) })),
 
   // ---- inbox ----
 
@@ -585,7 +607,11 @@ export const durableEvents = {
   /**
    * The call was refused without anyone being asked: by the policy
    * (`policy`), or because it needed approval and nobody was present
-   * (`unattended`; `needs` is what it needed). `stop`: the run ends with it.
+   * (`unattended`; `needs` is what it needed). `agent` is set when the
+   * policy that refused it is the restrictions of the agent the session runs
+   * as, and names that agent: they are checked before the approval layer, so
+   * `paths` is empty (nothing about the call was looked at) and `mode` is
+   * the mode in force then. `stop`: the run ends with it.
    * The call's `tool.settled` follows in the same append, with the text the
    * model sees.
    */
@@ -600,6 +626,7 @@ export const durableEvents = {
       reason: oneOf(["policy", "unattended"]),
       needs: array(storedNeed),
       stop: boolean,
+      agent: optional(nonEmptyString),
     }),
   ),
   /**
@@ -640,7 +667,8 @@ export const durableEvents = {
    * the call returned at once and the result arrives later as a message;
    * otherwise the call itself waits for it (subagents only). A follow-up
    * message to a child that has ended starts new work with a new `spawnId`
-   * for the same child session.
+   * for the same child session. `agent` names the agent a new subagent runs
+   * as, for display; the child's own log has the record.
    */
   "spawn.started": define(
     1,
@@ -651,7 +679,7 @@ export const durableEvents = {
       background: boolean,
       work: variant("kind", {
         command: object({ kind: literal("command"), command: string, logPath: nullable(string) }),
-        subagent: object({ kind: literal("subagent"), sessionId, worktree: nullable(worktreeRecord) }),
+        subagent: object({ kind: literal("subagent"), sessionId, worktree: nullable(worktreeRecord), agent: optional(nonEmptyString) }),
       }),
     }),
   ),

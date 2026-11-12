@@ -149,6 +149,10 @@ export const FAILURE_TEXT = {
   compaction: (reason: string) => `Could not compact the conversation: ${reason}`,
   stepLimitIgnored: "The step limit was reached and the model kept asking for tools.",
   config: (problem: string) => `The configuration could not be loaded: ${problem}`,
+  /** The default agent of the user's configuration cannot be used, so the session does not start without it. */
+  agent: (problem: string) => `The session could not start as its agent: ${problem}`,
+  /** The session's settings name something the model does not offer; nothing was sent. */
+  settings: (problem: string) => `Nothing was sent: ${problem}. Change the settings and send the message again.`,
   internal: (message: string) => `The harness failed: ${message}`,
   /** The run was ended because a call needed approval and nobody was there (`unattended: "stop"`). `refusal` is what the model was told. */
   approvalStop: (refusal: string) => `Stopped: a tool call needed your approval and nobody was there to give it. ${refusal}`,

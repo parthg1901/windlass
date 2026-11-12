@@ -17,3 +17,8 @@ export { type McpServerPlan, type McpServerQuestion, type McpSetup, type McpStat
 export { type SkillsSetup } from "./skills.ts"
 export { type WakeApi, type WakeSetup } from "./wake.ts"
 export { type MemorySetup } from "./memory.ts"
+export { type AgentListing, type AgentsSetup } from "./agents.ts"
+export { type AgentRecord } from "../agents/use.ts"
+export { type AgentDefinition, type AgentProblem } from "../agents/discover.ts"
+export { type AgentRestrictions, NO_AGENT } from "../agents/definition.ts"
+export { describeRestrictions, restrictionTag } from "../agents/restrictions.ts"

@@ -92,6 +92,8 @@ export interface FeatureSetting {
   readonly wake?: boolean
   /** The real `todo` tool is among the session's tools (the scenarios' other tools are stand-ins). */
   readonly todo?: boolean
+  /** The project has agent definitions (`.claude/agents/`), and the engine offers agents. */
+  readonly agents?: boolean
 }
 
 export interface SpawnSetting {

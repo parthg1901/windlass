@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import { ConfigError, findConfigFiles, loadConfig, mergeConfigFiles, parseConfigFile, resolveConfig } from "../../src/config/index.ts"
+import { loadConfigSync } from "../../src/config/load.ts"
 
 const created: string[] = []
 afterEach(() => {
@@ -263,5 +264,29 @@ describe("the sections of other modules", () => {
     write(userFile, {})
     write(projectFile(repo), { mcp: { servers: { broken: { timeoutSeconds: 5 } } } })
     expect(loadConfig({ cwd: repo, home, env: {} })).rejects.toThrow(`${projectFile(repo)}: mcp.servers.broken: needs \`command\``)
+  })
+})
+
+describe("the agents section, and loading without waiting", () => {
+  test("agents is accepted and validated by its own module, and is not part of the merged configuration", () => {
+    const file = parseConfigFile(JSON.stringify({ agents: { paths: ["~/team-agents"], disabled: ["old"], default: "reviewer" } }), "f.json")
+    expect(file.agents).toEqual({ paths: ["~/team-agents"], disabled: ["old"], default: "reviewer" })
+    expect(Object.keys(resolveConfig(file)).sort()).toEqual(["checks", "effort", "model", "verify"])
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ agents: { defualt: "x" } }), "f.json")).message).toStartWith('f.json: agents.defualt: unknown key "defualt"')
+    expect(errorOf(() => parseConfigFile(JSON.stringify({ agents: { paths: ["team"] } }), "f.json")).message).toStartWith("f.json: agents.paths[0]: expected an absolute path or one starting with ~/")
+  })
+
+  test("loadConfigSync reads what loadConfig reads: the same files, the same result, the same errors", async () => {
+    const { home, repo, userFile } = layout()
+    const inside = join(repo, "packages", "app", "src")
+    for (const cwd of [repo, inside, home]) expect(loadConfigSync({ cwd, home, env: {} })).toEqual(await loadConfig({ cwd, home, env: {} }))
+    write(userFile, { model: "gpt-a", approval: { mode: "ask" }, agents: { default: "reviewer" }, checks: [{ name: "test", command: "bun test" }] })
+    write(projectFile(repo), { effort: "low", approval: { mode: "full" }, skills: { disabled: ["x"] } })
+    for (const cwd of [repo, inside, home]) expect(loadConfigSync({ cwd, home, env: {} })).toEqual(await loadConfig({ cwd, home, env: {} }))
+    expect(loadConfigSync({ cwd: inside, home, env: {} })).toMatchObject({ projectDir: repo, approval: { user: { mode: "ask" }, project: { mode: "full" } }, files: { user: { agents: { default: "reviewer" } } } })
+    expect(loadConfigSync({ cwd: repo, home, env: { XDG_CONFIG_HOME: join(home, "xdg") } }).files.user).toBeNull()
+    write(projectFile(repo), "{ not json")
+    const asynchronous = await loadConfig({ cwd: repo, home, env: {} }).catch((error: unknown) => error as ConfigError)
+    expect(errorOf(() => loadConfigSync({ cwd: repo, home, env: {} })).message).toBe((asynchronous as ConfigError).message)
   })
 })

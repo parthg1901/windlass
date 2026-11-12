@@ -6,6 +6,7 @@
  * Every type here is declared as a validator, because projection rows are
  * also read back from SQLite JSON.
  */
+import { agentRecord } from "../agents/use.ts"
 import { grant } from "../approval/grants.ts"
 import { choiceId, storedNeed, storedQuestion, storedRunDecision, storedTaintSource } from "../approval/record.ts"
 import { blobRef, content } from "../content.ts"
@@ -125,7 +126,8 @@ export const callApproval = variant("kind", {
     then: storedRunDecision,
     answer: nullable(object({ seq: integer(1), choice: choiceId, approve: boolean, note: nullable(string) })),
   }),
-  denied: object({ kind: literal("denied"), seq: integer(1), reason: oneOf(["policy", "unattended"]), stop: boolean }),
+  /** `agent`: the agent whose restrictions refused the call, when it was those and not the approval policy. */
+  denied: object({ kind: literal("denied"), seq: integer(1), reason: oneOf(["policy", "unattended"]), stop: boolean, agent: optional(nonEmptyString) }),
 })
 export type CallApproval = Infer<typeof callApproval>
 
@@ -446,6 +448,13 @@ export const sessionState = object({
       usage: nullable(usage),
     }),
   ),
+  /**
+   * The agent the session runs as (`agent.switched`): the definition as it
+   * was when it was selected, with the restrictions every call is checked
+   * against. `null` after it was switched off; absent for a session that
+   * never ran as one. A fork inherits it with the history.
+   */
+  agent: optional(nullable(agentRecord)),
   /**
    * Set for a replay session: the copy of the workspace it carries on in once
    * it left the recording (`replay.diverged`), and how it ended.

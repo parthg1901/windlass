@@ -179,7 +179,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
                 () => false,
               ),
             // What a model name is checked against. A provider of the caller's has no listing, so nothing is checked.
-            listModels: () => listModels({ accessToken }).then((models) => models.map((model) => model.slug)),
+            // What a model name and a reasoning effort are checked against, before a session is created with them and before a request is sent.
+            listModels: () => listModels({ accessToken }).then((models) => models.map((model) => ({ id: model.slug, efforts: model.reasoningEfforts }))),
           }
         : {}),
       log,
@@ -197,6 +198,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       ...(options.engine?.wake === undefined ? { wake: {} } : {}),
       // Memory is behind its flag: the engine can offer it, and a session gets it only when `memory.enabled` is on.
       ...(options.engine?.memory === undefined ? { memory: {} } : {}),
+      // Agents: a session can start as one, switch to one, and run a subagent as one. `null` builds a harness without them.
+      ...(options.engine?.agents === undefined ? { agents: {} } : {}),
       store: sessions,
       provider,
       tools: options.tools ?? createStandardTools({ spillDir, shell: { sandbox } }),
