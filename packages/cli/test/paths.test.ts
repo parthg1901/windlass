@@ -414,7 +414,7 @@ describe("the interactive mode, every path", () => {
     expect(shown.steps).toBe(8)
     expect(shown.code).toBe(0)
     expect(shown.out).toContain("also check b")
-    expect(shown.out).toContain("you edited 1 file by hand since the turn: notes.md")
+    expect(shown.out.replace(/\n\s+/g, " ")).toContain("1 file changed outside this session since the turn (by you, another program or another session): notes.md")
     expect(shown.out).toContain('↷ redone: turn 2 "then the docs"')
     // /redo brings back the workspace as it was right before the /undo: the hand edit.
     expect(shown.notes).toBe("# Notes\n\nmine\n")
