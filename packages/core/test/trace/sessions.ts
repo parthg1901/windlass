@@ -326,6 +326,37 @@ export const SCRIPTS: readonly TraceScript[] = [
     },
   },
   {
+    // What changes during a session without ever being in the baseline: the skill index (given, replaced,
+    // withdrawn), the MCP catalogue of a server that connected late, and a wake-up's firing admitted under its own
+    // ID. Each is an appended message, so every request extends the one before.
+    name: "skills, an MCP catalogue and a wake-up appended",
+    clean: true,
+    breaks: {},
+    intentional: {},
+    run(loop) {
+      opening(loop)
+      loop.add(enqueue("u1", "Which skills do you have?"), executionStarted("exe_1"), instruction("i1", "skills", "Skills you can load:\n- release: How to cut a release."), deliver("u1"))
+      loop.start("a1")
+      loop.read("a1", "call_1", "RELEASING.md", "Tag, then push the tag.")
+      loop.add(stepEnded("a1", "tool_calls"))
+      // The server connected while the tool ran; a skill was edited.
+      loop.add(
+        instruction("i2", "skills", "The skills have changed. This list replaces the one you were given before:\n- release: How to cut a release, step by step."),
+        instruction("i3", "mcp", "MCP tools are available:\nfx (1 tool):\n- echo: Echo the text back."),
+      )
+      loop.start("a2")
+      loop.add(textEnded("a2", "One skill, release, and one MCP tool."), stepEnded("a2"), executionSucceeded("exe_1"))
+      // Idle. A wake-up fires: admitted under its own ID, it starts a turn; the skill is gone by then.
+      loop.add(
+        enqueue("msg_wk_5c3a9e21b7d4_1", "[Wake-up wk_5c3a9e21b7d4 · after 5m]\nLook at the build.", "queue", "wake"),
+        executionStarted("exe_2"),
+        event("instruction.appended", { messageId: "i4" as MessageId, source: "skills", text: "There are no skills any more. Disregard the list of skills you were given before.", fingerprint: null }),
+        deliver("msg_wk_5c3a9e21b7d4_1"),
+      )
+      loop.answer("2", "a3", "The build is green.")
+    },
+  },
+  {
     name: "compaction",
     clean: false,
     // Call 0 and 1 are the two turns, 2 is the compaction call (nothing is kept, so it extends call 1), 3 follows the compaction.
