@@ -85,6 +85,18 @@ async function command(text: string) {
 }
 
 describe("a project's hook", () => {
+  test("the question in the dock's title is whole at 100 columns: it wraps under itself", async () => {
+    const { session } = await open(100, 40)
+    mounted!.clock.now += QUIET_MS + 10
+    session.pushHooks(hooks(session.id, [hook("exit 0", "a".repeat(64))]))
+    await mounted!.settle()
+    const rows = (await mounted!.frame()).split("\n")
+    const at = rows.findIndex((row) => row.startsWith("─ ? This project's configuration asks to run a hook"))
+    expect(at).toBeGreaterThan(-1)
+    expect(rows[at]).not.toContain("…")
+    expect(rows[at + 1]).toMatch(/^ {4}\S.*the call:$/)
+  })
+
   test("waits in the dock with the engine's question; `a` allows it; an edited one is asked about again; /hooks lists them", async () => {
     const { session } = await open()
     const approved: string[] = []

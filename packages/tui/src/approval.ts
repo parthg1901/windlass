@@ -134,7 +134,7 @@ export function commandLines(state: DockState, columns: number): Span[][] {
 
 /** The lines of the dock that are always there besides the subject: its title, the choices (or the note), and the keys. */
 function fixedRows(state: DockState, columns: number): number {
-  return 1 + choiceLines(state, columns).length + 1
+  return headLines(state, columns).length + choiceLines(state, columns).length + 1
 }
 
 /**
@@ -171,11 +171,7 @@ function choiceLines(state: DockState, columns: number): Span[][] {
 export function dockLines(state: DockState, columns: number, rows: number, now: number, idle = false): Span[][] {
   const ask = state.ask
   const question = ask.question
-  // A subagent's question says which one asks: the first line of its task.
-  const who = ask.subagent === null ? "" : ` subagent: ${truncate(sanitize(ask.subagent), Math.max(12, Math.floor(columns / 3)))} `
-  const title = truncate(sanitize(question.title), Math.max(10, columns - 6 - textWidth(who)))
-  const rule = Math.max(0, columns - 4 - textWidth(title) - textWidth(who))
-  const head: Span[] = [span("─ ", "warn"), span("? ", "warn", { bold: true }), span(title, undefined, { bold: true }), span(` ${"─".repeat(Math.max(0, rule - 1))}`, "warn"), span(who, "accent", { bold: true })]
+  const head = headLines(state, columns)
 
   const subject = sanitize(question.subject)
     .split("\n")
@@ -210,12 +206,35 @@ export function dockLines(state: DockState, columns: number, rows: number, now: 
       : [span("  Tab", "warn", { bold: true }), span(columns < 80 ? " answers it · your message stays" : ` answers the question · your message stays as it is${idle ? "" : " · Ctrl-C stops the turn"}`, "warn")]
 
   // Never more than `rows`: the details go first, then the why and how, never the title, the subject or the choices.
-  const fixed = 1 + what.length + choices.length + 1
+  const fixed = head.length + what.length + choices.length + 1
   const room = Math.max(0, rows - fixed)
   const optional = [...why, ...runLine, ...details]
   const body = optional.slice(0, room)
   if (body.length < optional.length && room > 0) body[body.length - 1] = [span(`  … ${plural(optional.length - body.length + 1, "more line")} (a wider or taller terminal shows them)`, "dim")]
-  return [head, ...what, ...body, ...choices, footer].map((line) => clip(line, columns)).slice(0, Math.max(1, rows))
+  return [...head, ...what, ...body, ...choices, footer].map((line) => clip(line, columns)).slice(0, Math.max(1, rows))
+}
+
+/** The most rows the question's title takes: a longer one is cut on its last row. */
+const TITLE_ROWS = 3
+
+/**
+ * The dock's first rows: the question, on the rule that opens the dock, and
+ * when it is longer than the row, wrapped under itself (the question is what
+ * is answered, so it is not cut while it fits in three rows).
+ */
+function headLines(state: DockState, columns: number): Span[][] {
+  const ask = state.ask
+  // A subagent's question says which one asks: the first line of its task.
+  const who = ask.subagent === null ? "" : ` subagent: ${truncate(sanitize(ask.subagent), Math.max(12, Math.floor(columns / 3)))} `
+  const room = Math.max(10, columns - 6 - textWidth(who))
+  const wrapped = wrapLine([span(sanitize(ask.question.title))], room).map((row) => row.map((part) => part.text).join(""))
+  const rows = wrapped.length <= TITLE_ROWS ? wrapped : [...wrapped.slice(0, TITLE_ROWS - 1), truncate(wrapped.slice(TITLE_ROWS - 1).join(" "), room)]
+  const first = rows[0] ?? ""
+  const rule = Math.max(0, columns - 4 - textWidth(first) - textWidth(who))
+  return [
+    [span("─ ", "warn"), span("? ", "warn", { bold: true }), span(first, undefined, { bold: true }), span(` ${"─".repeat(Math.max(0, rule - 1))}`, "warn"), span(who, "accent", { bold: true })],
+    ...rows.slice(1).map((row) => [span("    "), span(row, undefined, { bold: true })]),
+  ]
 }
 
 function runsText(then: { readonly network: boolean; readonly writableRoots: readonly string[] }): Span[] {
