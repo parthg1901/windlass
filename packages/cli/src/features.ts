@@ -27,6 +27,12 @@ export interface Line {
    * interface, so that it can be read to its end and copied in one piece.
    */
   readonly path?: boolean
+  /**
+   * The column, counted from the line's own indentation, where its second
+   * part starts (a description after a padded label): rows that continue it
+   * start there too, so a wrapped description stays in its column.
+   */
+  readonly hang?: number
 }
 
 /** A command the user is asked about, as a line of its own: whole and word for word. */

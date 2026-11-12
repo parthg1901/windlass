@@ -110,7 +110,7 @@ export function helpLines(sources: readonly CommandSource[] = [BUILTIN_COMMANDS]
     const labels = commands.map((command) => `/${command.name}${command.args === "" ? "" : ` ${command.args}`}${command.aliases === undefined ? "" : ` (${command.aliases.map((alias) => `/${alias}`).join(", ")})`}`)
     const width = Math.max(...labels.map((label) => label.length))
     commands.forEach((command, index) => {
-      lines.push(say(`${labels[index]!.padEnd(width)}  ${command.description}${command.when === "idle" ? " (while the agent is idle)" : ""}`, 2))
+      lines.push({ ...say(`${labels[index]!.padEnd(width)}  ${command.description}${command.when === "idle" ? " (while the agent is idle)" : ""}`, 2), hang: width + 2 })
       // The file on a line of its own: a path is for opening, and is never cut.
       if (command.file !== undefined) lines.push(say(`${COMMAND_SCOPE[command.file.scope]}${command.file.agent === null ? "" : ` · runs as the agent ${command.file.agent}`}:`, 6), { text: command.file.path, tone: "dim", indent: 6, path: true })
     })

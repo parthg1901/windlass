@@ -13,6 +13,7 @@ import { FakeProvider, script } from "@windlass/core/testing"
 import { m, opening } from "@windlass/core/testing/scenarios"
 import type { CommandsResult } from "@windlass/acp/extensions"
 import { BUILTIN_COMMANDS, clientCommands, commandSent, helpLines, lookup, unknownCommandText, unusableCommandLines, userCommands } from "../src/slash.ts"
+import { PrettyRenderer } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
 import { typedSessions } from "./typed.ts"
 
@@ -72,6 +73,16 @@ describe("looking a typed entry up", () => {
       "      /home/u/.config/x/commands/release-notes.md",
     ])
     expect(lines.filter((line) => line.path === true).map((line) => line.text)).toEqual(["/w/.claude/commands/frontend/test.md", "/home/u/.config/x/commands/release-notes.md"])
+    // A description that does not fit the terminal continues in its own column, under its first row.
+    let out = ""
+    new PrettyRenderer({ write: (written) => (out += written), color: false, columns: () => 90, live: false, showReasoning: false, echoPrompts: false }).printLines(lines)
+    const rows = out.split("\n")
+    const first = rows.findIndex((row) => row.startsWith("  /undo "))
+    const column = rows[first]!.indexOf("go back to before your last message")
+    expect(column).toBeGreaterThan("  /undo ".length)
+    expect(rows[first + 1]).toMatch(new RegExp(`^ {${column}}\\S`))
+    expect(`${rows[first]!.slice(column)} ${rows[first + 1]!.trim()} ${rows[first + 2]!.trim()}`).toBe("go back to before your last message: the files and the conversation (while the agent is idle)")
+    for (const row of rows) expect(row.length, row).toBeLessThanOrEqual(90)
     // A file the CLI's own command hides is not offered as a command.
     expect(text.some((line) => line.includes("A file the CLI's own command hides"))).toBe(false)
   })

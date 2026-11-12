@@ -249,8 +249,11 @@ export class PrettyRenderer implements Sink {
         this.uncut("info", displayWidth(item.text) <= room ? `${indent}${item.text}` : item.text, tone)
         continue
       }
+      // A label and its description: the description wraps in its own column, when the terminal leaves it room.
+      const hang = item.hang !== undefined && room - item.hang >= 24 ? item.hang : 0
+      const flat = flatten(item.text)
       if (item.verbatim === true) for (const text of hardWrap(sanitize(item.text), room)) this.line("info", [seg(`${indent}${text}`, tone)])
-      else this.whole(flatten(item.text), room, (text) => this.line("info", [seg(`${indent}${text}`, tone)]), tone)
+      else this.whole(flat.slice(hang), room - hang, (text, index) => this.line("info", [seg(`${indent}${index === 0 ? flat.slice(0, hang) : " ".repeat(hang)}${text}`, tone)]), tone)
     }
     this.drawStatus()
   }
