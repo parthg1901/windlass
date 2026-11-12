@@ -618,7 +618,7 @@ is a new version with a decoder for the old one.
   names the messages before and after. Reverted and refused messages are never returned, and a checkpoint is not
   searched. Their output goes through the tool runtime's one cap like any tool's. They see what the model was
   shown: a tool output that was capped when it ran is stored capped, with the path of the full output.
-- *The context window in tests.* `LIGHT_HARNESS_TEST_CONTEXT_WINDOW` (the name is built from `brand`) lowers the
+- *The context window in tests.* `LH_TEST_CONTEXT_WINDOW` (the name is built from `brand`) lowers the
   window `createHarness` hands the engine, so an evaluation run compacts after tens of thousands of tokens. It can
   only lower it, the harness says so on its log, and no configuration file has a key for it.
 - A diagnostic about a session (a prefix violation, an internal error, a tool that threw) is said once: as an

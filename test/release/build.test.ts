@@ -1,9 +1,10 @@
 /** The build script's pure parts and the version string. Nothing here builds: see `binary.test.ts` for the executable. */
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import workspace from "../../package.json" with { type: "json" }
+import cli from "../../packages/cli/package.json" with { type: "json" }
 import { brand } from "../../packages/core/src/brand.ts"
 import { platformString, userAgent, versionLine, versionString } from "../../packages/core/src/version.ts"
 import { selfCommand } from "../../packages/cli/src/self.ts"
@@ -25,6 +26,10 @@ describe("the version", () => {
 
   test("the provider's user agent carries the same version", () => {
     expect(userAgent()).toBe(`${brand.name}/${versionString()} (${process.platform}; ${process.arch})`)
+  })
+
+  test("the CLI package's bin map is the binary and each alias, all the same entry point", () => {
+    expect(cli.bin as Record<string, string>).toEqual(Object.fromEntries([brand.binary, ...brand.aliases].map((name) => [name, "./src/main.ts"])))
   })
 
   test("from source the program starts its server child as Bun running main.ts", () => {
@@ -106,6 +111,39 @@ describe("the build script", () => {
     expect(resolved["true:@opentui/core-darwin-arm64"]).toEqual({ path: "@opentui/core-darwin-arm64", namespace: "absent-native" })
     const stampLoad = loads.find((item) => item.filter.test("/x/packages/core/src/build-stamp.ts"))
     expect(stampLoad?.load({ path: "" })).toEqual({ contents: stampModule({ ...stamp, tui: true }), loader: "ts" })
+  })
+
+  test("the install script installs the binary, links each alias the build recorded to it, and removes both", async () => {
+    // A stand-in executable with a build record beside it: the script takes every name from these two.
+    const dir = mkdtempSync(join(tmpdir(), "release-install-"))
+    const bin = join(dir, "bin")
+    const exe = join(dir, `${brand.binary}-${platformString()}`)
+    await Bun.write(exe, "#!/bin/sh\necho stand-in 1.0\n")
+    Bun.spawnSync(["chmod", "755", exe])
+    await Bun.write(join(dir, "build-info.json"), `${JSON.stringify({ binary: brand.binary, aliases: ["short", "other"], builds: [] }, null, 2)}\n`)
+    mkdirSync(bin)
+    await Bun.write(join(bin, "other"), "someone else's program\n")
+    const install = (...args: string[]) => {
+      const result = Bun.spawnSync(["sh", join(ROOT, "scripts/install.sh"), ...args, "--bin-dir", bin, "--no-profile"], { env: { HOME: dir, PATH: `${bin}:/usr/bin:/bin` }, stdout: "pipe", stderr: "pipe" })
+      return { code: result.exitCode, out: result.stdout.toString() }
+    }
+    try {
+      const installed = install(exe)
+      expect(installed.code).toBe(0)
+      expect(installed.out).toContain(`installed ${join(bin, brand.binary)}: stand-in 1.0\n`)
+      expect(lstatSync(join(bin, "short")).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(join(bin, "short"))).toBe(brand.binary)
+      expect(Bun.spawnSync([join(bin, "short")]).stdout.toString()).toBe("stand-in 1.0\n")
+      // A file of that name that is not a link stays as it is.
+      expect(installed.out).toContain(`not linked: ${join(bin, "other")} exists and is not a link`)
+      expect(await Bun.file(join(bin, "other")).text()).toBe("someone else's program\n")
+      const removed = install(exe, "--uninstall")
+      expect(removed.code).toBe(0)
+      expect(existsSync(join(bin, brand.binary)) || existsSync(join(bin, "short"))).toBe(false)
+      expect(existsSync(join(bin, "other"))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test("git state: a commit and a dirty flag", () => {

@@ -9,6 +9,7 @@
  *
  * Nothing here reads the clock or the disk, so the hashes are the same on every run.
  */
+import { brand } from "../packages/core/src/brand.ts"
 import { text } from "../packages/core/src/content.ts"
 import { type NewEvent, type StoredEvent, event } from "../packages/core/src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, SessionId } from "../packages/core/src/id.ts"
@@ -151,7 +152,7 @@ function send(title: string) {
 
 // ---- the session ----
 
-console.log("light-harness request demo")
+console.log(`${brand.name} request demo`)
 console.log("A request is a list of blocks: params, each tool, the instructions, each input item.")
 console.log("The provider's cache reads a request cheaply only if it is the previous request plus appended blocks.")
 console.log("Marks: = unchanged   + appended   ! the first block that differs   ~ after it, so no longer cached")

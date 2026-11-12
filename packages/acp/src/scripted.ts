@@ -16,7 +16,7 @@
 import { brand } from "@light-harness/core"
 import { FakeProvider, type ScriptItem, script } from "@light-harness/core/testing"
 
-export const SCRIPT_ENV = `${brand.binary.toUpperCase()}_ACP_SCRIPT`
+export const SCRIPT_ENV = `${brand.envPrefix}ACP_SCRIPT`
 
 type RawItem = Record<string, unknown>
 

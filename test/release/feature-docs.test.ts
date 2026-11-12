@@ -237,7 +237,7 @@ describe("wake-ups against the code", () => {
   test("the section on where wake-ups fire is still true (WAKE-UPS-FIRE)", () => {
     expect(page).toContain("<!-- WAKE-UPS-FIRE:")
     expect(page).toContain("**Wake-ups fire while a server process of the program runs**")
-    expect(page).toContain("`LH_WAKE=off`".replace("LH", brand.binary.toUpperCase()))
+    expect(page).toContain(`\`${brand.envPrefix}WAKE=off\``)
     // The scheduler runs only where an engine is created with `wake: { run: true }`: the stdio server, unless its
     // switch says off. When another entry point starts it, or this one stops, docs/wake-ups.md must say so.
     const runs = (file: string) => /wake\s*:\s*\{[^}]*run\s*:\s*true/.test(withoutComments(readFileSync(file, "utf8")))

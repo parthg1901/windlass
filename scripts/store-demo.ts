@@ -8,6 +8,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
 import { type NewEvent, event } from "../packages/core/src/event/durable.ts"
 import type { CallId, ExecutionId, MessageId, RequestId, SessionId } from "../packages/core/src/id.ts"
 import type { Message } from "../packages/core/src/message/message.ts"
@@ -20,7 +21,7 @@ const c = (id: string) => id as CallId
 const sessionId = "ses_demo" as SessionId
 const usage = { inputTokens: 1800, cachedInputTokens: 1536, outputTokens: 120, reasoningTokens: 40 }
 
-const directory = mkdtempSync(join(tmpdir(), "light-harness-demo-"))
+const directory = mkdtempSync(join(tmpdir(), `${brand.directory}-demo-`))
 const path = join(directory, "sessions.db")
 console.log(`Database: ${path} (temporary, removed at exit)\n`)
 

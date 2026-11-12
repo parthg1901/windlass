@@ -598,7 +598,7 @@ describe("compaction on the real assembly", () => {
   const big = registry(0)
 
   test("the test setting lowers the context window, says so, and is not a configuration key", () => {
-    expect(TEST_CONTEXT_WINDOW_ENV).toBe("LIGHT_HARNESS_TEST_CONTEXT_WINDOW")
+    expect(TEST_CONTEXT_WINDOW_ENV).toBe("LH_TEST_CONTEXT_WINDOW")
     expect(testContextWindow({ [TEST_CONTEXT_WINDOW_ENV]: "40000" })).toBe(40_000)
     // Only a whole number of tokens is a setting; anything else is not one, and without it nothing is lowered.
     for (const value of ["", "0", "-5", "40k", "4e4", "40000.5", " "]) expect(testContextWindow({ [TEST_CONTEXT_WINDOW_ENV]: value })).toBeNull()

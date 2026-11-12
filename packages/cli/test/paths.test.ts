@@ -392,7 +392,9 @@ describe("the interactive mode, every path", () => {
       let next = 0
       const run = await cli(at, [], {
         stdinTTY: true,
-        terminal: 100,
+        // Wide enough for the line that names the session on leaving (two IDs, the binary twice), so that it is not
+        // wrapped inside an ID, where the IDs could not be told apart from the rest.
+        terminal: 120,
         keys: (typer) => {
           type = typer
         },

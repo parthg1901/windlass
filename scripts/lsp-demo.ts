@@ -12,13 +12,14 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
 import { type LspConfigSection, planLspServers } from "../packages/core/src/lsp/config.ts"
 import { type DiagnoseResult, type LspNotice, createLspRegistry } from "../packages/core/src/lsp/registry.ts"
 
 const fixture = join(import.meta.dir, "../packages/core/test/lsp/fixtures/server.ts")
 const scripted = (...flags: string[]) => ({ command: process.execPath, args: [fixture, ...flags], languages: { plaintext: ["**/*.txt"] } })
 const rule = (title: string) => console.log(`\n${"=".repeat(8)} ${title} ${"=".repeat(Math.max(0, 70 - title.length))}`)
-const scratch = realpathSync(mkdtempSync(join(tmpdir(), "lh-lsp-demo-")))
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), `${brand.binary}-lsp-demo-`)))
 
 const TEXT_BEFORE = ["let unused = WARN(unused)", "call(ERROR(old))", "end"].join("\n")
 const TEXT_AFTER = ["// a line added above", "let unused = WARN(unused)", "call(ERROR(old))", "fresh(ERROR(fetchUser))", "end"].join("\n")

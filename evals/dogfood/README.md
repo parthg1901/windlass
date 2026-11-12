@@ -114,7 +114,7 @@ tmux server. Wait for the line interface's first `›` before typing: text typed
 prompt and looks sent (task 21).
 
 11. **Compaction across turns** (clean, one-shot, with the test context window set to 20000: the variable's name is
-    `TEST_CONTEXT_WINDOW_ENV` in `packages/core/src/assembly.ts`, built from `brand.directory`). Four `-c` turns: `"Remember the codeword PELICAN-42;
+    `TEST_CONTEXT_WINDOW_ENV` in `packages/core/src/assembly.ts`, built from `brand.envPrefix`). Four `-c` turns: `"Remember the codeword PELICAN-42;
     I will ask for it later. Now read src/usage.ts and tell me in two sentences what normalizeUsage does. Change
     nothing."`, then read `src/analyze.ts`, then `src/cli.ts` (this one compacts: `⇣ compacted the conversation ·
     about 12,185 → 5,499 tokens`), then `"What was the codeword I gave you at the very start, and on what line of

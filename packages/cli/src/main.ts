@@ -78,7 +78,7 @@ export const DOUBLE_INTERRUPT_MS = 2000
 export const EXIT = { usage: 2, interrupted: 130, outputClosed: 141, terminated: 143 } as const
 
 /** Names a file the fake engine appends `close` and `closed` to; for tests of the exit paths. */
-export const DEMO_TRACE_ENV = `${brand.binary.toUpperCase()}_DEMO_TRACE`
+export const DEMO_TRACE_ENV = `${brand.envPrefix}DEMO_TRACE`
 
 const STEER_HINT = "type to steer · /queue <message> for after this turn"
 
@@ -157,7 +157,7 @@ export async function run(io: Io): Promise<number> {
     return engine === null ? EXIT.usage : listing(io, engine, parsed.what, options, cwd)
   }
   // The TUI is opt-in until it becomes the default: `lh tui`, or `LH_TUI=1` for an interactive `lh` with no prompt.
-  const tuiByDefault = parsed.kind === "run" && options.prompt === null && !options.interactive && options.output === "pretty" && io.stdin.isTTY && io.stdout.isTTY && io.env[`${brand.binary.toUpperCase()}_TUI`] === "1"
+  const tuiByDefault = parsed.kind === "run" && options.prompt === null && !options.interactive && options.output === "pretty" && io.stdin.isTTY && io.stdout.isTTY && io.env[`${brand.envPrefix}TUI`] === "1"
   if (parsed.kind === "tui" || tuiByDefault) return tui(io, options, demo, cwd)
 
   const prompt = options.prompt ?? (io.stdin.isTTY || demo !== null ? null : (await io.stdin.readAll()).trim())
@@ -301,7 +301,7 @@ async function tui(io: Io, options: Options, demo: DemoScenario | null, cwd: str
 }
 
 /** The server's switch for firing wake-ups (`WAKE_ENV` in the ACP package, which this process loads only to serve). */
-const WAKE_ENV = `${brand.binary.toUpperCase()}_WAKE`
+const WAKE_ENV = `${brand.envPrefix}WAKE`
 
 /**
  * The engine for this run, or `null` after saying why there is none. Only a run someone sits in front of

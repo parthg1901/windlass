@@ -17,7 +17,7 @@ export interface Logger {
 const RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 }
 
 /** The environment variable that sets the level: `debug`, `info` (default), `warn` or `error`. */
-export const LOG_LEVEL_ENV = `${brand.binary.toUpperCase()}_ACP_LOG`
+export const LOG_LEVEL_ENV = `${brand.envPrefix}ACP_LOG`
 
 export function createLogger(options: { readonly level?: LogLevel; readonly write?: (line: string) => void } = {}): Logger {
   const threshold = RANK[options.level ?? "info"]

@@ -23,6 +23,7 @@ import { mkdtempSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type SessionNotification, client, methods, ndJsonStream } from "@agentclientprotocol/sdk"
+import { brand } from "@light-harness/core"
 import { EXT } from "../src/extensions.ts"
 
 const MAIN = join(import.meta.dir, "..", "..", "cli", "src", "main.ts")
@@ -30,7 +31,7 @@ const args = parseArgs(process.argv.slice(2))
 const dim = (text: string) => (process.stdout.isTTY ? `\x1b[2m${text}\x1b[0m` : text)
 const bold = (text: string) => (process.stdout.isTTY ? `\x1b[1m${text}\x1b[0m` : text)
 
-const workspace = args.workspace ?? realpathSync(mkdtempSync(join(tmpdir(), "lh-try-")))
+const workspace = args.workspace ?? realpathSync(mkdtempSync(join(tmpdir(), `${brand.binary}-try-`)))
 if (args.setup === "failing-test") await setupFailingTest(workspace)
 say(`workspace: ${workspace}`)
 

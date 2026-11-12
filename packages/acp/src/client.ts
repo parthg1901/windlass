@@ -842,7 +842,7 @@ export class HarnessClient {
 function childTransport(transport: Extract<Transport, { kind: "child" }>, log: ConnectOptions["log"]): Transported {
   const env = transport.env
   // Only what the user should see, unless asked for more: the server's warnings and errors.
-  const level = `${brand.binary.toUpperCase()}_ACP_LOG`
+  const level = `${brand.envPrefix}ACP_LOG`
   const child = Bun.spawn([...transport.command], {
     stdin: "pipe",
     stdout: "pipe",

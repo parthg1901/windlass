@@ -42,7 +42,7 @@ export const SPILL_DIRECTORY = "spill"
  * the window, the harness says so on its log when it is set, and no
  * configuration file has a key for it.
  */
-export const TEST_CONTEXT_WINDOW_ENV = `${brand.directory.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_TEST_CONTEXT_WINDOW`
+export const TEST_CONTEXT_WINDOW_ENV = `${brand.envPrefix}TEST_CONTEXT_WINDOW`
 
 /** The window `TEST_CONTEXT_WINDOW_ENV` asks for, or `null` when it is not set to a whole number of tokens. */
 export function testContextWindow(env: Record<string, string | undefined> = process.env): number | null {

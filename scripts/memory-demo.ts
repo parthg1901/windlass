@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadResults } from "../evals/baseline.ts"
+import { brand } from "../packages/core/src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../packages/core/src/id.ts"
 import { createInterrupt } from "../packages/core/src/interrupt.ts"
 import { compareMemory, formatComparison } from "../evals/memory-compare.ts"
@@ -25,7 +26,7 @@ import type { DeliveredRecord } from "../packages/core/src/memory/usage.ts"
 import { createToolRuntime } from "../packages/core/src/tool/runtime.ts"
 import { noBlobStore } from "../packages/core/src/tool/tool.ts"
 
-const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-memory-demo-")))
+const base = realpathSync(mkdtempSync(join(tmpdir(), `${brand.binary}-memory-demo-`)))
 const projectDir = join(base, "shop-api")
 mkdirSync(projectDir)
 let now = new Date("2026-11-12T09:00:00Z")

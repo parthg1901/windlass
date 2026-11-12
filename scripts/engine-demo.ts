@@ -20,6 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { accessToken } from "../packages/core/src/auth/chatgpt.ts"
+import { brand } from "../packages/core/src/brand.ts"
 import { type EngineEvent, type Provider, OpenAIResponsesProvider, createEngine, createStandardTools, openSqliteStore } from "../packages/core/src/index.ts"
 import { FakeProvider, script } from "../packages/core/src/testing/fake-provider.ts"
 
@@ -80,7 +81,7 @@ function describe(item: EngineEvent): string | null {
 }
 
 async function run(title: string, provider: Provider, options: { cwd: string; model: string; effort: string | null; prompt: string; maxSteps: number }) {
-  const directory = mkdtempSync(join(tmpdir(), "lh-engine-demo-"))
+  const directory = mkdtempSync(join(tmpdir(), `${brand.binary}-engine-demo-`))
   const store = openSqliteStore({ path: join(directory, "sessions.db") })
   const engine = createEngine({ store, provider, tools: createStandardTools({ spillDir: join(directory, "spill") }), dataDir: directory })
   const session = engine.createSession({ cwd: options.cwd, settings: { model: options.model, reasoningEffort: options.effort } })
@@ -119,7 +120,7 @@ async function run(title: string, provider: Provider, options: { cwd: string; mo
 }
 
 function workspace() {
-  const directory = mkdtempSync(join(tmpdir(), "lh-engine-demo-ws-"))
+  const directory = mkdtempSync(join(tmpdir(), `${brand.binary}-engine-demo-ws-`))
   mkdirSync(join(directory, "src"))
   writeFileSync(join(directory, "src", "greet.ts"), 'export function greet(name: string) {\n  return "Hello, " + name\n}\n')
   writeFileSync(join(directory, "README.md"), "# demo\n\nA tiny workspace for the engine demo.\n")

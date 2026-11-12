@@ -54,7 +54,7 @@ const WINDOW = 128_000
 /** As the engine computes it: the window minus the output reserve (the smaller of 32,000 and a fifth of the window). */
 const USABLE = WINDOW - Math.min(32_000, Math.floor(WINDOW / 5))
 const FULL_TARGET = 500_000
-const TARGET = Number(process.env[`${brand.binary.toUpperCase()}_LONG_SESSION_TOKENS`] ?? FULL_TARGET)
+const TARGET = Number(process.env[`${brand.envPrefix}LONG_SESSION_TOKENS`] ?? FULL_TARGET)
 /** Tokens of one file the model reads, as the estimator counts them. Under the tool output cap of 50 KB. */
 const FILE_TOKENS = 9_000
 /** Reads per turn, in a cycle: a 12-read turn (about 108,000 tokens) cannot fit and is compacted in its middle. */

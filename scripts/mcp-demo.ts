@@ -8,6 +8,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../packages/core/src/id.ts"
 import { createInterrupt } from "../packages/core/src/interrupt.ts"
 import { mcpBridgeTools, mcpResultSource } from "../packages/core/src/mcp/bridge.ts"
@@ -20,7 +21,7 @@ import { startHttpFixture } from "../packages/core/test/mcp/fixtures/http-server
 
 const fixture = join(import.meta.dir, "../packages/core/test/mcp/fixtures/stdio-server.ts")
 const stdio = (...flags: string[]) => ({ command: process.execPath, args: [fixture, ...flags] })
-const scratch = mkdtempSync(join(tmpdir(), "lh-mcp-demo-"))
+const scratch = mkdtempSync(join(tmpdir(), `${brand.binary}-mcp-demo-`))
 const remote = startHttpFixture({ era: "modern", flags: ["--only", "slow,region", "--name", "remote"] })
 
 const config = resolveMcpConfig({

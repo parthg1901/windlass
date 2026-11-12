@@ -283,7 +283,7 @@ describe("trust", () => {
 })
 
 describe("the event", () => {
-  const P = `${brand.directory.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_HOOK_`
+  const P = `${brand.envPrefix}HOOK_`
   const common = { sessionId: "ses_1", cwd: "/w", hook: { name: "no-push", origin: "user" as const } }
 
   test("before: one line of JSON, and the environment for one-liners", () => {

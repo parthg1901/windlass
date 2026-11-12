@@ -86,7 +86,7 @@ export interface AcpEngineOptions {
 
 export { START_TIMEOUT_MS }
 /** Overrides `START_TIMEOUT_MS`, in milliseconds. */
-export const START_TIMEOUT_ENV = `${brand.binary.toUpperCase()}_ENGINE_START_TIMEOUT_MS`
+export const START_TIMEOUT_ENV = `${brand.envPrefix}ENGINE_START_TIMEOUT_MS`
 
 export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
   let started: Promise<HarnessConnection> | null = null

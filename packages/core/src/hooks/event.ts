@@ -25,7 +25,7 @@ import { brand } from "../brand.ts"
 import type { Json } from "../json.ts"
 import type { HookOrigin, HookPoint } from "./config.ts"
 
-export const HOOK_ENV_PREFIX = `${brand.directory.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_HOOK_`
+export const HOOK_ENV_PREFIX = `${brand.envPrefix}HOOK_`
 
 export const EVENT_LIMITS = {
   /** The arguments object, as JSON. Larger: `arguments` is `null` and `argumentsBytes` says how large it was. */

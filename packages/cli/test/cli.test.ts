@@ -71,9 +71,9 @@ describe("commands", () => {
     expect(result.err).toBe(`${brand.binary}: the real engine is not available in this build; try \`${brand.binary} --demo list\`\n`)
   })
 
-  test("the package's bin entry is the brand's binary name", async () => {
+  test("the package's bin entries are the brand's binary name and its aliases", async () => {
     const pkg: { bin: Record<string, string> } = await Bun.file(new URL("../package.json", import.meta.url)).json()
-    expect(Object.keys(pkg.bin)).toEqual([brand.binary])
+    expect(Object.keys(pkg.bin)).toEqual([brand.binary, ...brand.aliases])
   })
 })
 

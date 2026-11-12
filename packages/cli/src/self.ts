@@ -4,6 +4,12 @@
  * `main.ts`; a compiled executable is its own runtime, so it is the
  * executable alone: passing a script path to it would make the path its
  * first argument.
+ *
+ * The name it was started under (the binary's or an alias's, `brand.aliases`)
+ * does not matter, and nothing here reads it: an alias is a link, and both
+ * paths are the file itself. `process.execPath` is the executable with links
+ * resolved, and Bun runs a linked `main.ts` from the file it points to, so
+ * `import.meta.url` is the real `main.ts`.
  */
 import { buildStamp } from "@light-harness/core"
 

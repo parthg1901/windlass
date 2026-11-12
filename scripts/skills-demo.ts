@@ -8,6 +8,7 @@
 import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../packages/core/src/id.ts"
 import { createInterrupt } from "../packages/core/src/interrupt.ts"
 import { discoverSkills } from "../packages/core/src/skills/discover.ts"
@@ -16,7 +17,7 @@ import { SKILL_TOOL, skillTool } from "../packages/core/src/skills/tool.ts"
 import { createToolRuntime } from "../packages/core/src/tool/runtime.ts"
 import { noBlobStore, specOf } from "../packages/core/src/tool/tool.ts"
 
-const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-skills-demo-")))
+const base = realpathSync(mkdtempSync(join(tmpdir(), `${brand.binary}-skills-demo-`)))
 const repo = join(base, "repo")
 const cwd = join(repo, "app")
 const configDir = join(base, "config")

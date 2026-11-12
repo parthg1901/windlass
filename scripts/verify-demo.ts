@@ -14,7 +14,7 @@ import { loadConfig } from "../packages/core/src/config/index.ts"
 import { createInterrupt } from "../packages/core/src/interrupt.ts"
 import { type CheckResult, type GateInput, decideGate, renderReport, runChecks, selectChecks } from "../packages/core/src/verify/index.ts"
 
-const root = mkdtempSync(join(tmpdir(), "lh-verify-demo-"))
+const root = mkdtempSync(join(tmpdir(), `${brand.binary}-verify-demo-`))
 const dir = join(root, "project")
 mkdirSync(join(dir, ".git"), { recursive: true })
 await Bun.write(join(dir, "math.ts"), "export function add(a: number, b: number) {\n  return a - b\n}\n")

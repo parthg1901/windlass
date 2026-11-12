@@ -48,6 +48,7 @@ import type { ModelRequest } from "../request/request.ts"
 import type { RequestRecord, Store } from "../store/store.ts"
 import {
   type CanonicalTraceRequest,
+  HARNESS_KEY,
   type HarnessExtension,
   type PrefixBreakHint,
   TRACE_VERSION,
@@ -360,7 +361,7 @@ function toRecord(
     ...(hints.length > 0 ? { hints } : {}),
     ...(typeof cacheKey === "string" ? { headers: { "session-id": cacheKey } } : {}),
     source: { harness: brand.name, exporter: "trace", purpose: row.purpose },
-    x_light_harness: extension,
+    [HARNESS_KEY]: extension,
   }
 }
 

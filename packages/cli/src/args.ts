@@ -160,7 +160,8 @@ function error(message: string): Parsed {
 
 export function helpText(): string {
   const b = brand.binary
-  return `${brand.name}: a terminal coding agent
+  const short = brand.aliases.map((alias) => `; \`${alias}\` is short for \`${b}\``).join("")
+  return `${brand.name}: a terminal coding agent${short}
 
 Usage:
   ${b} [options] <prompt...>     run one prompt and exit
@@ -173,7 +174,7 @@ Usage:
   ${b} login finish              finish a sign-in started elsewhere from the pasted address
   ${b} login status              who is signed in and until when (never the tokens)
   ${b} login logout              forget the saved sign-in on this machine
-  ${b} tui [options]             the full-screen terminal interface (preview; ${b.toUpperCase()}_TUI=1 makes
+  ${b} tui [options]             the full-screen terminal interface (preview; ${brand.envPrefix}TUI=1 makes
                                  it what \`${b}\` with no prompt starts)
   ${b} fork [<session>]          a new session with the conversation so far, to try another
                                  way without changing the original; --turn <n> forks after

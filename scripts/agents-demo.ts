@@ -19,7 +19,7 @@ import { discoverCommands } from "../packages/core/src/commands/discover.ts"
 import { expandCommand, listCommands, lookupCommand, parseSlash } from "../packages/core/src/commands/lookup.ts"
 import { COMMANDS as TUI_COMMANDS } from "../packages/tui/src/commands.ts"
 
-const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-agents-demo-")))
+const base = realpathSync(mkdtempSync(join(tmpdir(), `${brand.binary}-agents-demo-`)))
 try {
   await run()
 } finally {

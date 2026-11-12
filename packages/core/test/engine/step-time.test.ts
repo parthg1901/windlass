@@ -39,7 +39,7 @@ const directory = mkdtempSync(join(tmpdir(), "lh-step-time-"))
 afterAll(() => rmSync(directory, { recursive: true, force: true }))
 
 const WINDOW = 128_000
-const TARGET = Number(process.env[`${brand.binary.toUpperCase()}_STEP_TIME_TOKENS`] ?? 400_000)
+const TARGET = Number(process.env[`${brand.envPrefix}STEP_TIME_TOKENS`] ?? 400_000)
 const FILE_TOKENS = 9_000
 const READS_PER_TURN = [6, 12, 3, 9]
 

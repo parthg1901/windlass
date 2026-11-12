@@ -7,6 +7,7 @@
 import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
 import { IGNORED_DIRS, STORED_SUFFIX, lastLine, run } from "./grader.ts"
 
 export const TASKS_DIR = join(import.meta.dir, "tasks")
@@ -48,7 +49,7 @@ export async function loadTask(id: string): Promise<Task> {
 
 /** Copies `workspace/` (renaming stored `*.in` files) into a new temporary directory. */
 export async function copyWorkspace(id: string, dest?: string) {
-  const target = dest ?? (await mkdtemp(join(tmpdir(), `lh-eval-${id}-`)))
+  const target = dest ?? (await mkdtemp(join(tmpdir(), `${brand.binary}-eval-${id}-`)))
   const source = join(TASKS_DIR, id, "workspace")
   const walk = async (rel: string): Promise<void> => {
     for (const entry of await readdir(join(source, rel), { withFileTypes: true })) {

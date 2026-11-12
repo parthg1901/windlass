@@ -242,7 +242,7 @@ export async function runAgent(options: RunOptions): Promise<Report> {
   const tasks = await Promise.all(options.tasks.map((id) => source.load(id)))
   for (const task of tasks) taskRunEnv(task)
   const jobs = tasks.flatMap((task) => Array.from({ length: options.repeat ?? 1 }, (_, index) => ({ task, attempt: index + 1 })))
-  const root = await mkdtemp(join(tmpdir(), "lh-agent-"))
+  const root = await mkdtemp(join(tmpdir(), `${brand.binary}-agent-`))
   const results: RunResult[] = []
   try {
     let next = 0

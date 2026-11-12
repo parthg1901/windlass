@@ -9,12 +9,13 @@
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
 import { type Hook, HOOK_ENV_PREFIX, createHookRunner, parseHooksSection, pendingHookApprovals, resolveHooksConfig, runAfterHooks, runBeforeHooks, runStopHooks } from "../packages/core/src/hooks/index.ts"
 import type { HookPointContext, HookRecord } from "../packages/core/src/hooks/points.ts"
 import { createCommandSandbox } from "../packages/core/src/sandbox/command.ts"
 import { detectSandbox } from "../packages/core/src/sandbox/detect.ts"
 
-const base = realpathSync(mkdtempSync(join(tmpdir(), "lh-hooks-demo-")))
+const base = realpathSync(mkdtempSync(join(tmpdir(), `${brand.binary}-hooks-demo-`)))
 const cwd = join(base, "repo")
 const P = HOOK_ENV_PREFIX
 await Bun.write(join(cwd, "a.ts"), "export const a = 1   \n")

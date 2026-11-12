@@ -2,6 +2,7 @@
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../../../packages/core/src/brand.ts"
 import { fail, importFrom, pass, requireUnchanged, run, workspaceArg } from "../../grader.ts"
 
 type Rec = Record<string, unknown> & { archived: boolean; locked: boolean; history: string[]; deleted: boolean }
@@ -22,7 +23,7 @@ for (const [name, field, value] of [["archive-order", "archived", true], ["lock-
   if (!COMMANDS.get(name)?.(other).ok || other[field] !== value) fail(`${name} broke`)
 }
 
-const original = await mkdtemp(join(tmpdir(), "lh-long-file-"))
+const original = await mkdtemp(join(tmpdir(), `${brand.binary}-long-file-`))
 const generated = await run(["bun", join(import.meta.dir, "workspace", "gen.ts"), original], workspace)
 if (generated.code !== 0) throw new Error(`grader bug: could not regenerate commands.ts: ${generated.output}`)
 const before = (await Bun.file(join(original, "src", "commands.ts")).text()).split("\n")

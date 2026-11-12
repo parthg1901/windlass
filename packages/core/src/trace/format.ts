@@ -20,6 +20,7 @@
  * Nothing here knows about sessions or the store; `export.ts` does.
  */
 import { createHash } from "node:crypto"
+import { brand } from "../brand.ts"
 import type { Json } from "../json.ts"
 import type { Usage } from "../provider/usage.ts"
 import { canonicalJson } from "../request/canonical.ts"
@@ -79,6 +80,12 @@ export interface PrefixBreakHint {
   readonly detail?: string
 }
 
+/** The brand's directory name as an identifier (`-` becomes `_`), as a type, so that the field's name below is a literal. */
+type Identifier<S extends string> = S extends `${infer Head}-${infer Tail}` ? `${Head}_${Identifier<Tail>}` : S
+
+/** The name of the field that holds `HarnessExtension`: `x_` and the brand's directory name as an identifier. */
+export const HARNESS_KEY = `x_${brand.directory.replaceAll("-", "_")}` as `x_${Identifier<typeof brand.directory>}`
+
 /**
  * The harness's own facts about a call, in a field readers ignore (SPEC 2:
  * "Readers MUST ignore fields they do not know"). Prefix breaks are declared
@@ -125,7 +132,7 @@ export interface TraceRecord {
   readonly hints?: readonly TraceHint[]
   readonly headers?: Readonly<Record<string, string>>
   readonly source?: Readonly<Record<string, Json>>
-  readonly x_light_harness?: HarnessExtension
+  readonly [HARNESS_KEY]?: HarnessExtension
 }
 
 /** SPEC 4.4: lowercase hex SHA-256 of the UTF-8 canonical JSON (RFC 8785 for the values JSON carries). */

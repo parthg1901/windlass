@@ -28,7 +28,7 @@ const PAGES = ["README.md", "docs/user-guide.md", "docs/troubleshooting.md"] as 
 const text = Object.fromEntries(PAGES.map((page) => [page, readFileSync(join(ROOT, page), "utf8")])) as Record<(typeof PAGES)[number], string>
 const all = Object.values(text).join("\n")
 const BIN = brand.binary
-const PREFIX = BIN.toUpperCase()
+const PREFIX = brand.envPrefix
 
 /** The commands in `sh` blocks, one per line, with the page they are on. */
 const commands = PAGES.flatMap((page) =>
@@ -170,7 +170,7 @@ describe("the user guide against the code", () => {
       const source = readFileSync(file, "utf8")
       for (const [, name] of source.matchAll(/\benv\.([A-Z][A-Z0-9_]{2,})\b/g)) read.add(name!)
       for (const [, name] of source.matchAll(/\benv\[\s*"([A-Z][A-Z0-9_]+)"\s*\]/g)) read.add(name!)
-      for (const [, suffix] of source.matchAll(/_ENV = `\$\{brand\.binary\.toUpperCase\(\)\}(_[A-Z0-9_]+)`/g)) read.add(`${PREFIX}${suffix}`)
+      for (const [, suffix] of source.matchAll(/_ENV = `\$\{brand\.envPrefix\}([A-Z0-9_]+)`/g)) read.add(`${PREFIX}${suffix}`)
     }
     read.add(TEST_CONTEXT_WINDOW_ENV)
     expect(read.size).toBeGreaterThan(10)
@@ -181,6 +181,10 @@ describe("the user guide against the code", () => {
 describe("names from the brand", () => {
   test("the README's title is the product's name", () => {
     expect(text["README.md"].split("\n")[0]).toBe(`# ${brand.name}`)
+  })
+
+  test("the README names each alias of the binary", () => {
+    for (const alias of brand.aliases) expect(text["README.md"]).toContain(`\`${alias}\``)
   })
 
   test("directories are the brand's", () => {
@@ -197,7 +201,7 @@ describe("names from the brand", () => {
       if (first === undefined || second === undefined || others.has(first) || !/^[a-z][a-z0-9-]*$/.test(first)) continue
       if (ours.test(second)) expect(first, span).toBe(BIN)
     }
-    for (const [, prefix] of all.matchAll(/\b([A-Z][A-Z0-9]*)_(?:TUI|TUI_DEBUG|ACP_LOG|ACP_SCRIPT|DEMO_TRACE|ENGINE_START_TIMEOUT_MS)\b/g)) expect(prefix).toBe(PREFIX)
+    for (const [, prefix] of all.matchAll(/\b([A-Z][A-Z0-9]*)_(?:TUI|TUI_DEBUG|ACP_LOG|ACP_SCRIPT|DEMO_TRACE|ENGINE_START_TIMEOUT_MS)\b/g)) expect(`${prefix}_`).toBe(PREFIX)
     for (const [name] of all.matchAll(/\b[A-Z][A-Z0-9_]*_TEST_CONTEXT_WINDOW\b/g)) expect(name).toBe(TEST_CONTEXT_WINDOW_ENV)
   })
 })

@@ -23,9 +23,9 @@ export { Transcript } from "./transcript.ts"
 export { Theme } from "./theme.ts"
 
 /** Turns the TUI on for `lh` run interactively with no prompt (until it is the default). */
-export const TUI_ENV = `${brand.binary.toUpperCase()}_TUI`
+export const TUI_ENV = `${brand.envPrefix}TUI`
 /** Shows events this client does not know as dim rows. */
-export const DEBUG_ENV = `${brand.binary.toUpperCase()}_TUI_DEBUG`
+export const DEBUG_ENV = `${brand.envPrefix}TUI_DEBUG`
 
 export interface TuiOptions {
   readonly cwd: string

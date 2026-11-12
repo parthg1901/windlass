@@ -20,7 +20,7 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { brand } from "../packages/core/src/brand.ts"
 import { COMPACTION_PROMPT } from "../packages/core/src/engine/constants.ts"
-import type { TraceRecord } from "../packages/core/src/trace/format.ts"
+import { HARNESS_KEY, type TraceRecord } from "../packages/core/src/trace/format.ts"
 import { errorLine } from "./grader.ts"
 
 const REPO = resolve(import.meta.dir, "..")
@@ -112,12 +112,12 @@ export async function classifyTrace(traceFile: string): Promise<CacheClassificat
   if (reported.code !== 0) return skipped(`prefixlens report failed (${reported.code}): ${errorLine(reported.stderr)}`, "error")
   const report = JSON.parse(reported.stdout) as ReportJson
 
-  const messageOf = (turn: number) => records[turn - 1]?.x_light_harness?.message_id ?? null
+  const messageOf = (turn: number) => records[turn - 1]?.[HARNESS_KEY]?.message_id ?? null
   const unfaithful = records.flatMap((record, index) => {
     if (record.fidelity === "full-request") return []
-    const reason = record.x_light_harness?.unverified_reason ?? "usage-only"
+    const reason = record[HARNESS_KEY]?.unverified_reason ?? "usage-only"
     // The exporter is given the engine's compaction prompt, so this only appears if that prompt changed under it.
-    return [{ turn: index + 1, messageId: record.x_light_harness?.message_id ?? null, reason }]
+    return [{ turn: index + 1, messageId: record[HARNESS_KEY]?.message_id ?? null, reason }]
   })
   const misses = report.turns
     .filter((turn) => turn.status === "miss" || turn.status === "partial")

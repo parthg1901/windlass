@@ -493,7 +493,7 @@ with its \`seq\`), and \`bun scripts/export-trace.ts <session id> -o <file>\` ex
 /**
  * A one-turn session: the user asks what a file says, the model reads it and
  * answers. Taken from a run of the real program with the scripted model
- * (`${brand.binary.toUpperCase()}_ACP_SCRIPT`), then shortened: IDs, paths, the system prompt and the
+ * (`${brand.envPrefix}ACP_SCRIPT`), then shortened: IDs, paths, the system prompt and the
  * tool list are cut down; every event is checked against the schema.
  */
 const EXAMPLE: readonly { readonly seq: number; readonly type: string; readonly data: Record<string, unknown> }[] = [

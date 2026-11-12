@@ -4,7 +4,7 @@
  * what a real session looks like: searches, a failing command, an edit with a
  * diff, parallel calls, usage on every step, and output capped to a spill file.
  */
-import { type Json, type NewEvent, type ToolEffect, type Truncation, event } from "@light-harness/core"
+import { type Json, type NewEvent, type ToolEffect, type Truncation, brand, event } from "@light-harness/core"
 import {
   type Scenario,
   c,
@@ -136,7 +136,7 @@ const BUILD_OUTPUT = [
   " 0 fail",
   "Ran 214 tests across 6 files. [4.81s]",
   "",
-  "[Output capped: 4,210 lines in total. The full output is in /tmp/lh-spill/shell-a1-call_1.log]",
+  `[Output capped: 4,210 lines in total. The full output is in /tmp/${brand.binary}-spill/shell-a1-call_1.log]`,
 ].join("\n")
 
 export const longBuild: Scenario = {
@@ -158,7 +158,7 @@ export const longBuild: Scenario = {
           "success",
           BUILD_OUTPUT,
           { exitCode: 0, signal: null, timedOut: false, interrupted: null, durationMs: 9_420 },
-          { originalBytes: 312_044, originalLines: 4_210, spillPath: "/tmp/lh-spill/shell-a1-call_1.log" },
+          { originalBytes: 312_044, originalLines: 4_210, spillPath: `/tmp/${brand.binary}-spill/shell-a1-call_1.log` },
         ),
         ended("a1", "tool_calls", 6_100, 0, 38),
         stepStarted("a2"),

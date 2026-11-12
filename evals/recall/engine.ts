@@ -23,6 +23,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { brand } from "../../packages/core/src/brand.ts"
 import { estimateRequest } from "../../packages/core/src/context/estimate.ts"
 import { HISTORY_READ, HISTORY_SEARCH } from "../../packages/core/src/context/history-tools.ts"
 import { NOTE_TEXT } from "../../packages/core/src/engine/constants.ts"
@@ -216,7 +217,7 @@ export interface EngineOptions {
 
 /** Loads, compacts and asks. Throws when the engine did not compact: then the number would not be about compaction. */
 export async function runEngine(options: EngineOptions): Promise<EngineRun> {
-  const directory = options.directory ?? mkdtempSync(join(tmpdir(), "lh-recall-"))
+  const directory = options.directory ?? mkdtempSync(join(tmpdir(), `${brand.binary}-recall-`))
   const database = join(directory, "recall.db")
   const store = openSqliteStore({ path: database })
   const tools = listedTools()

@@ -6,7 +6,7 @@
  * does, a build takes a while).
  */
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import workspace from "../../package.json" with { type: "json" }
@@ -42,6 +42,22 @@ describe.skipIf(!built)(`the built executable (${host?.id ?? "none"})`, () => {
     expect(help.out).toContain(`${brand.binary} login status`)
   })
 
+  test("each alias, a link to the executable as the install script makes it, is the same program", async () => {
+    const version = await run(["--version"])
+    for (const alias of brand.aliases) {
+      const link = join(home, alias)
+      symlinkSync(executable!, link)
+      const as = async (args: readonly string[]) => {
+        const child = Bun.spawn([link, ...args], { cwd: work, env: cleanEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+        const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+        return { code, out, err }
+      }
+      expect(await as(["--version"])).toEqual(version)
+      // The server child is started from the executable itself, whatever name started it.
+      expect(await as(["--list-sessions"])).toEqual({ code: 0, out: `no sessions in ${work}\n`, err: "" })
+    }
+  })
+
   test("a demo plays without a sign-in or a model", async () => {
     expect((await run(["--demo", "list"])).out).toContain("find-and-fix-a-failing-test")
     const played = await run(["--demo", "a-plain-answer", "--demo-speed", "0"])
@@ -71,7 +87,7 @@ describe.skipIf(!built)(`the built executable (${host?.id ?? "none"})`, () => {
     // Were .env read, the scripted model would answer instead of the sign-in error.
     const script = join(home, "script.json")
     await Bun.write(script, JSON.stringify({ responses: [[{ type: "text", text: "loaded" }]] }))
-    await Bun.write(join(work, ".env"), `${brand.binary.toUpperCase()}_ACP_SCRIPT=${script}\n`)
+    await Bun.write(join(work, ".env"), `${brand.envPrefix}ACP_SCRIPT=${script}\n`)
     const result = await run(["hello"])
     rmSync(join(work, ".env"))
     expect(result.code).toBe(1)
@@ -86,7 +102,7 @@ describe.skipIf(!built)(`the built executable (${host?.id ?? "none"})`, () => {
       script,
       JSON.stringify({ responses: [[{ type: "tool_call", callId: "c1", name: "shell", input: { command: "echo from-inside > made.txt; cat made.txt" } }], [{ type: "text", text: "Ran it." }]] }),
     )
-    const result = await run(["run it"], { env: { [`${brand.binary.toUpperCase()}_ACP_SCRIPT`]: script } })
+    const result = await run(["run it"], { env: { [`${brand.envPrefix}ACP_SCRIPT`]: script } })
     expect(result.code).toBe(0)
     expect(result.out).toContain("Ran it.")
     // With a sandbox it ran (marked ⊡); without one it asked, and with nobody there it was refused.

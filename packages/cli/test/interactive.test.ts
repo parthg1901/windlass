@@ -78,7 +78,8 @@ test("the session is named on start and on leaving; /help lists commands; an unk
   expect(JSON.stringify(provider.requests[0]!.input)).toContain("/etc is where configuration lives?")
   expect(JSON.stringify(provider.requests[0]!.input)).not.toContain("//etc")
   const id = /new session (ses_\w+)/.exec(first.screen)![1]!
-  expect(first.screen.trimEnd().split("\n").at(-1)).toBe(`${brand.binary}: session ${id} · resume with: ${brand.binary} --session ${id}`)
+  // The last line, with the terminal's wrapping undone: it holds two IDs and the binary twice, and may not fit.
+  expect(first.screen.trimEnd().replaceAll("\n", "")).toEndWith(`${brand.binary}: session ${id} · resume with: ${brand.binary} --session ${id}`)
 
   // Resumed: its title and how many turns it has.
   const second = await session(new FakeProvider([]), ["-c"], async (type, waitFor) => {

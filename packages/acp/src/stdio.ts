@@ -37,7 +37,7 @@ export const SHUTDOWN_TIMEOUT_MS = 5000
  * resume when their session is next opened). The tools work either way: a
  * wake-up created there fires in the next server that runs.
  */
-export const WAKE_ENV = `${brand.binary.toUpperCase()}_WAKE`
+export const WAKE_ENV = `${brand.envPrefix}WAKE`
 
 /** Whether this server fires wake-ups, going by `WAKE_ENV`: yes unless it says `off`, `0`, `false` or `no`. */
 export function firesWakeUps(env: Record<string, string | undefined>): boolean {

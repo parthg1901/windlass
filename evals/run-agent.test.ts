@@ -39,7 +39,7 @@ function run(mode: string, options: Partial<RunOptions> & { tasks: string[] }, e
 }
 
 async function leftovers() {
-  return (await readdir(scratch.tmp)).filter((name) => name.startsWith("lh-agent-") || name.startsWith("lh-eval-"))
+  return (await readdir(scratch.tmp)).filter((name) => name.startsWith(`${brand.binary}-agent-`) || name.startsWith(`${brand.binary}-eval-`))
 }
 
 describe("a solved task", () => {

@@ -13,6 +13,7 @@
 #
 # The installed name comes from the executable's file name, <binary>-<os>-<arch>,
 # which scripts/build.ts takes from the product's brand; nothing here names it.
+# Each alias the build recorded in build-info.json is linked to it.
 set -eu
 
 die() { printf 'install: %s\n' "$*" >&2; exit 1; }
@@ -32,7 +33,7 @@ while [ $# -gt 0 ]; do
     --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a directory"; bin_dir=$2; shift ;;
     --yes) profile=yes ;;
     --no-profile) profile=no ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) [ -z "$exe" ] || die "one executable at a time"; exe=$1 ;;
   esac
@@ -59,6 +60,14 @@ built_binary() {
   info=$root/dist/build-info.json
   [ -f "$info" ] || return 1
   sed -n 's/^ *"binary": *"\([^"]*\)".*/\1/p' "$info" | head -n 1
+}
+# The other names of the program (one per line), from the build's record beside the
+# executable, else from dist/: each is installed as a link to the binary.
+built_aliases() {
+  info=$(dirname -- "$1")/build-info.json
+  [ -f "$info" ] || info=$root/dist/build-info.json
+  [ -f "$info" ] || return 0
+  awk '/"aliases": *\[/ { on = 1 } on { print } on && /\]/ { exit }' "$info" | sed 's/"aliases"//' | sed -n 's/^[^"]*"\([^"]*\)".*/\1/p'
 }
 
 check_requirements() {
@@ -130,6 +139,13 @@ case $mode in
     else
       say "nothing to remove: $target does not exist"
     fi
+    for alias in $(built_aliases "${exe:-$root/dist/$name}"); do
+      link=$bin_dir/$alias
+      if [ -L "$link" ] && [ "$(readlink -- "$link")" = "$name" ]; then
+        rm -f -- "$link"
+        say "removed $link"
+      fi
+    done
     say "Your sessions and sign-in are kept. To delete them too, see \"Deleting everything\" in docs/user-guide.md."
     exit 0
     ;;
@@ -156,6 +172,15 @@ cp -- "$exe" "$tmp"
 chmod 755 "$tmp"
 mv -f -- "$tmp" "$bin_dir/$name"
 say "installed $bin_dir/$name: $version"
+for alias in $(built_aliases "$exe"); do
+  link=$bin_dir/$alias
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    say "not linked: $link exists and is not a link; $name is the same program"
+  else
+    ln -sf -- "$name" "$link"
+    say "linked $link to $name: the same program, for short"
+  fi
+done
 say ""
 check_requirements || say "The program runs without these; the lines above say what each one costs."
 

@@ -16,7 +16,9 @@
  *
  * Each executable is `<out>/<binary>-<os>-<arch>` (the binary's name from
  * `brand`), and `<out>/build-info.json` lists what was built: version,
- * size, SHA-256, and whether the full-screen interface is in it.
+ * size, SHA-256, and whether the full-screen interface is in it. It also
+ * names the binary and its aliases (`brand.aliases`): the install script
+ * installs the executable under the binary's name and links each alias to it.
  *
  * How the parts of the program that are not plain code get into one file:
  * - The version: `packages/core/src/build-stamp.ts` is replaced with the
@@ -250,7 +252,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const infoPath = join(args.outDir, "build-info.json")
   const previous: Built[] = existsSync(infoPath) ? ((await Bun.file(infoPath).json()) as { builds?: Built[] }).builds ?? [] : []
   const merged = [...previous.filter((item) => !built.some((next) => next.target === item.target)), ...built].sort((a, b) => a.target.localeCompare(b.target))
-  await Bun.write(infoPath, `${JSON.stringify({ binary: brand.binary, builds: merged.map((item) => ({ ...item, file: basename(item.file) })) }, null, 2)}\n`)
+  await Bun.write(infoPath, `${JSON.stringify({ binary: brand.binary, aliases: brand.aliases, builds: merged.map((item) => ({ ...item, file: basename(item.file) })) }, null, 2)}\n`)
   return 0
 }
 

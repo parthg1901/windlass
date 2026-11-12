@@ -280,6 +280,6 @@ For tests only, never for real use:
 |---|---|
 | `LH_ACP_SCRIPT` | a JSON file of scripted model responses: no model is called and no sign-in is needed |
 | `LH_DEMO_TRACE` | a file the demo engine appends its shutdown steps to |
-| `LIGHT_HARNESS_TEST_CONTEXT_WINDOW` | a smaller context window, in tokens, so that compaction happens early |
+| `LH_TEST_CONTEXT_WINDOW` | a smaller context window, in tokens, so that compaction happens early |
 
 A project's `.env` and `bunfig.toml` are never loaded by the built executable.
