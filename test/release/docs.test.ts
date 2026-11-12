@@ -22,6 +22,7 @@ import { brand } from "../../packages/core/src/brand.ts"
 import { TEST_CONTEXT_WINDOW_ENV } from "../../packages/core/src/assembly.ts"
 import { parseConfigFile } from "../../packages/core/src/config/schema.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
+import { forkUsage, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { ROOT, hostTarget, parseBuildArgs } from "../../scripts/build.ts"
 
 const PAGES = ["README.md", "docs/user-guide.md", "docs/troubleshooting.md"] as const
@@ -49,7 +50,8 @@ function words(line: string): string[] {
 
 const installFlags = [...readFileSync(join(ROOT, "scripts/install.sh"), "utf8").matchAll(/^\s+(--[a-z-]+)(?:\|[^)]*)?\)/gm)].map((match) => match[1]!)
 const buildFlags = [...readFileSync(join(ROOT, "scripts/build.ts"), "utf8").matchAll(/arg === "(--[a-z-]+)"/g)].map((match) => match[1]!)
-const helpFlags = [...helpText().matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((match) => match[1]!)
+/** The options of the main command and of the `fork` and `replay` subcommands. */
+const helpFlags = [helpText(), forkUsage(), replayUsage()].flatMap((usage) => [...usage.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((match) => match[1]!))
 const loginFlags = ["--no-browser"]
 
 describe("commands in the documentation", () => {
@@ -178,6 +180,72 @@ describe("the user guide against the code", () => {
   })
 })
 
+describe("the user guide against what the program prints and keeps", () => {
+  const guide = text["docs/user-guide.md"]
+  const section = (title: string) => {
+    const start = guide.indexOf(`\n## ${title}\n`)
+    expect(start, title).toBeGreaterThan(-1)
+    const end = guide.indexOf("\n## ", start + 4)
+    return guide.slice(start, end === -1 ? undefined : end)
+  }
+  const source = (file: string) => readFileSync(join(ROOT, file), "utf8")
+
+  test("each interface's turn endings are worded as its source words them", () => {
+    const checks = section("Verification checks")
+    const line = source("packages/cli/src/renderer.ts")
+    const screen = source("packages/tui/src/rows.ts")
+    const leftToParent = /LEFT_TO_PARENT = "([^"]+)"/.exec(source("packages/cli/src/agents.ts"))![1]!
+    // [what the page shows for the line interface, for the full-screen one], and the source text each is made of.
+    const rows: readonly (readonly [string, readonly string[], string, readonly string[]])[] = [
+      ["✓ done · checks passed", ['done("checks passed")'], "✓ done · checks passed", ['span("✓ ", "ok"), span("done", "ok", { bold: true }), span(" · checks passed", "ok")']],
+      ["✓ done · nothing to check", ['done("nothing to check")'], "○ done · checks not needed: nothing they cover changed", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · checks not needed: nothing they cover changed", "dim")']],
+      ["✓ done · nothing to check", ['seg(" · nothing to check", "dim")'], "○ done · nothing to check", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · nothing to check", "dim")']],
+      ["✓ done · no checks configured", ['done("no checks configured")'], "○ done · no checks configured", ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(" · no checks configured", "dim")']],
+      [`✓ done · ${leftToParent}`, ["done(LEFT_TO_PARENT)"], `○ done · ${leftToParent}`, ['span("○ ", "ok"), span("done", "ok", { bold: true }), span(` · ${LEFT_TO_PARENT}`, "dim")']],
+      ["✗ stopped with failing checks: <names>", ['seg("stopped with failing checks", ["red", "bold"])'], "✗ unresolved · failing checks: <names>", ['span("✗ ", "error"), span("unresolved", "error", { bold: true }), span(` · failing checks: ${failing}`, "error")']],
+    ]
+    for (const [inLine, lineSource, onScreen, screenSource] of rows) {
+      expect(checks).toContain(`| \`${inLine}\``)
+      expect(checks).toContain(`\`${onScreen}\``)
+      for (const piece of lineSource) expect(line, piece).toContain(piece)
+      for (const piece of screenSource) expect(screen, piece).toContain(piece)
+    }
+    // The line interface draws a done turn with the ok mark; the full-screen one with ○ unless checks passed.
+    expect(line).toContain("const done = (basis: string) => this.summary([seg(`${SYMBOL.ok} `, \"green\"), seg(\"done\"")
+    expect(checks).not.toContain("`✓ done · no checks configured` or `✓ done · nothing to check`")
+  })
+
+  test("the sentence about defaults is with the models, not under the task list", () => {
+    const sentence = "Defaults can be set in the configuration file (`model`, `effort`; see below)."
+    expect(section("Models and effort")).toContain(sentence)
+    expect(section("The task list")).not.toContain("configuration file")
+    expect(guide.split(sentence).length - 1).toBe(1)
+  })
+
+  test("the data directory's table names what the program keeps there, and the work directory beside it", () => {
+    const data = section("The data directory")
+    const paths = (header: string) => {
+      const start = data.indexOf(`| ${header} |`)
+      expect(start, header).toBeGreaterThan(-1)
+      const rows = data.slice(start).split("\n").slice(2)
+      return rows.slice(0, rows.findIndex((row) => !row.startsWith("|"))).flatMap((row) => [.../`([^`]+)`/g[Symbol.matchAll](row.split("|")[1]!)].map((match) => match[1]!))
+    }
+    expect(paths("Path")).toEqual(["auth.json", "auth.lock", "host-id", "sessions/", "index.db", "snapshots/", "approvals/", "blobs/", "spill/", "wake/", "memory/"])
+    // Each is a name the source gives a file or directory of the data directory.
+    const all = sourceFiles().map((file) => readFileSync(file, "utf8")).join("\n")
+    for (const name of paths("Path")) expect(all, name).toContain(`"${name.replace(/\/$/, "")}"`)
+    // The work directory: `<data directory>-work`, with one directory per kind of work the program makes a place for.
+    expect(data).toContain(`\`~/.local/share/${brand.directory}-work\` (\`$XDG_DATA_HOME/${brand.directory}-work\`)`)
+    expect(all).toContain('`${options.dataDir.replace(/\\/+$/, "")}-work`')
+    expect(paths("Path in the work directory")).toEqual(["workspaces/", "worktrees/", "replays/"])
+    for (const name of paths("Path in the work directory")) expect(all, name).toMatch(new RegExp(`join\\((core\\.)?workDir, "${name.replace(/\/$/, "")}"`))
+    // Deleting everything takes the work directory too.
+    const remove = commands.find(({ words: [command] }) => command === "rm")!
+    expect(remove.words).toContain(`~/.local/share/${brand.directory}-work`)
+    expect(remove.words).toContain(`~/.local/share/${brand.directory}`)
+  })
+})
+
 describe("names from the brand", () => {
   test("the README's title is the product's name", () => {
     expect(text["README.md"].split("\n")[0]).toBe(`# ${brand.name}`)
@@ -188,7 +256,9 @@ describe("names from the brand", () => {
   })
 
   test("directories are the brand's", () => {
-    for (const [, name] of all.matchAll(/(?:~\/\.local\/share|~\/\.config|\$XDG_DATA_HOME|\$XDG_CONFIG_HOME)\/([a-z0-9][a-z0-9_-]*)/g)) expect(name).toBe(brand.directory)
+    // The data and configuration directories, and the work directory beside the data directory (`<name>-work`).
+    for (const [, name] of all.matchAll(/(?:~\/\.local\/share|~\/\.config|\$XDG_DATA_HOME|\$XDG_CONFIG_HOME)\/([a-z0-9][a-z0-9_-]*)/g)) expect(name!.replace(/-work$/, "")).toBe(brand.directory)
+    for (const [, where] of all.matchAll(/(~\/\.config|\$XDG_CONFIG_HOME)\/[a-z0-9_]+-work/g)) throw new Error(`the work directory is beside the data directory, not under ${where}`)
     for (const [, name] of all.matchAll(/(?<![\w/])\.([a-z][a-z0-9_-]*)\/(?:config\.json)?(?![\w.])/g)) if (name !== "local" && name !== "config") expect(name).toBe(brand.directory)
     for (const [, name] of all.matchAll(/\/tmp\/([a-z][a-z0-9_-]*)-(?:<uid>|\$\(id -u\))/g)) expect(name).toBe(brand.directory)
   })

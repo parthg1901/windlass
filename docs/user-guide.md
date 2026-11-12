@@ -47,9 +47,11 @@ windlass -m gpt-6-luna --effort low "rename the helper to parseLine"
 `windlass --models` lists the models your plan offers and the efforts each accepts; the one marked `*` is the default.
 `-m` (`--model`) and `--effort` choose for a new session. A session keeps the model it was started with when you
 resume it, unless you name another. An effort the model does not take is refused in one sentence that names the
-ones it accepts (`model gpt-6-luna does not offer the reasoning effort "extreme"; it accepts: low, medium, high`),
-exit code 2. `--max-steps <n>` limits the model calls in one turn; at the limit the model is asked for a final
-answer without tools.
+ones it accepts (`model gpt-6-luna does not offer the reasoning effort "extreme"; it accepts: low, medium, high,
+xhigh, max`), exit code 2. `--max-steps <n>` limits the model calls in one turn; at the limit the model is asked for
+a final answer without tools.
+
+Defaults can be set in the configuration file (`model`, `effort`; see below).
 
 ## Agents
 
@@ -89,8 +91,6 @@ For work with several steps the model keeps a task list, and each update is show
 `✓` is done, `▸` in progress, `○` pending. The full-screen interface keeps the current list in the panel; a session
 you resume shows the list as it stands (`Its task list (1 of 3 done):`). A turn you `/undo` takes its list back
 with it.
-
-Defaults can be set in the configuration file (`model`, `effort`; see below).
 
 ## Approvals and the sandbox
 
@@ -197,17 +197,29 @@ noticed on the next request.
 ## Verification checks
 
 Declare the commands that tell whether the code is right as `checks` in the configuration. When a turn changed files,
-the checks whose `when` patterns match run before the turn ends, in the sandbox. A turn ends one of these ways:
+the checks whose `when` patterns match run before the turn ends, in the sandbox. A turn ends one of these ways;
+the two interfaces word them differently:
 
-- `✓ done · checks passed`: they ran and passed. Exit code 0.
-- `✓ done · no checks configured` or `✓ done · nothing to check` (nothing changed that a check covers). Exit code 0.
-  When files the checks cover did change outside the turn (you edited by hand, a turn was undone, an earlier turn
-  ended with its checks failing), a line under it says so: they were not checked now, and are at the end of the
-  next turn that changes a file.
-- `✓ done · its checks are left to its parent's turn`: a subagent's turn. Its work is checked with its parent's.
-- `✗ stopped with failing checks: <names>`: they still fail, and the agent reported that it cannot fix them, ran
-  out of rounds (`verify.maxRounds`), or `verify.mode` is `report`. Exit code 3; with `--json` the turn's last event is
-  `execution.succeeded` with `data.verification.status` `"unresolved"`.
+| The turn | Line interface (`windlass`) | Full-screen (`windlass tui`) |
+|---|---|---|
+| ran its checks, and they passed | `✓ done · checks passed` | `✓ done · checks passed` |
+| changed nothing that a check covers | `✓ done · nothing to check` | `○ done · checks not needed: nothing they cover changed` |
+| the same, while files the checks cover changed outside the turn | `✓ done · nothing to check`, and a line under it | `○ done · nothing to check`, and the same line under it |
+| ran in a project with no checks | `✓ done · no checks configured` | `○ done · no checks configured` |
+| was a subagent's | `✓ done · its checks are left to its parent's turn` | `○ done · its checks are left to its parent's turn` |
+| ended with checks that still fail | `✗ stopped with failing checks: <names>` | `✗ unresolved · failing checks: <names>` |
+
+- Each row goes on with the turn's steps and time (`· 2 steps · 392ms`), and in the full-screen interface with
+  the turn's number (`· turn 2`), which `/fork <n>` takes. `○` there marks a turn that ended as done with nothing
+  checked.
+- The line under "nothing to check" is for files the checks cover that changed outside the turn (you edited by
+  hand, a turn was undone, an earlier turn ended with its checks failing): they were not checked now, and are at
+  the end of the next turn that changes a file.
+- A subagent's work is checked with its parent's.
+- Checks still fail when the agent reported that it cannot fix them, ran out of rounds (`verify.maxRounds`), or
+  `verify.mode` is `report`; the line under the row says which.
+- For a one-shot run the exit code is 0 for every `done` and 3 for failing checks; with `--json` the turn's last
+  event is then `execution.succeeded` with `data.verification.status` `"unresolved"`.
 
 With `gate` (the default) a failing check is shown to the agent (`↻ the agent is shown the failing checks and
 carries on`), which then fixes the code or reports why it cannot. Each check's full output is kept in a file the
@@ -287,12 +299,25 @@ Everything the program keeps is in `~/.local/share/windlass` (`$XDG_DATA_HOME/wi
 | Path | What |
 |---|---|
 | `auth.json` | your sign-in (mode 0600); `windlass login logout` deletes it |
+| `auth.lock` | a lock that keeps two processes from renewing the sign-in at once |
 | `host-id` | this machine's ID for the sign-in |
 | `sessions/` | one SQLite database per session, with its lock files |
 | `index.db` | a cache for listing sessions; safe to delete |
 | `snapshots/` | the private git directories that undo uses, one per project |
 | `approvals/` | what you allowed "in this project", kept for 30 days |
 | `blobs/`, `spill/` | images, and tool output too long to show the model |
+| `wake/` | the wake-ups of every session (`wake.db`), with the secrets of webhook wake-ups ([wake-ups.md](wake-ups.md)) |
+| `memory/` | the memory notes, one Markdown file each, once memory is turned on ([memory.md](memory.md)) |
+
+Beside it, not inside it, is the work directory `~/.local/share/windlass-work` (`$XDG_DATA_HOME/windlass-work`),
+where the program makes the directories that sessions work in when it makes them itself. It is outside the data
+directory because sandboxed commands must run there, and the data directory is hidden from them.
+
+| Path in the work directory | What |
+|---|---|
+| `workspaces/` | the copy of a workspace that a fork made with `--copy` works in ([forks.md](forks.md)) |
+| `worktrees/` | the git worktree of a subagent started with `worktree: true`, removed when its work is merged ([subagents.md](subagents.md)) |
+| `replays/` | the copy a replay carried on in under `--policy execute`; nothing removes it ([replay.md](replay.md)) |
 
 Each session also has a temp directory, `/tmp/windlass-<uid>/<session id>/` (under `$TMPDIR` instead of `/tmp`
 when that is set), which sandboxed commands can write to (they see it as `/tmp` on Linux) and which holds the full
@@ -302,12 +327,13 @@ output of long commands.
 
 ```sh
 sh scripts/install.sh --uninstall
-rm -rf ~/.local/share/windlass ~/.config/windlass "/tmp/windlass-$(id -u)"
+rm -rf ~/.local/share/windlass ~/.local/share/windlass-work ~/.config/windlass "/tmp/windlass-$(id -u)"
 ```
 
 This removes the program, every session, your sign-in (the plan's authorization on OpenAI's side stays until you
-revoke it there), your configuration and `AGENTS.md`. Projects may also have a `.windlass/` directory of their
-own.
+revoke it there), the wake-ups and memory notes, the work directory with every fork's copy, your configuration
+and `AGENTS.md`. Projects may also have a `.windlass/` directory of their own, and a repository where a subagent's
+work was not merged keeps its `windlass/subagent-<id>` branch.
 
 ## Environment variables
 
