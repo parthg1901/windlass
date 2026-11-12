@@ -5,6 +5,7 @@ export { DecodeError, safeDecode, type DecodeResult, type Infer, type Validator 
 export * from "./id.ts"
 export * from "./content.ts"
 export * from "./interrupt.ts"
+export * from "./command-line.ts"
 export * from "./event/index.ts"
 export * from "./message/index.ts"
 export * from "./store/index.ts"

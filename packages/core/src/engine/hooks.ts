@@ -52,7 +52,7 @@ export interface HookQuestion {
   readonly point: Hook["point"]
   /** Identifies this definition of the hook: what `approveHook` takes, and what the approval is remembered for. */
   readonly fingerprint: string
-  /** The command, word for word: what approving it runs. */
+  /** The command, whole and word for word: what approving it runs. A line (or several) a shell reads, so it has no argument list. */
   readonly command: string
   /** The whole question as the module words it, for a client that shows it as it is. */
   readonly question: string
@@ -134,11 +134,13 @@ export function hookRan(record: HookRecord, call: { readonly messageId: MessageI
 
 const POINT_WORDS: Record<Hook["point"], string> = { beforeTool: "before a tool call", afterTool: "after a tool call", stop: "when a turn is about to end" }
 
-/** What the user is told, once, about a project's hook that is not run. */
+/**
+ * What the user is told, once, about a project's hook that is not run. The command is shown whole and word for
+ * word, every line of it: a command cut where the notice ran out of room hides its end, which is where what it
+ * does to the machine is. (A hook's command is a line a shell reads, not an argument list: nothing is quoted.)
+ */
 export function skippedHookNotice(question: HookQuestion): string {
-  const first = question.command.split("\n")[0] ?? ""
-  const shown = first.length > 120 ? `${first.slice(0, 120)}…` : first
-  return `This project's configuration asks to run the hook "${question.name}" ${POINT_WORDS[question.point]} (${shown}). It is not run: a hook a project names runs only after you approve it.`
+  return `This project's configuration asks to run the hook "${question.name}" ${POINT_WORDS[question.point]} (${question.command}). It is not run: a hook a project names runs only after you approve it.`
 }
 
 /**

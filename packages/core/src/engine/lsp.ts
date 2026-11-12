@@ -30,6 +30,7 @@
 import { readFileSync, statSync } from "node:fs"
 import { isAbsolute, relative, resolve, sep } from "node:path"
 import { type Grant, PROJECT_GRANT_TTL_MS } from "../approval/grants.ts"
+import { quotedCommand } from "../command-line.ts"
 import type { DiagnosticsRecord } from "../event/durable.ts"
 import { type LspPlan, type LspServerQuestion, lspApprovalKey, planLspServers, stableJson } from "../lsp/config.ts"
 import { type DiagnoseResult, type LspNotice, type LspRegistry, type LspRegistryOptions, type LspServerStatus, MAX_DOCUMENT_CHARS, createLspRegistry } from "../lsp/registry.ts"
@@ -45,6 +46,11 @@ export interface LspState {
   readonly servers: readonly LspServerStatus[]
   /** The project's servers that wait for the user's approval and are not started. */
   readonly awaiting: readonly LspServerQuestion[]
+}
+
+/** What the user is told, once, about a project's language server that is not started: its whole command, each argument quoted. */
+export function skippedLspServerNotice(question: LspServerQuestion): string {
+  return `This project's configuration names the language server "${question.name}" (${quotedCommand(question.argv)}). It was not started: a server a project names runs only after you approve it.`
 }
 
 /** The grant an approval of a project's language server writes, for `addProjectGrants`. */

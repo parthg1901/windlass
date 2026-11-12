@@ -278,8 +278,10 @@ export interface LspServerQuestion {
   readonly name: string
   readonly fingerprint: string
   readonly key: string
-  /** The command with its arguments: what approving it runs. */
+  /** The command with its arguments joined by spaces: what approving it runs. */
   readonly subject: string
+  /** The command and each of its arguments, one string each, as the definition has them: what a client shows (`quotedCommand`). */
+  readonly argv: readonly string[]
   readonly details: readonly string[]
 }
 
@@ -291,6 +293,7 @@ export function lspServerQuestion(plan: LspServerPlan): LspServerQuestion {
     fingerprint: plan.fingerprint,
     key: lspApprovalKey(plan),
     subject: [server.command, ...server.args].join(" "),
+    argv: [server.command, ...server.args],
     details: [
       `This project's configuration names the language server "${server.name}", started by running that command when the agent edits ${files.join(", ")}. It runs outside the sandbox, with your permissions.`,
       ...variableLines(server.env, "env"),

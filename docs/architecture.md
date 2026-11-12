@@ -927,8 +927,11 @@ appended later. The first step of an execution alone gives servers that have nev
   any other (`approval/grants.ts`: a `tool` rule `mcp-server:<name>:<fingerprint>` in
   `approvals/<workspace hash>.json`, 30 days), for exactly this definition of the server: the fingerprint is of its
   merged configuration, so an edited command is asked about again. `EngineSession.mcp()` lists the started servers
-  and the ones that wait, with the words of the question; `approveMcpServer(name, fingerprint)` records the
-  approval and starts the server. The question is not tied to a tool call, so it is not an `approval.requested`
+  and the ones that wait, with the words of the question and the command as an argument list (`argv`, one string
+  per argument as the definition has them; `null` for a server reached at an address), so a client shows it with
+  `quotedCommand` and never reads the configuration file again to find where an argument ends;
+  `approveMcpServer(name, fingerprint)` records the approval and starts the server. The notice the engine
+  itself says about a server that waits shows the same: the whole command, each argument quoted, never cut. The question is not tied to a tool call, so it is not an `approval.requested`
   event: the session's log does not change when a server starts, only when its catalogue is appended. Until a
   client puts the question, the user is told by a `diagnostic` of kind `mcp`, and a call that names the server is
   answered with why it went nowhere. There is no unattended default.
@@ -1081,7 +1084,10 @@ days). The question is not about a tool call, so it is not an `approval.requeste
 it: until a client puts it, the hook is skipped (and recorded as skipped) and the server is not started, the
 user is told once by a `diagnostic`, and nothing of it reaches the model. `EngineSession.hooks()` gives the hooks
 in force and the ones that wait, each with the question word for word; `approveHook(fingerprint)` records the
-approval, in force from the next call. `lsp()` gives the started servers and the ones that wait;
+approval, in force from the next call. What the user is told about a hook or a server that waits shows its
+command whole: a hook's as it is written, every line of it (a line a shell reads has no argument list), a
+server's with each argument quoted (`quotedCommand`), and a language server's question carries `argv` as an MCP
+server's does. `lsp()` gives the started servers and the ones that wait;
 `approveLspServer(name, fingerprint)` records the approval, and the server starts at the next file it serves.
 
 ## Slash commands and live telemetry

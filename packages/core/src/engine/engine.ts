@@ -159,8 +159,8 @@ import {
 } from "./constants.ts"
 import { historyTools } from "./history.ts"
 import { type HooksSetup, type HooksState, approvedHooks, failedHookNotice, hasHooks, hookGrant, hookQuestions, hookRan, sessionHooks, skippedHookNotice } from "./hooks.ts"
-import { type HeldRegistry, LspHub, type LspSetup, type LspState, diagnosticsOf, lspGrant, offersDiagnostics, planLanguageServers, readDocument, servesFile } from "./lsp.ts"
-import { McpHub, type McpServerPlan, type McpSetup, type McpState, type SessionServers, catalogueAppended, engineMcpTools, planServers, serverGrant, serverQuestion, sessionServers } from "./mcp.ts"
+import { type HeldRegistry, LspHub, type LspSetup, type LspState, diagnosticsOf, lspGrant, offersDiagnostics, planLanguageServers, readDocument, servesFile, skippedLspServerNotice } from "./lsp.ts"
+import { McpHub, type McpServerPlan, type McpSetup, type McpState, type SessionServers, catalogueAppended, engineMcpTools, planServers, serverGrant, serverQuestion, sessionServers, skippedServerNotice } from "./mcp.ts"
 import { type MemorySetup, engineMemoryTools, memoryOutcome, memorySource, openSessionMemory, sessionMemoryConfig } from "./memory.ts"
 import type { MemoryConfig } from "../memory/config.ts"
 import type { MemoryStore } from "../memory/store.ts"
@@ -5161,7 +5161,7 @@ class LiveSession implements EngineSession {
     for (const plan of plans) {
       if (!plan.config.enabled || plan.approved) continue
       const question = serverQuestion(plan)
-      this.say("mcp", `This project's configuration names the MCP server "${plan.config.name}" (${question.subject}). It was not started: a server a project names runs only after you approve it.`)
+      this.say("mcp", skippedServerNotice(question))
     }
   }
 
@@ -5444,7 +5444,7 @@ class LiveSession implements EngineSession {
     this.lspHeld = held
     this.lspPlan = held === null ? null : plan
     for (const question of held?.registry.awaitingApproval() ?? [])
-      this.say("lsp", `This project's configuration names the language server "${question.name}" (${question.subject}). It was not started: a server a project names runs only after you approve it.`)
+      this.say("lsp", skippedLspServerNotice(question))
   }
 
   private releaseLsp(): void {

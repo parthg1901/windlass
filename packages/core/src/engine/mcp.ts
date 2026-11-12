@@ -34,6 +34,7 @@
  */
 import { resolve } from "node:path"
 import { type Grant, type GrantRule, PROJECT_GRANT_TTL_MS } from "../approval/grants.ts"
+import { quotedCommand } from "../command-line.ts"
 import { mergeConfigFiles } from "../config/schema.ts"
 import type { InstructionDetail } from "../event/durable.ts"
 import { fingerprint } from "../instructions/source.ts"
@@ -73,8 +74,14 @@ export interface McpServerPlan {
 export interface McpServerQuestion {
   readonly name: string
   readonly fingerprint: string
-  /** The command with its arguments, or the address: what approving it runs or reaches. */
+  /** The command with its arguments joined by spaces, or the address: what approving it runs or reaches. */
   readonly subject: string
+  /**
+   * The command and each of its arguments, one string each, as the definition has them: what a client shows
+   * (`quotedCommand`), so that where an argument ends is never a guess and the configuration file need not be
+   * read again for it. `null` for a server reached at an address.
+   */
+  readonly argv: readonly string[] | null
   /** Facts the user needs to answer, one per line. */
   readonly details: readonly string[]
 }
@@ -131,6 +138,11 @@ function mergeSections(user: McpConfigSection | undefined, project: McpConfigSec
   return mergeConfigFiles(user === undefined ? null : { mcp: user }, project === undefined ? null : { mcp: project }).mcp
 }
 
+/** What the user is told, once, about a project's server that is not started: its whole command, each argument quoted, or its address. */
+export function skippedServerNotice(question: McpServerQuestion): string {
+  return `This project's configuration names the MCP server "${question.name}" (${question.argv === null ? question.subject : quotedCommand(question.argv)}). It was not started: a server a project names runs only after you approve it.`
+}
+
 /** The question about a project's server, in the words a client shows. */
 export function serverQuestion(plan: McpServerPlan): McpServerQuestion {
   const transport = plan.config.transport
@@ -139,6 +151,7 @@ export function serverQuestion(plan: McpServerPlan): McpServerQuestion {
     name: plan.config.name,
     fingerprint: plan.fingerprint,
     subject,
+    argv: transport.kind === "stdio" ? [transport.command, ...transport.args] : null,
     details: [
       transport.kind === "stdio"
         ? `This project's configuration names the MCP server "${plan.config.name}", which is started by running that command${transport.cwd === null ? "" : ` in ${transport.cwd}`}. It runs outside the sandbox, with your permissions.`
