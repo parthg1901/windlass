@@ -234,12 +234,19 @@ export class HarnessConnection {
   }
 
   static async start(options: ConnectOptions): Promise<HarnessConnection> {
-    const transport = options.transport.kind === "memory" ? await memoryTransport(options.transport, options.log) : childTransport(options.transport, options.log)
+    // Until the server is ready, what it writes that is not one of its own log lines (a crash's source excerpt and
+    // stack, Bun's banner) is held back: if it dies at start the user gets one sentence, not the dump.
+    let held: [string, LogLevel][] | null = []
+    const log = (line: string, level: LogLevel) => {
+      if (held !== null && level === "raw") held.push([line, level])
+      else options.log?.(line, level)
+    }
+    const transport = options.transport.kind === "memory" ? await memoryTransport(options.transport, log) : childTransport(options.transport, log)
     const link = new HarnessConnection(transport)
     const timeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS
     let timer: ReturnType<typeof setTimeout> | undefined
     const failed = (message: string) => new ClientError(message, "closed")
-    const goneText = (gone: Gone) => `the engine process ${gone.how} before it was ready${gone.said === null ? "" : `: ${gone.said}`}`
+    const goneText = (gone: Gone) => (gone.said === null ? `the engine process ${gone.how} before it was ready` : `the engine could not start: ${gone.said} (its process ${gone.how})`)
     try {
       const init = await Promise.race([
         link.connection.agent.request(methods.agent.initialize, {
@@ -259,8 +266,12 @@ export class HarnessConnection {
       const names = (value: unknown) => (Array.isArray(value) ? value.filter((name): name is string => typeof name === "string") : [])
       if (!names(offered?.notifications).includes(EXT.event)) throw failed(`the engine process does not send ${brand.name}'s events (${EXT.event}); it may be another version`)
       link.offered = { methods: names(offered?.methods), notifications: names(offered?.notifications) }
+      const early = held
+      held = null
+      for (const [line, level] of early) options.log?.(line, level)
       return link
     } catch (error) {
+      held = null
       // The connection closes a moment before the process is reaped: an exit is the better explanation.
       const gone = error instanceof ClientError ? null : await Promise.race([transport.gone, Bun.sleep(1000).then(() => null)])
       transport.kill()
@@ -746,7 +757,7 @@ function childTransport(transport: Extract<Transport, { kind: "child" }>, log: C
   const tail: string[] = []
   const logged = forwardLines(child.stderr, (line) => {
     tail.push(line)
-    if (tail.length > 5) tail.shift()
+    if (tail.length > 40) tail.shift()
     const own = /^\S+ acp (debug|info|warn|error): (.*)$/.exec(line)
     if (own === null) return log?.(line, "raw")
     log?.(own[2]!, own[1] as LogLevel)
@@ -754,8 +765,7 @@ function childTransport(transport: Extract<Transport, { kind: "child" }>, log: C
   const gone = child.exited.then(async (code) => {
     await logged
     const how = child.signalCode !== null ? `was killed (${child.signalCode})` : `exited with code ${code}`
-    const last = tail.filter((line) => line.trim() !== "").at(-1)
-    return { how, said: last === undefined || code === 0 ? null : last.replace(/^\S+ acp \w+: /, "") }
+    return { how, said: code === 0 ? null : lastWords(tail) }
   })
   const input = new WritableStream<Uint8Array>({
     write: (chunk) => {
@@ -807,6 +817,22 @@ async function memoryTransport(transport: Extract<Transport, { kind: "memory" }>
     },
     kill: () => served.connection.close(),
   }
+}
+
+/**
+ * Why a server process died, from the end of what it wrote: its own last
+ * error line, or the message of an uncaught error out of a crash dump
+ * (`error: ...`, `TypeError: ...`), never the runtime's banner, a source
+ * excerpt or a stack frame.
+ */
+export function lastWords(tail: readonly string[]): string | null {
+  const lines = tail.map((line) => line.trimEnd()).filter((line) => line.trim() !== "")
+  const own = lines.findLast((line) => /^\S+ acp (error|warn): /.test(line))
+  if (own !== undefined) return own.replace(/^\S+ acp \w+: /, "")
+  const thrown = lines.findLast((line) => /^(error|[A-Z]\w*Error|[A-Z]\w*Exception)(\[\w+\])?: \S/.test(line))
+  if (thrown !== undefined) return thrown.replace(/^error: /, "")
+  const plain = lines.findLast((line) => !/^Bun v\d/.test(line) && !/^\s*\d+ \| /.test(line) && !/^\s+at /.test(line) && !/^\s*\^\s*$/.test(line))
+  return plain === undefined ? null : plain.trim()
 }
 
 /** Calls `line` with each line of the stream; resolves when it ends. */

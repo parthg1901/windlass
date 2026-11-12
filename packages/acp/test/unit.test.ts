@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
-import type { EngineEvent } from "@light-harness/core"
+import { type EngineEvent, brand } from "@light-harness/core"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
+import { lastWords } from "../src/client.ts"
 import { META } from "../src/extensions.ts"
 import { silentLogger } from "../src/log.ts"
 import { fenced, promptText } from "../src/prompt.ts"
@@ -146,4 +147,14 @@ test("titles name the action and its most useful argument", () => {
   expect(toolTitle("grep", { pattern: "TODO", path: "src", glob: "*.ts" })).toBe('Search "TODO" in src (*.ts)')
   expect(toolTitle("shell", { command: "bun test\n--watch" })).toBe("`bun test …`")
   expect(toolTitle("mystery", { what: "thing" })).toBe("mystery thing")
+})
+
+test("a dead server's last words: its own error line, else the message of an uncaught error, never the runtime's banner", () => {
+  expect(lastWords([`${brand.binary} acp info: starting`, `${brand.binary} acp error: the data directory is not writable`])).toBe("the data directory is not writable")
+  const dump = ["1 | throw new Error('boom')", "          ^", "error: boom", "      at /x/[eval]:1:11", "", "Bun v1.4.0 (Linux arm64)"]
+  expect(lastWords(dump)).toBe("boom")
+  expect(lastWords(["TypeError: undefined is not a function", "    at main (a.ts:3:1)", "Bun v1.4.0 (Linux arm64)"])).toBe("TypeError: undefined is not a function")
+  expect(lastWords(["something odd happened", "Bun v1.4.0 (Linux arm64)"])).toBe("something odd happened")
+  expect(lastWords(["Bun v1.4.0 (Linux arm64)"])).toBeNull()
+  expect(lastWords([])).toBeNull()
 })

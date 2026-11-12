@@ -235,7 +235,16 @@ describe("a server that does not start properly", () => {
   test("exits before it is ready: its last words are in the sentence", async () => {
     const broken = fixture("broken.sh", `echo "${brand.binary} acp error: the data directory is not writable" >&2; exit 3`)
     const refused = await open(createAcpEngine({ command: ["sh", broken], stderr: () => {} }))
-    expect((refused as Error).message).toBe("the engine process exited with code 3 before it was ready: the data directory is not writable")
+    expect((refused as Error).message).toBe("the engine could not start: the data directory is not writable (its process exited with code 3)")
+  })
+
+  test("dies at start with an uncaught error: one sentence with the error's message, and none of the runtime's dump on stderr", async () => {
+    const crashing = fixture("crashing.ts", `throw new Error("cannot open the data directory: permission denied")`)
+    const written: string[] = []
+    const refused = await open(createAcpEngine({ command: ["bun", crashing], stderr: (text) => void written.push(text) }))
+    expect((refused as Error).message).toBe("the engine could not start: cannot open the data directory: permission denied (its process exited with code 1)")
+    // Bun's source excerpt, stack and banner went to the server's stderr; the user is not shown them.
+    expect(written.join("")).toBe("")
   })
 
   test("speaks ACP but not this harness's events: refused as another version", async () => {
