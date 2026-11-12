@@ -457,8 +457,8 @@ export interface McpServerInfo {
   readonly target: string | null
   /**
    * The command and each of its arguments, one string each, so a client can show where one argument ends
-   * (`quotedCommand`). `null` for a server reached at an address, and when the definition a question is about
-   * is no longer the one in the file.
+   * (`quotedCommand`). For a question they are the engine's own, of the definition it asks about. `null` for a
+   * server reached at an address.
    */
   readonly argv: readonly string[] | null
   /** Tools it offers, once running. */
@@ -538,8 +538,8 @@ export interface LspServerInfo {
   readonly state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started"
   /** The command with its arguments. */
   readonly command: string
-  /** The command and each of its arguments, one string each (`quotedCommand`); `null` when the definition a question is about is no longer the one in the file. */
-  readonly argv: readonly string[] | null
+  /** The command and each of its arguments, one string each (`quotedCommand`); for a question, the engine's own, of the definition it asks about. */
+  readonly argv: readonly string[]
   /** The files it serves: glob patterns relative to the working directory, by the language they are sent as. */
   readonly languages: readonly { readonly languageId: string; readonly patterns: readonly string[] }[]
   /** One process per workspace root it was started for. */

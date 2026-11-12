@@ -605,8 +605,8 @@ servers: {
   state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started",
   transport: "stdio" | "http" | null,
   target: string | null,          // the command with its arguments, or the address
-  argv: string[] | null,          // the command and each argument, one string each; null for an address, and for a
-                                  //   question about a definition the file no longer holds
+  argv: string[] | null,          // the command and each argument, one string each (for a question: the engine's
+                                  //   own, of the definition it asks about); null for an address
   tools: number | null,           // once running
   hiddenTools: number,            // hidden by the allow/deny list
   error: string | null,           // failed: why, with the end of its stderr
@@ -675,7 +675,7 @@ servers: {
   name: string,
   state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started",
   command: string,                 // with its arguments
-  argv: string[] | null,           // the command and each argument, one string each (see quotedCommand above)
+  argv: string[],                  // the command and each argument, one string each (see quotedCommand above)
   languages: { languageId: string, patterns: string[] }[],   // the files it serves, relative to the working directory
   processes: { root: string, state: "running" | "starting" | "failed" | "stopped" | "not_started",
                error: string | null, restarts: number, openDocuments: number }[],   // one per workspace root

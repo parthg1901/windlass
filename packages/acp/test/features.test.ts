@@ -92,6 +92,12 @@ describe("MCP servers", () => {
     expect(waiting.target).toContain("stdio-server.ts --only echo")
     // Each argument on its own, for a client that shows where one ends.
     expect(waiting.argv).toEqual([process.execPath, SERVER, "--only", "echo"])
+    // They are the question's own: a file edited since then (the next turn reads it) changes nothing of what is asked about now.
+    projectConfig(harness.workspace, { mcp: { servers: { theirs: { command: process.execPath, args: [SERVER, "--only", "add"] } } } })
+    const still = (await ext<McpStateResult>(harness, EXT.mcp, { sessionId })).servers[0]!
+    expect(still.argv).toEqual([process.execPath, SERVER, "--only", "echo"])
+    expect(still.question!.fingerprint).toBe(waiting.question!.fingerprint)
+    projectConfig(harness.workspace, { mcp: { servers: { theirs: { command: process.execPath, args: [SERVER, "--only", "echo"] } } } })
     expect(waiting.question!.details.join(" ")).toContain("runs outside the sandbox")
     expect(waiting.question!.fingerprint).toMatch(/^[0-9a-f]{16}$/)
 

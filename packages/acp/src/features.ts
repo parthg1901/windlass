@@ -8,7 +8,9 @@
  * a person, in the engine's own words where it has them.
  *
  * The configuration files are read only to say where a server is defined and
- * to name one the session has not started yet (servers start with a turn).
+ * to name one the session has not started yet (servers start with a turn);
+ * the command a question is about is the engine's own (`argv`), never read
+ * back from a file.
  */
 import { type EngineSession, type Harness, type SessionId, brand } from "@windlass/core"
 import { findConfigFiles, readConfigFile } from "../../core/src/config/load.ts"
@@ -108,14 +110,13 @@ export async function mcpState(session: EngineSession): Promise<McpStateResult> 
   }
   for (const question of state.awaiting) {
     seen.add(question.name)
-    const config = byName.get(question.name)
     servers.push({
       name: question.name,
       state: "awaiting_approval",
-      transport: config?.transport.kind ?? null,
+      // The question is the engine's, about the definition it read: its own arguments are shown, whatever the file holds now.
+      transport: question.argv === null ? "http" : "stdio",
       target: question.subject,
-      // Only when the file still names the command the question is about: the arguments shown are then the ones asked about.
-      argv: argvOf(config)?.join(" ") === question.subject ? argvOf(config) : null,
+      argv: question.argv === null ? null : [...question.argv],
       tools: null,
       hiddenTools: 0,
       error: null,
@@ -238,8 +239,8 @@ export async function lspState(session: EngineSession): Promise<LspStateResult> 
       name,
       state: !server.config.enabled ? "disabled" : question !== undefined ? "awaiting_approval" : (shown?.state ?? "not_started"),
       command: question?.subject ?? [server.config.command, ...server.config.args].join(" "),
-      // Only when the file still holds the definition the question is about (its fingerprint): the arguments shown are then the ones asked about.
-      argv: question === undefined || question.fingerprint === server.fingerprint ? [server.config.command, ...server.config.args] : null,
+      // A question is the engine's, about the definition it read: its own arguments are shown, whatever the file holds now.
+      argv: question === undefined ? [server.config.command, ...server.config.args] : [...question.argv],
       languages: server.config.languages.map((language) => ({ languageId: language.languageId, patterns: [...language.patterns] })),
       processes,
       error: shown?.state === "failed" || shown?.state === "stopped" ? shown.error : null,
