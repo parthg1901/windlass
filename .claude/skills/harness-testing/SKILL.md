@@ -206,3 +206,24 @@ Reading a result:
 - A watch whose regular expression takes more than 50 ms on a line is ended and the user is told (`too_slow`).
 - A follow-up to a subagent that is not held to its parent's current agent restrictions is refused.
 
+
+## Fourth dogfood pass (2026-11-12): the README as a stranger, a project's own configuration
+
+- The README's interactive commands (the program alone, and `tui`) name no model, and the line interface never says which model a session runs on: in a directory without a project configuration they spend the account's default model (`gpt-6.1-sol`). When a test follows the README, add `--model gpt-6-luna --effort low` yourself, and check `--list-sessions` (its third column is the model) after the first turn.
+- `sh scripts/install.sh --bin-dir <dir> --no-profile` installs into a throwaway directory and touches nothing else; put that directory first on `PATH` inline. `dist/` is ignored by git: remove it when done.
+- `evals/dogfood/hooks-config.ts --project <workspace> --marker <word> [--lsp <langserver.js>]` writes four hooks and a language server into a project's file; `evals/dogfood/otel-collector.ts --out <file>` is a local collector, and `--check <file> <word>...` counts words in what it received.
+- Approvals of a project's hooks and servers are per project directory, so `cp -a <workspace> <new dir>` gives a project nothing was approved for, and an edited definition (a new `--marker`) is asked about again: no fresh clone needed.
+- The line interface asks about a project's hooks, language server and MCP server when the session opens. The full-screen interface does not: its question comes with the first message (which is held), or from `/hooks approve`, `/lsp approve`, `/mcp approve`. Wait for the dock after sending, not after `● ready`.
+- Anything typed at a yes/no question that is not `y` counts as no, a slash command included (`/mcp` at the MCP question declined it).
+- In the line interface the confirmation of one answer can be printed under the next question's text (`approved: the hook …` right below the language server's choices). Read which name each `approved:` line carries, and answer one question at a time with a pause; do not send several `y` in a loop.
+- A cold pyright missed its first edit even with `waitMs` 4000 (it was still starting); the second edit got `2 new diagnostics from python` in 2.1 s. Make two edits before judging the note.
+- Checks run before stop hooks. After a stop hook sends the agent back, the ending says `nothing to check` and adds the note about files "changed outside this turn": that note is about the agent's own work after the checks, not a hand edit.
+- A file changed by hand while a turn runs is listed in that turn's `· changed` line, and `/undo` takes it back without the question it asks about hand edits made after the turn. Hand-edit only between turns unless the test is about this.
+- `/diff` after a queued message shows the files of the turn before it, and the line interface prints one ending row for a turn and its queued message together (the step count is their sum).
+- `fork --turn <n>` fails with `seq … is inside a step` when turn n was followed by a queued message; `--turn <n+1>` works.
+- `/compact` is accepted while a turn runs and answers when the running call ends. With the real context window a session of 30,000 tokens still answers `Not compacted: only about 449 tokens … could be summarised`: use the test window to see a compaction.
+- `replay` now prints the `compared on what it did (reads ignored)` part itself, and names the copy it worked in (under `<data dir>-work/replays/`): delete that copy, and a `fork --copy`'s (`<data dir>-work/workspaces/<id>`), when done.
+- The Ctrl-T choice between steering and queueing in the full-screen interface stays as set for later turns: read the hint line before typing.
+- Telemetry with content off, checked on a turn with a command, a read, a write and a subagent: 15 spans in 4 requests, no prompt, path, command or output in them; the machine's host name is.
+- No client command stops one running call or sets a watch yet (`/help` in both interfaces, 2026-11-12).
+- The fourth pass spent 115 requests on tasks 34 to 41 (15 of them on the default model, see the first point).
