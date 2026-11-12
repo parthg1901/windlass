@@ -11,8 +11,8 @@ bun run typecheck
 bun test <path>          # the tests for what you changed
 ```
 
-Bun is the only tool needed. Tests that check prompt-cache behaviour load the sibling checkout `../prefixlens`
-(or `PREFIXLENS_DIR`) and are skipped, saying so, when it is absent.
+Bun is the only tool needed. The tests that check prompt-cache behaviour use the `prefixlens` package, a dev
+dependency of the workspace root that `bun install` brings in.
 
 ## What a change must keep true
 

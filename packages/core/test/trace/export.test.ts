@@ -15,12 +15,11 @@ import { SIGNED_IN_PROVIDER } from "../../src/provider/provider.ts"
 import type { SqliteStore } from "../../src/store/sqlite.ts"
 import { type ExportResult, describeUnverified, exportSession } from "../../src/trace/export.ts"
 import { canonicalResponsesRequest, serializeTrace, traceHash } from "../../src/trace/format.ts"
-import { NOT_HARNESS, loadPrefixlens, report, withPrefixlens } from "./prefixlens.ts"
+import {NOT_HARNESS, report, prefixlens } from "./prefixlens.ts"
 import { baselineSet, created, deliver, enqueue, executionInterrupted, executionStarted, interruptRequested, reverted, stepFailed, stepStarted, synthetic } from "../store/scripted.ts"
 import { COMPACTION_PROMPT, Loop, SCRIPTS, type StepBuilder, openTestStore, record } from "./sessions.ts"
 import { validateTrace } from "./spec.ts"
 
-const prefixlens = await loadPrefixlens()
 
 let store: SqliteStore
 let directory: string
@@ -201,14 +200,13 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
     expect(declared).toEqual(script.intentional as never)
   })
 
-  test.skipIf(prefixlens === null)(
-    withPrefixlens("the exported records agree block for block with what prefixlens's proxy records for the same calls"),
+  test("the exported records agree block for block with what prefixlens's proxy records for the same calls",
     () => {
       const { result, loop } = session(name)
       for (const sent of loop.sent) {
         const call = result.calls.find((candidate) => candidate.row.id === sent.row.id)!
         if (call.record === null) continue
-        const proxied = prefixlens!.recorder.buildRecord({
+        const proxied = prefixlens.recorder.buildRecord({
           api: "openai-responses",
           body: sent.body,
           response: {
@@ -236,19 +234,17 @@ describe.each(SCRIPTS.map((script) => [script.name, script] as const))("%s", (na
     },
   )
 
-  test.skipIf(prefixlens === null)(withPrefixlens("prefixlens reads the trace without errors or warnings"), () => {
-    const parsed = prefixlens!.reader.parseTrace(session(name).trace)
+  test("prefixlens reads the trace without errors or warnings", () => {
+    const parsed = prefixlens.reader.parseTrace(session(name).trace)
     expect(parsed.errors).toEqual([])
     expect(parsed.warnings).toEqual([])
     expect(parsed.records.length).toBe(session(name).result.records.length)
   })
 
-  test.skipIf(prefixlens === null)(
-    withPrefixlens(
-      script.clean
-        ? "prefixlens report shows one lane and no avoidable miss"
-        : "prefixlens report shows one lane, no avoidable miss, and each declared break as an intentional break",
-    ),
+  test(
+    script.clean
+      ? "prefixlens report shows one lane and no avoidable miss"
+      : "prefixlens report shows one lane, no avoidable miss, and each declared break as an intentional break",
     async () => {
       const { json } = await reportOn(session(name).loop.id, session(name).trace)
       expect(json.report).toBe("prefixlens")
@@ -482,10 +478,10 @@ describe("hints", () => {
 async function reportOn(name: string, trace: string) {
   const file = join(directory, `${name}.trace.jsonl`)
   await Bun.write(file, trace)
-  return report(prefixlens!.cli, file)
+  return report(prefixlens.cli, file)
 }
 
-describe.skipIf(prefixlens === null)(withPrefixlens("declared breaks in prefixlens report"), () => {
+describe("declared breaks in prefixlens report", () => {
   test("a seeded bug is still a real miss when the session also declares a break on another call", async () => {
     // The tool list reversed from the second request on: a harness bug at call 1. The revert at call 2 is declared.
     const reorder: StepBuilder = (projection, build) => {

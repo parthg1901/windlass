@@ -18,10 +18,9 @@ import type { ModelRequest } from "../../src/request/request.ts"
 import { exportSession } from "../../src/trace/export.ts"
 import { type PrefixPair, prefixPairs } from "../../src/trace/gate.ts"
 import type { Projection } from "../../src/message/message.ts"
-import { loadPrefixlens, withPrefixlens } from "./prefixlens.ts"
+import {prefixlens } from "./prefixlens.ts"
 import { COMPACTION_PROMPT, SCRIPTS, type StepBuilder, type TraceScript, openTestStore, record } from "./sessions.ts"
 
-const prefixlens = await loadPrefixlens()
 
 /** Records `script` with `builder`, exports it (rebuilding with the same builder), and runs the gate over every pair. */
 function gate(script: TraceScript, builder?: StepBuilder) {
@@ -32,7 +31,7 @@ function gate(script: TraceScript, builder?: StepBuilder) {
   const pairs = prefixPairs(result)
   const failures = pairs.flatMap((pair) => {
     try {
-      prefixlens!.test.assertPrefixStable(pair.previous.request, pair.next.request, options(pair))
+      prefixlens.test.assertPrefixStable(pair.previous.request, pair.next.request, options(pair))
       return []
     } catch (error) {
       return [{ pair, message: error instanceof Error ? error.message : String(error) }]
@@ -45,7 +44,7 @@ const options = (pair: PrefixPair) => ({ provider: "openai" as const, ...(pair.a
 
 const multiStep = SCRIPTS
 
-describe.skipIf(prefixlens === null)(withPrefixlens("prefix gate"), () => {
+describe("prefix gate", () => {
   test.each(multiStep.map((script) => [script.name, script] as const))("%s keeps its prefix between every pair of requests", (_, script) => {
     const { result, pairs, failures } = gate(script)
     // A request that cannot be shown to be the one sent cannot be gated, so it fails the gate too.
@@ -59,7 +58,7 @@ describe.skipIf(prefixlens === null)(withPrefixlens("prefix gate"), () => {
     (_, script) => {
       const { pairs } = gate(script)
       for (const pair of pairs) {
-        const bare = prefixlens!.test.explainPrefixDiff(pair.previous.request, pair.next.request, { provider: "openai" })
+        const bare = prefixlens.test.explainPrefixDiff(pair.previous.request, pair.next.request, { provider: "openai" })
         expect({ pair: pair.next.row.id, stable: bare.stable }).toEqual({ pair: pair.next.row.id, stable: pair.allowBreak === undefined })
       }
     },
@@ -72,7 +71,7 @@ describe.skipIf(prefixlens === null)(withPrefixlens("prefix gate"), () => {
     expect(reverted.allowBreak).toEqual({ reason: "revert" })
     expect(reverted.allowBreak).toEqual({ reason: reverted.next.declared[0]!.reason })
     const next = { ...reverted.next.request, blocks: reverted.next.request.blocks.toReversed() }
-    expect(() => prefixlens!.test.assertPrefixStable(reverted.previous.request, next, options(reverted))).toThrow(
+    expect(() => prefixlens.test.assertPrefixStable(reverted.previous.request, next, options(reverted))).toThrow(
       "a break was allowed (revert) only after block",
     )
   })

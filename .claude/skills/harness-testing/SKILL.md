@@ -58,7 +58,7 @@ First full run (2026-11-11, gpt-6-luna, low effort): 8 of 10 passed, median 18.6
 
 Reading a result:
 - `cache-drop` in the anomalies column means a step read fewer cached tokens than the one before. Do not assume a harness bug. Export the session and ask prefixlens:
-  `bun scripts/export-trace.ts <session-id> -o /tmp/t.jsonl && bun ../prefixlens/src/cli.ts report /tmp/t.jsonl --all`
+  `bun scripts/export-trace.ts <session-id> -o /tmp/t.jsonl && bunx prefixlens report /tmp/t.jsonl --all`
   "provider-side miss, not caused by the harness" with all records full-request means the prefix was intact (seen on 4 of 10 runs; it is the provider's lag on quick follow-ups). Any other cause is a real bug.
 - "N full-request, 0 usage-only" in the report is itself a check: every request rebuilt from the log matched the hashes in the ledger.
 - A failed task is not always the agent's fault. Read the task prompt against the grader's reason before blaming either (one grader demanded behaviour the prompt never asked for).
@@ -93,7 +93,7 @@ Reading a result:
 - Each process plays its script from the start: the `fork` subcommand needs no responses, the `replay` subcommand needs the recording's responses again.
 - With a throwaway `XDG_DATA_HOME` there is no sign-in, and every subcommand that starts the server needs either the sign-in or `WINDLASS_ACP_SCRIPT`, `fork` included although it calls no model.
 - To reproduce "session in use" after a kill: put a command with `trap '' TERM` in the scripted turn, `kill -9` the CLI, then run `--continue` within 5 s.
-- In a git worktree, set `PREFIXLENS_DIR=/home/ubuntu/projects/prefixlens`: the prefix gate and the eval classifier look for prefixlens beside the repository and skip silently when it is not there.
+- prefixlens is a dev dependency of the workspace root (pinned to an exact version in `package.json`): the prefix gate, the trace tests and the eval classifier import it or run its `bin`, so they always run, in a worktree too, after `bun install`. There is no `PREFIXLENS_DIR` any more.
 
 ## MCP, skills and wake-ups (wired 2026-11-12)
 
@@ -139,7 +139,7 @@ Reading a result:
 - An agent is chosen with `--agent <name>` or `/agent`; `agents.default` in the user's config file (a throwaway `XDG_CONFIG_HOME` in tests) sets the one a new session starts as.
 - In tmux, wait for the `›` prompt before sending keys: under load a fixed 6-second wait lost the Enter.
 - Under heavy load (five agents on two cores: load average 15 to 20) tests time out at the default 5 s. Re-run a timeout alone, or with `--timeout 60000`, before believing it.
-- prefixlens is a separate repository that may be changing under you: a failing `packages/core/test/trace/export.test.ts` can mean the sibling checkout moved (its trace format, how it records images), not that the harness broke. Check `git -C ../prefixlens log` first.
+- A failing `packages/core/test/trace/export.test.ts` or `media.test.ts` after the prefixlens version in `package.json` was raised means the package's trace format or its recorder changed: read its CHANGELOG (`node_modules/prefixlens/CHANGELOG.md`) before touching the harness's exporter.
 
 ## Client commands for MCP, skills, wake-ups and memory (2026-11-12)
 

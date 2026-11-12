@@ -55,7 +55,7 @@ the run, and the grader runs after the last turn that was sent. All turns go int
 After each run the runner exports the session from the CLI's data directory (`$XDG_DATA_HOME/windlass/`, or
 `~/.local/share/windlass/`, where each session is its own database file, `sessions/<id>.db`; or `--db`) with
 `scripts/export-trace.ts` and runs `prefixlens report --json` on the trace
-(`classify.ts`; prefixlens is the sibling checkout `../prefixlens` or `PREFIXLENS_DIR`, run by path). Each call that
+(`classify.ts`; prefixlens is a dev dependency of the workspace root, and its command-line entry is run). Each call that
 lost cached tokens is sorted into provider-side (prefix intact, the provider missed: common on quick follow-ups),
 expired, intentional (a break the harness declared, within what the declaration allows) or avoidable (anything
 else, with prefixlens's cause: a harness bug). A record exported usage-only means the request rebuilt from the log is
@@ -453,7 +453,7 @@ Nothing is installed by the repository. To run it every night at 03:00 with cron
 that is kept on `main` and signed in:
 
 ```
-0 3 * * * cd /path/to/checkout && PREFIXLENS_DIR=/path/to/prefixlens /path/to/bun evals/nightly.ts >> "$HOME/.local/share/<brand>-nightly/cron.log" 2>&1
+0 3 * * * cd /path/to/checkout && /path/to/bun evals/nightly.ts >> "$HOME/.local/share/<brand>-nightly/cron.log" 2>&1
 ```
 
 Or with a systemd user timer, two files under `~/.config/systemd/user/`:
@@ -465,7 +465,6 @@ Description=Nightly evals
 [Service]
 Type=oneshot
 WorkingDirectory=/path/to/checkout
-Environment=PREFIXLENS_DIR=/path/to/prefixlens
 ExecStart=/path/to/bun evals/nightly.ts
 ```
 

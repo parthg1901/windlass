@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type CallId, type EventData, type EventType, type MessageId, type SessionId, event } from "../packages/core/src/index.ts"
 import { traceHash } from "../packages/core/src/trace/format.ts"
-import { classifySession, classifyTrace, prefixlensDir } from "./classify.ts"
+import { classifySession, classifyTrace } from "./classify.ts"
 import { type RunOptions, computeMetrics, explainAnomalies, formatTable, parseRunnerArgs, runAgent, taskRunEnv } from "./run-agent.ts"
 import { TEST_CONTEXT_WINDOW_ENV } from "../packages/core/src/assembly.ts"
 import { brand } from "../packages/core/src/brand.ts"
@@ -306,8 +306,6 @@ const system = (text: string) => block("system", undefined, { type: "text", text
 const message = (n: number) => block("message", "user", { type: "message", role: "user", content: [{ type: "input_text", text: `message ${n} `.repeat(50) }] })
 const instructions = system("You are a coding agent. ".repeat(200))
 const prefix = [tool("read"), tool("shell"), instructions]
-const present = await Bun.file(join(prefixlensDir(), "src", "cli.ts")).exists()
-const withPrefixlens = (name: string) => (present ? name : `${name} [skipped: no prefixlens checkout at ${prefixlensDir()}]`)
 
 describe("cache classification", () => {
   const trace = async (name: string, calls: Parameters<typeof handTrace>[0]) => {
@@ -316,7 +314,7 @@ describe("cache classification", () => {
     return file
   }
 
-  test.skipIf(!present)(withPrefixlens("a provider-side miss, a declared break and an avoidable miss are told apart"), async () => {
+  test("a provider-side miss, a declared break and an avoidable miss are told apart", async () => {
     const file = await trace("mixed", [
       { blocks: [...prefix, message(1)], read: 0 },
       { blocks: [...prefix, message(1), message(2)], read: 3200 },
@@ -354,7 +352,7 @@ describe("cache classification", () => {
     expect(marked.filter((anomaly) => anomaly.kind === "avoidable-miss").map((anomaly) => anomaly.detail)).toEqual(["trace call 4: tools_changed: tool list changed (-1 tool: 2 → 1)"])
   }, 60_000)
 
-  test.skipIf(!present)(withPrefixlens("a drop at an avoidable miss is unexplained"), async () => {
+  test("a drop at an avoidable miss is unexplained", async () => {
     const file = await trace("avoidable", [
       { blocks: [...prefix, message(1)], read: 0 },
       { blocks: [...prefix, message(1), message(2)], read: 3200 },
@@ -372,7 +370,7 @@ describe("cache classification", () => {
     expect(drop.detail).toEndWith("unexplained, tools_reordered")
   }, 60_000)
 
-  test.skipIf(!present)(withPrefixlens("a usage-only record is a fidelity failure, with the exporter's reason"), async () => {
+  test("a usage-only record is a fidelity failure, with the exporter's reason", async () => {
     const file = await trace("usage-only", [
       { blocks: [...prefix, message(1)], read: 0 },
       { blocks: [], read: 3200, fidelity: "usage-only", reason: "hash_mismatch" },
@@ -383,25 +381,18 @@ describe("cache classification", () => {
     expect(explainAnomalies(computeMetrics("", 5), result).map((anomaly) => anomaly.kind)).toContain("usage-only-record")
   }, 60_000)
 
-  test("without the prefixlens checkout it is skipped and says why; drops stay unexplained", async () => {
-    const previous = process.env.PREFIXLENS_DIR
-    process.env.PREFIXLENS_DIR = join(scratch.dir, "no-prefixlens")
-    try {
-      const result = await classifySession("ses_x", { database: join(scratch.dir, "none.db"), traceFile: join(scratch.dir, "none.jsonl") })
-      expect(result.status).toBe("skipped")
-      expect(result.reason).toBe(`no prefixlens checkout at ${join(scratch.dir, "no-prefixlens")}`)
-      const usage = (cached: number) => ({ inputTokens: 3000, cachedInputTokens: cached, outputTokens: 10, reasoningTokens: 0 })
-      const stream = [usage(2000), usage(0)].map((step, index) => JSON.stringify({ type: "step.ended", v: 1, data: { messageId: `m${index}`, finish: "stop", usage: step } })).join("\n")
-      expect(explainAnomalies(computeMetrics(stream, 5), result).find((anomaly) => anomaly.kind === "cache-drop")?.explained).toBeNull()
-    } finally {
-      if (previous === undefined) delete process.env.PREFIXLENS_DIR
-      else process.env.PREFIXLENS_DIR = previous
-    }
+  test("a run that reported no session is skipped and says why; drops stay unexplained", async () => {
+    const result = await classifySession(null, { database: join(scratch.dir, "none.db"), traceFile: join(scratch.dir, "none.jsonl") })
+    expect(result.status).toBe("skipped")
+    expect(result.reason).toBe("the run reported no session")
+    const usage = (cached: number) => ({ inputTokens: 3000, cachedInputTokens: cached, outputTokens: 10, reasoningTokens: 0 })
+    const stream = [usage(2000), usage(0)].map((step, index) => JSON.stringify({ type: "step.ended", v: 1, data: { messageId: `m${index}`, finish: "stop", usage: step } })).join("\n")
+    expect(explainAnomalies(computeMetrics(stream, 5), result).find((anomaly) => anomaly.kind === "cache-drop")?.explained).toBeNull()
   })
 
   // End to end: the stand-in writes a scripted session into a real session database, the runner exports it with
   // scripts/export-trace.ts and classifies it.
-  test.skipIf(!present)(withPrefixlens("the runner exports a real session and classifies its declared breaks"), async () => {
+  test("the runner exports a real session and classifies its declared breaks", async () => {
     const data = join(scratch.dir, "data-settings")
     const report = await run("scripted", { tasks: ["answer-question"] }, { XDG_DATA_HOME: data, STAND_IN_SCRIPT: "settings changes" })
     const result = report.results[0]!
@@ -412,7 +403,7 @@ describe("cache classification", () => {
     expect(formatTable(report)).toContain("0 provider-side, 2 intentional, 0 avoidable; 0 usage-only records")
   }, 60_000)
 
-  test.skipIf(!present)(withPrefixlens("a session whose ledger does not match its log exports usage-only, and that is flagged"), async () => {
+  test("a session whose ledger does not match its log exports usage-only, and that is flagged", async () => {
     const data = join(scratch.dir, "data-broken")
     const report = await run("scripted", { tasks: ["answer-question"] }, { XDG_DATA_HOME: data, STAND_IN_SCRIPT: "multi-step turns", STAND_IN_BUILDER: "broken" })
     const result = report.results[0]!
@@ -428,7 +419,7 @@ describe("cache classification", () => {
     expect(off.results[0]!.cache).toMatchObject({ status: "skipped", reason: "classification turned off" })
     const missing = await run("nothing", { tasks: ["answer-question"] })
     expect(missing.results[0]!.cache.status).toBe("skipped")
-    expect(missing.results[0]!.cache.reason).toContain(present ? "no session database" : "no prefixlens checkout")
+    expect(missing.results[0]!.cache.reason).toContain("no session database")
   }, 60_000)
 })
 

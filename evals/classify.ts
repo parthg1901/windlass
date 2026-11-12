@@ -12,12 +12,12 @@
  * A usage-only record in the export means the request rebuilt from the log did not match the hashes the ledger
  * stored for what was sent: also a harness bug, and prefixlens cannot explain that call's miss.
  *
- * prefixlens is the sibling checkout `../prefixlens` (or `PREFIXLENS_DIR`); it is run by path, never imported or
- * installed. Without it, classification is skipped and says so.
+ * prefixlens is a dev dependency of the workspace root; its command-line entry is run as a process.
  */
 import { existsSync } from "node:fs"
+import { createRequire } from "node:module"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { brand } from "../packages/core/src/brand.ts"
 import { COMPACTION_PROMPT } from "../packages/core/src/engine/constants.ts"
 import { HARNESS_KEY, type TraceRecord } from "../packages/core/src/trace/format.ts"
@@ -26,8 +26,11 @@ import { errorLine } from "./grader.ts"
 const REPO = resolve(import.meta.dir, "..")
 const EXPORTER = join(REPO, "scripts", "export-trace.ts")
 
-export function prefixlensDir() {
-  return process.env.PREFIXLENS_DIR ?? resolve(REPO, "..", "prefixlens")
+/** The command-line entry of the installed prefixlens package, from its own `bin`. */
+export function prefixlensCli(): string {
+  const require = createRequire(import.meta.url)
+  const { bin } = require("prefixlens/package.json") as { bin: Record<string, string> }
+  return join(dirname(require.resolve("prefixlens/package.json")), bin.prefixlens!)
 }
 
 /** The data directory the CLI keeps its sessions in, one file each, for the environment the agent ran with. */
@@ -91,7 +94,6 @@ export function skipped(reason: string, status: "skipped" | "error" = "skipped")
 
 /** Exports `sessionId` from `database` (a harness data directory, or a single database file) to `traceFile`, then classifies it. Never throws. */
 export async function classifySession(sessionId: string | null, options: { readonly database: string; readonly traceFile: string }): Promise<CacheClassification> {
-  if (!existsSync(join(prefixlensDir(), "src", "cli.ts"))) return skipped(`no prefixlens checkout at ${prefixlensDir()}`)
   if (sessionId === null) return skipped("the run reported no session")
   if (!existsSync(options.database)) return skipped(`no session database at ${options.database}`)
   // Exit 3: written, with some calls usage-only because their rebuilt request differs. Read the trace to see which.
@@ -102,8 +104,7 @@ export async function classifySession(sessionId: string | null, options: { reado
 
 /** Runs `prefixlens report --json` on a trace file and sorts its misses. Never throws. */
 export async function classifyTrace(traceFile: string): Promise<CacheClassification> {
-  const cli = join(prefixlensDir(), "src", "cli.ts")
-  if (!existsSync(cli)) return skipped(`no prefixlens checkout at ${prefixlensDir()}`)
+  const cli = prefixlensCli()
   const records = (await Bun.file(traceFile).text())
     .split("\n")
     .filter((line) => line.trim() !== "")

@@ -8,7 +8,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { buildBaseline, loadResults } from "./baseline.ts"
-import { prefixlensDir } from "./classify.ts"
 import { EXIT, LOCK_FILE, type NightlySummary, STAGING_PREFIX, acquireLock, countRequests, parseNightlyArgs } from "./nightly.ts"
 import type { HistoryRow } from "./recall/track.ts"
 
@@ -16,7 +15,6 @@ const REPO = resolve(import.meta.dir, "..")
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "wl-nightly-")))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 const TASKS = ["answer-question", "config-edits", "large-log"]
-const hasPrefixlens = existsSync(join(prefixlensDir(), "src", "cli.ts"))
 
 /** Runs the nightly as a user would, with a time limit; returns its exit code and output. */
 async function nightly(args: string[], env: Record<string, string> = {}) {
@@ -80,7 +78,7 @@ describe("the whole flow, dry", () => {
     expect(summary.requests.total).toBe(summary.requests.tasks + summary.requests.recall)
     expect(summary.tokens!.input).toBeGreaterThan(0)
     expect(Object.keys(summary.phasesMs)).toEqual(["tasks", "gate", "recall"])
-    if (hasPrefixlens) expect(summary.cache).toMatchObject({ classified: 9, runs: 9, avoidable: 0, usageOnly: 0 })
+    expect(summary.cache).toMatchObject({ classified: 9, runs: 9, avoidable: 0, usageOnly: 0 })
     // The raw results name their files where they are now, not where they were written.
     const results = readFileSync(join(directory, "tasks", "results.json"), "utf8")
     expect(results).not.toContain(STAGING_PREFIX)
@@ -101,7 +99,7 @@ describe("the whole flow, dry", () => {
     writeFileSync(failingBaselineFile, JSON.stringify(perfect))
   }, 240_000)
 
-  test.skipIf(!hasPrefixlens)("a run that matches its baseline and keeps its recall passes: exit 0", async () => {
+  test("a run that matches its baseline and keeps its recall passes: exit 0", async () => {
     const root = join(scratch, "pass")
     const result = await nightly(["--root", root, "--tasks", TASKS.join(","), "--baseline", baselineFile, "--recall-history", seeded("pass", [oracleRow({ engine: full(12) })])])
     expect(result.code).toBe(EXIT.pass)

@@ -1,25 +1,21 @@
 /**
- * The sibling prefixlens checkout, when there is one at ../prefixlens next to
- * this repository. It is loaded by path at run time, never declared as a
- * dependency, so a fresh clone without it still installs, typechecks and runs
- * its tests (the parts that need prefixlens are skipped and say why).
+ * prefixlens, the package the cache guarantee is checked with: its `assertPrefixStable` on the harness's own
+ * requests, its recorder's records beside the exporter's, and its report on an exported trace. It is a dev
+ * dependency of the workspace root, so these tests always run.
  *
  * Only the few entry points the tests use are typed here.
  */
-import { existsSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { createRequire } from "node:module"
+import { dirname, join } from "node:path"
+import { buildRecord, parseTrace } from "prefixlens"
+import { assertPrefixStable, explainPrefixDiff } from "prefixlens/test"
 
-/** `../prefixlens` beside this repository; `PREFIXLENS_DIR` points elsewhere (or at nothing, to see the skips). */
-export const PREFIXLENS_DIR = process.env.PREFIXLENS_DIR ?? resolve(import.meta.dir, "../../../../../prefixlens")
-const present = existsSync(join(PREFIXLENS_DIR, "src/assert.ts")) && existsSync(join(PREFIXLENS_DIR, "src/cli.ts"))
-
-/** Why the prefixlens parts are skipped, or `null` when the sibling is there. */
-export const SKIP_REASON = present ? null : `skipped: no prefixlens checkout at ${PREFIXLENS_DIR}`
-
-/** `name`, with the skip reason appended when the sibling is absent, so a skipped test says why in the summary. */
-export const withPrefixlens = (name: string) => (SKIP_REASON === null ? name : `${name} [${SKIP_REASON}]`)
-
-if (SKIP_REASON !== null) console.warn(`prefixlens tests ${SKIP_REASON}`)
+/** The package's command-line entry, from its own `bin`. */
+function cliPath(): string {
+  const manifest = createRequire(import.meta.url).resolve("prefixlens/package.json")
+  const { bin } = createRequire(import.meta.url)("prefixlens/package.json") as { bin: Record<string, string> }
+  return join(dirname(manifest), bin.prefixlens!)
+}
 
 export interface Explanation {
   readonly stable: boolean
@@ -58,15 +54,11 @@ export interface PrefixlensReader {
   readonly parseTrace: (text: string) => { records: unknown[]; errors: string[]; warnings: string[] }
 }
 
-export async function loadPrefixlens() {
-  if (SKIP_REASON !== null) return null
-  const load = (file: string) => import(join(PREFIXLENS_DIR, file))
-  return {
-    test: (await load("src/assert.ts")) as PrefixlensTest,
-    recorder: (await load("src/record/exchange.ts")) as PrefixlensRecorder,
-    reader: (await load("src/trace.ts")) as PrefixlensReader,
-    cli: join(PREFIXLENS_DIR, "src/cli.ts"),
-  }
+export const prefixlens = {
+  test: { assertPrefixStable, explainPrefixDiff } as unknown as PrefixlensTest,
+  recorder: { buildRecord } as unknown as PrefixlensRecorder,
+  reader: { parseTrace } as unknown as PrefixlensReader,
+  cli: cliPath(),
 }
 
 /** `prefixlens report <trace> --json`, parsed. */

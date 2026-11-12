@@ -17,13 +17,12 @@ import { script } from "../../src/testing/fake-provider.ts"
 import { describeUnverified, exportSession } from "../../src/trace/export.ts"
 import { TRACE_FORMAT_VERSION, elideBinary, serializeTrace, traceHash } from "../../src/trace/format.ts"
 import { SETTINGS, USAGE, call, closeHarnesses, place, removePlaces, start } from "../engine/assembly-helpers.ts"
-import { PREFIXLENS_DIR, loadPrefixlens, report, withPrefixlens } from "./prefixlens.ts"
+import {report, prefixlens } from "./prefixlens.ts"
 import { validateTrace } from "./spec.ts"
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)
 
-const prefixlens = await loadPrefixlens()
 
 /** A real, decodable PNG: `width` x `height` pixels of one RGB colour. */
 function png(width: number, height: number, rgb: readonly [number, number, number]): Uint8Array {
@@ -85,9 +84,22 @@ describe("elideBinary", () => {
     expect(elideBinary({ type: "input_file", file_data: "JVBERi0=" }).content).toEqual({ type: "input_file", file_data: `<binary, 5 bytes, sha256 ${sha("JVBERi0=")}>` })
   })
 
-  test.skipIf(prefixlens === null)(withPrefixlens("gives what prefixlens's recorder gives for every part shape SPEC 4.5 names"), async () => {
-    const canonical = (await import(`${PREFIXLENS_DIR}/src/canonical.ts`)) as {
-      elideBinary: (block: { kind: string; hash: string; content?: unknown }) => { content?: unknown; elided?: boolean }
+  test("gives what prefixlens's recorder gives for every part shape SPEC 4.5 names", async () => {
+    // prefixlens's public recorder, given a request whose one input item is, or holds, the part.
+    const theirsFor = (part: Record<string, unknown>) => {
+      const item = part.type === "function_call_output" ? part : { role: "user", content: [part] }
+      const record = prefixlens.recorder.buildRecord({
+        api: "openai-responses",
+        body: { model: "m", input: [item] },
+        response: { usage: { input_tokens: 1, output_tokens: 1 }, complete: true },
+        startedAt: new Date(0),
+        lane: "main",
+        recorder: "proxy",
+      })
+      if (typeof record === "string") throw new Error(record)
+      const block = (record.request as { blocks: { content?: unknown; elided?: boolean }[] }).blocks.at(-1)!
+      const content = part.type === "function_call_output" ? block.content : (block.content as { content: unknown[] }).content[0]
+      return { content, elided: block.elided }
     }
     const parts = [
       output,
@@ -100,7 +112,7 @@ describe("elideBinary", () => {
       { type: "input_image", image_url: "https://example.test/shot.png" },
     ]
     for (const part of parts) {
-      const theirs = canonical.elideBinary({ kind: "message", hash: traceHash(part), content: part })
+      const theirs = theirsFor(part as Record<string, unknown>)
       const ours = elideBinary(part as never)
       expect(ours.content).toEqual(theirs.content as never)
       expect(ours.elided).toBe(theirs.elided === true)
@@ -174,11 +186,11 @@ describe(`a session in which a tool reads an image, exported as format ${TRACE_F
     expect(validateTrace(trace).errors).toEqual([])
   }, 60_000)
 
-  test.skipIf(prefixlens === null)(withPrefixlens("the records agree block for block with prefixlens's recorder, and prefixlens reads and reports the trace"), async () => {
+  test("the records agree block for block with prefixlens's recorder, and prefixlens reads and reports the trace", async () => {
     const { exported, sent, rows, id, root } = await session()
     exported.records.forEach((record, index) => {
       const row = rows[index]!
-      const proxied = prefixlens!.recorder.buildRecord({
+      const proxied = prefixlens.recorder.buildRecord({
         api: "openai-responses",
         body: sent[index]!.body,
         response: {
@@ -200,12 +212,12 @@ describe(`a session in which a tool reads an image, exported as format ${TRACE_F
     })
 
     const trace = serializeTrace(exported.records)
-    const parsed = prefixlens!.reader.parseTrace(trace)
+    const parsed = prefixlens.reader.parseTrace(trace)
     expect(parsed.errors).toEqual([])
     expect(parsed.warnings).toEqual([])
     const file = `${root}/trace.jsonl`
     await Bun.write(file, trace)
-    const { json } = report(prefixlens!.cli, file)
+    const { json } = report(prefixlens.cli, file)
     expect(json.summary.fidelity).toEqual({ full_request: 3, usage_only: 0 })
     expect(json.summary.misses).toBe(0)
     expect(id).toBeTruthy()
@@ -223,7 +235,7 @@ describe(`a session in which a tool reads an image, exported as format ${TRACE_F
     expect(validateTrace(trace).errors).toEqual([])
   }, 60_000)
 
-  test.skipIf(prefixlens === null)(withPrefixlens("a 1.1 trace, with the image written in full, still reads the same in prefixlens"), async () => {
+  test("a 1.1 trace, with the image written in full, still reads the same in prefixlens", async () => {
     const { exported, root } = await session()
     // What the exporter wrote before format 1.2: the same blocks with the content as sent.
     const old = exported.records.map((record) => ({
@@ -238,14 +250,14 @@ describe(`a session in which a tool reads an image, exported as format ${TRACE_F
         }),
       },
     }))
-    const parsed = prefixlens!.reader.parseTrace(serializeTrace(old as never))
+    const parsed = prefixlens.reader.parseTrace(serializeTrace(old as never))
     expect(parsed.errors).toEqual([])
     expect(parsed.warnings).toEqual([])
     const [oldFile, newFile] = [`${root}/old.jsonl`, `${root}/new.jsonl`]
     await Bun.write(oldFile, serializeTrace(old as never))
     await Bun.write(newFile, serializeTrace(exported.records))
     const summary = (file: string) => {
-      const { json } = report(prefixlens!.cli, file)
+      const { json } = report(prefixlens.cli, file)
       return { fidelity: json.summary.fidelity, misses: json.summary.misses, statuses: json.turns.map((turn) => [turn.status, turn.hit_rate]) }
     }
     expect(summary(oldFile)).toEqual(summary(newFile))
