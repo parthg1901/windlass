@@ -10,6 +10,8 @@ import { join } from "node:path"
 import { createHarness } from "../packages/core/src/assembly.ts"
 import { responsesFromTape } from "../packages/core/src/replay/fake.ts"
 import { tapeFromEvents } from "../packages/core/src/replay/tape.ts"
+import { exportSnapshot } from "../packages/core/src/snapshot/index.ts"
+import { snapshotOfCopy } from "../scripts/replay.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../packages/core/src/testing/fake-provider.ts"
 import { describeChange, fisherExact, formatSuite, readRuns, runReplaySuite, verdict } from "./replay-suite.ts"
 
@@ -75,6 +77,8 @@ describe("the replay suite", () => {
         request: { systemPrompt: "Changed.", policy: "execute" },
         results,
         cleanup: false,
+        exportSnapshot: (workspace, id, into) => exportSnapshot(workspace, id, into, { dataDir: join(harness.dataDir, "snapshots") }),
+        snapshotCopy: (copy, session) => snapshotOfCopy(copy, harness.dataDir, session),
         grade: async (task, workspace) => {
           graded.push(task)
           const content = readFileSync(join(workspace, "a.txt"), "utf8")
@@ -92,13 +96,14 @@ describe("the replay suite", () => {
         ["task-b", "change", "identical", null, null],
       ])
       // The new measures: what each replay did and the files it ended with, against the recording.
-      expect(report.rows.map((row) => [row.effects?.same ?? null, row.effects?.first ?? null, row.lenient?.left ?? null, row.sameWorkspace])).toEqual([
-        [true, null, null, true],
-        [false, 'act 1: write "a.txt" (act differs)', 'act 1: write "a.txt" (act differs)', false],
-        [false, 'act 1: write "a.txt" (act differs)', 'act 1: write "a.txt" (act differs)', false],
-        [true, null, null, true],
-        [true, null, null, true],
-        [true, null, null, true],
+      // The other content in a.txt is another side effect and other bytes, but the same file changed.
+      expect(report.rows.map((row) => [row.effects?.same ?? null, row.effects?.first ?? null, row.lenient?.left ?? null, row.samePaths, row.sameWorkspace])).toEqual([
+        [true, null, null, true, true],
+        [false, 'act 1: write "a.txt" (act differs)', 'act 1: write "a.txt" (act differs)', true, false],
+        [false, 'act 1: write "a.txt" (act differs)', 'act 1: write "a.txt" (act differs)', true, false],
+        [true, null, null, true, true],
+        [true, null, null, true, true],
+        [true, null, null, true, true],
       ])
       // Every replay that left its recording has a workspace of its own to grade, unchanged ones too.
       expect(graded).toEqual(["task-a", "task-a"])
@@ -111,10 +116,11 @@ describe("the replay suite", () => {
       expect(report.totals).toMatchObject({ runs: 2, skipped: 1, change: { replays: 2, onTape: 1, left: 1, other: 0, novel: 0 }, noise: { replays: 4, onTape: 3, left: 1, other: 0, effectsDiffer: { yes: 1, of: 4 } }, requests: 15 })
       const table = formatSuite(report)
       expect(table).toContain("change: the system prompt   policy: execute   unchanged replays: execute")
-      // Per task: the noise floor on each measure, then the change on each, then the new places.
-      expect(table).toMatch(/task-a\s+1\s+1\/2\s+1\/2\s+1\/2\s+1\/2\s+2\/2\s+1\/1\s+1\/1\s+1\/1\s+1\/1\s+1\/1\s+0\/1/)
-      expect(table).toMatch(/all\s+2\s+1\/4\s+1\/4\s+1\/4\s+1\/4\s+2\/4\s+1\/2/)
-      expect(table).toContain('  no change acted first  act 1: write "a.txt" (act differs)')
+      // Per task a row for the unchanged replays and one for the changed: left, lenient, effects, paths, bytes, pass, new place.
+      expect(table).toContain("task    runs  replays      left  lenient  effects  paths  bytes  pass  new place")
+      expect(table).toMatch(/task-a\s+1\s+no change 2\s+1\/2\s+1\/2\s+1\/2\s+0\/2\s+1\/2\s+2\/2\n\s+change 1\s+1\/1\s+1\/1\s+1\/1\s+0\/1\s+1\/1\s+1\/1\s+0\/1\n/)
+      expect(table).toMatch(/all\s+2\s+no change 4\s+1\/4\s+1\/4\s+1\/4\s+0\/4\s+1\/4\s+2\/4\n\s+change 2\s+1\/2/)
+      expect(table).toContain('  no change acted first   act 1: write "a.txt" (act differs)')
       expect(table).toContain("- made other side effects than the recording: 1 of 2 with the change, 1 of 4 without; within what chance gives at these numbers (p = 1.00).")
       expect(table).toContain("Every place the change left a recording is a place where no change left it too")
       expect(table).toContain('At 2 and 4 replays only a large difference can be told from chance; "within chance" here does not mean the change does nothing.')
@@ -149,22 +155,23 @@ describe("the replay suite", () => {
     expect(describeChange({})).toBe("nothing (every replay measures the noise floor)")
     expect(describeChange({ systemPrompt: "x", toolDescriptions: { shell: "y" }, model: "m", effort: null, strict: true })).toBe("the system prompt, the description of shell, model m, effort default, strict matching")
     const none = { yes: 0, of: 0 }
-    const empty = { replays: 0, onTape: 0, left: 0, other: 0, effectsDiffer: none, lenientLeft: none, workspaceDiffers: none, passed: none }
+    const empty = { replays: 0, onTape: 0, left: 0, other: 0, effectsDiffer: none, lenientLeft: none, pathsDiffer: none, workspaceDiffers: none, passed: none }
     const table = formatSuite({ results: "r", policy: "stop", noisePolicy: "stop", change: "the system prompt", rows: [], tasks: [], totals: { runs: 0, skipped: 0, change: { ...empty, novel: 0 }, noise: empty, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 } })
     expect(table).toContain("The noise floor was not measured (--noise 0), so nothing can be read into the change yet.")
   })
 
   test("with nothing changed every replay is the noise floor, and a rate of none says how rare a rate it can rule out", () => {
     const of = (yes: number, count: number) => ({ yes, of: count })
-    const noise = { replays: 20, onTape: 0, left: 20, other: 0, effectsDiffer: of(6, 20), lenientLeft: of(15, 20), workspaceDiffers: of(0, 20), passed: of(19, 20) }
-    const change = { replays: 0, onTape: 0, left: 0, other: 0, effectsDiffer: of(0, 0), lenientLeft: of(0, 0), workspaceDiffers: of(0, 0), passed: of(0, 0), novel: 0 }
+    const noise = { replays: 20, onTape: 0, left: 20, other: 0, effectsDiffer: of(6, 20), lenientLeft: of(15, 20), pathsDiffer: of(0, 20), workspaceDiffers: of(4, 20), passed: of(19, 20) }
+    const change = { replays: 0, onTape: 0, left: 0, other: 0, effectsDiffer: of(0, 0), lenientLeft: of(0, 0), pathsDiffer: of(0, 0), workspaceDiffers: of(0, 0), passed: of(0, 0), novel: 0 }
     const lines = verdict({ results: "r", policy: "execute", noisePolicy: "execute", change: describeChange({}), rows: [], tasks: [], totals: { runs: 5, skipped: 0, change, noise, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 } })
     expect(lines).toEqual([
       "Nothing was changed, so every replay measures the noise floor of these recordings on this model:",
       "- left the recording (the strict matcher: the old measure): 20 of 20 (100%)",
       "- would have left it under a lenient matcher without a copy: 15 of 20 (75%)",
       "- made other side effects than the recording: 6 of 20 (30%)",
-      "- ended with other files than the recording: 0 of 20 (the true rate is probably below 15%: with 20 replays nothing rarer can be seen)",
+      "- changed other files than the recording: 0 of 20 (the true rate is probably below 15%: with 20 replays nothing rarer can be seen)",
+      "- ended with files not byte for byte the recording's: 4 of 20 (20%)",
       "A change is visible on a measure only where it moves that measure clearly above these rates.",
     ])
   })

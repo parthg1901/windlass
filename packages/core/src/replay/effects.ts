@@ -447,7 +447,8 @@ export function lastSnapshot(events: readonly { readonly type: string; readonly 
 /**
  * The workspace a replay ended with, as a snapshot ID: the last snapshot its
  * copy took after `replay.diverged`, else the snapshot the copy was restored
- * from. `recorded` when it never left the recording (it made the recorded
+ * from. Only as good as the log: the step in which a replay leaves the
+ * recording is not bracketed by snapshots (see `compareReplay`). `recorded` when it never left the recording (it made the recorded
  * calls, so it ends where the recording did). `null` when it left without a
  * copy (`stop`) or no snapshot was taken.
  */
@@ -476,10 +477,17 @@ export interface ReplayComparison {
 
 type AnyEvent = Parameters<typeof tapeFromEvents>[0][number]
 
-/** The comparison on side effects, lenient matching and outcome of a replay session with its recording, from both logs. */
-export function compareReplay(recordedEvents: readonly AnyEvent[], replayEvents: readonly AnyEvent[], report: Pick<ReplayReport, "status" | "comparison">, options: EffectOptions = {}): ReplayComparison {
+/**
+ * The comparison on side effects, lenient matching and outcome of a replay
+ * session with its recording, from both logs. `replayFinal` is the snapshot
+ * of the copy the replay ended in, taken after it ended; give it whenever
+ * the copy is still there: the replay's log does not bracket the step in
+ * which it left the recording with snapshots, so `finalSnapshot` of the log
+ * misses that step's changes when no later step took one.
+ */
+export function compareReplay(recordedEvents: readonly AnyEvent[], replayEvents: readonly AnyEvent[], report: Pick<ReplayReport, "status" | "comparison">, options: EffectOptions & { readonly replayFinal?: string | null } = {}): ReplayComparison {
   const recordedFinal = lastSnapshot(recordedEvents)
-  const final = finalSnapshot(replayEvents, recordedFinal)
+  const final = options.replayFinal !== undefined ? options.replayFinal : finalSnapshot(replayEvents, recordedFinal)
   const sameWorkspace = final === null || recordedFinal === null ? null : final === recordedFinal
   // Only a replay that reached an answer of its own made everything it was going to make.
   const whole = (report.status === "identical" || report.status === "diverged") && report.comparison.finalAnswer.replayed !== null

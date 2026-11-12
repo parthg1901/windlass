@@ -15,6 +15,7 @@
  * Exit code: 0 when the replay ran (identical or diverged), 1 when it could
  * not be compared (unsupported, incomplete), 2 for a usage error.
  */
+import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { createHarness } from "../packages/core/src/assembly.ts"
 import { brand } from "../packages/core/src/brand.ts"
@@ -23,6 +24,7 @@ import type { ReplayRequest } from "../packages/core/src/engine/replay.ts"
 import { DEFAULT_NORMALISERS } from "../packages/core/src/engine/replay.ts"
 import { compareReplay, renderComparison } from "../packages/core/src/replay/effects.ts"
 import { renderReport } from "../packages/core/src/replay/report.ts"
+import { openSnapshots } from "../packages/core/src/snapshot/index.ts"
 
 const USAGE = `usage: bun scripts/replay.ts <session-id> [--system-prompt <file>] [--tool-description <tool>=<file>]... [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute] [--strict] [--json] [--through <seq>] [--workspace <dir>] [--data-dir <dir>]`
 const POLICIES = ["stop", "execute-read-only", "execute"] as const
@@ -67,6 +69,18 @@ export async function replayRequest(values: {
   }
 }
 
+/**
+ * A snapshot of the copy a replay ended in, taken now. The replay's own log
+ * can miss what the step in which it left its recording changed (that step
+ * started on the tape, so it was not bracketed by snapshots), so the files
+ * it ended with are read from the copy itself. `null` without snapshots.
+ */
+export async function snapshotOfCopy(copy: string, dataDir: string, session: string): Promise<string | null> {
+  const snapshots = await openSnapshots(copy, { dataDir: join(dataDir, "snapshots") })
+  if (snapshots.kind !== "ready") return null
+  return (await snapshots.take({ session }).catch(() => null))?.id ?? null
+}
+
 export const REPLAY_FLAGS = {
   "system-prompt": { type: "string" },
   "tool-description": { type: "string", multiple: true },
@@ -109,7 +123,8 @@ async function main(argv: readonly string[]): Promise<number> {
     const outcome = await run.done
     await run.session.settled()
     // Reads ignored: the side effects and the files it ended with, which is what the noise floor leaves readable.
-    const compared = compareReplay(harness.engine.readEvents(sourceId), harness.engine.readEvents(outcome.sessionId), outcome.report, { normalisers: DEFAULT_NORMALISERS })
+    const replayFinal = outcome.workspace === null ? undefined : await snapshotOfCopy(outcome.workspace, harness.dataDir, outcome.sessionId)
+    const compared = compareReplay(harness.engine.readEvents(sourceId), harness.engine.readEvents(outcome.sessionId), outcome.report, { normalisers: DEFAULT_NORMALISERS, ...(replayFinal === undefined ? {} : { replayFinal }) })
     if (parsed.values.json === true)
       console.log(JSON.stringify({ sourceSessionId: sourceId, replaySessionId: outcome.sessionId, policy: request.policy, workspace: outcome.workspace, requests: outcome.requests, usage: outcome.usage, report: outcome.report, compared }, null, 2))
     else {

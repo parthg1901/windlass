@@ -25,15 +25,18 @@
  * side effects. Whether the new behaviour is better is what the eval suite
  * itself measures (`run-agent.ts`, `gate.ts`).
  */
-import { rm } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { createHash } from "node:crypto"
+import { mkdtemp, readFile, readdir, readlink, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, relative, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { type Engine, EngineError, type ReplayOutcome, type ReplayRequest, createHarness } from "../packages/core/src/index.ts"
 import type { SessionId } from "../packages/core/src/id.ts"
 import { DEFAULT_NORMALISERS } from "../packages/core/src/engine/replay.ts"
-import { compareReplay } from "../packages/core/src/replay/effects.ts"
+import { compareReplay, finalSnapshot } from "../packages/core/src/replay/effects.ts"
+import { exportSnapshot } from "../packages/core/src/snapshot/index.ts"
 import type { Divergence } from "../packages/core/src/replay/match.ts"
-import { REPLAY_FLAGS, replayRequest } from "../scripts/replay.ts"
+import { REPLAY_FLAGS, replayRequest, snapshotOfCopy } from "../scripts/replay.ts"
 import { type GradeResult, grade } from "./run-check.ts"
 
 /** One recorded run, as the suite needs it. */
@@ -78,6 +81,14 @@ export interface ReplayRow {
   readonly lenient: { readonly served: number; readonly mustRun: number; readonly left: string | null } | null
   /** Whether it ended with the recording's workspace (equal snapshot IDs); `null` when that is not known (it left without a copy). */
   readonly sameWorkspace: boolean | null
+  /**
+   * Whether it changed the same files as the recording, whatever it wrote in
+   * them (the paths that differ between the recording's first snapshot and
+   * each side's last). `null` when not known.
+   */
+  readonly samePaths: boolean | null
+  /** The changed paths of both sides, when they are not the same. */
+  readonly paths: { readonly recorded: readonly string[]; readonly replayed: readonly string[] } | null
   /** The grade of the copy a diverged replay ended in (`--policy execute`). */
   readonly graded: GradeResult | null
   readonly recordedPass: boolean
@@ -114,7 +125,9 @@ export interface Tally {
   readonly effectsDiffer: Measure
   /** A lenient matcher without a copy would have left the recording (same replays). */
   readonly lenientLeft: Measure
-  /** Ended with another workspace than the recording (of the replays where it is known). */
+  /** Changed other files than the recording, whatever it wrote in them (of the replays where it is known). */
+  readonly pathsDiffer: Measure
+  /** Ended with another workspace than the recording, byte for byte (of the replays where it is known). */
   readonly workspaceDiffers: Measure
   /** Passed the task's grader (of the replays that were graded). */
   readonly passed: Measure
@@ -154,6 +167,19 @@ export interface SuiteOptions {
    * like with like, and graded), otherwise `stop`.
    */
   readonly noisePolicy?: "stop" | "execute"
+  /**
+   * Writes snapshot `id` of `workspace` into the directory `into`
+   * (`exportSnapshot` with the harness's snapshot directory). Without it the
+   * changed paths are not compared.
+   */
+  readonly exportSnapshot?: (workspace: string, id: string, into: string) => Promise<unknown>
+  /**
+   * Takes a snapshot of the copy a replay ended in and returns its ID
+   * (`snapshotOfCopy`). Without it the files are judged from the replay's
+   * log, which misses the changes of the step in which it left the recording
+   * when no later step was snapshotted.
+   */
+  readonly snapshotCopy?: (copy: string, session: string) => Promise<string | null>
   /** Grades a diverged replay's copy. Default: the task's own grader. */
   readonly grade?: (task: string, workspace: string) => Promise<GradeResult>
   /** Whether the copies are deleted after grading. Default true. */
@@ -205,7 +231,7 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
 
   const one = async (run: RecordedRun, kind: ReplayRow["kind"], request: ReplayRequest): Promise<ReplayRow> => {
     const base = { task: run.task, attempt: run.attempt, sessionId: run.sessionId!, kind, recordedPass: run.pass }
-    const failed = (reason: string): ReplayRow => ({ ...base, replaySessionId: null, status: "error", reason, left: null, matchedSteps: 0, recordedSteps: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, effects: null, lenient: null, sameWorkspace: null, graded: null })
+    const failed = (reason: string): ReplayRow => ({ ...base, replaySessionId: null, status: "error", reason, left: null, matchedSteps: 0, recordedSteps: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, effects: null, lenient: null, sameWorkspace: null, samePaths: null, paths: null, graded: null })
     let outcome: ReplayOutcome
     try {
       const started = await options.engine.replaySession(options.engine.resolveSession(run.sessionId!) as SessionId, request)
@@ -216,7 +242,12 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
       return failed(error instanceof EngineError || error instanceof Error ? error.message : String(error))
     }
     const report = outcome.report
-    const compared = compareReplay(options.engine.readEvents(outcome.sourceSessionId), options.engine.readEvents(outcome.sessionId), report, { normalisers: DEFAULT_NORMALISERS })
+    const sourceEvents = options.engine.readEvents(outcome.sourceSessionId)
+    const replayEvents = options.engine.readEvents(outcome.sessionId)
+    const replayFinal = outcome.workspace === null || options.snapshotCopy === undefined ? undefined : await options.snapshotCopy(outcome.workspace, outcome.sessionId).catch(() => null)
+    const compared = compareReplay(sourceEvents, replayEvents, report, { normalisers: DEFAULT_NORMALISERS, ...(replayFinal === undefined ? {} : { replayFinal }) })
+    const paths = compared.sameWorkspace !== false || options.exportSnapshot === undefined ? null : await changedPaths(options.exportSnapshot, sourceEvents, replayEvents, replayFinal).catch(() => null)
+    const samePaths = compared.sameWorkspace === true ? true : paths === null ? null : sameList(paths.recorded, paths.replayed)
     let graded: GradeResult | null = null
     if (outcome.workspace !== null) {
       // Only a replay that left the recording has a workspace of its own to grade.
@@ -236,6 +267,8 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
       cachedTokens: outcome.usage?.cachedInputTokens ?? 0,
       outputTokens: outcome.usage?.outputTokens ?? 0,
       ...compared,
+      samePaths,
+      paths: samePaths === false ? paths : null,
       graded,
     }
   }
@@ -290,6 +323,49 @@ export async function runReplaySuite(options: SuiteOptions): Promise<SuiteReport
   }
 }
 
+type LogEvents = ReturnType<Engine["readEvents"]>
+
+/** The files each side changed: what differs between the recording's first snapshot and each side's last one. */
+async function changedPaths(exporter: NonNullable<SuiteOptions["exportSnapshot"]>, sourceEvents: LogEvents, replayEvents: LogEvents, replayFinal: string | null | undefined): Promise<{ recorded: string[]; replayed: string[] } | null> {
+  const taken = sourceEvents.flatMap((item) => (item.type === "snapshot.taken" ? [item.data.id] : []))
+  const diverged = replayEvents.find((item) => item.type === "replay.diverged")
+  const start = taken[0]
+  const recorded = taken.at(-1)
+  const replayed = replayFinal !== undefined ? replayFinal : finalSnapshot(replayEvents, recorded ?? null)
+  const cwd = sourceEvents[0]?.type === "session.created" ? sourceEvents[0].data.cwd : null
+  if (start === undefined || recorded === undefined || replayed === null || diverged?.type !== "replay.diverged" || cwd === null) return null
+  const directory = await mkdtemp(join(tmpdir(), "replay-suite-"))
+  const written = async (workspace: string, id: string, into: string) => {
+    const result = await exporter(workspace, id, into).catch(() => null)
+    return typeof result === "object" && result !== null && "files" in result
+  }
+  try {
+    if (!(await written(cwd, start, join(directory, "start"))) || !(await written(cwd, recorded, join(directory, "recorded")))) return null
+    // The replay's last snapshot is its copy's; the one it was restored from, the recording's.
+    if (!(await written(diverged.data.workspace, replayed, join(directory, "replayed"))) && !(await written(cwd, replayed, join(directory, "replayed")))) return null
+    const [before, after, replay] = await Promise.all(["start", "recorded", "replayed"].map((name) => fileHashes(join(directory, name))))
+    return { recorded: differing(before!, after!), replayed: differing(before!, replay!) }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+async function fileHashes(root: string): Promise<Map<string, string>> {
+  const hashes = new Map<string, string>()
+  const walk = async (directory: string) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else hashes.set(relative(root, path), entry.isSymbolicLink() ? `link:${await readlink(path)}` : createHash("sha256").update(await readFile(path)).digest("hex"))
+    }
+  }
+  await walk(root)
+  return hashes
+}
+
+const differing = (a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>) => [...new Set([...a.keys(), ...b.keys()])].filter((path) => a.get(path) !== b.get(path)).sort()
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((value, index) => value === b[index])
+
 const measure = (list: readonly ReplayRow[], pick: (row: ReplayRow) => boolean | null): Measure => {
   const known = list.map(pick).filter((value): value is boolean => value !== null)
   return { yes: known.filter(Boolean).length, of: known.length }
@@ -303,6 +379,7 @@ function tally(list: readonly ReplayRow[]): Tally {
     other: list.filter((row) => row.status !== "identical" && row.status !== "diverged").length,
     effectsDiffer: measure(list, (row) => (row.effects === null ? null : !row.effects.same)),
     lenientLeft: measure(list, (row) => (row.lenient === null ? null : row.lenient.left !== null)),
+    pathsDiffer: measure(list, (row) => (row.samePaths === null ? null : !row.samePaths)),
     workspaceDiffers: measure(list, (row) => (row.sameWorkspace === null ? null : !row.sameWorkspace)),
     // A replay that stayed on the recording made the recorded calls, so its result is the recorded one.
     passed: measure(list, (row) => (row.graded !== null ? row.graded.pass : row.status === "identical" ? row.recordedPass : null)),
@@ -339,7 +416,8 @@ const MEASURES = [
   { key: "left", title: "left", words: "left the recording (the strict matcher: the old measure)" },
   { key: "lenientLeft", title: "lenient", words: "would have left it under a lenient matcher without a copy" },
   { key: "effectsDiffer", title: "effects", words: "made other side effects than the recording" },
-  { key: "workspaceDiffers", title: "files", words: "ended with other files than the recording" },
+  { key: "pathsDiffer", title: "paths", words: "changed other files than the recording" },
+  { key: "workspaceDiffers", title: "bytes", words: "ended with files not byte for byte the recording's" },
   { key: "passed", title: "pass", words: "passed the task's grader" },
 ] as const
 
@@ -347,24 +425,23 @@ function measureOf(tallied: Tally, key: (typeof MEASURES)[number]["key"]): Measu
   return key === "left" ? { yes: tallied.left, of: tallied.onTape + tallied.left } : tallied[key]
 }
 
-/** The table: per task, the old count and the new measures, for the unchanged replays next to the changed ones. */
+/** The table: per task, the unchanged replays and the changed ones, each on the old count and the new measures. */
 export function formatSuite(report: SuiteReport): string {
   const unchangedOnly = report.change.startsWith("nothing")
-  const head = ["task", "runs", ...MEASURES.map((item) => `noise ${item.title}`), ...(unchangedOnly ? [] : [...MEASURES.map((item) => `change ${item.title}`), "new place"])]
-  const cells = (task: Pick<TaskSummary, "noise" | "change">, novel: string) => [
-    ...MEASURES.map((item) => (task.noise.replays === 0 ? "-" : ratio(measureOf(task.noise, item.key)))),
-    ...(unchangedOnly ? [] : [...MEASURES.map((item) => ratio(measureOf(task.change, item.key))), novel]),
+  const head = ["task", "runs", "replays", ...MEASURES.map((item) => item.title), "new place"]
+  const rowsOf = (task: string, runs: number, noise: Tally, change: Tally & { readonly novel: number }) => [
+    [task, String(runs), `no change ${noise.replays}`, ...MEASURES.map((item) => (noise.replays === 0 ? "-" : ratio(measureOf(noise, item.key)))), ""],
+    ...(unchangedOnly ? [] : [["", "", `change ${change.replays}`, ...MEASURES.map((item) => ratio(measureOf(change, item.key))), noise.replays === 0 ? "-" : `${change.novel}/${change.left}`]]),
   ]
-  const body = report.tasks.map((task) => [task.task, String(task.runs), ...cells(task, task.noise.replays === 0 ? "-" : `${task.change.novel}/${task.change.left}`)])
   const totals = report.totals
-  body.push(["all", String(totals.runs), ...cells({ noise: { ...totals.noise, where: [], effectsWhere: [] }, change: { ...totals.change, where: [], effectsWhere: [] } }, totals.noise.replays === 0 ? "-" : `${totals.change.novel}/${totals.change.left}`)])
+  const body = [...report.tasks.flatMap((task) => rowsOf(task.task, task.runs, task.noise, task.change)), ...rowsOf("all", totals.runs, totals.noise, totals.change)]
   const widths = head.map((title, column) => Math.max(title.length, ...body.map((row) => row[column]!.length)))
   const line = (row: readonly string[]) => row.map((cell, column) => cell.padEnd(widths[column]!)).join("  ").trimEnd()
   const wheres = report.tasks.flatMap((task) => [
     `${task.task}`,
-    `  no change left it at   ${task.noise.where.join("; ") || "-"}`,
-    `  no change acted first  ${task.noise.effectsWhere.join("; ") || "-"}`,
-    ...(unchangedOnly ? [] : [`  the change left it at  ${task.change.where.join("; ") || "-"}`, `  the change acted first ${task.change.effectsWhere.join("; ") || "-"}`]),
+    `  no change left it at    ${task.noise.where.join("; ") || "-"}`,
+    `  no change acted first   ${task.noise.effectsWhere.join("; ") || "-"}`,
+    ...(unchangedOnly ? [] : [`  the change left it at   ${task.change.where.join("; ") || "-"}`, `  the change acted first  ${task.change.effectsWhere.join("; ") || "-"}`]),
   ])
   return [
     `replay suite: ${report.results}`,
@@ -374,9 +451,11 @@ export function formatSuite(report: SuiteReport): string {
     line(widths.map((width) => "-".repeat(width))),
     ...body.map(line),
     "",
-    "left: replays that left the recording at all (strict matcher). lenient: that a matcher ignoring reads it could not",
-    "answer would still have left. effects: that made other writes, edits or non-reading commands, in order. files: that",
-    "ended with another workspace. pass: that passed the grader. Each is counted of the replays it could be measured on.",
+    "Each column counts the replays that did it, of those it could be measured on. left: left the recording (the strict",
+    "matcher, the old measure). lenient: would still have left under a matcher that lets reads pass where it can answer",
+    "them soundly from the recording, and stops at the first it cannot. effects: made other writes, edits or non-reading",
+    "commands, or in another order. paths: changed other files. bytes: ended with other file contents. pass: passed the",
+    "task's grader. new place: changed replays that left at a step, tool and kind no unchanged replay of the task did.",
     "",
     ...wheres,
     "",
@@ -470,9 +549,11 @@ async function main(argv: readonly string[]): Promise<number> {
       repeat,
       noise,
       ...(noisePolicy === undefined ? {} : { noisePolicy: noisePolicy as "stop" | "execute" }),
+      exportSnapshot: (workspace, id, into) => exportSnapshot(workspace, id, into, { dataDir: join(harness.dataDir, "snapshots") }),
+      snapshotCopy: (copy, session) => snapshotOfCopy(copy, harness.dataDir, session),
       results: directory,
       cleanup: parsed.values.keep !== true,
-      onRow: (row) => console.error(`  ${row.kind === "noise" ? "no change" : "change   "}  ${row.task}#${row.attempt}  ${row.status}${row.left === null ? "" : `  ${place(row.left)}`}${row.effects === null ? "" : `  effects ${row.effects.same ? "same" : "differ"}`}${row.sameWorkspace === null ? "" : `  files ${row.sameWorkspace ? "same" : "differ"}`}${row.graded === null ? "" : `  graded ${row.graded.pass ? "pass" : "fail"}`}  (${row.requests} calls)`),
+      onRow: (row) => console.error(`  ${row.kind === "noise" ? "no change" : "change   "}  ${row.task}#${row.attempt}  ${row.status}${row.left === null ? "" : `  ${place(row.left)}`}${row.effects === null ? "" : `  effects ${row.effects.same ? "same" : "differ"}`}${row.samePaths === null ? "" : `  paths ${row.samePaths ? "same" : "differ"}`}${row.sameWorkspace === null ? "" : `  bytes ${row.sameWorkspace ? "same" : "differ"}`}${row.graded === null ? "" : `  graded ${row.graded.pass ? "pass" : "fail"}`}  (${row.requests} calls)`),
     })
     if (parsed.values.out !== undefined) await Bun.write(parsed.values.out, `${JSON.stringify(report, null, 2)}\n`)
     console.log(parsed.values.json === true ? JSON.stringify(report, null, 2) : formatSuite(report))
