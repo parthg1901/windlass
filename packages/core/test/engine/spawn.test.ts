@@ -293,7 +293,7 @@ describe("between parent and child", () => {
       }
       expect(session.projection().session.execution).toBeNull()
       // The foreground call observed its child stopping and says so; the background child's end waits in the inbox for the next prompt.
-      expect(outputs(h).find(([, output]) => output.includes(child(2)))?.[1]).toContain("It was stopped before it finished: this session was interrupted.")
+      expect(outputs(h).find(([, output]) => output?.includes(child(2)))?.[1]).toContain("It was stopped before it finished: this session was interrupted.")
       expect(session.projection().inbox.map((item) => item.origin)).toEqual(["subagent_result"])
     }))
 
