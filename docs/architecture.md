@@ -591,7 +591,10 @@ is a new version with a decoder for the old one.
   checks run. A turn that was told that spawned work ended (a background command exited, a background subagent
   finished or was lost) is checked for everything since the last verification: that work runs outside the steps,
   also between two turns, and its exit is the first moment anyone can verify it. A turn that changes a file and
-  puts it back changed nothing. When a turn changed nothing while files the checks cover differ from the verified
+  puts it back changed nothing, unless its checks had already run: a turn that was sent back after they passed
+  (by a stop hook, or by a report) and changed files again is checked again for what changed since, also when
+  that put the workspace back as the turn found it. The ending then rests on the run that saw the final state,
+  never on "changed outside this turn" for a change the turn made itself. When a turn changed nothing while files the checks cover differ from the verified
   state (a hand edit, an undo, an earlier turn that ended unresolved), its `not_needed` says `unverified`, and
   `verification.verified` does not move: those changes are checked, with everything else, at the end of the next
   turn that changes a file. Without snapshots the stand-in for "the turn changed files" is whether a call that

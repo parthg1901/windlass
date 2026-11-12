@@ -5975,7 +5975,10 @@ class LiveSession implements EngineSession {
    *   turn's own work, so a question that was answered, or a turn that put
    *   back what it changed, runs nothing, whatever the user edited by hand
    *   or undid before it. What changed outside the turn stays unverified
-   *   (`not_needed` says so) and is checked with the next turn that changes a file;
+   *   (`not_needed` says so) and is checked with the next turn that changes a file.
+   *   A turn in which the checks already ran is not such a turn: what it
+   *   changed after them (sent back by a stop hook, say) is checked again,
+   *   also when that put the workspace back as it was when the turn began;
    * - nothing the checks cover changed since they last passed: done;
    * - the checks pass: done, with the evidence;
    * - they fail: the report is appended as a harness message and the model
@@ -6022,7 +6025,11 @@ class LiveSession implements EngineSession {
     const selected = changed.files === null ? (changed.any ? loaded.config.checks : []) : selectChecks(loaded.config.checks, changed.files)
     // Checks run for a turn that changed files, and only for one. Which ones then is decided from everything that
     // is unverified, the turn's own changes or not: a check that runs cannot tell whose change it reads.
-    if (!this.turnChangedFiles(state, current)) {
+    // A turn whose checks already ran is such a turn whatever the workspace looks like now: when the model was
+    // sent back after they passed (a stop hook, a report) and put the files back as they were when the turn
+    // began, the workspace is no longer what was checked, and the change was made in this turn, after the checks.
+    // The gate decides below: nothing changed since the run, and it stands; something did, and they run again.
+    if (latest === null && !this.turnChangedFiles(state, current)) {
       await this.announceChanges()
       if (signal.aborted) return interrupted()
       return this.finish(run, selected.length === 0 ? { status: "not_needed" } : { status: "not_needed", unverified: true })
