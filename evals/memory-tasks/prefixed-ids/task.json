@@ -1,0 +1,8 @@
+{
+  "id": "prefixed-ids",
+  "title": "Add a new kind of record where IDs come from a prefixed generator, and one older module does it differently",
+  "prompt": "Add emoji reactions to comments, in a new src/reactions.ts: addReaction(store, commentId, emoji, userId) stores a reaction (with its own id) and returns it, and reactionsFor(store, commentId) lists a comment's reactions. A user can react with a given emoji only once per comment.",
+  "tags": ["memory", "conventions", "ids"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

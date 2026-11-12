@@ -5,6 +5,7 @@
  *
  *   bun evals/run-agent.ts [task-id ...] [--all] [--model <slug>] [--effort <level>] [--repeat N] [--concurrency N]
  *                          [--keep] [--out <dir>] [--cli "<command>"] [--timeout <s>] [--grace <s>] [--db <path>] [--no-classify]
+ *                          [--memory with|without]
  *
  * A task with several prompts is one session: each later prompt is sent with `--session <id>` once the previous
  * turn's process has exited. After each run the session is exported and its cache misses classified (classify.ts).
@@ -15,9 +16,11 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { EVENT_TYPES, EventDecodeError, type EphemeralEventType, type StepError, type ToolOutcome, type Usage, validateEvent } from "../packages/core/src/index.ts"
 import { brand } from "../packages/core/src/brand.ts"
+import { TEST_CONTEXT_WINDOW_ENV } from "../packages/core/src/assembly.ts"
 import type { EngineEvent } from "../packages/cli/src/engine.ts"
 import { type CacheClassification, classifySession, sessionDatabase, skipped } from "./classify.ts"
-import { type GradeResult, type Task, grade, listTasks, loadTask, prepareWorkspace } from "./run-check.ts"
+import { type MemorySide, type TaskSource, arrangeMemorySide, memoryTaskSource } from "./memory-tasks/source.ts"
+import { type GradeResult, TASKS_DIR, type Task, applySolution, grade, listTasks, loadTask, prepareWorkspace } from "./run-check.ts"
 
 const REPO = resolve(import.meta.dir, "..")
 /** The CLI as a user of this checkout would start it. */
@@ -64,6 +67,33 @@ export interface RunOptions {
   readonly database?: string
   /** Export and classify each run's cache misses (default true; skipped visibly when prefixlens is absent). */
   readonly classify?: boolean
+  /**
+   * One side of the memory A/B (memory-tasks/source.ts): the tasks come from `evals/memory-tasks/`, and each run gets
+   * its own user configuration with memory on and the task's notes seeded (`with`), or memory off and no notes (`without`).
+   */
+  readonly memory?: MemorySide
+}
+
+/** The general tasks, `evals/tasks/`. */
+export const GENERAL_TASKS: TaskSource = { dir: TASKS_DIR, list: listTasks, load: loadTask, prepare: prepareWorkspace, solve: applySolution, grade }
+
+/** How a task.json may ask to be run, under `run`. Applied to every run of that task. */
+export interface TaskRun {
+  /** The context window the harness assumes, in tokens, lowered for this task so the run compacts early (`TEST_CONTEXT_WINDOW_ENV`). */
+  readonly contextWindow?: number
+}
+
+/** The agent's extra environment for a task's `run` section. Throws on a section it does not understand. */
+export function taskRunEnv(task: Task): Record<string, string> {
+  const section = (task as Task & { readonly run?: unknown }).run
+  if (section === undefined) return {}
+  const value = section as Record<string, unknown>
+  const unknown = typeof section === "object" && section !== null ? Object.keys(value).filter((key) => key !== "contextWindow") : ["(not an object)"]
+  if (unknown.length > 0) throw new Error(`tasks/${task.id}/task.json: unknown run option ${unknown.join(", ")}; known: contextWindow`)
+  const window = value.contextWindow
+  if (window === undefined) return {}
+  if (typeof window !== "number" || !Number.isInteger(window) || window < 1000) throw new Error(`tasks/${task.id}/task.json: run.contextWindow must be a whole number of tokens, at least 1000`)
+  return { [TEST_CONTEXT_WINDOW_ENV]: String(window) }
 }
 
 export interface StepUsage {
@@ -185,6 +215,8 @@ export interface Report {
   readonly out: string
   readonly totals: Totals
   readonly results: readonly RunResult[]
+  /** The memory A/B side these runs were, when they were one. */
+  readonly memory?: MemorySide
 }
 
 export interface Totals {
@@ -206,7 +238,9 @@ export async function runAgent(options: RunOptions): Promise<Report> {
   const startedAt = new Date().toISOString()
   const out = resolve(options.out ?? join(RESULTS_DIR, startedAt.replace(/[:.]/g, "-")))
   await mkdir(join(out, "runs"), { recursive: true })
-  const tasks = await Promise.all(options.tasks.map((id) => loadTask(id)))
+  const source = options.memory === undefined ? GENERAL_TASKS : memoryTaskSource
+  const tasks = await Promise.all(options.tasks.map((id) => source.load(id)))
+  for (const task of tasks) taskRunEnv(task)
   const jobs = tasks.flatMap((task) => Array.from({ length: options.repeat ?? 1 }, (_, index) => ({ task, attempt: index + 1 })))
   const root = await mkdtemp(join(tmpdir(), "lh-agent-"))
   const results: RunResult[] = []
@@ -234,6 +268,7 @@ export async function runAgent(options: RunOptions): Promise<Report> {
     out,
     totals: totalsOf(results),
     results,
+    ...(options.memory === undefined ? {} : { memory: options.memory }),
   }
   await Bun.write(join(out, "results.json"), `${JSON.stringify(report, null, 2)}\n`)
   return report
@@ -246,16 +281,25 @@ function commitOf() {
   return { sha: sha.stdout.toString().trim(), dirty: status.stdout.toString().trim() !== "" }
 }
 
-async function runOne(task: Task, attempt: number, root: string, out: string, options: RunOptions): Promise<RunResult> {
+async function runOne(task: Task, attempt: number, root: string, out: string, base: RunOptions): Promise<RunResult> {
   const name = `${task.id}-${attempt}`
   const eventsFile = join(out, "runs", `${name}.jsonl`)
   const stderrFile = join(out, "runs", `${name}.stderr.log`)
   const dir = join(root, name)
   await mkdir(dir, { recursive: true })
-  const prepared = await prepareWorkspace(task.id, dir).then(
-    () => null,
-    (error: unknown) => String(error instanceof Error ? error.message : error),
-  )
+  const source = base.memory === undefined ? GENERAL_TASKS : memoryTaskSource
+  const extra: Record<string, string> = { ...taskRunEnv(task) }
+  const prepared = await source
+    .prepare(task.id, dir)
+    .then(async () => {
+      // The configuration sits beside the workspace, not in it, so a grader never sees it.
+      if (base.memory !== undefined) Object.assign(extra, await arrangeMemorySide(base.memory, task.id, dir, join(root, `${name}.config`)))
+    })
+    .then(
+      () => null,
+      (error: unknown) => String(error instanceof Error ? error.message : error),
+    )
+  const options: RunOptions = Object.keys(extra).length === 0 ? base : { ...base, env: { ...base.env, ...extra } }
   if (prepared !== null) {
     await Promise.all([Bun.write(eventsFile, ""), Bun.write(stderrFile, `${prepared}\n`)])
     if (!options.keep) await rm(dir, { recursive: true, force: true })
@@ -287,7 +331,7 @@ async function runOne(task: Task, attempt: number, root: string, out: string, op
 
   const agent = await runTurns(task, dir, eventsFile, stderrFile, options)
   const counted = computeMetrics(agent.stdout, task.maxSteps)
-  const graded: GradeResult = await grade(task.id, dir).catch((error: unknown) => ({ pass: false, message: `grader error: ${String(error)}` }))
+  const graded: GradeResult = await source.grade(task.id, dir).catch((error: unknown) => ({ pass: false, message: `grader error: ${String(error)}` }))
   if (!options.keep) await rm(dir, { recursive: true, force: true })
   const traceFile = join(out, "runs", `${name}.trace.jsonl`)
   const cache =
@@ -708,13 +752,13 @@ export function splitCommand(command: string): string[] {
 
 const USAGE = `usage: bun evals/run-agent.ts [task-id ...] [--all] [--model <slug>] [--effort <level>] [--repeat N]
          [--concurrency N] [--keep] [--out <dir>] [--cli "<command>"] [--timeout <s>] [--grace <s>]
-         [--db <path>] [--no-classify]`
+         [--db <path>] [--no-classify] [--memory with|without]`
 
 export async function parseRunnerArgs(argv: readonly string[]): Promise<RunOptions | string> {
   const values = new Map<string, string>()
   const flags = new Set<string>()
   const ids: string[] = []
-  const valueFlags = ["--model", "--effort", "--repeat", "--concurrency", "--out", "--cli", "--timeout", "--grace", "--db"]
+  const valueFlags = ["--model", "--effort", "--repeat", "--concurrency", "--out", "--cli", "--timeout", "--grace", "--db", "--memory"]
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!
     if (valueFlags.includes(arg)) {
@@ -731,7 +775,9 @@ export async function parseRunnerArgs(argv: readonly string[]): Promise<RunOptio
     if (arg.startsWith("-")) return `unknown option ${arg}`
     ids.push(arg)
   }
-  const known = await listTasks()
+  const memory = values.get("--memory")
+  if (memory !== undefined && memory !== "with" && memory !== "without") return "--memory must be with or without"
+  const known = await (memory === undefined ? listTasks() : memoryTaskSource.list())
   const unknown = ids.filter((id) => !known.includes(id))
   if (unknown.length > 0) return `unknown task ${unknown.join(", ")}; tasks: ${known.join(", ")}`
   const tasks = flags.has("--all") ? known : ids
@@ -757,6 +803,7 @@ export async function parseRunnerArgs(argv: readonly string[]): Promise<RunOptio
     ...(values.has("--out") ? { out: values.get("--out") } : {}),
     ...(values.has("--db") ? { database: resolve(values.get("--db")!) } : {}),
     ...(flags.has("--no-classify") ? { classify: false } : {}),
+    ...(memory === undefined ? {} : { memory }),
     // The agent starts in its workspace, so a script path given relative to here is made absolute.
     ...(cli === undefined ? {} : { cli: splitCommand(cli).map((word) => (!word.startsWith("-") && existsSync(word) ? resolve(word) : word)) }),
     ...(numbers["--timeout"] === undefined ? {} : { timeoutSeconds: numbers["--timeout"] }),

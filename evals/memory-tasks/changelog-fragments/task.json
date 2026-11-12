@@ -1,0 +1,8 @@
+{
+  "id": "changelog-fragments",
+  "title": "Fix a bug and add a changelog entry, where entries are fragment files and CHANGELOG.md is generated",
+  "prompt": "paginate() gives one item too few on the last page when the total isn't a multiple of the page size (issue #482). Please fix it and add a changelog entry for it.",
+  "tags": ["memory", "conventions", "changelog"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

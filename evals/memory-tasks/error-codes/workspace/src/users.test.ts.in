@@ -1,0 +1,12 @@
+import { expect, test } from "bun:test"
+import { createUser, findUser } from "./users.ts"
+
+test("creates and finds a user", () => {
+  const user = createUser({ name: " Ada ", email: "Ada@Example.com" })
+  expect(user.name).toBe("Ada")
+  expect(findUser("ada@example.com")).toEqual(user)
+})
+
+test("a name is required", () => {
+  expect(() => createUser({ name: "", email: "x@example.com" })).toThrow()
+})

@@ -1,0 +1,8 @@
+{
+  "id": "error-codes",
+  "title": "Add a validation error where the project registers coded errors, and the file at hand still uses plain ones",
+  "prompt": "createUser accepts email addresses without an @ in them. Make it reject those.",
+  "tags": ["memory", "conventions", "errors"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

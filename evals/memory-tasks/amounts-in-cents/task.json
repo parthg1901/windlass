@@ -1,0 +1,8 @@
+{
+  "id": "amounts-in-cents",
+  "title": "Add a shipping fee in a codebase where every amount is integer cents, said far from the code",
+  "prompt": "Add shipping to the checkout: orders under $50 pay $4.99 shipping, orders of $50 or more ship free. Put a shippingFee(order) in src/pricing.ts and include it in orderTotal.",
+  "tags": ["memory", "conventions", "money"],
+  "timeoutSeconds": 300,
+  "maxSteps": 15
+}

@@ -1,0 +1,13 @@
+import { expect, test } from "bun:test"
+import { addComment, commentsIn } from "./comments.ts"
+import { kindOf } from "./ids.ts"
+import { createStore } from "./store.ts"
+import { createThread } from "./threads.ts"
+
+test("comments belong to a thread", () => {
+  const store = createStore()
+  const thread = createThread(store, "Hello", "usr_1")
+  const comment = addComment(store, thread.id, "usr_1", "First!")
+  expect(kindOf(comment.id)).toBe("comment")
+  expect(commentsIn(store, thread.id)).toEqual([comment])
+})

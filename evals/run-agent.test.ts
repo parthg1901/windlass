@@ -6,7 +6,10 @@ import { join } from "node:path"
 import { type CallId, type EventData, type EventType, type MessageId, type SessionId, event } from "../packages/core/src/index.ts"
 import { traceHash } from "../packages/core/src/trace/format.ts"
 import { classifySession, classifyTrace, prefixlensDir } from "./classify.ts"
-import { type RunOptions, computeMetrics, explainAnomalies, formatTable, parseRunnerArgs, runAgent } from "./run-agent.ts"
+import { type RunOptions, computeMetrics, explainAnomalies, formatTable, parseRunnerArgs, runAgent, taskRunEnv } from "./run-agent.ts"
+import { TEST_CONTEXT_WINDOW_ENV } from "../packages/core/src/assembly.ts"
+import { brand } from "../packages/core/src/brand.ts"
+import { memoryTaskSource, notesOf } from "./memory-tasks/source.ts"
 import { grade, prepareWorkspace } from "./run-check.ts"
 
 const STAND_IN = ["bun", join(import.meta.dir, "testing", "stand-in-agent.ts")]
@@ -454,4 +457,65 @@ test("arguments", async () => {
   expect(await parseRunnerArgs(["no-such-task"])).toStartWith("unknown task no-such-task")
   expect(await parseRunnerArgs(["--all", "--repeat", "0"])).toStartWith("--repeat must be")
   expect(await parseRunnerArgs(["--all", "--bogus"])).toBe("unknown option --bogus")
+})
+
+describe("per-task run options and the memory A/B sides", () => {
+  // A CLI that records what the agent was started with (its configuration file and the test window) and then hands
+  // over to the stand-in. The runner appends the CLI's flags after it.
+  const spy = (name: string) => [
+    "sh",
+    "-c",
+    `{ cat "$XDG_CONFIG_HOME/${brand.directory}/config.json" 2>/dev/null || echo none; echo "window=\${${TEST_CONTEXT_WINDOW_ENV}:-unset}"; } > "${join(scratch.dir, name)}"; exec "$@"`,
+    "spy",
+    ...STAND_IN,
+  ]
+
+  test("a task's run.contextWindow reaches the agent as the test window; a bad run section is refused", async () => {
+    const audit = await (await import("./run-check.ts")).loadTask("audit-every-handler")
+    expect(taskRunEnv(audit)).toEqual({ [TEST_CONTEXT_WINDOW_ENV]: "32000" })
+    expect(taskRunEnv({ ...audit, run: undefined } as never)).toEqual({})
+    expect(() => taskRunEnv({ ...audit, run: { contextWindow: 10.5 } } as never)).toThrow("whole number")
+    expect(() => taskRunEnv({ ...audit, run: { window: 1 } } as never)).toThrow("unknown run option window")
+    await run("nothing", { tasks: ["audit-every-handler"], cli: spy("seen-window") })
+    expect((await Bun.file(join(scratch.dir, "seen-window")).text()).trim().split("\n").at(-1)).toBe("window=32000")
+    await run("nothing", { tasks: ["answer-question"], cli: spy("seen-plain") })
+    expect(await Bun.file(join(scratch.dir, "seen-plain")).text()).toBe("none\nwindow=unset\n")
+  }, 60_000)
+
+  test("--memory with: memory on in the run's own configuration, the task's notes seeded in the workspace", async () => {
+    const id = (await memoryTaskSource.list())[0]!
+    const report = await run("nothing", { tasks: [id], memory: "with", keep: true, cli: spy("seen-with") })
+    const result = report.results[0]!
+    expect(report.memory).toBe("with")
+    expect(result.status).toBe("failed")
+    expect(result.reason).toStartWith("fail:")
+    expect(JSON.parse((await Bun.file(join(scratch.dir, "seen-with")).text()).split("\nwindow=")[0]!)).toEqual({ memory: { enabled: true, inRepository: true } })
+    const notes = await notesOf(id)
+    for (const note of notes) {
+      const seeded = Bun.file(join(result.workspace!, `.${brand.directory}`, "memory", note.split("/").at(-1)!))
+      expect(await seeded.text()).toBe(await Bun.file(note).text())
+    }
+    await rm(join(result.workspace!, ".."), { recursive: true, force: true })
+  }, 60_000)
+
+  test("--memory without: memory off in the run's own configuration, no notes", async () => {
+    const id = (await memoryTaskSource.list())[0]!
+    const report = await run("nothing", { tasks: [id], memory: "without", keep: true, cli: spy("seen-without") })
+    const result = report.results[0]!
+    expect(report.memory).toBe("without")
+    expect(JSON.parse((await Bun.file(join(scratch.dir, "seen-without")).text()).split("\nwindow=")[0]!)).toEqual({ memory: { enabled: false } })
+    expect(await Bun.file(join(result.workspace!, `.${brand.directory}`, "memory")).exists()).toBe(false)
+    expect(await readdir(join(result.workspace!, ".."))).toEqual(expect.arrayContaining([`${id}-1`, `${id}-1.config`]))
+    await rm(join(result.workspace!, ".."), { recursive: true, force: true })
+  }, 60_000)
+
+  test("--memory picks the task set and is checked", async () => {
+    const ids = await memoryTaskSource.list()
+    expect(await parseRunnerArgs(["--all", "--memory", "without"])).toMatchObject({ tasks: ids, memory: "without" })
+    expect(await parseRunnerArgs([ids[0]!, "--memory", "with"])).toMatchObject({ tasks: [ids[0]], memory: "with" })
+    expect(await parseRunnerArgs(["answer-question", "--memory", "with"])).toStartWith("unknown task answer-question")
+    expect(await parseRunnerArgs(["--all", "--memory", "maybe"])).toBe("--memory must be with or without")
+    expect(((await parseRunnerArgs(["--all"])) as RunOptions).tasks).not.toContain(ids[0])
+    expect(await leftovers()).toEqual([])
+  })
 })

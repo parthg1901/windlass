@@ -1,0 +1,6 @@
+{
+  "name": "@acme/listkit",
+  "version": "3.1.0",
+  "type": "module",
+  "scripts": { "test": "bun test", "release": "bun scripts/release.ts" }
+}

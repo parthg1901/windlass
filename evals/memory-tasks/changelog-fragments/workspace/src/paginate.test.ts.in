@@ -1,0 +1,10 @@
+import { expect, test } from "bun:test"
+import { paginate } from "./paginate.ts"
+
+test("a full first page", () => {
+  expect(paginate([1, 2, 3, 4, 5], 1, 2)).toEqual({ items: [1, 2], page: 1, pages: 3 })
+})
+
+test("past the end is empty", () => {
+  expect(paginate([1, 2, 3], 4, 2).items).toEqual([])
+})

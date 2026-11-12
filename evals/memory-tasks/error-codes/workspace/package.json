@@ -1,0 +1,6 @@
+{
+  "name": "accounts-service",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}
