@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { type EngineEvent, brand } from "@windlass/core"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
 import { lastWords } from "../src/client.ts"
-import { META } from "../src/extensions.ts"
+import { META, handEditSentences, handEditTitle } from "../src/extensions.ts"
 import { silentLogger } from "../src/log.ts"
 import { fenced, promptText } from "../src/prompt.ts"
 import { parseHunks, toolTitle } from "../src/tools.ts"
@@ -174,4 +174,21 @@ test("a dead server's last words: its own error line, else the message of an unc
   expect(lastWords(["something odd happened", "Bun v1.4.0 (Linux arm64)"])).toBe("something odd happened")
   expect(lastWords(["Bun v1.4.0 (Linux arm64)"])).toBeNull()
   expect(lastWords([])).toBeNull()
+})
+
+test("the undo question's title says how the files changed: outside the session, while a command of its own ran, or some of each", () => {
+  const outside = { path: "notes.md", handEdited: true, editedBy: { kind: "outside" as const } }
+  const during = (path: string) => ({ path, handEdited: true, editedBy: { kind: "unknown" as const } })
+  const untouched = { path: "src/a.ts", handEdited: false }
+  expect(handEditTitle([outside, untouched], false)).toBe("Undo: 1 file changed outside this session since the turn")
+  expect(handEditTitle([outside, { ...outside, path: "b.md" }], true)).toBe("Redo: 2 files changed outside this session since the undo")
+  // A file that changed while a command or the checks ran may be the session's own work: not "outside this session".
+  expect(handEditTitle([during("out/report.txt"), untouched], false)).toBe("Undo: 1 file changed while a command ran since the turn")
+  expect(handEditTitle([during("a"), during("b")], true)).toBe("Redo: 2 files changed while a command ran since the undo")
+  expect(handEditTitle([outside, during("a"), during("b")], false)).toBe("Undo: 3 files changed outside this session or while a command ran since the turn")
+  // The sentences under it say the same of each group.
+  expect(handEditSentences([outside, during("a")], "since the turn")).toEqual([
+    "1 file changed since the turn by you or another program: notes.md",
+    "1 file changed since the turn while a command or the checks ran (the command's own work, or yours meanwhile): a",
+  ])
 })

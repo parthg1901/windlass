@@ -117,6 +117,7 @@ import {
   type SessionState,
   type StateNotification,
   handEditSentences,
+  handEditTitle,
   sessionTitle,
 } from "./extensions.ts"
 import { hookFailure, hooksState, lspState, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeCreate, wakeCreateParams, wakeList, wakeSecret } from "./features.ts"
@@ -736,13 +737,12 @@ class ConnectionState {
     const byHand = plan.changes.filter((change) => change.handEdited).map((change) => change.path)
     const cwd = view.session.projection().session.cwd
     const command = undo ? "undo_revert" : "revert"
-    const files = byHand.length === 1 ? "1 file" : `${byHand.length} files`
     const request: RequestPermissionRequest = {
       sessionId: view.session.id,
       toolCall: {
         toolCallId: `${META.capabilities}-${command}-${plan.fromSeq}`,
         // Who changed them is in the text, as far as the engine can tell (`editedBy` of each file).
-        title: undo ? `Redo: ${files} changed outside this session since the undo` : `Undo: ${files} changed outside this session since the turn`,
+        title: handEditTitle(plan.changes, undo),
         kind: "edit",
         status: "pending",
         locations: byHand.map((path) => ({ path: join(cwd, path) })),

@@ -1000,6 +1000,19 @@ export function handEditSentences(changes: readonly PlannedChange[], since: stri
   return [...groups].map(([who, paths]) => `${paths.length === 1 ? "1 file" : `${paths.length} files`} changed ${since}${who}: ${paths.join(", ")}`)
 }
 
+/**
+ * The title of the question an undo (or, with `redo`, a redo) asks before it overwrites files: how many, and how
+ * they changed. Outside this session; or, when every one of them is `unknown`, while a command or the checks of
+ * this session ran and no call named them, which may be the session's own work, so "outside this session" would
+ * be wrong; or some of each.
+ */
+export function handEditTitle(changes: readonly PlannedChange[], redo: boolean): string {
+  const asked = changes.filter((change) => change.handEdited)
+  const during = asked.filter((change) => (change.editedBy?.kind ?? "unknown") === "unknown").length
+  const how = during === 0 ? "changed outside this session" : during === asked.length ? "changed while a command ran" : "changed outside this session or while a command ran"
+  return `${redo ? "Redo" : "Undo"}: ${asked.length === 1 ? "1 file" : `${asked.length} files`} ${how} ${redo ? "since the undo" : "since the turn"}`
+}
+
 /** One item of the model's task list (the `todo` tool). */
 export interface TaskItem {
   readonly text: string
