@@ -515,6 +515,14 @@ is a new version with a decoder for the old one.
   clock), `mcp_search` and `mcp_call` (a server elsewhere may answer differently, and one that was starting is
   there a moment later). `varies` is a property of the tool like its effect class, not of its spec: the name,
   the description and the schema the model is sent are the same with it. The step limit still bounds the turn.
+- *The step limit.* A turn makes at most `stepLimit` (60) model calls that completed, or the number a caller gave
+  with the turn's input (`send(text, { maxSteps })`); then the loop appends a note and makes one last call with
+  `toolChoice: "none"` (the tool list stays, so the prefix does), and a model that still asks for tools twice more
+  fails the execution. The steps are counted from the log over the turn as a person sees it (`wholeTurn` in
+  `engine/state.ts`): since the user's message, or the queued item, that began it. A message the harness delivers
+  in the middle of the turn (a background command ended, a background subagent's result, a watch that fired)
+  does not start the count again, and neither does a check report or a stop hook's message; a user's steer
+  does, as the user's word that the work should go on.
 - *The order of the calls of one step.* Calls the loop itself refuses are settled first. Reads are decided at
   once and run side by side. Every call that can change something (a write, a command, a network or MCP tool)
   keeps its place in one line: it is decided when the one before it in the line has its result, and runs alone.

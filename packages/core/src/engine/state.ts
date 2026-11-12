@@ -83,8 +83,8 @@ function beginsTurn(message: Message): boolean {
  * The messages under the claim since the turn began: from the latest
  * message that begins one (`beginsTurn`), or from the start of the
  * execution. What a bound that holds for a whole turn is counted over (the
- * rounds of the stop hooks): unlike `currentTurn`, it does not start again
- * at a message the harness delivers in the middle of the turn.
+ * step limit, the rounds of the stop hooks): unlike `currentTurn`, it does
+ * not start again at a message the harness delivers in the middle of the turn.
  */
 export function wholeTurn(projection: Projection): readonly Message[] {
   const startedSeq = claimOf(projection).startedSeq
@@ -92,20 +92,29 @@ export function wholeTurn(projection: Projection): readonly Message[] {
   return start === -1 ? projection.messages.filter((message) => message.seq > startedSeq) : projection.messages.slice(start)
 }
 
-/** The input that opened the current turn, when there is one. A per-turn step limit is keyed by its ID. */
+/**
+ * The input that began the turn in progress, when there is one: the user's
+ * message or the queued item it started with, or the first input delivered
+ * under the claim. A per-turn step limit is keyed by its ID.
+ */
 export function turnInput(projection: Projection): Message | undefined {
-  const first = currentTurn(projection)[0]
-  return first !== undefined && delivered(first) ? first : undefined
+  return wholeTurn(projection).find(delivered)
 }
 
-/** Completed model calls of the current turn. A retry is not a step, and neither is a call that failed. */
+/**
+ * Completed model calls of the turn in progress. A retry is not a step, and
+ * neither is a call that failed. Counted over the whole turn (`wholeTurn`):
+ * a message the harness delivers in the middle of it (a background command
+ * ended, a subagent's result, a watch that fired) does not start the count
+ * again, so the step limit bounds the turn however often that happens.
+ */
 export function stepsThisTurn(projection: Projection): number {
-  return currentTurn(projection).filter((message) => message.kind === "assistant" && message.status === "completed").length
+  return wholeTurn(projection).filter((message) => message.kind === "assistant" && message.status === "completed").length
 }
 
-/** Whether the loop already appended a harness note of this origin in the current turn. */
+/** Whether the loop already appended a harness note of this origin in the turn in progress (the whole turn, as `stepsThisTurn` counts it). */
 export function notedThisTurn(projection: Projection, origin: string): boolean {
-  return currentTurn(projection).some((message) => message.kind === "synthetic" && message.delivery === null && message.origin === origin)
+  return wholeTurn(projection).some((message) => message.kind === "synthetic" && message.delivery === null && message.origin === origin)
 }
 
 /**

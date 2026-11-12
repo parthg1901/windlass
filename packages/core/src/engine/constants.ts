@@ -25,9 +25,10 @@ export interface EngineLimits {
   /** How many times recovery takes up the same execution again after a crash before it gives up. */
   readonly crashResumeCap: number
   /**
-   * Steps of one turn (from a user's input to the answer) before the loop
-   * makes one final call with tools forbidden. A caller can lower or raise it
-   * per turn with `send(text, { maxSteps })`.
+   * Steps of one turn (from a user's input, or a queued item, to the answer)
+   * before the loop makes one final call with tools forbidden. A message the
+   * harness delivers in the middle of the turn does not start the count
+   * again. A caller can lower or raise it per turn with `send(text, { maxSteps })`.
    */
   readonly stepLimit: number
   /** Tool calls of one step that are run. Calls beyond it are answered with an error and not run. */
