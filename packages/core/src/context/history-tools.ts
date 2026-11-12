@@ -170,7 +170,7 @@ export function parseHistoryReadInput(text: string): Parsed<HistoryReadInput> {
 /** The tool result text of a search. */
 export function renderSearchOutput(output: HistorySearchOutput): string {
   if (output.hits.length === 0) return `No earlier message matches ${JSON.stringify(output.query)}.`
-  const head = `${output.matched} message${output.matched === 1 ? "" : "s"} match ${JSON.stringify(output.query)}; showing ${output.hits.length}, best first.`
+  const head = `${output.matched} ${output.matched === 1 ? "message matches" : "messages match"} ${JSON.stringify(output.query)}; showing ${output.hits.length}, best first.`
   const hits = output.hits.map(
     (hit) => `[seq ${hit.seq}${hit.offset > 0 ? `, offset ${hit.offset}` : ""}] ${hit.role}${hit.tool === null ? "" : ` (${hit.tool})`}: ${hit.snippet}`,
   )

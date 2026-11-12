@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { ftsQuery, locateHit, queryTerms, readable, scanSearch } from "../../src/context/history-search.ts"
 import {
   HISTORY_READ,
   HISTORY_SEARCH,
@@ -78,4 +79,52 @@ test("messagePieces lists text, each call and each result", () => {
     { role: "tool", tool: "shell", text: "result (error):\n1 fail\n[Exit code 1]" },
   ])
   expect(messageReadText(script.messages[0]!)).toBe("run it")
+})
+
+describe("a query", () => {
+  test("is split into quoted phrases and the words that say something, in lower case, once each", () => {
+    expect(queryTerms('Where is "Exit Code 3" in the src/billing/rounding.ts:142 output? the THE exit')).toEqual([
+      { text: "exit code 3", phrase: true },
+      { text: "src/billing/rounding.ts:142", phrase: false },
+      { text: "output", phrase: false },
+      { text: "exit", phrase: false },
+    ])
+    expect(queryTerms("  ")).toEqual([])
+    expect(queryTerms('"" "unbalanced')).toEqual([{ text: "unbalanced", phrase: false }])
+  })
+
+  test("becomes a full-text query in which nothing is syntax: identifiers and phrases are quoted, plain words match as prefixes", () => {
+    const terms = queryTerms('upload "part 3 of 9" src/a.ts:42 AND say "it\'s" ok')
+    expect(ftsQuery(terms, "any")).toBe('"part 3 of 9" OR "it\'s" OR "upload"* OR "src/a.ts:42" OR "say"* OR "ok"')
+    // Quotes inside quotes just end and begin phrases: nothing can break out of a term.
+    expect(ftsQuery(queryTerms('say "a ""quoted"" word"'), "all")).toBe('"a" AND "quoted" AND "word" AND "say"*')
+    // Nothing a tokenizer keeps: no query.
+    expect(ftsQuery(queryTerms("-- :: //"), "any")).toBeNull()
+  })
+
+  test("the hit is in the piece that holds the first term found, with the offset into the whole message", () => {
+    const script = new Script().user("run it").step({ text: "Running the suite.", calls: [shell("bun test", "12 pass\n1 fail: parses the March export", 1)] })
+    const step = script.messages[1]!
+    const hit = locateHit(step, queryTerms("march export"))!
+    expect(hit).toMatchObject({ seq: 2, role: "tool", tool: "shell" })
+    expect(messageReadText(step).slice(hit.offset, hit.offset + 5)).toBe("March")
+    // Restricted to the assistant's own words, the tool output is not looked at; a role with no piece gives nothing.
+    expect(locateHit(step, queryTerms("suite"), { role: "assistant" })).toMatchObject({ role: "assistant", tool: null, offset: 12 })
+    expect(locateHit(step, queryTerms("suite"), { role: "user" })).toBeNull()
+    // A match the tokenizer made that is not there as written falls back to the start of the piece.
+    expect(locateHit(step, queryTerms("nothing-like-this"), { piece: 2 })).toMatchObject({ role: "tool", offset: messageReadText(step).indexOf("result (error)") })
+  })
+
+  test("the scan ranks rarer terms higher and skips what cannot be read", () => {
+    const script = new Script().user("the parser fails on dates").step({ text: "The parser is fine; the lexer drops the year." }).user("fix the lexer").checkpoint("the lexer drops the year", 1)
+    const output = scanSearch(script.messages, { query: "lexer year parser" })
+    expect(output.matched).toBe(3)
+    expect(output.hits[0]).toMatchObject({ seq: 2, role: "assistant" })
+    // The checkpoint is not searched, and an excluded message is not either.
+    expect(output.hits.map((hit) => hit.seq)).not.toContain(4)
+    const reverted = script.messages.map((message) => (message.seq === 3 ? { ...message, excluded: "reverted" as const } : message))
+    expect(scanSearch(reverted, { query: "fix lexer", role: "user" }).hits).toEqual([])
+    expect(readable(reverted[2]!)).toBe(false)
+    expect(readable(script.messages[3]!)).toBe(false)
+  })
 })

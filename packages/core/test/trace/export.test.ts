@@ -10,11 +10,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { buildRequest } from "../../src/request/build.ts"
 import { requestBlocks } from "../../src/request/request.ts"
+import type { SessionId } from "../../src/id.ts"
 import type { SqliteStore } from "../../src/store/sqlite.ts"
 import { type ExportResult, describeUnverified, exportSession } from "../../src/trace/export.ts"
 import { canonicalResponsesRequest, serializeTrace, traceHash } from "../../src/trace/format.ts"
 import { NOT_HARNESS, loadPrefixlens, report, withPrefixlens } from "./prefixlens.ts"
-import { COMPACTION_PROMPT, type Loop, SCRIPTS, type StepBuilder, openTestStore, record } from "./sessions.ts"
+import { baselineSet, created, deliver, enqueue, executionInterrupted, executionStarted, interruptRequested, reverted, stepFailed, stepStarted, synthetic } from "../store/scripted.ts"
+import { COMPACTION_PROMPT, Loop, SCRIPTS, type StepBuilder, openTestStore, record } from "./sessions.ts"
 import { validateTrace } from "./spec.ts"
 
 const prefixlens = await loadPrefixlens()
@@ -368,6 +370,39 @@ describe("hints", () => {
       { kind: "compaction", detail: "compaction c1" },
       { kind: "prefix_break", reason: "compaction", detail: "compaction c1" },
     ])
+  })
+
+  test("a break before a call that left no record is declared on the next record", () => {
+    const local = openTestStore()
+    const loop = new Loop(local, "ses_carried" as SessionId)
+    loop.add(created("/work/demo", "Demo"), baselineSet())
+    loop.prompt("1", "Fix the README.")
+    loop.answer("1", "a1", "Fixed the typo in the README.")
+    loop.prompt("2", "Run the tests.")
+    loop.answer("2", "a2", "The tests pass.")
+    // The second turn is reverted; the first call after it is cancelled before the provider reports usage.
+    loop.add(reverted(loop.seqOf("u2")))
+    loop.add(enqueue("u3", "Update the changelog."), executionStarted("exe_3"), deliver("u3"), stepStarted("a3"))
+    loop.call("a3", 1, "aborted")
+    loop.add(
+      interruptRequested("exe_3", "user"),
+      stepFailed("a3", { kind: "interrupted", reason: "user" }),
+      synthetic("s1", "interrupt", "The user stopped the previous response before it finished."),
+      executionInterrupted("exe_3", "user"),
+    )
+    loop.prompt("4", "Go on.")
+    loop.answer("4", "a4", "Added an entry.")
+    const result = exportSession(local, loop.id)
+    expect(result.unverified).toEqual([])
+    const [, , cancelled, next] = result.calls
+    // The cancelled call is where the revert is declared, and it has no record to carry it.
+    expect(cancelled).toMatchObject({ record: null, breaks: ["revert"], declared: [{ kind: "prefix_break", reason: "revert" }] })
+    expect(next!.declared).toEqual([])
+    expect(next!.hinted).toEqual(cancelled!.declared)
+    expect(next!.record!.hints).toEqual(cancelled!.declared as never)
+    // A record that follows a record carries only its own.
+    expect(result.calls[1]!.hinted).toEqual([])
+    local.close()
   })
 
   test("a model change declares a model switch, an effort change a settings change", () => {

@@ -16,6 +16,9 @@
  *   checks     a write and an answer, in a project whose configuration declares
  *              a check; the real snapshot module and the real check runner
  *   revert     as `checks`, then the turn is reverted
+ *   compaction a read the provider measures at 6,000 tokens of a 10,000-token
+ *              window, so the loop compacts before the next step; then a
+ *              summary and an answer
  */
 import { dirname, join } from "node:path"
 import { loadConfig } from "../../../src/config/load.ts"
@@ -23,6 +26,7 @@ import { type ProbePoint, createEngine } from "../../../src/engine/engine.ts"
 import { openSqliteStore } from "../../../src/store/sqlite.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../../../src/testing/fake-provider.ts"
 import { createStandardTools } from "../../../src/tools/index.ts"
+import { SUMMARY } from "../../scenarios/script.ts"
 
 const [database, workspace, name, point, nth] = process.argv.slice(2)
 if (database === undefined || workspace === undefined || name === undefined) throw new Error("usage: engine-child.ts <database> <workspace> <script> [<point> <nth>]")
@@ -38,6 +42,11 @@ const scripts: Record<string, ScriptedResponse[]> = {
   retry: [[script.fail("rate_limit", { message: "Rate limit reached", status: 429, retryAfterMs: 60_000 })]],
   shell: [[script.toolCall("call_1", "shell", { command: "echo $$ > tool.pid; sleep 300 & echo $! > background.pid; wait" })]],
   checks: [[script.toolCall("call_1", "write", { path: "b.txt", content: "new\n" })], [script.text("Changed b.txt.")]],
+  compaction: [
+    [script.toolCall("call_1", "read", { path: "a.txt" }), script.usage({ inputTokens: 6000, cachedInputTokens: 5000, outputTokens: 50, reasoningTokens: 0 })],
+    [script.text(SUMMARY)],
+    [script.text("All done.")],
+  ],
 }
 scripts.revert = scripts.checks!
 /** The scripts that run in a project: snapshots in a data directory beside the workspace, and the project's own configuration. */
@@ -57,6 +66,7 @@ const engine = createEngine({
     ? { dataDir: join(root, "data"), loadConfig: (cwd: string) => loadConfig({ cwd, env: {}, home: join(root, "home") }) }
     : { dataDir: workspace, snapshots: null, loadConfig: null }),
   log: () => {},
+  ...(name === "compaction" ? { contextWindow: () => 10_000 } : {}),
   hooks: {
     probe: (at: ProbePoint) => {
       if (name === "interrupt" && at === "tool.started") session.interrupt()

@@ -1744,8 +1744,9 @@ class LiveSession implements EngineSession {
       // Built from the log: the cut, the prompt and, the second time, the rejected answer with the request to fix it.
       const request = buildCompactionRequest(this.projection(), this.core.call)
       const blocks = hashRequest(request)
-      let answer: { readonly text: string; readonly complete: boolean } | { readonly unusable: string } | null = null
-      for (let tries = 1; answer === null; tries += 1, attempt += 1) {
+      /** What came back: text (cut short when the loop stopped reading), or why there is none. `final`: not worth asking again. */
+      let answer: { readonly text: string; readonly complete: boolean; readonly final: string | null } | null = null
+      for (let tries = 1; answer === null; tries += 1) {
         const call = await this.callModel(run, {
           messageId,
           attempt,
@@ -1755,20 +1756,23 @@ class LiveSession implements EngineSession {
           limitMs: limits.compactionCallTimeoutMs,
           maxOutputChars: summaryOutputCapChars(config.summaryMaxTokens),
         })
+        // Every call is its own ledger row: the attempts of this compaction count up across retries and the repair.
+        attempt += 1
         usage = addUsage(usage, call.usage)
         if (call.end.type === "aborted") {
           this.finishInterrupt(run)
           return "done"
         }
+        const written = call.text + call.partialText
         if (call.end.type === "finish") {
-          answer = { text: call.text + call.partialText, complete: !call.overran && call.end.reason !== "length" }
+          answer = { text: written, complete: !call.overran && call.end.reason !== "length", final: null }
           break
         }
         const error = call.end.error
-        // A call that did not end is not asked again: another one would take as long.
-        if (error.kind === "transport" && error.reason === "timeout") answer = { unusable: COMPACTION_TEXT.timedOut(limits.compactionCallTimeoutMs) }
-        else if (error.kind === "context_overflow") answer = { unusable: COMPACTION_TEXT.tooLarge }
-        else if (error.kind === "content_policy") answer = { unusable: COMPACTION_TEXT.refused }
+        // A call that did not end is not asked again (another one would take as long); what it had written may still be a whole summary.
+        if (error.kind === "transport" && error.reason === "timeout") answer = { text: written, complete: false, final: COMPACTION_TEXT.timedOut(limits.compactionCallTimeoutMs) }
+        else if (error.kind === "context_overflow") answer = { text: "", complete: false, final: COMPACTION_TEXT.tooLarge }
+        else if (error.kind === "content_policy") answer = { text: "", complete: false, final: COMPACTION_TEXT.refused }
         else if (error.retryable && tries < limits.attemptBudget) {
           // The log has no retry event for a compaction; the ledger row of each attempt is its record.
           await clock.sleep(retryDelayMs(limits, tries, error, this.core.random), signal)
@@ -1778,19 +1782,14 @@ class LiveSession implements EngineSession {
           }
         } else return failed(error, error.retryable ? FAILURE_TEXT.budget(tries, error) : failureText(error))
       }
-      attempt += 1
 
-      if ("unusable" in answer) {
-        chosen = this.settle(first, null, repairing, answer.unusable)
-        break
-      }
       const resolved = resolveSummary(answer.text, config.summaryMaxTokens, { complete: answer.complete })
       if (resolved.ok) {
         chosen = { summary: resolved.text, source: repairing ? "repaired" : "model", detail: resolved.salvaged ? COMPACTION_TEXT.repeated : null }
         break
       }
-      if (repairing || resolved.text === "") {
-        chosen = this.settle(first, resolved, repairing, resolved.text === "" ? COMPACTION_TEXT.empty : COMPACTION_TEXT.invalid(resolved.problems))
+      if (repairing || answer.final !== null || resolved.text === "") {
+        chosen = this.settle(first, resolved, repairing, answer.final ?? (resolved.text === "" ? COMPACTION_TEXT.empty : COMPACTION_TEXT.invalid(resolved.problems)))
         break
       }
       // One repair: the answer (its first copy, when the model repeated itself) and what is wrong with it.
@@ -1817,7 +1816,7 @@ class LiveSession implements EngineSession {
    * answers if it is merely too long or lacks a detail (it has every section
    * once, in order, and is bounded), otherwise no summary at all.
    */
-  private settle(first: ResolvedSummary | null, second: ResolvedSummary | null, repaired: boolean, why: string) {
+  private settle(first: ResolvedSummary | null, second: ResolvedSummary, repaired: boolean, why: string) {
     const usable = (answer: ResolvedSummary | null): answer is Extract<ResolvedSummary, { ok: false }> => answer !== null && !answer.ok && answer.usable
     // The repaired answer wins a tie: it is the one that was asked to be right.
     const candidates = [

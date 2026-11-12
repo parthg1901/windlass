@@ -114,8 +114,8 @@ export function salvageSummary(summary: string, complete = true): string {
   const seen = new Set<string>()
   const kept: string[] = []
   const lines = summary.split("\n")
-  // A stream that was cut ends in the middle of a line.
-  if (!complete) lines.pop()
+  // A stream that was cut ends in the middle of a line, which is dropped unless it is all there is.
+  if (!complete && lines.length > 1) lines.pop()
   for (const line of lines) {
     const heading = /^#{1,3}\s+(.+?)\s*$/.exec(line)
     if (heading !== null) {

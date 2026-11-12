@@ -5,8 +5,9 @@
  * `fixtures/engine-child.ts`). The parent then opens the same file, recovers
  * and continues, and checks the log, the projection and the next request.
  *
- * The last test kills the whole process group of an engine whose shell tool
- * is running a command, and checks that nothing of that command survives.
+ * A compaction is killed at its two durable points. Another test kills the
+ * whole process group of an engine whose shell tool is running a command,
+ * and checks that nothing of that command survives.
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -17,11 +18,15 @@ import { brand } from "../../src/brand.ts"
 import { loadConfig } from "../../src/config/load.ts"
 import { TOOL_TEXT } from "../../src/engine/constants.ts"
 import { type ProbePoint, createEngine } from "../../src/engine/engine.ts"
+import { selectModelHistory } from "../../src/message/history.ts"
 import { buildRequest } from "../../src/request/build.ts"
+import type { ModelRequest } from "../../src/request/request.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
+import { exportSession } from "../../src/trace/export.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
+import { SUMMARY } from "../scenarios/script.ts"
 import { danglingCalls } from "./harness.ts"
 
 const FIXTURE = join(import.meta.dir, "fixtures", "engine-child.ts")
@@ -64,16 +69,19 @@ async function crashAt(name: string, point: ProbePoint, nth: number, check?: str
   return where
 }
 
-/** Opens the store a dead process left, recovers its session and lets the loop finish the turn. */
-async function recoverAndContinue(where: Pick<Place, "database" | "workspace"> & Partial<Place>) {
+/** Whether a request is a compaction's summary request: tools switched off, and a developer prompt last. */
+const isSummary = (request: ModelRequest) => request.toolChoice === "none" && request.input.at(-1)?.type === "message"
+
+/** Opens the store a dead process left, recovers its session and lets the loop finish the turn. `contextWindow`: what the engine that recovers is told. */
+async function recoverAndContinue(where: Pick<Place, "database" | "workspace"> & Partial<Place>, contextWindow?: number) {
   const store = openSqliteStore({ path: where.database })
   try {
     const [summary] = store.listSessions()
     if (summary === undefined) throw new Error("the child created no session")
     const id = summary.session.id
     const died = store.readEvents(id)
-    // Whatever the model is asked after the restart, it wraps up.
-    const provider = new FakeProvider(Array.from({ length: 4 }, () => () => [script.text("Recovered and finished.")]))
+    // Whatever the model is asked after the restart, it wraps up; asked for a summary, it gives one.
+    const provider = new FakeProvider(Array.from({ length: 4 }, () => (request: ModelRequest) => [script.text(isSummary(request) ? SUMMARY : "Recovered and finished.")]))
     const diagnostics: string[] = []
     const engine = createEngine({
       store,
@@ -84,6 +92,7 @@ async function recoverAndContinue(where: Pick<Place, "database" | "workspace"> &
         ? { dataDir: join(where.directory, "data"), loadConfig: (cwd: string) => loadConfig({ cwd, env: {}, home: join(where.directory!, "home") }) }
         : { dataDir: where.workspace, snapshots: null, loadConfig: null }),
       log: (line) => diagnostics.push(line),
+      ...(contextWindow === undefined ? {} : { contextWindow: () => contextWindow }),
       strict: true,
     })
     const session = engine.openSession(id)
@@ -205,6 +214,56 @@ describe("a process killed with SIGKILL is recovered by the next one", () => {
     const result = await recoverAndContinue(await crashAt("normal", "tool.started", 2))
     const texts = result.recovered.flatMap((item) => (item.type === "tool.settled" ? [item.data.output] : []))
     expect<string[]>(texts).toEqual([TOOL_TEXT.crashRead, TOOL_TEXT.crashEffectUnknown])
+  })
+})
+
+describe("a process killed inside a compaction", () => {
+  const view = (result: Awaited<ReturnType<typeof recoverAndContinue>>) => selectModelHistory(result.projection).messages.map((message) => message.kind)
+
+  test("compaction.started #1: the cut and the prompt are durable and the summary was never asked for; the next process closes it and compacts again", async () => {
+    const where = await crashAt("compaction", "compaction.started", 1)
+    const result = await recoverAndContinue(where, 10_000)
+    expect(types(result.died).at(-1)).toBe("compaction.started")
+    // No step was cut short, so there is no marker: the compaction is closed as crashed and the execution taken up again.
+    expect(types(result.recovered)).toEqual(["compaction.failed", "execution.resumed"])
+    expect(result.recovered[0]).toMatchObject({ data: { error: { kind: "crashed" } } })
+    // The loop decided again from the log: the request is as large as it was, so it compacted, under a new message.
+    const compactions = result.projection.messages.filter((message) => message.kind === "compaction")
+    expect(compactions.map((message) => message.status)).toEqual(["failed", "completed"])
+    expect(compactions[1]).toMatchObject({ source: "model", keepFromSeq: compactions[0]!.keepFromSeq })
+    expect(view(result)).toEqual(["compaction", "assistant", "assistant"])
+    expect(result.log.at(-1)!.type).toBe("execution.succeeded")
+    // One summary call and one answer after the restart.
+    expect(result.calls).toBe(2)
+  })
+
+  test("compaction.ended #1: the checkpoint is durable and the baseline was not set again; the next process sets it and carries on", async () => {
+    const where = await crashAt("compaction", "compaction.ended", 1)
+    const result = await recoverAndContinue(where, 10_000)
+    expect(types(result.died).at(-1)).toBe("compaction.ended")
+    expect(types(result.recovered)).toEqual(["execution.resumed"])
+    const after = types(result.log.slice(result.died.length))
+    expect(after).toEqual(["execution.resumed", "baseline.set", "step.started", "text.ended", "step.ended", "execution.succeeded"])
+    // The checkpoint the dead process froze is the one the model continued from: nothing was summarised twice.
+    expect(result.projection.messages.filter((message) => message.kind === "compaction").map((message) => message.status)).toEqual(["completed"])
+    expect(result.calls).toBe(1)
+    expect(view(result)).toEqual(["compaction", "assistant", "assistant"])
+  })
+
+  test("the summary request of a compaction a dead process started can still be rebuilt from the log", async () => {
+    const where = await crashAt("compaction", "compaction.ended", 1)
+    const store = openSqliteStore({ path: where.database })
+    try {
+      const id = store.listSessions()[0]!.session.id
+      const result = exportSession(store, id)
+      expect(result.unverified).toEqual([])
+      expect(result.calls.map((call) => [call.row.purpose, call.request !== null])).toEqual([
+        ["step", true],
+        ["compaction", true],
+      ])
+    } finally {
+      store.close()
+    }
   })
 })
 

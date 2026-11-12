@@ -9,19 +9,22 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type Harness, createHarness } from "../../src/assembly.ts"
-import { resolveConfig } from "../../src/config/schema.ts"
+import { type Harness, TEST_CONTEXT_WINDOW_ENV, createHarness, testContextWindow } from "../../src/assembly.ts"
+import { parseConfigFile, resolveConfig } from "../../src/config/schema.ts"
+import { estimateRequest } from "../../src/context/estimate.ts"
 import { EngineError, type EngineSession, type RevertResult } from "../../src/engine/engine.ts"
 import type { EngineEvent } from "../../src/engine/channel.ts"
 import { neededSnapshots } from "../../src/engine/workspace.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import type { Json } from "../../src/json.ts"
+import type { ModelRequest } from "../../src/request/request.ts"
 import { openSnapshots } from "../../src/snapshot/index.ts"
 import { SessionInUseError, openSessionDirectory } from "../../src/store/directory.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../../src/testing/fake-provider.ts"
 import type { AnyTool } from "../../src/tool/tool.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
+import { SUMMARY } from "../scenarios/script.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 
 const scratch: string[] = []
@@ -586,6 +589,80 @@ describe("two sessions in one workspace", () => {
     await session.settled()
     expect(await session.revert()).toMatchObject({ kind: "reverted", plan: { changes: [{ path: "generated.txt", handEdited: false }] } })
     expect(existsSync(join(directory, "generated.txt"))).toBe(false)
+  }, 60_000)
+})
+
+describe("compaction on the real assembly", () => {
+  /** A source file of about 6,000 tokens. */
+  const registry = (from: number) => Array.from({ length: 350 }, (_, index) => `export const entry${from + index} = register("handler-${from + index}", ${(from + index) * 31})`).join("\n")
+  const big = registry(0)
+
+  test("the test setting lowers the context window, says so, and is not a configuration key", () => {
+    expect(TEST_CONTEXT_WINDOW_ENV).toBe("LIGHT_HARNESS_TEST_CONTEXT_WINDOW")
+    expect(testContextWindow({ [TEST_CONTEXT_WINDOW_ENV]: "40000" })).toBe(40_000)
+    // Only a whole number of tokens is a setting; anything else is not one, and without it nothing is lowered.
+    for (const value of ["", "0", "-5", "40k", "4e4", "40000.5", " "]) expect(testContextWindow({ [TEST_CONTEXT_WINDOW_ENV]: value })).toBeNull()
+    expect(testContextWindow({})).toBeNull()
+    expect(() => parseConfigFile(JSON.stringify({ contextWindow: 40_000 }), "config.json")).toThrow("unknown key")
+  })
+
+  test("with the test setting a session compacts after a few thousand tokens, in its own file, and the history tools search that file", async () => {
+    const { data, workspace } = place()
+    const directory = workspace("compact", { "registry-a.ts": registry(0), "registry-b.ts": registry(350), "notes.md": "# Notes\n" })
+    const previous = process.env[TEST_CONTEXT_WINDOW_ENV]
+    process.env[TEST_CONTEXT_WINDOW_ENV] = "20000"
+    try {
+      const respond = (request: ModelRequest) => script.usage({ inputTokens: estimateRequest(request), cachedInputTokens: 0, outputTokens: 30, reasoningTokens: 0 })
+      const { harness, logged } = start(data, [
+        (request) => [call("read", { path: "registry-a.ts" }), respond(request)],
+        (request) => [call("read", { path: "registry-b.ts" }), respond(request)],
+        // Two files are over the trigger of a 20,000-token window: the loop asks for a summary before the next step,
+        // keeps the second file's step and puts the first behind the checkpoint.
+        (request) => [script.text(SUMMARY), respond(request)],
+        (request) => {
+          // The first file's content is behind the checkpoint: only the user's question still names the handler.
+          if (JSON.stringify(request.input).includes("entry212 = register")) throw new Error("the first file is still in view")
+          return [call("history_search", { query: "handler-212" }), respond(request)]
+        },
+        (request) => [script.text("entry212 registers handler-212."), respond(request)],
+      ])
+      const session = harness.engine.createSession({ cwd: directory, settings: SETTINGS })
+      session.send("Which entry registers handler-212?")
+      await session.settled()
+      const log = session.readEvents()
+      expect(logged.filter((line) => line.includes(TEST_CONTEXT_WINDOW_ENV))).toEqual([`${TEST_CONTEXT_WINDOW_ENV} is set: the context window is taken to be at most 20000 tokens (a test setting)`])
+      expect(log.filter((item) => item.type === "compaction.ended")).toHaveLength(1)
+      expect(log.at(-1)).toMatchObject({ type: "execution.succeeded" })
+      const found = log.findLast((item): item is StoredEvent<"tool.settled"> => item.type === "tool.settled")!
+      expect(found.data.output).toContain('[seq 7, offset 12130] tool (read): ')
+      expect(found.data.output).toContain('export const entry212 = register("handler-212", 6572)')
+      // The index is in the session's own database, beside its log.
+      const id = session.id
+      await harness.close()
+      open.splice(0)
+      const sessions = openSessionDirectory({ dataDir: data })
+      try {
+        const tables = sessions.read(id, (store) => (store as unknown as { database: { query: (sql: string) => { all: () => { name: string }[] } } }).database.query("SELECT name FROM sqlite_master WHERE name IN ('history_index', 'history_piece', 'history_fts') ORDER BY name").all())
+        expect(tables.map((row) => row.name)).toEqual(["history_fts", "history_index", "history_piece"])
+        expectRebuildEqualsLive(sessions.open(id), id)
+      } finally {
+        sessions.close()
+      }
+    } finally {
+      if (previous === undefined) delete process.env[TEST_CONTEXT_WINDOW_ENV]
+      else process.env[TEST_CONTEXT_WINDOW_ENV] = previous
+    }
+  }, 60_000)
+
+  test("without it, and with a provider that names no window, nothing is compacted ahead of time", async () => {
+    const { data, workspace } = place()
+    const directory = workspace("plain", { "registry.ts": big })
+    const { harness, logged } = start(data, [[call("read", { path: "registry.ts" }), script.usage({ inputTokens: 500_000 })], say("Read it.")])
+    const session = harness.engine.createSession({ cwd: directory, settings: SETTINGS })
+    session.send("Read registry.ts.")
+    await session.settled()
+    expect(session.readEvents().some((item) => item.type === "compaction.started")).toBe(false)
+    expect(logged).toEqual([])
   }, 60_000)
 })
 
