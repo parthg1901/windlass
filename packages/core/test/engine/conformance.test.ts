@@ -56,6 +56,9 @@ import type { AnyTool, ToolContext } from "../../src/tool/tool.ts"
 import { currentTodos, todoTool } from "../../src/tools/todo.ts"
 import { TODO_INPUT } from "../scenarios/compaction.ts"
 import { CAPTAIN_FILE, DELEGATE_AS, REVIEWER_FILE, WRITE_FIX } from "../scenarios/agents.ts"
+import { RELEASE_NOTES_ARGS, RELEASE_NOTES_FILE, REVIEW_ARGS, REVIEW_FILE, SHIP_ARGS, SHIP_FILE } from "../scenarios/commands.ts"
+import { mapSession } from "../../src/telemetry/map.ts"
+import type { Span } from "../../src/telemetry/span.ts"
 import { DOCUMENT_BEFORE, FORMAT_NOTE, PUSH_INPUT, PUSH_REASON, READ_DOCUMENT, SCRATCH_REASON, WRITE_DOCUMENT, WRITE_HELPER, WROTE_DOCUMENT, WROTE_HELPER } from "../scenarios/hooks.ts"
 import type { HookProcessResult } from "../../src/hooks/answer.ts"
 import type { HookRunner } from "../../src/hooks/run.ts"
@@ -99,6 +102,16 @@ function writeAgent(cwd: string, name: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, text)
 }
+
+/** A command file of the scenario's project. */
+function writeCommand(cwd: string, name: string, text: string): void {
+  const path = join(cwd, ".claude", "commands", `${name}.md`)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, text)
+}
+
+/** What the collector of the scenario being played was sent: the engine's exporter is this list. */
+let exportedSpans: Span[] = []
 
 /**
  * What the hooks of the scenario being played answer, by hook name: a play
@@ -1513,6 +1526,75 @@ Object.assign(PLAYS, {
     expect(JSON.stringify(h.provider.requests[0])).not.toContain("fixture")
     expect(JSON.stringify(h.provider.requests[2]!.input)).toContain("cannot find name 'fetchUser'")
   },
+
+  // ---------------------------------------------------------------- slash commands and telemetry
+
+  "The user sends a slash command: the expanded text is the message, and the log says which command produced it": async (h, say) => {
+    writeCommand(h.cwd, "release-notes", RELEASE_NOTES_FILE)
+    h.provider.enqueue(answer("Here are the notes for 1.4. Which version came before it?"))
+    h.create()
+    // What a palette previews before Enter: the same expansion, and nothing is written for it.
+    const preview = h.session.expandCommand("release-notes", RELEASE_NOTES_ARGS)
+    expect(preview).toMatchObject({ kind: "command", expansion: { text: say[0]!, missing: [2] } })
+    expect(h.log()).toHaveLength(1)
+    const sent = h.session.sendCommand("release-notes", RELEASE_NOTES_ARGS)
+    await h.settled()
+    // The user is told what was not given and what was left as text; none of it was run or read.
+    expect(sent.expansion.missing).toEqual([2])
+    expect(sent.expansion.unsupported.map((construct) => [construct.kind, construct.text])).toEqual([["shell", "!`git log --oneline`"], ["include", "@docs/CHANGES.md"]])
+    expect(h.tools.ran).toEqual([])
+    // The model is sent the expanded text as the user's message, with both constructs in it as written, and nothing else:
+    // the request is the one the same words typed as a prompt make.
+    const typed = new Harness({})
+    typed.provider.enqueue(answer("Here are the notes for 1.4. Which version came before it?"))
+    typed.create().send(say[0]!)
+    await typed.settled()
+    expect(JSON.stringify(h.provider.requests)).toBe(JSON.stringify(typed.provider.requests))
+    await typed.dispose()
+    expect(JSON.stringify(h.provider.requests[0]!.input)).toContain("!`git log --oneline`")
+    // The record is in the append of the admission, and the message carries it for a transcript.
+    const [admitted, record] = h.log().slice(1, 3)
+    expect([admitted!.type, record!.type, record!.seq - admitted!.seq]).toEqual(["inbox.enqueued", "command.expanded", 1])
+    expect(h.session.projection().messages[0]).toMatchObject({ kind: "user", id: sent.messageId, command: { name: "release-notes", arguments: "1.4", missing: [2] } })
+  },
+
+  "A command that names an agent: the session switches to it where the command's message is delivered": async (h, say) => {
+    writeAgent(h.cwd, "reviewer", REVIEWER_FILE)
+    writeAgent(h.cwd, "captain", CAPTAIN_FILE)
+    writeCommand(h.cwd, "review", REVIEW_FILE)
+    writeCommand(h.cwd, "ship", SHIP_FILE)
+    h.provider.enqueue(answer("The tests do not cover the empty list."), answer("sum.test.ts."), answer("Release 1.4 is prepared on release/1.4."))
+    h.create()
+    expect(h.session.sendCommand("review", REVIEW_ARGS).expansion.text).toBe(say[0]!)
+    await h.settled()
+    expect(h.session.agent()?.name).toBe("reviewer")
+    // While the question is being answered the user queues the second command: its switch waits with it.
+    h.at("step.started", 1, () => {
+      h.session.sendCommand("ship", SHIP_ARGS, { delivery: "queue" })
+      expect(h.session.projection().session.agent?.name).toBe("reviewer")
+    })
+    h.session.send(say[1]!)
+    await h.settled()
+    expect(h.session.projection().session.agent?.name).toBe("captain")
+    // The reviewer answered the question on the session's model; only the captain's turn is on the other one.
+    expect(h.provider.requests.map((request) => request.params.model)).toEqual(["gpt-test", "gpt-test", "gpt-other"])
+    for (const request of h.provider.requests) expect(request.tools).toEqual(h.provider.requests[0]!.tools)
+    expect(h.provider.prefixBreaks().map((entry) => (entry.comparison.extension ? null : entry.comparison.kind))).toEqual(["params"])
+  },
+
+  "Live telemetry is on: the turn's log is the log it would be without, and its spans are sent as it runs": async (h, say) => {
+    h.provider.enqueue([script.text("Let me read the test."), call("call_1", "read", { path: "a.test.ts" }), U], answer("The expectation is wrong: 1 + 1 is 2."))
+    h.tools.on("read", "expect(add(1, 1)).toBe(3)")
+    h.create().send(say[0]!)
+    await h.settled()
+    // The spans that were sent are the ones an export after the fact derives from the log and the ledger: the turn, two model calls, the read.
+    const later = mapSession({ sessionId: h.session.id, events: h.log(), requests: h.store.readRequests(h.session.id) }).spans
+    const byId = (spans: readonly Span[]) => [...spans].sort((a, b) => (a.spanId < b.spanId ? -1 : 1))
+    expect(byId(exportedSpans)).toEqual(byId(later))
+    expect(exportedSpans.map((span) => span.name.split(" ")[0]).sort()).toEqual(["chat", "chat", "execute_tool", "invoke_agent"])
+    expect(JSON.stringify(exportedSpans)).not.toContain("expect(add")
+    expect(JSON.stringify(h.provider.requests)).not.toContain("telemetry")
+  },
 } satisfies Record<string, Play>)
 
 const scenarios = Object.entries(families).flatMap(([family, list]) => list.map((scenario) => ({ family, scenario })))
@@ -1528,8 +1610,9 @@ describe("the loop writes each scenario's events", () => {
       const setup = scenario.setup
       const features = scenario.features
       // Skills and MCP servers are read from a real directory, which then stands for the scenarios' `/repo`.
-      const cwd = features?.skills === true || features?.mcp === true || features?.agents === true || features?.lsp === true ? projectDirectory() : undefined
+      const cwd = features?.skills === true || features?.mcp === true || features?.agents === true || features?.lsp === true || features?.commands === true ? projectDirectory() : undefined
       hookAnswers = {}
+      exportedSpans = []
       const h = new Harness({
         ...(cwd === undefined ? {} : { cwd }),
         ...(features?.skills === true ? { skills: { configDir: join(dirname(cwd!), "config") } } : {}),
@@ -1552,6 +1635,14 @@ describe("the loop writes each scenario's events", () => {
           : {}),
         ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
         ...(features?.agents === true ? { agents: { configDir: join(dirname(cwd!), "config") } } : {}),
+        ...(features?.commands === true ? { commands: { configDir: join(dirname(cwd!), "config") } } : {}),
+        // Telemetry of the user's own configuration, toward a collector that is this test: every closed span, as it closes.
+        ...(features?.telemetry === true
+          ? {
+              userConfig: { verify: { mode: "off" as const }, telemetry: { enabled: true, endpoint: "http://collector.invalid:4318" } },
+              telemetry: { mapDelayMs: 0, env: {}, send: async (spans: readonly Span[]) => (exportedSpans.push(...spans), { batches: [], sent: spans.length, failed: 0 }) },
+            }
+          : {}),
         tools,
         // The scenarios' conversations are a few dozen tokens long: a compaction on request is made whatever it frees.
         limits: { crashResumeCap: RESUME_CAP, attemptBudget: ATTEMPT_BUDGET, manualCompactionMinTokens: 0 },
@@ -1593,7 +1684,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(102)
+    expect(scenarios).toHaveLength(105)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

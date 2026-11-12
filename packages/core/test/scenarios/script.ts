@@ -100,7 +100,10 @@ export interface FeatureSetting {
   /** The `hooks` section of the user's own configuration file: the engine runs these hooks, which answer as the scenario says. */
   readonly hooks?: HooksConfigSection
   /** The user's configuration names one language server, which serves `*.txt` files (the scripted server), and the workspace is a real directory. */
-  readonly lsp?: boolean
+  readonly lsp?: boolean  /** The project has command files (`.claude/commands/`), and the engine offers slash commands. */
+  readonly commands?: boolean
+  /** The user's own configuration turns live telemetry on, toward a collector the play stands in for. */
+  readonly telemetry?: boolean
 }
 
 export interface SpawnSetting {
@@ -180,6 +183,8 @@ export interface MessageView {
   readonly excluded: Exclusion | null
   /** For a synthetic message: its origin. */
   readonly origin: string | null
+  /** For a user message a slash command produced: the line as it was typed (`/release-notes 1.4`). */
+  readonly command: string | null
 }
 
 // ---------------------------------------------------------------- ids and tools
@@ -704,7 +709,16 @@ export function view(projection: Projection): MessageView[] {
     const common = { id: message.id as string, kind: message.kind, excluded: message.excluded }
     switch (message.kind) {
       case "user":
-        return { ...common, status: null, attempt: null, text: contentText(message.content), calls: [], error: null, origin: null }
+        return {
+          ...common,
+          status: null,
+          attempt: null,
+          text: contentText(message.content),
+          calls: [],
+          error: null,
+          origin: null,
+          command: message.command === undefined ? null : `/${message.command.name}${message.command.arguments === "" ? "" : ` ${message.command.arguments}`}`,
+        }
       case "synthetic":
         return {
           ...common,
@@ -714,9 +728,10 @@ export function view(projection: Projection): MessageView[] {
           calls: [],
           error: null,
           origin: message.origin,
+          command: null,
         }
       case "instruction":
-        return { ...common, status: null, attempt: null, text: message.text, calls: [], error: null, origin: null }
+        return { ...common, status: null, attempt: null, text: message.text, calls: [], error: null, origin: null, command: null }
       case "compaction":
         return {
           ...common,
@@ -726,6 +741,7 @@ export function view(projection: Projection): MessageView[] {
           calls: [],
           error: message.error === null ? null : errorText(message.error),
           origin: null,
+          command: null,
         }
       case "assistant":
         return {
@@ -740,6 +756,7 @@ export function view(projection: Projection): MessageView[] {
           ),
           error: message.error === null ? null : errorText(message.error),
           origin: null,
+          command: null,
         }
     }
   })
@@ -801,6 +818,13 @@ export function describeEvent(item: NewEvent): string {
       return "baseline.set"
     case "inbox.enqueued":
       return `inbox.enqueued ${d.messageId} ${d.delivery}${d.origin === null ? "" : ` origin=${d.origin}`} ${quote(contentText(item.data.content))}`
+    case "command.expanded": {
+      const use = item.data
+      const typed = `/${use.name}${use.arguments === "" ? "" : ` ${use.arguments}`}`
+      const missing = use.missing.length === 0 ? "" : ` missing=${use.missing.map((position) => `$${position}`).join(",")}`
+      const left = use.unsupported.length === 0 ? "" : ` left as text: ${use.unsupported.map((construct) => construct.text).join(", ")}`
+      return `command.expanded ${d.messageId} ${quote(typed)} (${use.scope})${missing}${left}`
+    }
     case "synthetic.appended":
       return `synthetic.appended ${d.messageId} origin=${d.origin} ${quote(contentText(item.data.content))}`
     case "instruction.appended":

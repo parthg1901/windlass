@@ -57,14 +57,14 @@ export const REVIEWER: AgentRecord = agentRecordOf(REVIEWER_DEFINITION)
 export const CAPTAIN: AgentRecord = agentRecordOf(CAPTAIN_DEFINITION)
 
 /** The agent the session runs as changed. Without a message: before the first baseline. */
-const switched = (messageId: string | null, from: string | null, to: AgentRecord | null) => event("agent.switched", { messageId: messageId === null ? null : m(messageId), from, to })
+export const switched = (messageId: string | null, from: string | null, to: AgentRecord | null) => event("agent.switched", { messageId: messageId === null ? null : m(messageId), from, to })
 /** A baseline whose last section is the agent's instructions. */
-const baselineAs = (agent: AgentRecord) => {
+export const baselineAs = (agent: AgentRecord) => {
   const plain = baseline()
   return event("baseline.set", { ...plain.data, sources: [...plain.data.sources, { source: "agent", fingerprint: fingerprintOf(agent.instructions) }] })
 }
 /** The instruction message that tells the model about a switch, with the text the agents module writes. */
-const announced = (id: string, from: AgentRecord | null, to: AgentRecord | null) => {
+export const announced = (id: string, from: AgentRecord | null, to: AgentRecord | null) => {
   const update = agentSwitch(from, to)
   if (update === null) throw new Error("nothing changes")
   return event("instruction.appended", { messageId: m(id), source: "agent", text: update.text, fingerprint: update.fingerprint })

@@ -76,6 +76,10 @@ function describeFeatures(features: NonNullable<Scenario["features"]>): string {
     ...(features.skills === true ? ["skills (the `skill` tool; the project has skill files)"] : []),
     ...(features.mcp === true ? ["MCP (`mcp_search` and `mcp_call`; the user's configuration names one server, `fx`)"] : []),
     ...(features.wake === true ? ["wake-ups (`wake_create`, `wake_list`, `wake_cancel`)"] : []),
+    ...(features.todo === true ? ["the real `todo` tool"] : []),
+    ...(features.agents === true ? ["agents (the project has agent definitions)"] : []),
+    ...(features.commands === true ? ["slash commands (the project has command files)"] : []),
+    ...(features.telemetry === true ? ["live telemetry (the user's configuration turns it on and names a collector)"] : []),
     ...(features.hooks === undefined ? [] : [`hooks (the user's configuration: \`${JSON.stringify(features.hooks)}\`)`]),
     ...(features.lsp === true ? ["language-server diagnostics (the user's configuration names one server, `fixture`, for `*.txt` files)"] : []),
   ]
@@ -85,7 +89,8 @@ function describeFeatures(features: NonNullable<Scenario["features"]>): string {
 function describeMessage(message: MessageView): string {
   const what = message.kind === "assistant" ? `${message.status}${message.error === null ? "" : ` ${message.error}`}` : message.kind
   const calls = message.calls.length === 0 ? "" : ` [${message.calls.map((call) => call.split(" ").slice(1).join(" ")).join(", ")}]`
-  return `${message.id} ${what}${calls}${message.excluded === null ? "" : ` excluded:${message.excluded}`}`
+  const command = message.command === null ? "" : ` (${message.command})`
+  return `${message.id} ${what}${command}${calls}${message.excluded === null ? "" : ` excluded:${message.excluded}`}`
 }
 
 function describeClaim(state: Projection): string {

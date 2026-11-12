@@ -2352,7 +2352,7 @@ The model keeps a task list with the `todo` tool: every call sends the whole lis
 
 *Context window:* 10,000 tokens.
 
-*Engine:* offers .
+*Engine:* offers the real `todo` tool.
 
 ```
 -- the model sets its list and answers; the request is over the early threshold
@@ -3246,7 +3246,7 @@ The user starts the session as the agent `reviewer`, whose definition allows onl
 
 *Provider:* step 1 calls write; step 2 answers.
 
-*Engine:* offers .
+*Engine:* offers agents (the project has agent definitions).
 
 ```
 -- the session is created as the agent, and its first baseline carries the agent's instructions
@@ -3282,7 +3282,7 @@ The session has run a turn without an agent. The user selects `reviewer`. The ba
 
 *Provider:* turn 1 answers. Turn 2 (as the reviewer): a write, refused, then an answer. Turn 3 (as the captain, on the other model): a write that runs, then an answer. Turn 4 (no agent): an answer.
 
-*Engine:* offers .
+*Engine:* offers agents (the project has agent definitions).
 
 ```
 -- a turn without an agent
@@ -3351,7 +3351,7 @@ The `subagent` tool has an optional `agent` argument in every session: its spec 
 
 *Provider:* step 1 calls subagent with `agent`; the child answers in one step; step 2 answers.
 
-*Engine:* offers .
+*Engine:* offers agents (the project has agent definitions).
 
 ```
 -- the list of agents is appended after the baseline, and the model delegates to one
@@ -3385,7 +3385,7 @@ The same situation from the child's side. The child is created as the agent: `ag
 
 *Provider:* the child calls write, which is refused, then answers.
 
-*Engine:* offers .
+*Engine:* offers agents (the project has agent definitions).
 
 ```
 -- the child is created as the agent, is refused a write, and answers
@@ -3544,9 +3544,116 @@ The user's configuration names a language server for the files the model works o
 
 *Model sees next:* u1, a1, a2, a3.
 
+### Slash commands and telemetry
+
+#### 102. The user sends a slash command: the expanded text is the message, and the log says which command produced it
+
+The project has a command file, `.claude/commands/release-notes.md`: a prompt template with `$1` and `$2`. The user types `/release-notes 1.4`. The file is read once, then: its template is expanded with what was typed, and the result is admitted as the user's message, like any prompt. In the same append `command.expanded` records where that text came from: the command's name and file, the fingerprint of the file as it was read (so the version that was used is known after the file changes), the arguments as typed, and that position 2 was used by the template and not given (it became empty text). The template also holds a command in backticks after `!` and an `@path`, which other harnesses run and read at this moment. Here nothing in a command file runs anything or reads anything: both stay in the text exactly as written, and the record lists them, for the user. The model is sent the expanded text and nothing else: there is no tool for commands, no list of them, and the request is the one a typed prompt of the same words would have made. The model can run `git log` and read the file itself, with its tools, which are decided like any call.
+
+*Provider:* the model answers the expanded prompt.
+
+*Engine:* offers slash commands (the project has command files).
+
+```
+-- the command is expanded and admitted: the message and the record of where it came from, in one append
+  1  session.created
+  2  inbox.enqueued u1 steer "Draft the release notes for version 1.4 from the commits ..."
+  3  command.expanded u1 "/release-notes 1.4" (project) missing=$2 left as text: !`git log --oneline`, @docs/CHANGES.md
+-- the turn runs on the expanded text
+  4  execution.started exe_1
+  5  baseline.set
+  6  inbox.delivered u1
+  7  step.started a1 attempt=1
+  8  text.ended a1 "Here are the notes for 1.4. Which version came before it?"
+  9  step.ended a1 finish=stop
+ 10  execution.succeeded exe_1
+```
+
+*UI:* u1 user (/release-notes 1.4) · a1 completed. *Claim:* released.
+
+*Model sees next:* u1, a1.
+
+*The reducer rejects:*
+- after "the command is expanded and admitted: the message and the record of where it came from, in one append": `command.expanded u1 "/release-notes 1.4" (project) missing=$2 left as text: !`git log --oneline`, @docs/CHANGES.md` (invalid_transition). The record belongs to the admission it follows at once: it is written with it, never later.
+- after "the command is expanded and admitted: the message and the record of where it came from, in one append": `command.expanded u9 "/release-notes 1.4" (project) missing=$2 left as text: !`git log --oneline`, @docs/CHANGES.md` (not_found). A command's record names a message that waits in the inbox.
+- after "the turn runs on the expanded text": `command.expanded u1 "/release-notes 1.4" (project) missing=$2 left as text: !`git log --oneline`, @docs/CHANGES.md` (not_found). A delivered message is history: nothing is recorded about it afterwards.
+
+#### 103. A command that names an agent: the session switches to it where the command's message is delivered
+
+A command file may name an agent (`agent: reviewer`). The first thing the user types in a new session is `/review focus on the tests`. The command's text is admitted with its record, and the agent's definition is read then, once. Where the message is delivered, right before it, the session switches to the agent: no baseline is set yet, so `agent.switched` is the record alone and the first baseline carries the reviewer's instructions as its last section, exactly as for a session that was started as the reviewer. Later, while the model is answering a question, the user queues `/ship 1.4`, a command that runs under `captain`. A queued message waits for the turn in progress, and so does its switch: the reviewer answers the question as the reviewer. At the boundary where the queued message is delivered the switch is made first, as an appended instruction message and `agent.switched` (the baseline is frozen), then `settings.changed` because the captain names another model, then the turn's ending and the delivery. A command whose agent cannot be found sends nothing at all.
+
+*Provider:* turn 1 (as the reviewer) answers. Turn 2 answers the question; the queued command's turn (as the captain, on the other model) answers.
+
+*Engine:* offers agents (the project has agent definitions); slash commands (the project has command files).
+
+```
+-- the first message is a command that runs under the reviewer: the switch is recorded before the first baseline, which carries the agent
+  1  session.created
+  2  inbox.enqueued u1 steer "Review the uncommitted changes (git diff, and git diff --..."
+  3  command.expanded u1 "/review focus on the tests" (project)
+  4  execution.started exe_1
+  5  agent.switched null
+  6  baseline.set
+  7  inbox.delivered u1
+  8  step.started a1 attempt=1
+  9  text.ended a1 "The tests do not cover the empty list."
+ 10  step.ended a1 finish=stop
+ 11  execution.succeeded exe_1
+-- a question, and while it is answered the user queues a command that runs under the captain
+ 12  inbox.enqueued u2 steer "Which test is closest?"
+ 13  execution.started exe_2
+ 14  inbox.delivered u2
+ 15  step.started a2 attempt=1
+ 16  inbox.enqueued u3 queue "Prepare release 1.4 on a release branch."
+ 17  command.expanded u3 "/ship 1.4" (project)
+ 18  text.ended a2 "sum.test.ts."
+ 19  step.ended a2 finish=stop
+-- where the queued command is delivered: the switch, the model change it brings, the turn's ending and the delivery
+ 20  instruction.appended i1 source=agent "The user switched you from the agent \"reviewer\" to the ag..."
+ 21  agent.switched i1
+ 22  settings.changed model=gpt-other reasoningEffort=high
+ 23  turn.ended
+ 24  inbox.delivered u3
+ 25  step.started a3 attempt=1 model=gpt-other
+ 26  text.ended a3 "Release 1.4 is prepared on release/1.4."
+ 27  step.ended a3 finish=stop
+ 28  execution.succeeded exe_2
+```
+
+*UI:* u1 user (/review focus on the tests) · a1 completed · u2 user · a2 completed · i1 instruction · u3 user (/ship 1.4) · a3 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, u2, a2, i1, u3, a3.
+
+#### 104. Live telemetry is on: the turn's log is the log it would be without, and its spans are sent as it runs
+
+The user's own configuration turns `telemetry` on and names a collector. Nothing about the turn changes: no event is written for telemetry, no request carries anything of it, and the log is event for event the log of the same turn without it (this scenario's events are those of "One tool call, then an answer"). Beside the loop, the session's log and its request ledger are mapped to spans at the events where a span closes, with the mapping an export after the fact uses, so both give the same spans with the same IDs: the tool call when it has settled, each model call when its step has ended, the turn when the execution has. Each span is queued once and sent in the background. A collector that is slow, down or wrong costs the queue's memory and nothing else, and a project's configuration can turn the export off but never on. Message text, tool arguments and tool output are not in the spans unless the user's file asks for content.
+
+*Provider:* step 1 streams text and one tool call; step 2 answers.
+
+*Engine:* offers live telemetry (the user's configuration turns it on and names a collector).
+
+```
+-- the turn, as without telemetry
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  text.ended a1 "Let me read the test."
+  8  tool.called a1/call_1 read {"path":"a.test.ts"}
+  9  tool.started a1/call_1 effect=read
+ 10  tool.settled a1/call_1 success "expect(add(1, 1)).toBe(3)"
+ 11  step.ended a1 finish=tool_calls
+ 12  step.started a2 attempt=1
+ 13  text.ended a2 "The expectation is wrong: 1 + 1 is 2."
+ 14  step.ended a2 finish=stop
+ 15  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [read success] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
 ### Forks
 
-#### 102. A fork continues from its parent's history
+#### 105. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 
