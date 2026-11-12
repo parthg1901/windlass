@@ -253,6 +253,12 @@ At the prompt (/help lists every command; a /word that is not one is never sent,
                           it overwrites a file edited since by you or another session
   /redo                   bring back what the last /undo took away
   /diff                   the files the last turn changed, with their diffs
+  /mcp [approve <name>]   the MCP servers: state, tools, where each is defined; a server
+                          this project's configuration names is asked about first
+  /skills                 the skills the model can load here, and the ones that failed
+  /wakeups [cancel|secret <id>]  this session's wake-ups; a webhook's secret
+  /memory, /remember <text>, /forget <id>  notes for later sessions (memory is off
+                          unless turned on; /memory says how)
 
 Sessions are stored one file each, so several ${b} processes (and an editor) can
 work at once, each in its own session. A session another process is working in
