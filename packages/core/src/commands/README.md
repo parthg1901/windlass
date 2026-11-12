@@ -4,9 +4,12 @@ A slash command is a Markdown file whose body is a prompt template: type `/relea
 with `1.4` put in, is sent as your message. Nothing in a command file runs anything or reads anything when you type
 it: expansion is a pure function of the template and what you typed.
 
-A leaf module: nothing in core imports it, and it defines no durable events (it lists below what to record). It
-imports only `brand`, `config/schema.ts` (`ConfigError`), `instructions/source.ts` (`fingerprint`) and
-`skills/frontmatter.ts`. Commands are the user's side of the conversation: the model is never given a list of them.
+The module itself imports only `brand`, `config/schema.ts` (`ConfigError`), `instructions/source.ts`
+(`fingerprint`) and `skills/frontmatter.ts`, and defines no durable event. The engine offers it to clients
+(`engine/commands.ts`: `EngineSession.commands`, `findCommand`, `expandCommand`, `sendCommand`, and
+`Engine.listCommands`) and records which command produced a message (`command.expanded`); the configuration file
+has the `commands` section. Commands are the user's side of the conversation: the model is never given a list of
+them.
 
 | File | What |
 | --- | --- |
@@ -103,6 +106,13 @@ address and a lone `@` are not reported.)
 
 ## For the integrator
 
+The engine is wired (`docs/architecture.md`, "Slash commands and live telemetry"). What is left is the clients':
+the ACP server and the two interfaces. Where this section says to call the module's functions, the server calls
+the session instead: `session.commands(builtins)` for the listing, `session.expandCommand(name, args)` for a
+preview, and `session.sendCommand(entry.name, entry.args, { delivery })` to send, which does steps 2 and 3 below
+and the recording in one call and throws `EngineError` `invalid_request`, with the sentence to show, when
+nothing was sent.
+
 ### Where expansion happens
 
 In the ACP server, not in each client: ACP v1 has the shape for it. The server advertises the commands with a
@@ -154,8 +164,10 @@ stays `null`: it is the user's message. The reducer can fold the event onto the 
 
 ### Configuration
 
-Add `commands` to `configFile` with `parseCommandsSection`; `resolveCommandsConfig` applies the defaults and expands
-`~/`. Project and user sections may be merged like any list (a command only produces a message the user sends).
+`commands` is a section of the configuration file (`config/schema.ts`), validated by `parseCommandsSection`;
+`resolveCommandsConfig` applies the defaults and expands `~/`. The engine reads both files' sections: the
+project's `paths` first, then the user's, and a name either file disables is left out (a command only produces a
+message the user sends).
 
 ## Demo
 

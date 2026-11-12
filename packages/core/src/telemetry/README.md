@@ -1,10 +1,10 @@
 # telemetry: a session as OpenTelemetry spans
 
 A session's log and request ledger, mapped to spans that follow the OpenTelemetry GenAI semantic conventions, and two
-exporters for them: OTLP/HTTP to a collector, and OTLP/JSON to a file. Everything is derived after the fact from what
-the session stored, like the prefix-cache trace in `../trace/`; nothing in the engine writes spans yet. A leaf:
-nothing else in `packages/core` imports it, and it has no dependency (no OpenTelemetry SDK; the encoding is written by
-hand).
+exporters for them: OTLP/HTTP to a collector, and OTLP/JSON to a file. Everything is derived from what the session
+stored, like the prefix-cache trace in `../trace/`: after the fact by the script below, and live by the engine
+(`engine/telemetry.ts`), which maps the same log with the same function as a session runs and writes nothing for
+it. The module has no dependency (no OpenTelemetry SDK; the encoding is written by hand).
 
 ```
 span.ts      the span model, the deterministic trace and span IDs, the attribute namespace
@@ -121,8 +121,9 @@ Off by default. Only the user's own configuration file may turn it on, choose th
 content on; a project's file may only turn it off, because a repository must not be able to send data off the
 machine. `${NAME}` in a header is read from the environment when the configuration is resolved (`$$` is a `$`); a
 variable that is not set is an error naming it. The section is validated and resolved here (`parseTelemetrySection`,
-`resolveTelemetryConfig`); the configuration loader does not know the key yet (see below), so today the section is
-usable by code and tests, and the script takes its options on the command line.
+`resolveTelemetryConfig`) and is a key of the configuration file: with it on, the engine exports the spans of a
+session's turns as they run (`docs/architecture.md`, "Slash commands and live telemetry"). The script takes its
+options on the command line and does not read the section.
 
 ### The conventions
 
@@ -151,6 +152,8 @@ Unsure, used anyway, and worth checking when the conventions settle:
 - The message JSON shapes (`role`, `parts` with `type: text | tool_call | blob`, `finish_reason`) follow the
   conventions' input/output message schema as far as it was read; media is sent as a `blob` part with its type only.
 
+Used since the engine was wired: `gen_ai.response.model` (the model that answered, from the ledger row).
+
 Not used, deliberately: `gen_ai.response.id` (the Responses API's response ID is not stored), `server.address`,
 `gen_ai.request.stream`, `gen_ai.conversation.compacted` (no definition found; compaction is a span of its own),
 `gen_ai.system_instructions` and `gen_ai.tool.definitions` (the system prompt and tool list are large and frozen;
@@ -159,6 +162,9 @@ name, `brand.ts`): the ledger's request ID and purpose, attempts, retry delays, 
 status and error code, effect classes, sandbox and approval facts, compaction, checks, spawned work.
 
 ## For the engine integrator
+
+Live export is wired as this section describes (`engine/telemetry.ts`; `docs/architecture.md` says what it does
+and what it does not). It is kept as the reasoning behind that wiring.
 
 ### Wiring live export
 
@@ -197,10 +203,12 @@ never disagree. The loop needs no new writes for it.
 
 ### What the log cannot provide today
 
-- **The provider's request ID of a successful call.** Only a failed call has it (`providerError.requestId`). The
-  Responses API's response ID and request ID of each call would need a field on the ledger row (or on `step.ended`).
-- **Time to first token** (`gen_ai.response.time_to_first_chunk`) and the response model: deltas are ephemeral and
-  the response's model name is not stored. A ledger field for the first-chunk time would do.
+- **The Responses API's response ID** (`gen_ai.response.id`). The provider's own ID of the request and the model
+  that answered are on the ledger row since the engine was wired (`providerRequestId`, `responseModel`: the
+  attributes `<namespace>.provider.request_id` and `gen_ai.response.model` of a `chat` span, for a call that
+  finished as for one that failed); the response's ID is not.
+- **Time to first token** (`gen_ai.response.time_to_first_chunk`): deltas are ephemeral. A ledger field for the
+  first-chunk time would do.
 - **When a model call's stream ended**, as an event: the ledger's `finishedAt` has it, so the chat span is right, but
   a live exporter cannot see it on the event stream.
 - **A turn inside an execution.** One execution can hold several turns (a queued message is delivered under the same

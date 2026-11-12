@@ -46,7 +46,9 @@ packages/core/src
                   recovery.ts (start-up recovery), replay.ts (what a replay may change, its changed baseline),
                   spawn.ts (the subagent and background tools, what is read off a child's log),
                   worktree.ts (a subagent's git worktree and the merge back), skills.ts, mcp.ts, wake.ts, memory.ts,
-                  agents.ts, hooks.ts and lsp.ts (those seven modules as the loop offers them), state.ts (what the loop reads off the projection),
+                  agents.ts, hooks.ts and lsp.ts (those seven modules as the loop offers them), commands.ts (slash
+                  commands as clients are offered them), telemetry.ts (the live exporter: a session's log mapped to
+                  spans as it grows), state.ts (what the loop reads off the projection),
                   workspace.ts (what it reads off the log about snapshots), constants.ts (limits and frozen texts),
                   channel.ts (the event stream), clock.ts
   snapshot/       the working tree as git tree objects in a private git directory: take, diff, restore, prune
@@ -77,6 +79,10 @@ packages/core/src
                   the event a hook is given, the runner
   lsp/            language-server diagnostics: the `lsp` configuration section, the server process and its JSON-RPC
                   connection, one LSP session, the before/after comparison, the note, the registry
+  commands/       slash commands: discovery of command files, expansion of a template with what was typed, lookup
+                  with a did-you-mean, the listing, the `commands` configuration section
+  telemetry/      a session as OpenTelemetry spans: the mapping from the log and the ledger, the OTLP/JSON encoding,
+                  the HTTP and file exporters, the background queue, the `telemetry` configuration section
 ```
 
 Naming: a lowercase export such as `message` or `usage` is a validator; the PascalCase export of the same name is its
@@ -104,7 +110,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | --- | --- |
 | Session | `session.created` (cwd, title, settings, and the lineage: a `fork` of a parent through a seq, a `spawn` by a parent's tool call with its depth and worktree, a `replay` of a recording with its policy and what was changed; for a fork also `inherited`, what it needs at run time of the events it inherited: the entries taint is derived from), `session.renamed`, `session.archived`, `session.unarchived`, `settings.changed` |
 | Frozen prefix | `baseline.set` (instructions, tools, source fingerprints), `instruction.appended` (source, text, fingerprint; for the sources that are never in the baseline, `detail`: the servers whose descriptions an MCP catalogue carries, the notes a memory message makes the model hold, the skills an index lists, the agents a list names), `agent.switched` (the agent the session runs as from here on, as the definition was when it was selected; before the first baseline, or right after the instruction message that announces it) |
-| Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
+| Inbox | `inbox.enqueued` (with `untrusted` when a wake-up's firing carries a webhook's body or a networked check's output), `command.expanded` (the message admitted right before it was produced by a slash command: the command's name and file, the fingerprint of the file as it was read, the arguments, the positions that were not given, what was left as text), `inbox.delivery_changed`, `inbox.cancelled`, `inbox.delivered`, `turn.ended` (a turn ends because a queued message waits), `synthetic.appended` |
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
@@ -212,6 +218,10 @@ is a new version with a decoder for the old one.
     hooks that had finished are still accepted. An ending names unsatisfied stop hooks only when there is one,
     each once. The message a stop hook sends the model back with is a harness message like any other: it must be
     answered before the execution can end.
+  - *Commands.* `command.expanded` names a message of the user's that waits in the inbox and follows its
+    admission at once (the two are one append): never a harness component's message, never one admitted earlier,
+    never one that was delivered. The message carries the record from its delivery on (`command`), so a transcript
+    built from the rows and one built from the log say the same.
   - *Who verifies.* The ending of a subagent's turn (`execution.succeeded`, `turn.ended`) says `left_to_parent`
     and nothing else, and no other session's ending says it.
   - *Forks.* Only a fork's `session.created` carries `inherited`, and what it carries lies at or before the
@@ -251,8 +261,10 @@ is a new version with a decoder for the old one.
   state reads of one model call took 787 ms before and 1 ms after; the median time per call went from 659 ms
   to 138 ms.)
 - The request ledger stores, for each model call, the ordered block hashes of the request, the usage (with what
-  the provider says it wrote to its cache, when it says) and the name of the provider that served it
-  (`Provider.id`): the signed-in Responses provider, or a scripted one. It is in the session's own file.
+  the provider says it wrote to its cache, when it says), the name of the provider that served it
+  (`Provider.id`: the signed-in Responses provider, or a scripted one) and what the response said about itself,
+  when it did: the provider's own ID of the request (`providerRequestId`, of a call that finished and of one that
+  failed) and the model that answered (`responseModel`). It is in the session's own file.
 - Media lives in a blob store keyed by SHA-256 that all sessions share, so a reload shows the same image and a
   block that refers to it hashes the same.
 - `searchMessages` and `readMessageAt` are what the history tools use: every message that is not excluded, also the
@@ -318,7 +330,8 @@ is a new version with a decoder for the old one.
 - Every error has a kind, and the kind fixes whether it may be retried: rate limit, provider failure, transport and
   incomplete stream are; auth, usage limit, content policy, invalid request and context overflow are not.
 - An error carries the provider's request ID as `requestId` when a response supplied one; the message never contains
-  it. A `transport` error has a `reason`: `connection` (could not send, or the connection broke) or `stalled`
+  it. A `finish` carries the same ID and the model that answered (`response`), when the provider gave them: facts
+  for the ledger and a trace, never part of history. A `transport` error has a `reason`: `connection` (could not send, or the connection broke) or `stalled`
   (nothing arrived within the idle timeout).
 - Provider-owned payloads (encrypted reasoning, item phase) travel as opaque `providerData` and are replayed verbatim.
 - `Usage` keeps what the provider says it wrote to its prompt cache (`cacheWriteTokens`, and the part with the
@@ -408,9 +421,9 @@ is a new version with a decoder for the old one.
 - `loadConfig` reads the user and project files with strict validation: an unknown key is an error. The
   `approval` section is the one key that is not merged: each file's section is handed on as written, and
   `resolveApprovalConfig` lets the project's only tighten the user's. The sections `mcp`, `skills`, `wake`,
-  `memory`, `agents`, `hooks` and `lsp` are validated by the modules that own them, and `LoadedConfig.files` hands on both files
+  `memory`, `agents`, `hooks`, `lsp`, `commands` and `telemetry` are validated by the modules that own them, and `LoadedConfig.files` hands on both files
   apart, because for each of them it matters who wrote a value (see "Skills, MCP servers, wake-ups, memory and
-  agents" and "Hooks and language-server diagnostics"). The project's file is validated as the project's:
+  agents", "Hooks and language-server diagnostics" and "Slash commands and live telemetry"). The project's file is validated as the project's:
   only the user's own may run a hook outside the sandbox. `loadConfigSync` is the same loader without a turn of the event loop, for the two things that cannot
   wait for an execution to read the files: how a session's calls are decided, asked before its first turn, and
   the agent a new session starts as.
@@ -429,7 +442,8 @@ is a new version with a decoder for the old one.
   boundary), `withdraw` (a prompt that was not delivered yet), `readEvents` (its stored log, for a client that
   replays history), `revert`, `undoRevert`, `rename` (`session.renamed`, at any time), `compact` (a compaction
   the user asks for, see "Compaction"), `setAgent`, `agent` and `agents` (see "Agents"), `hooks`, `approveHook`,
-  `lsp` and `approveLspServer` (see "Hooks and language-server diagnostics"), an event stream and
+  `lsp` and `approveLspServer` (see "Hooks and language-server diagnostics"), `commands`, `findCommand`,
+  `expandCommand` and `sendCommand` (see "Slash commands and live telemetry"), an event stream and
   `close`. Closing a session closes that session:
   its work stops as a shutdown, its store is let go of so that any process can open it, and the engine and its
   other sessions carry on.
@@ -438,7 +452,8 @@ is a new version with a decoder for the old one.
   asked), `latestSession`, `getSession`, `resolveSession` (an ID or a unique prefix), `readEvents` (of any session,
   open or not, held here or elsewhere), `archiveSession` and `unarchiveSession` (through the session's log, holding
   it only for that append), `turnChanges` (the files each ended turn of a stored session changed, from its
-  snapshots, one entry per `turn.ended` or terminal event), `listAgents`, and `validateSettings`, which rejects a
+  snapshots, one entry per `turn.ended` or terminal event), `listAgents`, `listCommands`, `telemetry` (the
+  collectors live telemetry has sent to, with what waits and what was dropped, taken and not taken), and `validateSettings`, which rejects a
   model the provider does not offer, naming the ones it does, and a reasoning effort the model does not offer,
   naming the ones it accepts. The listing it fetched is kept: `createSession` and `setSettings` refuse the same
   settings from it without a request, and before a step is sent the loop checks the effort once more (fetching
@@ -838,7 +853,8 @@ client opened it meanwhile.
   and cut them short when it exits (they stay resumable, and resume when their session is next opened). What a
   process that does not fire sets up fires in the next one that does.
 - *Shutdown.* `Engine.close()` stops the listener and the scheduler first, then the sessions, then the MCP
-  servers and the language servers, then closes the wake store.
+  servers and the language servers, then sends the spans live telemetry still holds (for a short while at most),
+  then closes the wake store.
 - *Approval.* `wake_create` is an `exec` tool with the shell's `command` and `sandbox` in its input, so it is
   decided exactly as that command would be; the question adds that it acts later, unattended, and how often. What
   the call ran under becomes the most the wake-up's check may run with. Before each run the scheduler asks what
@@ -966,6 +982,83 @@ in force and the ones that wait, each with the question word for word; `approveH
 approval, in force from the next call. `lsp()` gives the started servers and the ones that wait;
 `approveLspServer(name, fingerprint)` records the approval, and the server starts at the next file it serves.
 
+## Slash commands and live telemetry
+
+Two more modules that were built apart (`commands/`, `telemetry/`; each has a README) and are wired in by
+`engine/commands.ts` and `engine/telemetry.ts`. Neither brings a tool, neither has anything in a request's
+prefix, and the model is told about neither. `EngineOptions.commands` and `telemetry` switch them on;
+`createHarness` passes both. **With no command sent and no `telemetry` section that turns export on, a session's
+requests, its log and its ledger are byte for byte those of an engine without either**
+(`test/engine/telemetry.test.ts` holds this, and that telemetry which is on writes nothing either).
+
+**Slash commands** (`engine/commands.ts`). A command is a Markdown file whose body is a prompt template
+(`.<brand.directory>/commands`, `.agents/commands`, `.claude/commands` up to the repository root, then
+`commands.paths`, then the user's own). It is the user's side of the conversation: what it produces is a user
+message, and the model sees that message and nothing else.
+
+- *For clients.* `Engine.listCommands(cwd, builtins)` and `EngineSession.commands(builtins)`: the usable
+  commands, the ones a client's own command hides, and what discovery skipped or found shadowed.
+  `findCommand(name, builtins)`: a client's own command first, then a file, exactly and then ignoring case; an
+  unknown name comes back with the close names and the sentence to show. `expandCommand(name, args)`: what would
+  be sent, with the positions that were not given and what was left as text, without sending (a palette's
+  preview). `sendCommand(name, args, options)`: `send` for a command. All of them read the directories as they
+  are at that moment; nothing is cached, as for skills.
+- *What is recorded.* `sendCommand` reads the file once, expands its template with what was typed, and appends
+  `inbox.enqueued` (the expanded text, origin `null`: it is the user's message) and `command.expanded` in one
+  append. The expanded text is stored once, as the message's content, and is what every request renders; where
+  it came from is fields (the name, the file, the fingerprint of the file as it was read, the arguments, the
+  positions that became empty text, what was left as text), never parsed back out of the text. The reducer puts
+  the record on the inbox item and on the user message, so a transcript shows the line as typed.
+- *Nothing in a command file runs or reads anything.* Expansion is a pure function of the template and the
+  arguments. A command in backticks after `!` and an `@path`, which other harnesses run and read when the slash
+  is typed, stay in the text exactly as written; the expansion a client is handed and the record both list
+  them, for the user. The model can run or read the same thing with its tools, which are decided like any call.
+- *A command that cannot be used sends nothing.* An unknown name, a file that could not be loaded, an agent that
+  does not exist: `sendCommand` throws `invalid_request` with the sentence for the user, writes no event and
+  starts no execution, so no request is spent.
+- *A command that names an agent.* The definition is read when the command is sent (a miss sends nothing). The
+  session switches to it at the boundary where the command's message is delivered, right before it, by the
+  rules of any switch: before the first baseline the record alone (the baseline then carries the agent), later
+  the instruction message and `agent.switched`, then `settings.changed` when the agent names another model. A
+  queued command's switch waits with its message: the turn in progress ends as the agent it ran as.
+- *Configuration.* `commands.paths` (the project's first, then the user's) and `commands.disabled` (either
+  file's) are read from both files: a command only ever produces a message the user sends.
+
+**Live telemetry** (`engine/telemetry.ts`). For a session whose configuration turns `telemetry` on, the spans
+of its turns are sent to an OTLP/HTTP collector as it runs. Nothing is written for it: spans are derived from
+the log and the request ledger by the mapping an export after the fact uses (`telemetry/map.ts`), so a span sent
+live and one exported later have the same IDs and say the same (`test/engine/telemetry.test.ts` compares them).
+
+- *Who may turn it on.* The section is read when an execution starts, as the module requires
+  (`resolveTelemetryConfig`): only the user's own file turns it on, names the endpoint and the headers and asks
+  for content; a project's file can only turn it off, because a repository must not be able to send data off
+  the machine. A header's `${NAME}` is read from the environment. A section that turns it on and cannot be used
+  (no endpoint, a variable that is not set) is a `diagnostic` of kind `telemetry`, said once; the turn runs.
+- *What is sent, and when.* The session keeps the part of its log that still has something open (the execution
+  in progress, and an earlier one whose background work still runs), without the text a span does not carry,
+  and the ledger rows of it as `callModel` writes them. At the events where a span closes (`tool.settled`,
+  `spawn.ended`, a compaction's or a run of checks' ending, a step's ending, a retry, the next step, the turn's
+  and the execution's ending) that window is mapped and every span that is closed and was not sent before is
+  queued, once. A model call's span waits until its ledger row is finished and the log says what became of the
+  call (its finish reason, or that it was retried). An execution's ending maps and sends at once, and cuts the
+  window; in the middle of a turn mapping is put off by a moment (`mapDelayMs`, 1 s) so that a step with many
+  calls is mapped once, and the queue is sent within `flushIntervalMs` (5 s).
+- *A subagent's turn* is placed under its parent's spawn span, in the parent's trace, when the parent is
+  traced: the child asks the parent's window where the spawned work that started it is.
+- *The collector never slows or fails a turn.* Queueing never waits and never throws; sending runs off the loop
+  through the module's background exporter, one request at a time, each with a timeout and bounded retries; a
+  queue that is full drops its oldest spans and counts them (`Engine.telemetry()` shows the counts, never a
+  header's value). A failure in the mapping itself switches telemetry off for that session and is said once.
+  `Engine.close()` sends what is queued and waits for it `closeDeadlineMs` (2 s) at most; then requests in
+  flight are cut and what is left is dropped.
+- *Content* (prompts, answers, tool arguments and output) stays out unless the user's file says
+  `"content": true`; then it is redacted with the engine's own secrets, as a tool's result is, and bounded.
+- *What a model call's span has that the log alone could not give:* the provider's own ID of the request and
+  the model that answered, from the ledger row (above), for a call that finished as for one that failed.
+- *What it does not do.* A session that is opened again sends nothing of the turns that ended before; an
+  execution a shutdown suspended and a later process resumed is, as in the export after the fact, one span up to
+  the shutdown and spans without a parent after it.
+
 ## Replay
 
 `Engine.replaySession` creates a replay session (`lineage.kind = "replay"`) and runs it; `docs/replay.md` is the
@@ -1047,6 +1140,11 @@ These are the shapes the scenarios spell out event by event.
 - **A stop hook's round.** The answer · the gate · in one append what the gate wrote (`checks.finished`),
   `hook.ran` (`stop`, `no`) and `synthetic.appended stop_hook` · the next step. At the bound: `hook.ran` ·
   `execution.succeeded` (or, with a queued message, `turn.ended`) with `hooks.unsatisfied`.
+- **A slash command.** In one append `inbox.enqueued` (the expanded text, origin `null`) and `command.expanded`
+  (that message) · if idle `execution.started` · where it is delivered, when the command names an agent, the
+  switch (`agent.switched`, after its instruction message once a baseline is set, then `settings.changed` when
+  the agent names another model) · `turn.ended` when it was queued behind a turn · `inbox.delivered` · the
+  turn's steps. A command that cannot be used: nothing.
 - **A wake-up's firing.** `inbox.enqueued` (the firing's key as the message ID, origin `wake` or `wake_webhook`,
   delivery `queue`, `untrusted` when it carries outside content) · `taint.noticed` when that is new · if idle and
   the delivery is `wake`, `execution.started` · `inbox.delivered` · the turn's steps. While a turn runs: the item
