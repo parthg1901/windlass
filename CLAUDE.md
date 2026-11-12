@@ -23,7 +23,7 @@ packages/core   engine, store, reducer, request builder, provider, tools, sandbo
                 snapshot, verify, context (compaction), replay, trace export, config, auth
                 mcp, skills, wake (wired in; wake-ups fire only where the engine is told to run them),
                 memory (wired, off by default)
-                leaf modules not yet wired into the engine: hooks, tools/todo.ts
+                leaf modules not yet wired into the engine: hooks, agents, commands, tools/todo.ts
 packages/acp    Agent Client Protocol v1 server and the shared client
 packages/cli    line-based CLI (an ACP client); subcommands acp, tui
 packages/tui    full-screen interface (an ACP client)
