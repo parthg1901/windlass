@@ -15,7 +15,7 @@ import { type HookRecord, diagnosticsSummary, hookCallLines, hookPrinted, hookRe
 import { restoreCounts } from "./commands.ts"
 import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
-import { type SteerInfo, type TurnEvent, type TurnInfo, TurnTracker, changedByRevert } from "@windlass/acp/turns"
+import { type SteerInfo, type TurnEvent, type TurnInfo, TurnTracker, changedByRevert, startedByText } from "@windlass/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapKeeping, wrapWhole } from "./text.ts"
 
@@ -1847,7 +1847,7 @@ export function turnsLabel(turns: readonly TurnInfo[]): string | null {
   if (turns.length === 0) return null
   if (turns.length === 1) {
     const turn = turns[0]!
-    return `turn ${turn.number}${turn.prompt === "" ? "" : ` "${truncate(flatten(turn.prompt), 40)}"`}`
+    return `turn ${turn.number}${turn.prompt === "" ? (turn.startedBy === undefined ? "" : ` (started by ${startedByText(turn.startedBy)})`) : ` "${truncate(flatten(turn.prompt), 40)}"`}`
   }
   return `turns ${turns[0]!.number} to ${turns.at(-1)!.number}`
 }

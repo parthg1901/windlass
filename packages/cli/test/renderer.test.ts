@@ -4,7 +4,7 @@ import { c, m, opening, stepStarted, synthetic } from "@windlass/core/testing/sc
 import { demoScenarios } from "../src/demo/scenarios.ts"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { displayWidth, stripAnsi } from "../src/text.ts"
-import { PrettyRenderer, excerpt } from "../src/renderer.ts"
+import { PrettyRenderer, excerpt, turnsLabel } from "../src/renderer.ts"
 import { render, runCli, stored, withoutDurations } from "./helpers.ts"
 
 const SESSION = "ses_test" as SessionId
@@ -584,6 +584,10 @@ describe("verification, the workspace and reverts", () => {
       '↶ undone: turn 1 "Write the notes." · out of the conversation · no file was restored · /redo brings it back',
       '↷ redone: turn 1 "Write the notes." · back in the conversation · no file was restored',
     ])
+  })
+
+  test("a turn a wake-up started is named by what started it", () => {
+    expect(turnsLabel([{ number: 2, prompt: "", startedBy: "wake", messageSeq: 5, endSeq: 9, forkSeq: 9, executionId: "exe_2", undoneBy: new Set() }])).toBe("turn 2 (started by a wake-up)")
   })
 
   test("an /undo that takes back only a message sent into a turn names that message", () => {

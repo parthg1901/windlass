@@ -55,7 +55,7 @@ import {
   type WatchesResult,
   titleFromEvents,
 } from "@windlass/acp/extensions"
-import { forkPointOfTurn, isUndone, turnsOf } from "@windlass/acp/turns"
+import { forkPointOfTurn, isUndone, startedByText, turnsOf } from "@windlass/acp/turns"
 import { type CallId, type HarnessOptions, type MessageId, type Question, type RevertResult, type SessionId, brand } from "@windlass/core"
 import { selfCommand } from "./self.ts"
 import {
@@ -490,7 +490,8 @@ class AcpSession implements Session {
 function turnList(turns: ReturnType<typeof turnsOf>): string {
   if (turns.length === 0) return ""
   const width = String(turns.length).length
-  return `\nIts turns:\n${turns.map((turn) => `  ${String(turn.number).padStart(width)}  "${turn.prompt.split("\n")[0]!.slice(0, 60)}"${isUndone(turn) ? " (undone)" : ""}`).join("\n")}`
+  const what = (turn: (typeof turns)[number]) => (turn.prompt === "" && turn.startedBy !== undefined ? `(started by ${startedByText(turn.startedBy)})` : `"${turn.prompt.split("\n")[0]!.slice(0, 60)}"`)
+  return `\nIts turns:\n${turns.map((turn) => `  ${String(turn.number).padStart(width)}  ${what(turn)}${isUndone(turn) ? " (undone)" : ""}`).join("\n")}`
 }
 
 /** Refusals that say the command line asked for something wrong: an exit with the usage code. */

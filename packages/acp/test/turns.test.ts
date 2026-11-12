@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { forkPointOfTurn, isUndone, turnsOf, type TurnEvent } from "../src/turns.ts"
+import { forkPointOfTurn, isUndone, startedByText, turnsOf, type TurnEvent } from "../src/turns.ts"
 
 /** A log written by hand: each entry is `[type, data]`, numbered from 1. */
 function log(...entries: [string, Record<string, unknown>][]): TurnEvent[] {
@@ -45,4 +45,14 @@ test("an undone turn keeps its number and is marked, until /redo; it cannot be f
 test("a turn cut off by a shutdown and resumed is one turn", () => {
   const turns = turnsOf(log(said("u1", "one"), started("e1"), delivered("u1"), ["execution.interrupted", { executionId: "e1", reason: "shutdown" }], ["execution.resumed", { executionId: "e1" }], ended("e1")))
   expect(turns.map((turn) => [turn.number, turn.prompt, turn.endSeq])).toEqual([[1, "one", 6]])
+})
+
+test("a turn no message of the user's started says what did", () => {
+  const from = (id: string, origin: string): [string, Record<string, unknown>] => ["inbox.enqueued", { messageId: id, origin, delivery: "steer", content: [{ type: "text", text: "..." }] }]
+  const turns = turnsOf(log(said("u1", "start the server"), started("e1"), delivered("u1"), ended("e1"), from("w1", "wake"), started("e2"), delivered("w1"), ended("e2"), from("b1", "background_command"), started("e3"), delivered("b1"), ended("e3")))
+  expect(turns.map((turn) => [turn.prompt, turn.startedBy === undefined ? null : startedByText(turn.startedBy)])).toEqual([
+    ["start the server", null],
+    ["", "a wake-up"],
+    ["", "a background command's end"],
+  ])
 })

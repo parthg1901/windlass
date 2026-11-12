@@ -29,6 +29,8 @@ export interface TurnInfo {
   readonly number: number
   /** The user's message that started it: its text, `""` when the work was not started by a message. */
   prompt: string
+  /** What started it when no message of the user's did: the `origin` of the message that did (`wake`, `background_command`, ...). */
+  startedBy?: string
   /** The seq of that message's delivery, which is where `/undo` cuts; the turn's start until it is known. */
   messageSeq: number
   /** The seq of the event that ended it; `null` while it runs. */
@@ -68,6 +70,8 @@ export class TurnTracker {
   readonly turns: TurnInfo[] = []
   readonly steers: SteerInfo[] = []
   private readonly prompts = new Map<string, string>()
+  /** Messages that were not the user's, by ID, with their origin: one may be what started a turn. */
+  private readonly origins = new Map<string, string>()
   private current: TurnInfo | null = null
   /** A queued message ended the previous turn: its delivery starts the next one. */
   private queuedNext: string | null = null
@@ -79,7 +83,10 @@ export class TurnTracker {
     const data = (event.data ?? {}) as Record<string, unknown>
     switch (event.type) {
       case "inbox.enqueued": {
-        if (data.origin !== null) return
+        if (data.origin !== null) {
+          if (typeof data.origin === "string") this.origins.set(String(data.messageId), data.origin)
+          return
+        }
         const content = Array.isArray(data.content) ? (data.content as { type?: string; text?: string }[]) : []
         this.prompts.set(String(data.messageId), content.map((part) => (part.type === "text" ? (part.text ?? "") : "[image]")).join(""))
         return
@@ -108,6 +115,10 @@ export class TurnTracker {
       case "inbox.delivered": {
         const id = String(data.messageId)
         const text = this.prompts.get(id)
+        const origin = this.origins.get(id)
+        this.origins.delete(id)
+        // A turn no message of the user's started (a wake-up, a background command's end): what did, until one of theirs comes.
+        if (text === undefined && origin !== undefined && this.current !== null && this.current.prompt === "" && this.current.startedBy === undefined && !this.delivered.has(this.current)) this.current.startedBy = origin
         if (text === undefined) return
         this.prompts.delete(id)
         if (this.queuedNext !== null && this.current === null) {
@@ -184,6 +195,19 @@ export function changedByRevert(tracker: TurnTracker, revertSeq: number): { read
   const turns = tracker.turns.filter((turn) => only(turn.undoneBy))
   const numbers = new Set(turns.map((turn) => turn.number))
   return { turns, steers: tracker.steers.filter((steer) => only(steer.undoneBy) && !numbers.has(steer.turn)) }
+}
+
+/** What started a turn that no message of the user's started, as a person says it: `a wake-up`, `a background command's end`. */
+export function startedByText(origin: string): string {
+  const words: Record<string, string> = {
+    wake: "a wake-up",
+    wake_webhook: "a webhook wake-up",
+    background_command: "a background command's end",
+    background_watch: "a watch on a background command",
+    subagent_result: "a subagent's answer",
+    spawn_lost: "background work that was lost",
+  }
+  return words[origin] ?? origin.replaceAll("_", " ")
 }
 
 export function turnsOf(events: Iterable<TurnEvent>): TurnInfo[] {
