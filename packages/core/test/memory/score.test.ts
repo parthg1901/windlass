@@ -49,7 +49,7 @@ describe("scoring", () => {
     expect(checkedPassRate(stats.overall.withNotes)).toBe(0.5)
     expect(checkedPassRate(stats.overall.withoutNotes)).toBe(1)
     const text = formatStats(stats)
-    expect(text).toContain(`${a.id}        in force              2     0  50% (1/2)                    1  1 passed, 1 unchecked, 1 unresolved, 1 reverted, 1 corrected again`)
+    expect(text).toContain(`${a.id}        in force                         2     0  50% (1/2)                    1  1 passed, 1 unchecked, 1 unresolved, 1 reverted, 1 corrected again`)
     expect(text).toContain("These rates are observational")
     expect(reviewReport(store.load().entries, [], time.now(), { usage: usageForReview(stats) }).map((item) => [item.reason, item.id])).toEqual([["corrected-after-delivery", a.id]])
   })

@@ -12,7 +12,7 @@
  * notes to review. Whether memory stays is decided by the A/B comparison (`compare.ts`).
  */
 import type { MemoryEntry } from "./entry.ts"
-import { describeState, statesOf } from "./hygiene.ts"
+import { type EntryState, statesOf } from "./hygiene.ts"
 import { OUTCOMES, type Outcome, type UsageRecord } from "./usage.ts"
 
 export type OutcomeCounts = Record<Outcome, number>
@@ -102,7 +102,7 @@ export function memoryStats(records: readonly UsageRecord[], entries: readonly M
       return {
         id,
         text: entry?.text.replace(/\s+/g, " ").trim() ?? "",
-        status: state === undefined ? "not in the store" : state.state === "active" ? "in force" : describeState(state),
+        status: state === undefined ? "not in the store" : shortState(state),
         deliveredSessions: usage?.delivered.size ?? 0,
         readSessions: usage?.read.size ?? 0,
         outcomes: usage?.outcomes ?? zero(),
@@ -111,6 +111,13 @@ export function memoryStats(records: readonly UsageRecord[], entries: readonly M
     }),
     overall: { sessions: sessions.size, sessionsWithNotes, withNotes, withoutNotes },
   }
+}
+
+function shortState(state: EntryState): string {
+  if (state.state === "active") return "in force"
+  if (state.state === "superseded") return `superseded by ${state.by}`
+  if (state.state === "expired") return `expired ${state.at.slice(0, 10)}`
+  return state.state
 }
 
 /** Per-note usage in the shape `reviewReport` takes. */
@@ -136,10 +143,10 @@ export function formatStats(stats: MemoryStats): string {
   const lines = [
     `Memory usage over ${stats.overall.sessions} session(s), ${stats.overall.sessionsWithNotes} of them given or reading notes.`,
     "",
-    "note          status         sessions  read  checks passed   corrected after  turns",
+    "note          status                    sessions  read  checks passed   corrected after  turns",
     ...stats.entries.map(
       (entry) =>
-        `${entry.id.padEnd(13)} ${entry.status.slice(0, 14).padEnd(14)} ${String(entry.deliveredSessions).padStart(8)}  ${String(entry.readSessions).padStart(4)}  ${rate(entry.outcomes).padEnd(14)} ${String(entry.correctedAfter).padStart(15)}  ${tally(entry.outcomes)}`,
+        `${entry.id.padEnd(13)} ${entry.status.padEnd(25)} ${String(entry.deliveredSessions).padStart(8)}  ${String(entry.readSessions).padStart(4)}  ${rate(entry.outcomes).padEnd(14)} ${String(entry.correctedAfter).padStart(15)}  ${tally(entry.outcomes)}`,
     ),
     "",
     `Turns with notes:    ${tally(stats.overall.withNotes)}; checks passed ${rate(stats.overall.withNotes)}`,

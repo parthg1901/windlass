@@ -119,9 +119,9 @@ export function compareMemory(withMemory: readonly Results[], withoutMemory: rea
 }
 
 export function formatComparison(comparison: Comparison): string {
-  const row = (stats: TaskStats | null) => (stats === null ? "-".padEnd(26) : `${stats.passes}/${stats.runs} pass, ${tokens(stats.medianInputTokens)} in, ${stats.medianSteps} steps`.padEnd(26))
+  const row = (stats: TaskStats | null) => (stats === null ? "-".padEnd(30) : `${stats.passes}/${stats.runs} pass, ${tokens(stats.medianInputTokens)} in, ${stats.medianSteps} steps`.padEnd(30))
   const lines = [
-    "task                        with memory                 without memory",
+    "task                        with memory                     without memory",
     ...comparison.tasks.map((task) => `${task.task.padEnd(27)} ${row(task.with)}  ${row(task.without)}${task.compared ? "" : "  (not enough runs)"}`),
     "",
     ...comparison.reasons.map((reason) => `- ${reason}`),
