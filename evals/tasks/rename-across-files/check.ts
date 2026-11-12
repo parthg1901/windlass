@@ -72,9 +72,10 @@ for (const [name, fn] of Object.entries(named)) {
 const probe = join(workspace, "src", "grader-probe.ts")
 await Bun.write(probe, 'import type { Invoice } from "./types.ts"\nexport const has: Invoice["accountId"] = "acc"\n// @ts-expect-error userId is no longer a key of Invoice\nexport const gone: keyof Invoice = "userId"\n')
 const tsc = join(import.meta.dir, "../../../node_modules/typescript/lib/tsc.js")
-const typed = await run(["bun", tsc, "--noEmit", "--strict", "--skipLibCheck", "--target", "esnext", "--module", "preserve", "--moduleResolution", "bundler", "--allowImportingTsExtensions", "--types", "", probe], workspace, 120)
+const typed = await run(["bun", tsc, "--noEmit", "--strict", "--skipLibCheck", "--target", "esnext", "--module", "preserve", "--moduleResolution", "bundler", "--allowImportingTsExtensions", probe], workspace, 120)
 await Bun.file(probe).delete()
 const probeErrors = typed.output.split("\n").filter((text) => text.includes("grader-probe.ts"))
+if (typed.code !== 0 && !/\.ts\(\d+,\d+\)/.test(typed.output)) throw new Error(`grader bug: tsc did not run: ${typed.output.slice(0, 200)}`)
 if (probeErrors.length > 0) fail(`the Invoice type does not have accountId instead of userId: ${probeErrors[0]!.trim().slice(0, 160)}`)
 
 const tests = await run(["bun", "test"], workspace)

@@ -1,7 +1,13 @@
 // Every grader must reject the untouched workspace and accept the reference solution.
 import { afterAll, describe, expect, test } from "bun:test"
-import { rm } from "node:fs/promises"
-import { applySolution, grade, listTasks, loadTask, prepareWorkspace } from "./run-check.ts"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { brand } from "../packages/core/src/brand.ts"
+import { parseEntryFile } from "../packages/core/src/memory/entry.ts"
+import { memoryPaths, openMemoryStore } from "../packages/core/src/memory/store.ts"
+import { arrangeMemorySide, memoryTaskSource, notesOf } from "./memory-tasks/source.ts"
+import { TASKS_DIR, applySolution, grade, listTasks, loadTask, prepareWorkspace } from "./run-check.ts"
 
 const ids = await listTasks()
 const dirs: string[] = []
@@ -31,5 +37,49 @@ for (const id of ids) {
       expect(result.message).toStartWith("ok:")
       expect(result.pass).toBe(true)
     }, 300_000)
+  })
+}
+
+// The chart the read-chart-image task shows is generated; the committed PNG must be what its generator makes.
+test("read-chart-image: the committed chart is what make-chart.ts renders", async () => {
+  const { render } = await import("./tasks/read-chart-image/make-chart.ts")
+  const committed = new Uint8Array(await Bun.file(join(TASKS_DIR, "read-chart-image/workspace/docs/cpu-last-night.png")).arrayBuffer())
+  expect(Buffer.compare(Buffer.from(committed), render())).toBe(0)
+})
+
+// The memory A/B tasks (evals/memory-tasks/) are held to the same rules, and their notes must be valid project notes
+// that the store finds where the runner's `--memory with` side puts them.
+const memoryIds = await memoryTaskSource.list()
+test("there are at least five memory tasks", () => {
+  expect(memoryIds.length).toBeGreaterThanOrEqual(5)
+})
+for (const id of memoryIds) {
+  describe(`memory-tasks/${id}`, () => {
+    test("the untouched workspace fails and the reference solution passes", async () => {
+      const untouched = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
+      const solved = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
+      dirs.push(untouched, solved)
+      await memoryTaskSource.prepare(id, untouched)
+      await memoryTaskSource.prepare(id, solved)
+      await memoryTaskSource.solve(id, solved)
+      const before = await memoryTaskSource.grade(id, untouched)
+      const after = await memoryTaskSource.grade(id, solved)
+      expect([before.pass, before.message.slice(0, 5), after.pass, after.message.slice(0, 3)]).toEqual([false, "fail:", true, "ok:"])
+    }, 300_000)
+
+    test("its notes are valid project notes, found by the store once seeded, and in force today", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "lh-eval-memory-"))
+      const config = await mkdtemp(join(tmpdir(), "lh-eval-memory-config-"))
+      dirs.push(workspace, config)
+      await memoryTaskSource.prepare(id, workspace)
+      const env = await arrangeMemorySide("with", id, workspace, config)
+      expect(await Bun.file(join(env.XDG_CONFIG_HOME!, brand.directory, "config.json")).json()).toEqual({ memory: { enabled: true, inRepository: true } })
+      const notes = await notesOf(id)
+      for (const note of notes) expect(parseEntryFile(await Bun.file(note).text(), note).scope).toBe("project")
+      const store = openMemoryStore({ paths: memoryPaths({ dataDir: join(config, "data"), projectDir: workspace, inRepository: true }), now: () => new Date("2026-11-12T12:00:00Z") })
+      const loaded = await store.load()
+      expect(loaded.problems).toEqual([])
+      expect(loaded.entries.length).toBe(notes.length)
+    }, 60_000)
   })
 }
