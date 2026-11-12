@@ -21,7 +21,9 @@
  * own file only).
  */
 import { type AgentsConfig, resolveAgentsConfig } from "../agents/config.ts"
+import type { AgentRestrictions } from "../agents/definition.ts"
 import { type AgentProblem, type AgentSet, discoverAgents } from "../agents/discover.ts"
+import { combineRestrictions } from "../agents/restrictions.ts"
 import { AGENT_INDEX_KEY, agentIndexSource, agentIndexUpdate } from "../agents/agent-index.ts"
 import type { AppendedSource } from "../instructions/state.ts"
 import type { ConfigFiles } from "./skills.ts"
@@ -55,6 +57,25 @@ export function findAgents(cwd: string, places: AgentPlaces): AgentSet {
   } catch (error) {
     return { agents: [], problems: [{ path: cwd, severity: "skipped", reason: `the agents could not be looked for: ${error instanceof Error ? error.message : String(error)}`, name: null }], roots: [] }
   }
+}
+
+/**
+ * Whether a subagent that runs under `child` is held to everything `parent`
+ * is held to: combining the two gives nothing stricter than the child's own.
+ * True for a child that was started while its parent ran as this agent (it
+ * was given the parent's restrictions then) and for any child of a parent
+ * that restricts nothing. False for a child started before its parent was
+ * switched to a stricter agent: work handed to it would get around the
+ * parent's restrictions, so a follow-up to it is refused (`followUp`).
+ */
+export function heldToParent(parent: AgentRestrictions, child: AgentRestrictions): boolean {
+  const both = combineRestrictions(parent, child)
+  const same = (a: readonly string[] | null, b: readonly string[] | null): boolean => {
+    if (a === null || b === null) return a === b
+    const names = new Set(b.map((name) => name.toLowerCase()))
+    return new Set(a.map((name) => name.toLowerCase())).size === names.size && a.every((name) => names.has(name.toLowerCase()))
+  }
+  return same(both.effects, child.effects) && same(both.tools, child.tools) && same(both.deniedTools, child.deniedTools) && both.approval === child.approval
 }
 
 /** The list of agents as a source the loop appends when it changed. */

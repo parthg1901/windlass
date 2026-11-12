@@ -761,6 +761,10 @@ message, with one line saying who reads its answer. It sees nothing of its paren
 with the same tools, the parent's model settings (or its agent's, when it runs as one that names them), the
 parent's approval settings and, by default, the parent's workspace. It has a cache key of its own. Its conversation stays: a follow-up by reference (`subagent` with
 `session`) is delivered to it while it runs, and starts a new piece of work (a new `spawnId`) once it has ended.
+A subagent keeps the agent it started as, so a follow-up is refused when the child is not held to everything
+its parent is held to now (`heldToParent` in `engine/agents.ts`: the parent was switched to a stricter agent
+after the child was started): work handed to it would get around the parent's restrictions. The refusal tells
+the model to start a new subagent, which is given them.
 
 **Decisions.**
 

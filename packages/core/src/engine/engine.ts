@@ -52,7 +52,7 @@ import { dirname, join, relative, resolve, sep } from "node:path"
 import type { AgentDefinition } from "../agents/discover.ts"
 import type { CommandDefinition } from "../commands/discover.ts"
 import { type BuiltinCommand, type CommandListing, type CommandLookup, listCommands, lookupCommand } from "../commands/lookup.ts"
-import { NO_AGENT } from "../agents/definition.ts"
+import { NO_AGENT, NO_RESTRICTIONS } from "../agents/definition.ts"
 import { type CallVerdict, checkAgentCall, effectiveApprovalMode, unknownToolNames } from "../agents/restrictions.ts"
 import { AGENT_KEY, type AgentRecord, agentRecordOf, agentSettings, agentSource, agentSwitch, childAgent, findAgent, resolveStartAgent } from "../agents/use.ts"
 import { type Decision, type RunDecision, type SandboxState, decide } from "../approval/decide.ts"
@@ -138,7 +138,7 @@ import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
 import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
-import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents } from "./agents.ts"
+import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents, heldToParent } from "./agents.ts"
 import { SessionTrace, type TelemetrySetup, type TelemetryState, TelemetryHub } from "./telemetry.ts"
 import { type CommandExpansion, type CommandPlaces, type CommandsSetup, type SentCommand, commandPlaces, commandUseOf, expandNamed, findCommands } from "./commands.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
@@ -4099,6 +4099,15 @@ class LiveSession implements EngineSession {
     if (lineage?.kind !== "spawn" || lineage.parentSessionId !== this.id) return toolResult("error", `Session ${childId} is not a subagent of this session.`)
     if (lineage.worktree !== null && !existsSync(lineage.worktree.path))
       return toolResult("error", `Subagent ${childId} worked in a worktree of its own, which was removed when it finished. Start a new subagent for further work.`)
+    // A subagent keeps the agent it started as. One started before this session was switched to a stricter agent
+    // is not under that agent's restrictions, and work handed to it now would get around them: it is not given
+    // any. A new subagent is: it runs as this session's agent, or under both sets of restrictions.
+    const mine = this.projection().session.agent ?? null
+    if (mine !== null && !heldToParent(mine.restrictions, state.agent?.restrictions ?? NO_RESTRICTIONS))
+      return toolResult(
+        "error",
+        `The follow-up was not sent: subagent ${childId} was started before this session ran as the agent "${mine.name}", so it is not under that agent's restrictions. Start a new subagent for the work (call subagent without \`session\`): it runs under them.`,
+      )
     if (child.working || state.execution !== null) return toolResult("error", `Subagent ${childId} is busy.`)
     const spawnId = this.core.ids.spawn()
     const background = input.background === true
