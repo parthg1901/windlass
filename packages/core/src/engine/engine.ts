@@ -3543,46 +3543,50 @@ class LiveSession implements EngineSession {
     }
     for (const call of calls) this.callStops.set(callKey(messageId, call.callId), () => cancel(call))
 
-    /** The line of calls that can change something: each starts when the one before it has its result. */
-    let line: Promise<void> | null = null
-    const running = calls.flatMap((call, index): Promise<void>[] => {
-      // Once an interrupt is requested nothing new starts; the call is settled as not started below.
-      if (failure.failed || signal.aborted) return []
-      // A call the recording has is answered by the recording, also where the recording's loop refused it.
-      if (recorded(call)) return [launch(call)]
-      if (toolChoice === "none") return refuse(call, TOOL_TEXT.toolsDisabled) && []
-      if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
-      if (repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
-      const effect = effects.get(call.name)
-      // The agent's restrictions come before the approval layer, and only take away: a call they let through is
-      // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
-      if (runsAs !== null && effect !== undefined) {
-        const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
-        if (verdict.kind === "refuse") return refuseAsAgent(call, runsAs, verdict.reason) && []
-      }
-      // A read changes nothing, and a tool nobody knows is refused before it could: both go at once. So does a
-      // call that hands its work to a subagent: several of them in one response are meant to run side by side.
-      if (approvals === null || effect === undefined || effect === "read" || this.core.delegating.has(call.name)) return [launch(call)]
-      // The first of the line starts here and now, so that with nothing to wait for the calls start in the order written.
-      const previous = line
-      const next: Promise<void> = previous === null ? launch(call) : previous.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
-      line = next
-      return [next]
-    })
+    try {
+      /** The line of calls that can change something: each starts when the one before it has its result. */
+      let line: Promise<void> | null = null
+      const running = calls.flatMap((call, index): Promise<void>[] => {
+        // Once an interrupt is requested nothing new starts; the call is settled as not started below.
+        if (failure.failed || signal.aborted) return []
+        // A call the recording has is answered by the recording, also where the recording's loop refused it.
+        if (recorded(call)) return [launch(call)]
+        if (toolChoice === "none") return refuse(call, TOOL_TEXT.toolsDisabled) && []
+        if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
+        if (repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
+        const effect = effects.get(call.name)
+        // The agent's restrictions come before the approval layer, and only take away: a call they let through is
+        // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
+        if (runsAs !== null && effect !== undefined) {
+          const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+          if (verdict.kind === "refuse") return refuseAsAgent(call, runsAs, verdict.reason) && []
+        }
+        // A read changes nothing, and a tool nobody knows is refused before it could: both go at once. So does a
+        // call that hands its work to a subagent: several of them in one response are meant to run side by side.
+        if (approvals === null || effect === undefined || effect === "read" || this.core.delegating.has(call.name)) return [launch(call)]
+        // The first of the line starts here and now, so that with nothing to wait for the calls start in the order written.
+        const previous = line
+        const next: Promise<void> = previous === null ? launch(call) : previous.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
+        line = next
+        return [next]
+      })
 
-    const all = Promise.all(running)
-    await untilAborted(all, signal)
-    if (signal.aborted && unsettled.size > 0) {
-      // Cooperative: the tools saw the abort. Give them time to stop and report what they observed.
-      const timer = new AbortController()
-      await Promise.race([all, clock.sleep(limits.toolStopGraceMs, timer.signal)])
-      timer.abort()
-      for (const callId of unsettled) abandoned.add(callId)
+      const all = Promise.all(running)
+      await untilAborted(all, signal)
+      if (signal.aborted && unsettled.size > 0) {
+        // Cooperative: the tools saw the abort. Give them time to stop and report what they observed.
+        const timer = new AbortController()
+        await Promise.race([all, clock.sleep(limits.toolStopGraceMs, timer.signal)])
+        timer.abort()
+        for (const callId of unsettled) abandoned.add(callId)
+      }
+    } finally {
+      // Whatever happened, nothing of this step can be stopped by itself any more, and no grace period is left running.
+      this.callStops.clear()
+      for (const timer of graces) timer.abort()
+      for (const stop of stops.values()) stop.release()
     }
     this.decided.clear()
-    this.callStops.clear()
-    for (const timer of graces) timer.abort()
-    for (const stop of stops.values()) stop.release()
     if (failure.failed) throw failure.error
   }
 

@@ -299,7 +299,7 @@ describe("what the message quotes", () => {
 
 describe("a real command", () => {
   test("what it printed before the watch was set is looked at too, a later line wakes the idle session, and closing the session ends the watch with the command", async () => {
-    const { data, workspace } = place("wl-watch-")
+    const { data, workspace } = place("watch-")
     const directory = workspace("w")
     const command = "echo booting; sleep 0.6; echo 'Server listening on http://localhost:3000'; sleep 300"
     const { harness, provider } = start(data, [[realCall("shell", { command, background: true })], say("Started."), say("It booted."), say("It is up.")])
