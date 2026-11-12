@@ -243,6 +243,8 @@ export async function run(io: Io): Promise<number> {
   const leaveNow = (code: number): never => {
     sink.close()
     terminal?.restore()
+    // Left without waiting for the stop: the session can still be taken up again, and how is said as on any leaving.
+    if (terminal !== null && demo === null) io.stdout.write(resumeLine(session.id, io.stdout.columns()))
     return io.exit(code)
   }
   const onCtrlC = () => {
