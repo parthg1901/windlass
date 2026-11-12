@@ -28,9 +28,13 @@ windlass "in a minute, remind me to look at the canary"
 ```
 
 ```text
-▸ wake_create after
+▸ wake_create Look at the canary.
   ✓ Created wake-up wk_7a3c12139dd8: after 1m (at 2026-11-12T08:39:20Z). ⊡
+Wake-up wk_7a3c12139dd8 (after 1m (at 2026-11-12 08:39:20 UTC)) was created, but this run does not fire wake-ups: it ends with its turn. It fires, late if its time has passed by then, the next time Windlass runs interactively on this machine (`windlass` with no prompt, `windlass tui`, or an editor). `windlass --session ses_3b1f0c5a9d2e` opens this session: /wakeups lists it there, and /wakeups cancel wk_7a3c12139dd8 removes it.
 ```
+
+The last lines are the notice a run that fires no wake-ups gives for each one created in it; the time in it is
+your local time, with its zone.
 
 `windlass` and `windlass tui` list the session's wake-ups with `/wakeups` (pending first, each with its trigger, state, next
 time, firings and limits in the engine's words), `/wakeups cancel <id>` stops one, and `/wakeups secret <id>` shows
@@ -47,8 +51,8 @@ runs with. A timer or a webhook runs no command. `wake_list` shows the session's
 `wake_cancel` stops one. Cancelling changes only the program's own records, so it runs without a question in the
 `auto` and `full` modes, also in a one-shot run (`windlass -c "cancel that wake-up"`); only `ask` asks about it.
 
-The one-shot run above creates the wake-up and exits; it does not wait for it. The wake-up fires in a process
-that runs them, as the section above says.
+The one-shot run above creates the wake-up and exits; it does not wait for it, and says so in that notice. The
+wake-up fires in a process that runs them, as the section above says.
 
 ## The triggers
 

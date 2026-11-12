@@ -538,6 +538,12 @@ describe("quoted program messages", () => {
     { page: "docs/skills.md", quote: "Skills you can load:", pieces: ["Skills you can load:"] },
     { page: "docs/skills.md", quote: "⚠ skills: The skill at <path> is hidden by another skill of the same name: ...", pieces: ["is hidden by another skill of the same name"] },
     { page: "docs/wake-ups.md", quote: "Created wake-up wk_7a3c12139dd8: after 1m (at 2026-11-12T08:39:20Z).", pieces: ["Created wake-up "] },
+    {
+      page: "docs/wake-ups.md",
+      quote: " was created, but this run does not fire wake-ups: it ends with its turn. It fires, late if its time has passed by then, the next time ",
+      pieces: [" was created, but this run does not fire wake-ups: it ends with its turn. It fires, late if its time has passed by then, the next time "],
+    },
+    { page: "docs/wake-ups.md", quote: " opens this session: /wakeups lists it there, and /wakeups cancel wk_7a3c12139dd8 removes it.", pieces: [" opens this session: /wakeups lists it there, and /wakeups cancel ", " removes it."] },
     { page: "docs/wake-ups.md", quote: "This message was not typed by the user just now.", pieces: ["This message was not typed by the user just now."] },
     { page: "docs/wake-ups.md", quote: "It was delivered by a wake-up that you (the model), in this session, set up on", pieces: ["It was delivered by a wake-up that ", " set up on", "you (the model)"] },
     { page: "docs/wake-ups.md", quote: "No one may be watching: work as in an unattended run.", pieces: ["No one may be watching: work as in an unattended run."] },
@@ -598,13 +604,13 @@ describe("quoted program messages", () => {
     },
     { page: "docs/memory.md", quote: "[a]llow once · this [s]ession · this [p]roject · [N]o ›", pieces: ["[a]llow once", "this [s]ession", "this [p]roject"] },
     { page: "docs/memory.md", quote: "Memory changed during this session:", pieces: ["Memory changed during this session:"] },
+    { page: "docs/memory.md", quote: "your note from before the first message: Saved m_… (fact, for this project)", pieces: ["your note from before the first message: ", "Saved ", "for this project"] },
     { page: "docs/memory.md", quote: "Notes recalled from memory:", pieces: ["Notes recalled from memory:"] },
     { page: "docs/memory.md", quote: "Saved m_4f821c9f (user preference). It will be shown in later sessions in every project.", pieces: ["Saved ", ". It will be shown in ", "later sessions in every project"] },
     { page: "docs/memory.md", quote: "About the user, in every project:", pieces: ["About the user, in every project:"] },
     { page: "docs/memory.md", quote: "preference, written by the user, 2026-11-12:", pieces: ["written by the user"] },
     { page: "docs/memory.md", quote: 'preference, saved by the assistant from the user\'s words "keep answers short", 2026-11-12:', pieces: ["saved by the assistant from the user's words"] },
     { page: "docs/memory.md", quote: "⚠ memory: A memory note is not valid and is not used: <file>", pieces: ["A memory note is not valid and is not used: "] },
-    { page: "docs/memory.md", quote: "your note from before the first message: Saved m_… (fact, for this project)", pieces: ["your note from before the first message: ", "Saved ", "for this project"] },
   ]
 
   test("each quote is on its page, and its pieces are the program's text", () => {
