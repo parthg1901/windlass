@@ -205,6 +205,50 @@ describe("/skills, /wakeups and /memory", () => {
   })
 })
 
+describe("/remember before the first message", () => {
+  test("says what /memory says, keeps the note, and saves it as soon as the session has started", async () => {
+    const cwd = workspace(undefined, { memory: { enabled: true } })
+    const provider = new FakeProvider([[script.text("Hi.")]])
+    const run = await interactive(cwd, provider, async (type, waitFor) => {
+      type("/memory\r")
+      await waitFor("Memory is on in the configuration; this session's notes are read when it starts its first turn.")
+      type("/remember this repository uses pnpm\r")
+      await waitFor("The note is kept and saved as soon as your first message is sent")
+      type("hello\r")
+      await waitFor(/your note from before the first message: Saved m_\w+/)
+      await waitFor("✓ done")
+      type("/memory\r")
+      await waitFor("Notes in force (1)")
+      type("\x04")
+    })
+    expect(run.code).toBe(0)
+    expect(run.screen).toMatch(/\[m_\w+\] this project · fact: this repository uses pnpm/)
+    expect(run.screen).toContain("and this session's notes are read when it starts its first turn: nothing is saved yet.")
+    expect(run.screen).not.toContain("Memory is off in this session")
+  })
+
+  test("a note that waited for a first message that never came is said to be unsaved, with its text", async () => {
+    const cwd = workspace(undefined, { memory: { enabled: true } })
+    const run = await interactive(cwd, new FakeProvider([]), async (type, waitFor) => {
+      type("/remember --me I prefer tabs\r")
+      await waitFor("The note is kept and saved as soon as your first message is sent")
+      type("\x04")
+    })
+    expect(run.screen).toContain("not saved: no message was sent in this session, and its memory starts with the first one. Your note was: I prefer tabs")
+  })
+
+  test("with memory off, /remember gives the sentence /memory gives: how to turn it on", async () => {
+    const cwd = workspace()
+    const run = await interactive(cwd, new FakeProvider([]), async (type, waitFor) => {
+      type("/remember this repository uses pnpm\r")
+      await waitFor("Memory is off. To turn it on, put")
+      type("\x04")
+    })
+    expect(run.screen).toContain(`{ "memory": { "enabled": true } }`)
+    expect(run.screen).not.toContain("not saved: no message was sent")
+  })
+})
+
 describe("what the renderer says", () => {
   const m = (id: string) => id as MessageId
   const c = (id: string) => id as CallId

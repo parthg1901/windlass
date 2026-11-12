@@ -178,15 +178,26 @@ describe("memory", () => {
     const state = await ext<MemoryStateResult>(harness, EXT.memory, { sessionId })
     expect(state.enabled).toBe(false)
     expect(state.off).toContain(`{ "memory": { "enabled": true } } in ${join(configHome, brand.directory, "config.json")}`)
-    const refused = await ext<{ ok: boolean; message: string }>(harness, EXT.memoryChange, { sessionId, action: "remember", text: "x" })
+    const refused = await ext<{ ok: boolean; message: string; deferred?: boolean }>(harness, EXT.memoryChange, { sessionId, action: "remember", text: "x" })
     expect(refused.ok).toBe(false)
+    // The same sentence the listing gives, and nothing for a client to keep: memory is off.
+    expect(refused.message).toBe(state.off!)
+    expect(refused.deferred).toBeUndefined()
+    expect(state.startsWithFirstTurn).toBeUndefined()
   })
 
   test("on: the user remembers a note, confirms a pending one, and retracts", async () => {
     userConfig({ memory: { enabled: true } })
     const harness = await start([[script.text("Noted.")]])
     const sessionId = await harness.newSession()
-    expect((await ext<MemoryStateResult>(harness, EXT.memory, { sessionId })).off).toContain("Send a message")
+    const before = await ext<MemoryStateResult>(harness, EXT.memory, { sessionId })
+    expect(before.off).toContain("Send a message")
+    expect(before.startsWithFirstTurn).toBe(true)
+    // A note written now is not saved yet and not dropped either: the client is told to keep it until the session has started.
+    const early = await ext<{ ok: boolean; id: string | null; message: string; deferred?: boolean }>(harness, EXT.memoryChange, { sessionId, action: "remember", text: "Build with pnpm." })
+    expect(early).toMatchObject({ ok: false, id: null, deferred: true })
+    expect(early.message).toContain("this session's notes are read when it starts its first turn: nothing is saved yet. The note is kept and saved as soon as your first message is sent")
+    expect((await ext<{ deferred?: boolean; message: string }>(harness, EXT.memoryChange, { sessionId, action: "retract", id: "m_x" })).message).toBe(before.off!)
     await prompt(harness, sessionId, "Hello.")
     const empty = await ext<MemoryStateResult>(harness, EXT.memory, { sessionId })
     expect(empty).toMatchObject({ enabled: true, notes: [], pending: [], problems: [] })

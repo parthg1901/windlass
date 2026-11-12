@@ -652,6 +652,8 @@ export interface MemoryStateResult {
   readonly sessionId: string
   readonly enabled: boolean
   readonly off: string | null
+  /** With `enabled: false`: memory is on in the configuration and starts with this session's first turn, which has not begun. */
+  readonly startsWithFirstTurn?: boolean
   readonly notes: readonly MemoryNote[]
   /** Notes the model saved after untrusted content arrived: not used until the user confirms them. */
   readonly pending: readonly { readonly id: string; readonly scope: string; readonly kind: string; readonly text: string; readonly session: string | null; readonly created: string; readonly quote: string | null; readonly supersedes: string | null; readonly why: string; readonly decisions: readonly string[] }[]
@@ -684,6 +686,13 @@ export interface MemoryChangeResult {
   readonly id: string | null
   /** What happened, or why nothing did, as a sentence. */
   readonly message: string
+  /**
+   * `remember` only, with `ok: false`: nothing is wrong with the note, but
+   * this session's memory starts with its first turn, which has not begun.
+   * The client keeps the note and sends it again once the session has
+   * started (its `baseline.set` event), so it is never dropped.
+   */
+  readonly deferred?: boolean
 }
 
 /** A command of the client's own, by name and aliases: it wins over a command file of the same name, and counts for a did-you-mean. */

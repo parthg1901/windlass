@@ -107,6 +107,8 @@ export class App {
   /** Messages held until the questions about the project's configuration are answered, and the answers being recorded. */
   private readonly featureWaiters: (() => void)[] = []
   private featureAnswering = 0
+  /** Notes written with /remember before the session's memory existed (it starts with the first turn): saved once it has. */
+  private keptNotes: { readonly session: BackendSession; readonly text: string; readonly scope: "user" | "project" }[] = []
   /** The entry starts with a slash: the command files were listed when it began to. */
   private typingCommand = false
   private contextWindows = new Map<string, number | null>()
@@ -1214,6 +1216,8 @@ export class App {
 
   /** What an event asks of the client besides showing it: a webhook wake-up's secret, once, when it is created. */
   private featureEvent(session: BackendSession, event: import("./cli.ts").EngineEvent): void {
+    // The session has started: its memory exists from here on, and what `/remember` kept is saved.
+    if (event.type === "baseline.set") void this.saveKeptNotes(session)
     if (event.type !== "tool.settled" || event.data.outcome !== "success") return
     const wake = (event.data.display as { wake?: { action?: unknown; id?: unknown } } | null)?.wake
     if (wake?.action !== "create" || typeof wake.id !== "string") return
@@ -1234,6 +1238,17 @@ export class App {
       },
       () => {},
     )
+  }
+
+  /** The notes written before the session's memory existed, saved now; what became of each is said. */
+  private async saveKeptNotes(session: BackendSession): Promise<void> {
+    const mine = this.keptNotes.filter((note) => note.session === session)
+    if (mine.length === 0 || session.memoryChange === undefined) return
+    this.keptNotes = this.keptNotes.filter((note) => note.session !== session)
+    for (const note of mine) {
+      const result = await session.memoryChange({ action: "remember", text: note.text, scope: note.scope }).catch((error: unknown) => ({ ok: false, id: null, message: error instanceof Error ? error.message : String(error) }))
+      this.say(`your note from before the first message: ${result.message}`, result.ok ? "dim" : "warn")
+    }
   }
 
   private showLines(lines: readonly Line[], tone: "dim" | "accent" | "warn" = "dim", symbol = "·"): void {
@@ -1307,6 +1322,11 @@ export class App {
           const { text, scope } = rememberArgs(rest)
           if (text === "") return this.say("/remember needs the note: /remember this repo uses pnpm (--me for a note about you, in every project)", "warn")
           const result = await session.memoryChange({ action: "remember", text, scope })
+          // Memory starts with the session's first turn: the note is kept until then, never dropped.
+          if (result.deferred === true) {
+            this.keptNotes.push({ session, text, scope })
+            return this.say(result.message)
+          }
           return this.say(result.message, result.ok ? "dim" : "warn")
         }
         case "forget": {

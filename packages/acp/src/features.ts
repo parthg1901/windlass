@@ -340,18 +340,26 @@ export function wakeSecret(harness: Harness, sessionId: string, id: string): Wak
 
 const ON = `{ "memory": { "enabled": true } }`
 
+/**
+ * Why a session has no memory, in the one sentence `/memory` and the user's
+ * own changes both give: it is off (and how to turn it on), it was off when
+ * the session started, or (`startsWithFirstTurn`) it is on and the session
+ * has not started its first turn yet, which is when its notes are read.
+ */
+async function memoryOff(session: EngineSession): Promise<{ readonly off: string; readonly startsWithFirstTurn: boolean }> {
+  const files = await configView(session.projection().session.cwd)
+  const on = files.user?.memory?.enabled === true || files.project?.memory?.enabled === true
+  const started = session.projection().baseline !== null
+  if (!on) return { off: `Memory is off. To turn it on, put ${ON} in ${files.userFile}; sessions started after that have it.`, startsWithFirstTurn: false }
+  if (started) return { off: `Memory is on in the configuration, but this session was started while it was off, so it has none; start a new session (${brand.binary}) to use it.`, startsWithFirstTurn: false }
+  return { off: "Memory is on in the configuration; this session's notes are read when it starts its first turn. Send a message, then try again.", startsWithFirstTurn: true }
+}
+
 export async function memoryState(session: EngineSession): Promise<MemoryStateResult> {
   const memory = session.memory()
   if (memory === null) {
-    const files = await configView(session.projection().session.cwd)
-    const on = files.user?.memory?.enabled === true || files.project?.memory?.enabled === true
-    const started = session.projection().baseline !== null
-    const off = !on
-      ? `Memory is off. To turn it on, put ${ON} in ${files.userFile}; sessions started after that have it.`
-      : started
-        ? `Memory is on in the configuration, but this session was started while it was off, so it has none; start a new session (${brand.binary}) to use it.`
-        : "Memory is on in the configuration; this session's notes are read when it starts its first turn. Send a message, then try again."
-    return { sessionId: session.id, enabled: false, off, notes: [], pending: [], problems: [], review: [], paths: null }
+    const { off, startsWithFirstTurn } = await memoryOff(session)
+    return { sessionId: session.id, enabled: false, off, ...(startsWithFirstTurn ? { startsWithFirstTurn } : {}), notes: [], pending: [], problems: [], review: [], paths: null }
   }
   const { store } = memory
   const loaded = store.load()
@@ -391,9 +399,16 @@ function noteOf(entry: MemoryEntry, state: string): MemoryNote {
 }
 
 /** The user's own action on a note: remember, retract, confirm, reject, renew. */
-export function memoryChange(session: EngineSession, params: MemoryChangeParams): MemoryChangeResult {
+export async function memoryChange(session: EngineSession, params: MemoryChangeParams): Promise<MemoryChangeResult> {
   const memory = session.memory()
-  if (memory === null) return { ok: false, message: "Memory is off in this session: /memory says how to turn it on.", id: null }
+  if (memory === null) {
+    // The same sentence `/memory` gives. A note written before the session's first turn is not lost: the client is
+    // told to keep it and send it again once the session has started.
+    const { off, startsWithFirstTurn } = await memoryOff(session)
+    if (startsWithFirstTurn && params.action === "remember" && (params.text ?? "").trim() !== "")
+      return { ok: false, id: null, deferred: true, message: "Memory is on in the configuration, and this session's notes are read when it starts its first turn: nothing is saved yet. The note is kept and saved as soon as your first message is sent (it is not saved if you leave before sending one)." }
+    return { ok: false, id: null, message: off }
+  }
   const { store } = memory
   switch (params.action) {
     case "remember": {

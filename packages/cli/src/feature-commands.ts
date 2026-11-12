@@ -42,6 +42,14 @@ export interface FeatureIo {
   readonly ask: ((question: string, print: () => void) => Promise<string | null>) | null
   /** Whether a turn is running now: what is approved then is there from the next message, and that is said. */
   readonly working?: () => boolean
+  /** Keeps a note that cannot be saved before the session's first turn; it is saved, and said, once the session has started. */
+  readonly keep?: (note: KeptNote) => void
+}
+
+/** A note written with `/remember` before the session's memory existed. */
+export interface KeptNote {
+  readonly text: string
+  readonly scope: "user" | "project"
 }
 
 export const FEATURE_COMMANDS = ["mcp", "hooks", "lsp", "skills", "wakeups", "memory", "remember", "forget"] as const
@@ -122,6 +130,11 @@ export async function runFeatureCommand(name: FeatureCommand, rest: string, sess
         const { text, scope } = rememberArgs(rest)
         if (text === "") return out.notice("/remember needs the note: /remember this repo uses pnpm (--me for a note about you, in every project)", "warn")
         const result = await session.memoryChange({ action: "remember", text, scope })
+        // Memory starts with the session's first turn: the note is kept until then, never dropped.
+        if (result.deferred === true && io.keep !== undefined) {
+          io.keep({ text, scope })
+          return out.notice(result.message)
+        }
         return out.notice(result.message, result.ok ? "info" : "warn")
       }
       case "forget": {
@@ -187,6 +200,8 @@ export class FeatureWatch {
   /** A turn is running; and whether the session has had one (its servers are looked at when the first starts). */
   private executing = false
   private started = false
+  /** Notes written before the session's memory existed: saved once it has started. */
+  private readonly notes: KeptNote[] = []
 
   constructor(
     private readonly session: Session,
@@ -234,6 +249,8 @@ export class FeatureWatch {
   /** Every event of the session, after the renderer has shown it. */
   event(event: EngineEvent): void {
     if (event.type === "execution.started" || event.type === "execution.resumed") this.executing = this.started = true
+    // The session has started: its memory exists from here on, and what `/remember` kept is saved.
+    if (event.type === "baseline.set" && this.notes.length > 0) this.track(this.saveKept())
     if (turnOutcomeOf(event) !== null) this.executing = false
     // The engine says a project's server was not started: the question (or how to approve it) follows at once.
     if (event.type === "diagnostic" && event.kind === "mcp" && this.session.mcp !== undefined) this.track(this.session.mcp().then((state) => this.mcp(state)))
@@ -246,8 +263,25 @@ export class FeatureWatch {
     }
   }
 
+  /** A note `/remember` could not save yet: kept until the session's first turn has started. */
+  keep(note: KeptNote): void {
+    this.notes.push(note)
+  }
+
+  /** The kept notes, saved now that the session has its memory; what became of each is said. */
+  private async saveKept(): Promise<void> {
+    const change = this.session.memoryChange
+    if (change === undefined) return
+    for (const note of this.notes.splice(0)) {
+      const result = await change.call(this.session, { action: "remember", text: note.text, scope: note.scope }).catch((error: unknown) => ({ ok: false, id: null, message: error instanceof Error ? error.message : String(error) }))
+      this.io.out.notice(`your note from before the first message: ${result.message}`, result.ok ? "info" : "warn")
+    }
+  }
+
   /** At the end of a run with nobody to ask: what became of the servers, said once. */
   async finish(): Promise<void> {
+    // A note that waited for a first message that never came was not saved: said, never dropped silently.
+    for (const note of this.notes.splice(0)) this.io.out.notice(`not saved: no message was sent in this session, and its memory starts with the first one. Your note was: ${note.text}`, "warn")
     if (!this.options.attended && this.session.mcp !== undefined) await this.track(this.session.mcp().then((state) => this.mcp(state)))
     if (!this.options.attended && this.session.hooks !== undefined) await this.track(this.session.hooks().then((state) => this.hooks(state)))
     if (!this.options.attended && this.session.lsp !== undefined) await this.track(this.session.lsp().then((state) => this.lsp(state)))
