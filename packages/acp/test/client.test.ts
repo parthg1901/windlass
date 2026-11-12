@@ -209,7 +209,7 @@ describe("in memory", () => {
     await session.send("first")
     await collect(session, turnEnded)
     const forked = await link.fork({ sessionId: session.id })
-    expect(forked).toMatchObject({ parentSessionId: session.id, cwd: workspace, title: "first" })
+    expect(forked).toMatchObject({ parentSessionId: session.id, cwd: workspace, title: "first (fork)" })
     expect((await link.listSessions(workspace)).map((row) => row.id)).toEqual([forked.sessionId, session.id])
     const opened = await link.openSession(forked.sessionId, forked.cwd, { replay: true })
     await opened.send("second")

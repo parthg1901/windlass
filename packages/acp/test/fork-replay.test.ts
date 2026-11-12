@@ -43,7 +43,7 @@ describe("fork", () => {
     await prompt(h, parent, "Write a.txt.")
     const forked = await ext<ForkResult>(h, EXT.fork, { sessionId: parent })
     expect(forked.sessionId).not.toBe(parent)
-    expect(forked).toMatchObject({ parentSessionId: parent, cwd: h.workspace, copiedFrom: null, title: "Write a.txt.", model: "test-model" })
+    expect(forked).toMatchObject({ parentSessionId: parent, cwd: h.workspace, copiedFrom: null, title: "Write a.txt. (fork)", model: "test-model" })
     expect(forked.throughSeq).toBeGreaterThan(1)
 
     // Listed beside its parent, newest first.
