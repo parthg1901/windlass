@@ -44,6 +44,32 @@ test("a hook's refusal and an agent's refusal are both drawn as refused, with wh
   expect(frame).not.toContain("✗")
 })
 
+test("a follow-up to a subagent that the session's agent did not let through is drawn as refused, with who refused and why; another failed follow-up stays a failure", async () => {
+  const session = await open()
+  const child = "ses_child000000000000000000"
+  const sentence = `The follow-up was not sent: subagent ${child} was started before this session ran as the agent "reviewer", so it is not under that agent's restrictions. Start a new subagent for the work (call subagent without \`session\`): it runs under them.`
+  session.emit(
+    event("agent.switched", { messageId: null, from: null, to: REVIEWER }),
+    started(),
+    event("step.started", { messageId: m("a1"), attempt: 1, model: "gpt-test" }),
+    call("a1", "c1", "subagent", { task: "Also fix the typo", session: child }),
+    event("tool.started", { messageId: m("a1"), callId: c("c1"), effect: "exec" } as never),
+    settle("a1", "c1", "error", sentence),
+    call("a1", "c2", "subagent", { task: "And the tests", session: "ses_nobody" }),
+    event("tool.started", { messageId: m("a1"), callId: c("c2"), effect: "exec" } as never),
+    settle("a1", "c2", "error", "This session has no subagent ses_nobody. It has started none."),
+  )
+  await mounted!.settle()
+  const frame = flat(await mounted!.frame())
+  expect(frame).toContain("⊘ subagent Also fix the typo · refused by the reviewer agent")
+  // The engine's sentence, whole, under the row (the panel stands beside it, so it is read in parts).
+  expect(frame).toContain(`The follow-up was not sent: subagent ${child} was started before this session ran as the agent "reviewer",`)
+  expect(frame).toContain("so it is not under that agent's restrictions.")
+  expect(frame).toContain("Start a new subagent for the work")
+  expect(frame).toContain("✗ subagent And the tests")
+  expect(frame.match(/✗/g)).toHaveLength(1)
+})
+
 test("a subagent's row names the agent it runs as", async () => {
   const session = await open()
   session.emit(

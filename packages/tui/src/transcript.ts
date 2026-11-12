@@ -645,6 +645,9 @@ export class Transcript {
           row.settledAt = event.time
           row.progress = null
           if (row.approval?.state === "asked") row.approval = { ...row.approval, live: false }
+          // A follow-up the session's agent did not let go to an earlier subagent: refused, like any call the agent may not make.
+          const refused = row.approval === null ? followUpRefused(row, this.session.agent ?? null) : null
+          if (refused !== null) row.approval = { state: "denied", reason: "policy", needs: [], stop: false, refusal: refused }
         })
         if (this.activity.waiting?.key === row.key) this.activity.waiting = null
         this.recordChange(row)
@@ -1315,6 +1318,26 @@ export class Transcript {
     row.version += 1
     this.version += 1
   }
+}
+
+/**
+ * A follow-up to a subagent (`subagent` with `session`) that the engine did
+ * not send because the subagent was started before the session ran as its
+ * agent, so it is not under that agent's restrictions: the agent's refusal,
+ * with the engine's sentence as the rule. The engine marks it only by that
+ * sentence (the call's result names the agent), so it is told by the call
+ * being a follow-up that failed without starting anything, and the sentence.
+ */
+function followUpRefused(row: ToolRow, agent: string | null): { readonly head: string; readonly reason: string } | null {
+  if (agent === null || row.name !== "subagent" || row.outcome !== "error" || row.subagent !== null) return null
+  let followUp = false
+  try {
+    followUp = typeof (JSON.parse(row.input) as { session?: unknown } | null)?.session === "string"
+  } catch {
+    return null
+  }
+  if (!followUp || !row.output.startsWith("The follow-up was not sent:") || !row.output.includes(`the agent "${agent}"`)) return null
+  return { head: agentRefused(agent, { text: row.output }).head, reason: oneLine(row.output) }
 }
 
 /** A line of the interface's own that is not about the turn's work: a command's answer, something the user asked for. */
