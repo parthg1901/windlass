@@ -4,7 +4,7 @@
  * a fixed virtual clock), so a frame is the same on every run and can be
  * compared as text.
  */
-import type { McpStateResult } from "@windlass/acp/extensions"
+import type { HooksStateResult, LspStateResult, McpStateResult } from "@windlass/acp/extensions"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { NewEvent, SessionId, StoredEvent } from "@windlass/core"
 import type { Scenario } from "@windlass/core/testing/scenarios"
@@ -155,6 +155,10 @@ export class ScriptSession implements BackendSession {
   fork?: BackendSession["fork"]
   mcp?: BackendSession["mcp"]
   approveMcp?: BackendSession["approveMcp"]
+  hooks?: BackendSession["hooks"]
+  approveHook?: BackendSession["approveHook"]
+  lsp?: BackendSession["lsp"]
+  approveLsp?: BackendSession["approveLsp"]
   skills?: BackendSession["skills"]
   wakeups?: BackendSession["wakeups"]
   cancelWake?: BackendSession["cancelWake"]
@@ -171,6 +175,29 @@ export class ScriptSession implements BackendSession {
   /** The server says the MCP servers changed. */
   pushMcp(state: McpStateResult): void {
     for (const listener of this.mcpListeners) listener(state)
+  }
+
+  private readonly hookListeners = new Set<(state: HooksStateResult) => void>()
+  private readonly lspListeners = new Set<(state: LspStateResult) => void>()
+
+  onHooks(listener: (state: HooksStateResult) => void): () => void {
+    this.hookListeners.add(listener)
+    return () => void this.hookListeners.delete(listener)
+  }
+
+  onLsp(listener: (state: LspStateResult) => void): () => void {
+    this.lspListeners.add(listener)
+    return () => void this.lspListeners.delete(listener)
+  }
+
+  /** The server says the hooks changed. */
+  pushHooks(state: HooksStateResult): void {
+    for (const listener of this.hookListeners) listener(state)
+  }
+
+  /** The server says the language servers changed. */
+  pushLsp(state: LspStateResult): void {
+    for (const listener of this.lspListeners) listener(state)
   }
 
   constructor(

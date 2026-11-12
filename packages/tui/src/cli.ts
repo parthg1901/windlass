@@ -25,6 +25,22 @@ export {
 } from "../../cli/src/features.ts"
 export { mcpArguments } from "../../cli/src/tools.ts"
 export { shownCommand } from "../../cli/src/features.ts"
+export {
+  type DiagnosticsRecord,
+  type HookRecord,
+  diagnosticsSummary,
+  hookCallLines,
+  hookNotNow,
+  hookPrinted,
+  hookQuestionParts,
+  hookRefusal,
+  hooksLines,
+  lspLines,
+  lspNotNow,
+  lspQuestionTitle,
+  stopHookSentBack,
+  unsatisfiedText,
+} from "../../cli/src/hooks.ts"
 export { LEFT_TO_PARENT, TASK_MARK, TASK_TOOL, UNVERIFIED_HINT, agentLines, agentProblemLines, agentRefusal, agentSwitchText, compactText, requestsText, taskLines, tasksOf, tasksProgress } from "../../cli/src/agents.ts"
 export { usageText } from "../../cli/src/renderer.ts"
 export { FakeEngine, type FakeOptions, type FakeSession } from "../../cli/src/fake-engine.ts"

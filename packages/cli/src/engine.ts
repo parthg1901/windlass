@@ -33,7 +33,7 @@
  *   that leaves them out has no undo, and the commands say so.
  */
 import type { AgentsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
-import type { DiffResult, ForkResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
 import { brand } from "@windlass/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
@@ -249,6 +249,18 @@ export interface Session {
   approveMcp?(name: string, fingerprint: string): Promise<boolean>
   /** Called whenever the session's MCP servers change (one started, failed, waits for approval). Returns the unsubscribe function. */
   onMcp?(listener: (state: McpStateResult) => void): () => void
+  /** `/hooks`: the session's hooks, with their state and where each is defined. */
+  hooks?(): Promise<HooksStateResult>
+  /** The user allows a hook the project's configuration names (exactly that definition). */
+  approveHook?(fingerprint: string): Promise<boolean>
+  /** Called whenever the session's hooks change (the configuration was read, one waits for approval or was approved). Returns the unsubscribe function. */
+  onHooks?(listener: (state: HooksStateResult) => void): () => void
+  /** `/lsp`: the session's language servers, with their state and the files they serve. */
+  lsp?(): Promise<LspStateResult>
+  /** The user allows a language server the project's configuration names (exactly that definition). */
+  approveLsp?(name: string, fingerprint: string): Promise<boolean>
+  /** Called whenever the session's language servers change (one started, failed, waits for approval). Returns the unsubscribe function. */
+  onLsp?(listener: (state: LspStateResult) => void): () => void
   /** `/skills`. */
   skills?(): Promise<SkillsResult>
   /** `/wakeups`, `/wakeups cancel <id>`, `/wakeups secret <id>`. A secret is for the user's eyes only. */

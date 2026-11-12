@@ -1,8 +1,9 @@
 /**
- * What the server tells a client about four features the engine runs for a
- * session (MCP servers, skills, wake-ups, memory), and the user's actions on
- * them, through the engine's own client surface: `EngineSession.mcp()`,
- * `approveMcpServer`, `skills()`, `memory()`, and `Engine.wake()`. Nothing
+ * What the server tells a client about the features the engine runs for a
+ * session (MCP servers, hooks, language servers, skills, wake-ups, memory),
+ * and the user's actions on them, through the engine's own client surface:
+ * `EngineSession.mcp()`, `approveMcpServer`, `hooks()`, `lsp()`, `skills()`,
+ * `memory()`, and `Engine.wake()`. Nothing
  * here changes the engine; it reads what the engine offers and words it for
  * a person, in the engine's own words where it has them.
  *
@@ -12,6 +13,9 @@
 import { type EngineSession, type Harness, type SessionId, brand } from "@windlass/core"
 import { findConfigFiles, readConfigFile } from "../../core/src/config/load.ts"
 import { type ConfigFile, mergeConfigFiles } from "../../core/src/config/schema.ts"
+import { type Hook, HOOK_POINTS } from "../../core/src/hooks/config.ts"
+import { type LspPlan, planLspServers } from "../../core/src/lsp/config.ts"
+import type { LspServerStatus } from "../../core/src/lsp/registry.ts"
 import { type McpServerConfig, resolveMcpConfig } from "../../core/src/mcp/config.ts"
 import { describeProblem } from "../../core/src/memory/store.ts"
 import { confirmationRequests } from "../../core/src/memory/trust.ts"
@@ -19,6 +23,10 @@ import { describeState, expiresAt, reviewReport, statesOf } from "../../core/src
 import { MEMORY_KINDS, type MemoryEntry, type MemoryKind, type MemoryScope, formatExpiry, oneLine } from "../../core/src/memory/entry.ts"
 import { describeTrigger } from "../../core/src/wake/record.ts"
 import type {
+  HookInfo,
+  HooksStateResult,
+  LspServerInfo,
+  LspStateResult,
   McpServerInfo,
   McpStateResult,
   MemoryChangeParams,
@@ -44,8 +52,8 @@ interface ConfigView {
 
 async function configView(cwd: string): Promise<ConfigView> {
   const where = await findConfigFiles({ cwd })
-  const read = (path: string | null) => (path === null ? Promise.resolve(null) : readConfigFile(path).catch(() => null))
-  const [user, project] = await Promise.all([read(where.userFile), read(where.projectFile)])
+  const read = (path: string | null, origin: "user" | "project") => (path === null ? Promise.resolve(null) : readConfigFile(path, origin).catch(() => null))
+  const [user, project] = await Promise.all([read(where.userFile, "user"), read(where.projectFile, "project")])
   let servers: readonly McpServerConfig[] = []
   try {
     servers = resolveMcpConfig(mergeConfigFiles(user, project).mcp).servers
@@ -143,6 +151,133 @@ export function mcpKey(session: EngineSession): string | null {
   if (state === null) return null
   return JSON.stringify([state.servers.map((server) => [server.name, server.state, server.tools, server.error]), state.awaiting.map((question) => [question.name, question.fingerprint])])
 }
+
+// ---------------------------------------------------------------- hooks
+
+/**
+ * The hooks of a session in the order they run, each with where it is
+ * defined and its state: in force, waiting for the user's approval (with the
+ * engine's question, word for word), or failed. `failures` is why a hook
+ * could not answer the last time it ran in this session, by fingerprint
+ * (`hookFailure`, folded from `hook.ran`).
+ */
+export async function hooksState(session: EngineSession, failures: ReadonlyMap<string, string> = new Map()): Promise<HooksStateResult> {
+  const state = session.hooks()
+  if (state === null) return { sessionId: session.id, available: false, hooks: [], maxStopRounds: 0, ignored: [] }
+  const files = await configView(session.projection().session.cwd)
+  const waiting = new Map(state.awaiting.map((question) => [question.fingerprint, question]))
+  const hooks: HookInfo[] = HOOK_POINTS.flatMap((point) => state.config[point]).map((hook: Hook) => {
+    const question = hook.origin === "project" ? waiting.get(hook.fingerprint) : undefined
+    const error = question === undefined ? (failures.get(hook.fingerprint) ?? null) : null
+    return {
+      name: hook.name,
+      point: hook.point,
+      state: question !== undefined ? "awaiting_approval" : error !== null ? "failed" : "in_force",
+      command: hook.command,
+      tools: hook.tools === null ? null : [...hook.tools],
+      paths: hook.paths === null ? null : [...hook.paths],
+      timeoutSeconds: hook.timeoutSeconds,
+      onError: hook.onError,
+      sandbox: hook.sandbox,
+      origin: hook.origin,
+      file: hook.origin === "project" ? files.projectFile : files.userFile,
+      fingerprint: hook.fingerprint,
+      error,
+      question: question?.question ?? null,
+    }
+  })
+  return { sessionId: session.id, available: true, hooks, maxStopRounds: state.config.maxStopRounds, ignored: [...state.config.ignored] }
+}
+
+/** What changes about the hooks that a client shows: which exist, which wait, and which could not answer. `null`: the engine runs none. */
+export function hooksKey(session: EngineSession, failures: ReadonlyMap<string, string>): string | null {
+  const state = session.hooks()
+  if (state === null) return null
+  const all = HOOK_POINTS.flatMap((point) => state.config[point])
+  return JSON.stringify([all.map((hook) => [hook.id, hook.fingerprint, failures.get(hook.fingerprint) ?? null]), state.awaiting.map((question) => question.fingerprint)])
+}
+
+/** The key of a session with no hooks: what a session is taken to have until it is first looked at. */
+export const NO_HOOKS_KEY = JSON.stringify([[], []])
+
+/**
+ * What a `hook.ran` record says about whether the hook can answer: why it
+ * could not (`failed`), `null` when it answered, `undefined` when the record
+ * says nothing about that (skipped, interrupted).
+ */
+export function hookFailure(record: { readonly answer: string; readonly failure: string | null; readonly detail: string | null }): string | null | undefined {
+  if (record.answer === "failed") return record.detail ?? record.failure?.replace(/_/g, " ") ?? "it failed"
+  return record.answer === "yes" || record.answer === "no" ? null : undefined
+}
+
+// ---------------------------------------------------------------- language servers
+
+const PROCESS_WORDS: Record<LspServerStatus["state"], LspServerInfo["processes"][number]["state"]> = { idle: "not_started", starting: "starting", ready: "running", retrying: "failed", stopped: "stopped" }
+
+/** The plan the two files give, without the approvals (the engine says which servers wait); `null` when neither names a server or they cannot be resolved. */
+function lspPlan(files: ConfigView): LspPlan | null {
+  if (files.user?.lsp === undefined && files.project?.lsp === undefined) return null
+  try {
+    return planLspServers(files.user?.lsp, files.project?.lsp, () => true)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The session's language servers: every one a file names, with the files it
+ * serves and where it is defined, and its state as the engine reports it
+ * (one process per workspace root; the server's state is the one that most
+ * needs the user's eye).
+ */
+export async function lspState(session: EngineSession): Promise<LspStateResult> {
+  const state = session.lsp()
+  const files = await configView(session.projection().session.cwd)
+  const plan = lspPlan(files)
+  const config = plan?.config ?? null
+  const off =
+    config === null
+      ? null
+      : !config.enabled
+        ? `Diagnostics are off: "lsp": { "enabled": false } in the configuration. No server is started.`
+        : config.waitMs === 0
+          ? `Diagnostics are off: "lsp": { "waitMs": 0 } in the configuration lets an edit wait no time for them. No server is started.`
+          : null
+  // The engine holds nothing although the files name servers that could run: it offers no diagnostics.
+  const available = state !== null || plan === null || off !== null || !plan.servers.some((server) => server.config.enabled)
+  const waiting = new Map((state?.awaiting ?? []).map((question) => [question.name, question]))
+  const servers: LspServerInfo[] = (plan?.servers ?? []).map((server) => {
+    const name = server.config.name
+    const question = waiting.get(name)
+    const processes = (state?.servers ?? []).filter((status) => status.server === name).map((status) => ({ root: status.root, state: PROCESS_WORDS[status.state], error: status.error, restarts: status.restarts, openDocuments: status.openDocuments }))
+    const first = (word: LspServerInfo["processes"][number]["state"]) => processes.find((process) => process.state === word)
+    const shown = first("failed") ?? first("starting") ?? first("running") ?? first("stopped")
+    return {
+      name,
+      state: !server.config.enabled ? "disabled" : question !== undefined ? "awaiting_approval" : (shown?.state ?? "not_started"),
+      command: question?.subject ?? [server.config.command, ...server.config.args].join(" "),
+      // Only when the file still holds the definition the question is about (its fingerprint): the arguments shown are then the ones asked about.
+      argv: question === undefined || question.fingerprint === server.fingerprint ? [server.config.command, ...server.config.args] : null,
+      languages: server.config.languages.map((language) => ({ languageId: language.languageId, patterns: [...language.patterns] })),
+      processes,
+      error: shown?.state === "failed" || shown?.state === "stopped" ? shown.error : null,
+      origin: server.origin,
+      file: server.origin === "project" ? files.projectFile : files.userFile,
+      question: question === undefined ? null : { fingerprint: question.fingerprint, subject: question.subject, details: [...question.details] },
+    }
+  })
+  return { sessionId: session.id, available, off, waitMs: config?.waitMs ?? null, servers }
+}
+
+/** What changes about the language servers that a client shows: not a process ID or a count of open files. `null`: none could give diagnostics. */
+export function lspKey(session: EngineSession): string | null {
+  const state = session.lsp()
+  if (state === null) return null
+  return JSON.stringify([state.servers.map((server) => [server.server, server.root, server.state, server.error]), state.awaiting.map((question) => [question.name, question.fingerprint])])
+}
+
+/** The key of a session whose language servers have not started and do not wait. */
+export const NO_LSP_KEY = JSON.stringify([[], []])
 
 // ---------------------------------------------------------------- skills
 

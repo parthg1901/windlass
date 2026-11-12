@@ -1,15 +1,16 @@
 /**
  * The line CLI's commands for the features the engine runs for a session
- * (`/mcp`, `/skills`, `/wakeups`, `/memory`, `/remember`, `/forget`), and
- * what it says about them unasked (`FeatureWatch`): a server the project's
- * configuration names is put to the user as a question at the prompt (or, in
- * a run with nobody to ask, said once with how to approve it), a server that
- * fails to start is a notice with why, and a webhook wake-up's URL and secret
- * are shown once when it is created, to the user only.
+ * (`/mcp`, `/skills`, `/wakeups`, `/memory`, `/remember`,
+ * `/forget`), and what it says about them unasked (`FeatureWatch`): an MCP
+ * server, a hook or a language server the project's configuration names is
+ * put to the user as a question at the prompt (or, in a run with nobody to
+ * ask, said once with how to approve it), a server that fails to start is a
+ * notice with why, and a webhook wake-up's URL and secret are shown once
+ * when it is created, to the user only.
  *
- * The words are `features.ts`'s, shared with the TUI.
+ * The words are `features.ts`'s and `hooks.ts`'s, shared with the TUI.
  */
-import type { McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
+import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import type { EngineEvent, Session } from "./engine.ts"
 import {
   type Line,
@@ -24,6 +25,7 @@ import {
   wakeLines,
   webhookSecretLines,
 } from "./features.ts"
+import { hookQuestionLines, hooksUnattendedText, lspQuestionLines, lspUnattendedText } from "./hooks.ts"
 
 export interface FeatureOutput {
   lines(lines: readonly Line[]): void
@@ -40,6 +42,8 @@ export const FEATURE_COMMANDS = ["mcp", "skills", "wakeups", "memory", "remember
 export type FeatureCommand = (typeof FEATURE_COMMANDS)[number]
 
 const MCP_ANSWERS = "[y] start it · [N] not now › "
+const HOOK_ANSWERS = "[y] allow it · [N] not now › "
+const LSP_ANSWERS = "[y] allow it · [N] not now › "
 
 /** Runs one feature command to its end. Never throws: a failure is a line. */
 export async function runFeatureCommand(name: FeatureCommand, rest: string, session: Session, io: FeatureIo): Promise<void> {
@@ -113,6 +117,30 @@ async function askMcpServer(server: McpServerInfo, session: Session, io: Feature
   return approved
 }
 
+/** Puts the question about a project's hook, and approves it on a yes. Resolves with whether it was approved. */
+async function askHook(hook: HookInfo, session: Session, io: FeatureIo): Promise<boolean> {
+  const answer = (await io.ask!(HOOK_ANSWERS, () => io.out.lines(hookQuestionLines(hook))))?.trim().toLowerCase() ?? ""
+  if (answer !== "y" && answer !== "yes") {
+    io.out.notice(`not allowed: the hook "${hook.name}" is not run; /hooks approve ${hook.name} asks again`)
+    return false
+  }
+  const approved = await session.approveHook!(hook.fingerprint)
+  io.out.notice(approved ? `approved: the hook "${hook.name}" runs from the next call it applies to; /hooks shows it` : `the hook "${hook.name}" no longer waits for an approval (its definition changed); /hooks shows it`, approved ? "info" : "warn")
+  return approved
+}
+
+/** Puts the question about a project's language server, and approves it on a yes. Resolves with whether it was approved. */
+async function askLspServer(server: LspServerInfo, session: Session, io: FeatureIo): Promise<boolean> {
+  const answer = (await io.ask!(LSP_ANSWERS, () => io.out.lines(lspQuestionLines(server))))?.trim().toLowerCase() ?? ""
+  if (answer !== "y" && answer !== "yes") {
+    io.out.notice(`not allowed: the language server "${server.name}" is not started; /lsp approve ${server.name} asks again`)
+    return false
+  }
+  const approved = await session.approveLsp!(server.name, server.question!.fingerprint)
+  io.out.notice(approved ? `approved: the language server "${server.name}" starts at the next file it serves; /lsp shows it` : `the language server "${server.name}" no longer waits for an approval (its definition changed); /lsp shows it`, approved ? "info" : "warn")
+  return approved
+}
+
 /**
  * What the CLI says about the features unasked, while a session is open.
  * `attended`: a person is at the prompt, so a project's server is asked
@@ -132,13 +160,17 @@ export class FeatureWatch {
   ) {}
 
   start(): void {
-    this.unsubscribe = this.session.onMcp?.((state) => this.mcp(state)) ?? null
+    const off = [this.session.onMcp?.((state) => this.mcp(state)), this.session.onHooks?.((state) => this.hooks(state)), this.session.onLsp?.((state) => this.lsp(state))]
+    this.unsubscribe = () => off.forEach((each) => each?.())
   }
 
   /** Every event of the session, after the renderer has shown it. */
   event(event: EngineEvent): void {
     // The engine says a project's server was not started: the question (or how to approve it) follows at once.
     if (event.type === "diagnostic" && event.kind === "mcp" && this.session.mcp !== undefined) this.track(this.session.mcp().then((state) => this.mcp(state)))
+    // So for a hook or a language server it did not run: asked about at once, or said how to approve.
+    if (event.type === "diagnostic" && event.kind === "hooks" && this.session.hooks !== undefined) this.track(this.session.hooks().then((state) => this.hooks(state)))
+    if (event.type === "diagnostic" && event.kind === "lsp" && this.session.lsp !== undefined) this.track(this.session.lsp().then((state) => this.lsp(state)))
     if (event.type === "tool.settled" && event.data.outcome === "success") {
       const wake = (event.data.display as { wake?: { action?: unknown; id?: unknown } } | null)?.wake
       if (wake?.action === "create" && typeof wake.id === "string") this.track(this.created(wake.id))
@@ -148,6 +180,8 @@ export class FeatureWatch {
   /** At the end of a run with nobody to ask: what became of the servers, said once. */
   async finish(): Promise<void> {
     if (!this.options.attended && this.session.mcp !== undefined) await this.track(this.session.mcp().then((state) => this.mcp(state)))
+    if (!this.options.attended && this.session.hooks !== undefined) await this.track(this.session.hooks().then((state) => this.hooks(state)))
+    if (!this.options.attended && this.session.lsp !== undefined) await this.track(this.session.lsp().then((state) => this.lsp(state)))
     await this.settled()
   }
 
@@ -184,6 +218,32 @@ export class FeatureWatch {
         else this.io.out.notice(mcpUnattendedText(server), "warn")
       }
     }
+  }
+
+  /** The project's hooks that wait: each is a question at the prompt, one after another; with nobody to ask, how to approve them, once. */
+  private hooks(state: HooksStateResult): void {
+    const fresh = state.hooks.filter((hook) => hook.state === "awaiting_approval" && hook.question !== null && !this.asked.has(`hook:${hook.fingerprint}`))
+    if (fresh.length === 0) return
+    for (const hook of fresh) this.asked.add(`hook:${hook.fingerprint}`)
+    if (!this.options.attended || this.io.ask === null) return this.io.out.notice(hooksUnattendedText(fresh), "warn")
+    this.track(
+      (async () => {
+        for (const hook of fresh) await askHook(hook, this.session, this.io)
+      })(),
+    )
+  }
+
+  /** A project's language server that waits is a question at the prompt; one that failed to start is a notice with why. */
+  private lsp(state: LspStateResult): void {
+    const fresh = state.servers.filter((server) => server.state === "awaiting_approval" && server.question !== null && !this.asked.has(`lsp:${server.name}:${server.question.fingerprint}`))
+    if (fresh.length === 0) return
+    for (const server of fresh) this.asked.add(`lsp:${server.name}:${server.question!.fingerprint}`)
+    if (!this.options.attended || this.io.ask === null) return this.io.out.notice(lspUnattendedText(fresh), "warn")
+    this.track(
+      (async () => {
+        for (const server of fresh) await askLspServer(server, this.session, this.io)
+      })(),
+    )
   }
 
   private async created(id: string): Promise<void> {

@@ -50,6 +50,8 @@ import {
   type ConfigChoice,
   type Delivery,
   type DiffResult,
+  type HooksStateResult,
+  type LspStateResult,
   type McpStateResult,
   type MemoryStateResult,
   type SkillsResult,
@@ -277,6 +279,34 @@ class AcpSession implements BackendSession {
   onMcp(listener: (state: McpStateResult) => void): () => void {
     return this.session.onSignal((signal) => {
       if (signal.kind === "mcp") listener(signal.mcp)
+    })
+  }
+
+  hooks(): Promise<HooksStateResult> {
+    return this.feature(EXT.hooks, () => this.session.hooks())
+  }
+
+  async approveHook(fingerprint: string): Promise<boolean> {
+    return (await this.feature(EXT.hookApprove, () => this.session.approveHook(fingerprint))).approved
+  }
+
+  onHooks(listener: (state: HooksStateResult) => void): () => void {
+    return this.session.onSignal((signal) => {
+      if (signal.kind === "hooks") listener(signal.hooks)
+    })
+  }
+
+  lsp(): Promise<LspStateResult> {
+    return this.feature(EXT.lsp, () => this.session.lsp())
+  }
+
+  async approveLsp(name: string, fingerprint: string): Promise<boolean> {
+    return (await this.feature(EXT.lspApprove, () => this.session.approveLsp(name, fingerprint))).approved
+  }
+
+  onLsp(listener: (state: LspStateResult) => void): () => void {
+    return this.session.onSignal((signal) => {
+      if (signal.kind === "lsp") listener(signal.lsp)
     })
   }
 

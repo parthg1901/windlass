@@ -103,7 +103,7 @@ import {
   type StateNotification,
   sessionTitle,
 } from "./extensions.ts"
-import { mcpKey, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
+import { NO_HOOKS_KEY, NO_LSP_KEY, hookFailure, hooksKey, hooksState, lspKey, lspState, mcpKey, mcpState, memoryChange, memoryKind, memoryState, skillsState, wakeCancel, wakeList, wakeSecret } from "./features.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText } from "./prompt.ts"
@@ -121,7 +121,7 @@ const NO_AGENT_VALUE = "none"
 const UNATTENDED = ["deny", "stop"] as const
 const DEFAULT_EFFORT_VALUE = "default"
 const LIST_PAGE = 100
-/** How often a session's MCP servers are looked at for `<prefix>/mcp_changed`. */
+/** How often a session's MCP servers, hooks and language servers are looked at for their `_changed` notifications. */
 const MCP_POLL_MS = 500
 /** How many of the latest turns a `session/load` replays the changed files of. */
 const REPLAYED_TURN_CHANGES = 50
@@ -164,8 +164,8 @@ async function snapshotOfCopy(copy: string, dataDir: string, session: string): P
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact],
-  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve, EXT.approval, EXT.clearTaint, EXT.diff, EXT.fork, EXT.replay, EXT.mcp, EXT.mcpApprove, EXT.hooks, EXT.hookApprove, EXT.lsp, EXT.lspApprove, EXT.skills, EXT.wakeups, EXT.wakeCancel, EXT.wakeSecret, EXT.memory, EXT.memoryChange, EXT.agents, EXT.rename, EXT.compact],
+  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event, EXT.taint, EXT.notice, EXT.replayStarted, EXT.child, EXT.mcpChanged, EXT.hooksChanged, EXT.lspChanged],
   promptMeta: [META.delivery, META.maxSteps],
   /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
   clientMeta: ["events", "updates"],
@@ -224,6 +224,10 @@ function buildAgent(state: ConnectionState): AgentApp {
     .onRequest(EXT.replay, parseReplayParams, ({ params, signal }) => state.replay(params, signal))
     .onRequest(EXT.mcp, parseObject, ({ params }) => mcpState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.mcpApprove, parseObject, ({ params }) => state.approveMcp(requireString(params, "sessionId"), requireString(params, "name"), optionalString(params, "fingerprint")))
+    .onRequest(EXT.hooks, parseObject, ({ params }) => state.view(requireString(params, "sessionId")).hooks())
+    .onRequest(EXT.hookApprove, parseObject, ({ params }) => state.approveHook(requireString(params, "sessionId"), requireString(params, "fingerprint")))
+    .onRequest(EXT.lsp, parseObject, ({ params }) => lspState(state.view(requireString(params, "sessionId")).session))
+    .onRequest(EXT.lspApprove, parseObject, ({ params }) => state.approveLsp(requireString(params, "sessionId"), requireString(params, "name"), optionalString(params, "fingerprint")))
     .onRequest(EXT.skills, parseObject, ({ params }) => skillsState(state.view(requireString(params, "sessionId")).session))
     .onRequest(EXT.wakeups, parseObject, ({ params }) => wakeList(state.harness, state.view(requireString(params, "sessionId")).session.id))
     .onRequest(EXT.wakeCancel, parseObject, ({ params }) => wakeCancel(state.harness, state.view(requireString(params, "sessionId")).session.id, requireString(params, "id")))
@@ -381,6 +385,7 @@ class ConnectionState {
       // the turn): all of it on a load (marked as a replay up to this open), and on either the events this open
       // appended, which are what a live session would have streamed.
       for (const item of history) {
+        prime.noteHook(item)
         if (this.fidelity.events && (replay || item.seq > openedAt)) prime.queueEvent(item, item.seq <= openedAt)
         const outputs = prime.translator.translate(item, true)
         if (replay) prime.queueOutputs(outputs.filter((output) => output.type === "update" || (output.type === "ext" && output.method === EXT.turn)), true)
@@ -1061,6 +1066,22 @@ class ConnectionState {
     return { approved, servers: (await mcpState(view.session)).servers }
   }
 
+  /** `<prefix>/hook_approve`: the user allows a hook the project's configuration names; it runs from the next call it applies to. */
+  async approveHook(sessionId: string, fingerprint: string) {
+    const view = this.requireView(sessionId)
+    const approved = view.session.approveHook(fingerprint)
+    view.watchFeatures(true)
+    return { approved, hooks: (await view.hooks()).hooks }
+  }
+
+  /** `<prefix>/lsp_approve`: the user allows a language server the project's configuration names; it starts at the next file it serves. */
+  async approveLsp(sessionId: string, name: string, fingerprint: string | undefined) {
+    const view = this.requireView(sessionId)
+    const approved = view.session.approveLspServer(name, fingerprint)
+    view.watchFeatures(true)
+    return { approved, servers: (await lspState(view.session)).servers }
+  }
+
   private requireView(sessionId: string): SessionView {
     const view = this.views.get(sessionId)
     if (view === undefined) throw RequestError.sessionNotFound(sessionId)
@@ -1129,6 +1150,16 @@ class SessionView {
   /** The MCP servers as last told to the client (`mcpKey`), and the timer that looks again. */
   private mcpSeen: string | null = null
   private mcpTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * The hooks and the language servers as last told to the client
+   * (`hooksKey`, `lspKey`). A session is taken to have none until it is
+   * first looked at, a moment after it was opened: what it has then is told.
+   */
+  private hooksSeen = NO_HOOKS_KEY
+  private lspSeen = NO_LSP_KEY
+  private featureTimer: ReturnType<typeof setInterval> | null = null
+  /** Why each hook could not answer the last time it ran in this session, by fingerprint (`hook.ran`). */
+  private readonly hookFailures = new Map<string, string>()
 
   constructor(
     private readonly connection: ConnectionState,
@@ -1164,6 +1195,63 @@ class SessionView {
     // waits for before its own `inbox.enqueued` is looked at here.
     this.unlisten = this.session.subscribe((item) => queueMicrotask(() => this.onEvent(item)))
     this.watchMcp()
+    this.watchFeatures()
+  }
+
+  /** `<prefix>/hooks`: the session's hooks, with the ones that could not answer when they last ran here. */
+  hooks() {
+    return hooksState(this.session, this.hookFailures)
+  }
+
+  /** A `hook.ran` record, live or from the stored log: whether that hook could answer. */
+  noteHook(item: EngineEvent): void {
+    if (item.type !== "hook.ran") return
+    const failure = hookFailure(item.data)
+    if (failure === undefined) return
+    if (failure === null) this.hookFailures.delete(item.data.fingerprint)
+    else this.hookFailures.set(item.data.fingerprint, failure)
+  }
+
+  /**
+   * Looks at the session's hooks and language servers every `MCP_POLL_MS`
+   * and sends `<prefix>/hooks_changed` and `<prefix>/lsp_changed` when what
+   * a client shows changed: the configuration was read and names some, one
+   * waits for the user's approval or was approved, a hook could not answer,
+   * a server started or failed (with why). Nothing is looked at while the
+   * session is being opened: reading the hooks reads the configuration, and
+   * what the engine says about it then belongs after the answer that opens
+   * the session.
+   */
+  watchFeatures(now = false): void {
+    if (this.detached) return
+    if (this.featureTimer === null) {
+      this.featureTimer = setInterval(() => this.checkFeatures(), MCP_POLL_MS)
+      this.featureTimer.unref?.()
+    }
+    if (now) this.checkFeatures()
+  }
+
+  private checkFeatures(): void {
+    if (this.detached) return
+    let hooks: string | null = null
+    let lsp: string | null = null
+    try {
+      hooks = hooksKey(this.session, this.hookFailures)
+      lsp = lspKey(this.session)
+    } catch {
+      // A session that is closing has nothing new to say.
+      return
+    }
+    if (hooks !== null && hooks !== this.hooksSeen) {
+      this.hooksSeen = hooks
+      this.enqueue(async () => this.connection.sendExt(EXT.hooksChanged, { ...(await this.hooks()) }))
+    }
+    // No registry (`null`) is the state of a session whose servers neither started nor wait.
+    const servers = lsp ?? NO_LSP_KEY
+    if (servers !== this.lspSeen) {
+      this.lspSeen = servers
+      this.enqueue(async () => this.connection.sendExt(EXT.lspChanged, { ...(await lspState(this.session)) }))
+    }
   }
 
   /**
@@ -1205,6 +1293,8 @@ class SessionView {
     this.unlisten?.()
     if (this.mcpTimer !== null) clearInterval(this.mcpTimer)
     this.mcpTimer = null
+    if (this.featureTimer !== null) clearInterval(this.featureTimer)
+    this.featureTimer = null
     this.connection.forget(this)
     const error = new RequestError(-32800, "the session was closed")
     for (const pending of this.pending.splice(0)) pending.reject(error)
@@ -1314,6 +1404,7 @@ class SessionView {
       if (pending !== undefined) pending.enqueuedSeq = item.seq
     }
     if (item.type === "settings.changed") this.requested = null
+    this.noteHook(item)
     // A title the user gave: the first message no longer names the session.
     if (item.type === "session.renamed") this.titled = true
     if (item.type === "inbox.enqueued" && item.data.origin === null && !this.titled) {

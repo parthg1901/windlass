@@ -597,8 +597,10 @@ async function compactNow(session: Session, renderer: PrettyRenderer): Promise<v
 /**
  * The questions put at the prompt, one at a time. A tool call's approval is
  * urgent: the turn waits for it, so it is put at once, and a patient question
- * that was showing (a project's MCP server) steps aside and is put again,
- * printed afresh, once no urgent one is left.
+ * that was showing (a project's MCP server, hook or language server) steps
+ * aside and is put again, printed afresh, once no urgent one is left. Patient
+ * questions wait for each other: the next is put when the one showing has
+ * its answer, never in its place.
  */
 export class Questions {
   private urgentCount = 0
@@ -606,6 +608,8 @@ export class Questions {
   private displaced = false
   private idle: Promise<void> = Promise.resolve()
   private release: (() => void) | null = null
+  /** The patient question showing or waiting last: the next one is put after it. */
+  private patientLine: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly screen: Pick<Screen, "ask">) {}
 
@@ -619,7 +623,13 @@ export class Questions {
     }
   }
 
-  async patient(question: string, print: () => void): Promise<string | null> {
+  patient(question: string, print: () => void): Promise<string | null> {
+    const answer = this.patientLine.then(() => this.putPatient(question, print))
+    this.patientLine = answer.catch(() => {})
+    return answer
+  }
+
+  private async putPatient(question: string, print: () => void): Promise<string | null> {
     for (;;) {
       await this.idle
       print()

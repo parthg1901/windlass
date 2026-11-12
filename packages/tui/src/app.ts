@@ -23,8 +23,8 @@ import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { COMMANDS, type CommandSpec, complete, parseCommand } from "./commands.ts"
 import { agentProblemLines, compactText, requestsText } from "./cli.ts"
 import { COPY_NOTE, changeLabel, fileList, formatDuration, mcpFailureText, mcpLines, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
-import { mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
-import type { McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
+import { hookAsk, hookAskId, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
+import type { HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult } from "@windlass/acp/extensions"
 import { plural, truncate, width as textWidth } from "./layout.ts"
 import { PANEL_WIDTH, middle, panelLines, shorten } from "./panel.ts"
 import { type Span, type Theme, span } from "./theme.ts"
@@ -63,6 +63,17 @@ export interface AppOptions {
   readonly ticking?: boolean
 }
 
+/**
+ * A question about something the project's configuration names and the user
+ * has not approved (an MCP server, a hook, a language server), as the dock
+ * shows it, and what an answer does. `id` names exactly that definition.
+ */
+interface FeatureQuestion {
+  readonly id: string
+  readonly ask: ApprovalAsk
+  readonly answer: (allow: boolean) => Promise<void>
+}
+
 type Connection = "starting" | "connected" | "disconnected" | "not signed in" | "failed"
 
 export class App {
@@ -98,12 +109,16 @@ export class App {
   /** The reason the last open failed, for /reconnect. */
   private target: OpenTarget
   /** The approval question waiting for the user, and how to answer it. */
-  private dock: { readonly state: DockState; readonly answer: (answer: ApprovalAnswer | null) => void; readonly server?: McpServerInfo } | null = null
-  /** Servers the project's configuration names that wait for the user's answer in the dock, and the ones asked about. */
-  private readonly serverQuestions: McpServerInfo[] = []
-  private readonly asked = new Set<string>()
+  private dock: { readonly state: DockState; readonly answer: (answer: ApprovalAnswer | null) => void; readonly feature?: FeatureQuestion } | null = null
+  /**
+   * What the project's configuration names and the user has not approved (an
+   * MCP server, a hook, a language server), waiting for the user's answer in
+   * the dock one after another; and the ones asked about.
+   */
+  private readonly featureQuestions: FeatureQuestion[] = []
   /** The questions whose command did not fit the dock and was printed in full above it. */
   private readonly printedCommands = new Set<string>()
+  private readonly asked = new Set<string>()
   /** Failures already told, by server and reason. */
   private readonly toldFailures = new Set<string>()
   private unwatchMcp: (() => void) | null = null
@@ -211,7 +226,8 @@ export class App {
       this.conversation.empty = this.welcome()
       this.pump = this.consume(session)
       this.unwatchMcp?.()
-      this.unwatchMcp = session.onMcp?.((state) => this.mcpChanged(session, state)) ?? null
+      const unwatch = [session.onMcp?.((state) => this.mcpChanged(session, state)), session.onHooks?.((state) => this.hooksChanged(session, state)), session.onLsp?.((state) => this.lspChanged(session, state))]
+      this.unwatchMcp = () => unwatch.forEach((off) => off?.())
       void this.loadModels()
       void this.refreshApproval()
       void session.title?.().then(
@@ -285,7 +301,7 @@ export class App {
     if (this.transcript.activity.executing) return this.say("stop the agent first (Ctrl-C), then switch sessions", "warn")
     const old = this.session
     this.session = null
-    this.serverQuestions.length = 0
+    this.featureQuestions.length = 0
     this.closeDock()
     await old?.close(false)
     await this.pump
@@ -901,8 +917,8 @@ export class App {
    */
   private approve(ask: ApprovalAsk, signal: AbortSignal): Promise<ApprovalAnswer | null> {
     // A tool call's question cannot wait: a server's question steps aside and comes back after it.
-    const server = this.dock?.server
-    if (server !== undefined) this.serverQuestions.unshift(server)
+    const feature = this.dock?.feature
+    if (feature !== undefined) this.featureQuestions.unshift(feature)
     this.dock?.answer(null)
     // A subagent's question is about a call in the subagent's own conversation.
     const row = this.transcript.toolRowFor(ask)
@@ -936,7 +952,7 @@ export class App {
   /** The question was settled without this dock (the call ended, the turn ended): it goes away. */
   private settleDock(): void {
     const dock = this.dock
-    if (dock === null || dock.server !== undefined) return
+    if (dock === null || dock.feature !== undefined) return
     const row = this.transcript.toolRowFor(dock.state.ask)
     const stillAsked = row === null || (row.phase !== "settled" && (row.approval === null || (row.approval.state === "asked" && row.approval.live)))
     if (!stillAsked || !this.transcript.activity.executing) this.closeDock()
@@ -954,37 +970,71 @@ export class App {
       }
       if (server.state === "awaiting_approval" && server.question !== null && !this.asked.has(mcpAskId(server))) {
         this.asked.add(mcpAskId(server))
-        this.serverQuestions.push(server)
+        this.featureQuestions.push(this.mcpQuestion(session, server))
       }
     }
     this.nextServerQuestion()
     this.redraw()
   }
 
-  /** Puts the next server question in the dock, when the dock is free. */
-  private nextServerQuestion(): void {
-    const session = this.session
-    if (this.dock !== null || session === null || this.leaving !== null) return
-    const server = this.serverQuestions.shift()
-    if (server === undefined) return
-    const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
-    const state = new DockState(mcpServerAsk(session.id, server), null, { focused: quiet, now: this.now(), withNote: false, whole: true })
-    this.printWholeCommand(mcpAskId(server), state)
-    const entry = {
-      state,
-      server,
-      answer: (answer: ApprovalAnswer | null) => {
-        if (this.dock !== entry) return
-        this.dock = null
-        this.layout()
-        // `null`: it stepped aside for a tool call's question, or the session went; it is not an answer.
-        if (answer !== null) void this.answerServer(session, server, answer.choice === "once")
-        this.nextServerQuestion()
-      },
+  private mcpQuestion(session: BackendSession, server: McpServerInfo): FeatureQuestion {
+    return { id: mcpAskId(server), ask: mcpServerAsk(session.id, server), answer: (allow) => this.answerServer(session, server, allow) }
+  }
+
+  /** The hooks changed: a project's hook nobody approved yet (this definition of it) is put in the dock, with the engine's question. */
+  private hooksChanged(session: BackendSession, state: HooksStateResult): void {
+    if (this.session !== session) return
+    for (const hook of state.hooks) {
+      if (hook.state !== "awaiting_approval" || hook.question === null || this.asked.has(hookAskId(hook))) continue
+      this.asked.add(hookAskId(hook))
+      this.featureQuestions.push(this.hookQuestion(session, hook))
     }
-    this.dock = entry
-    this.conversation.toBottom()
-    this.layout()
+    this.nextServerQuestion()
+    this.redraw()
+  }
+
+  private hookQuestion(session: BackendSession, hook: HookInfo): FeatureQuestion {
+    return { id: hookAskId(hook), ask: hookAsk(session.id, hook), answer: (allow) => this.answerHook(session, hook, allow) }
+  }
+
+  private async answerHook(session: BackendSession, hook: HookInfo, allow: boolean): Promise<void> {
+    if (!allow) return this.say(`the hook "${hook.name}" is not run; /hooks approve ${hook.name} asks again`)
+    try {
+      const approved = (await session.approveHook?.(hook.fingerprint)) ?? false
+      if (approved) this.transcript.note([span(`approved: the hook "${hook.name}" runs from the next call it applies to`), span(" · /hooks shows it", "dim")], "accent", "✓")
+      else this.say(`the hook "${hook.name}" no longer waits for an approval (its definition changed); /hooks shows it`, "warn")
+      this.redraw()
+    } catch (error) {
+      this.say(`could not approve the hook "${hook.name}": ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  /** The language servers changed: a project's server nobody approved yet is put in the dock. */
+  private lspChanged(session: BackendSession, state: LspStateResult): void {
+    if (this.session !== session) return
+    for (const server of state.servers) {
+      if (server.state !== "awaiting_approval" || server.question === null || this.asked.has(lspAskId(server))) continue
+      this.asked.add(lspAskId(server))
+      this.featureQuestions.push(this.lspQuestion(session, server))
+    }
+    this.nextServerQuestion()
+    this.redraw()
+  }
+
+  private lspQuestion(session: BackendSession, server: LspServerInfo): FeatureQuestion {
+    return { id: lspAskId(server), ask: lspServerAsk(session.id, server), answer: (allow) => this.answerLspServer(session, server, allow) }
+  }
+
+  private async answerLspServer(session: BackendSession, server: LspServerInfo, allow: boolean): Promise<void> {
+    if (!allow) return this.say(`the language server "${server.name}" is not started; /lsp approve ${server.name} asks again`)
+    try {
+      const approved = (await session.approveLsp?.(server.name, server.question!.fingerprint)) ?? false
+      if (approved) this.transcript.note([span(`approved: the language server "${server.name}" starts at the next file it serves`), span(" · /lsp shows it", "dim")], "accent", "✓")
+      else this.say(`the language server "${server.name}" no longer waits for an approval (its definition changed); /lsp shows it`, "warn")
+      this.redraw()
+    } catch (error) {
+      this.say(`could not approve the language server "${server.name}": ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
   }
 
   /**
@@ -1004,6 +1054,38 @@ export class App {
   /** The most rows the dock takes of the terminal. */
   private dockRows(): number {
     return Math.max(4, Math.floor(this.renderer.height * DOCK_SHARE))
+  }
+
+  /** Asks about `question` now (a command of the user's), unless it is waiting or showing already. */
+  private askFeature(question: FeatureQuestion): void {
+    if (!this.featureQuestions.some((candidate) => candidate.id === question.id) && this.dock?.feature?.id !== question.id) this.featureQuestions.push(question)
+    this.nextServerQuestion()
+  }
+
+  /** Puts the next question about what the project's configuration names in the dock, when the dock is free. */
+  private nextServerQuestion(): void {
+    const session = this.session
+    if (this.dock !== null || session === null || this.leaving !== null) return
+    const feature = this.featureQuestions.shift()
+    if (feature === undefined) return
+    const quiet = this.input.plainText === "" && this.now() - this.lastTyped >= QUIET_MS && !this.dialog.open && !this.pager.open
+    const state = new DockState(feature.ask, null, { focused: quiet, now: this.now(), withNote: false, whole: true })
+    this.printWholeCommand(feature.id, state)
+    const entry = {
+      state,
+      feature,
+      answer: (answer: ApprovalAnswer | null) => {
+        if (this.dock !== entry) return
+        this.dock = null
+        this.layout()
+        // `null`: it stepped aside for a tool call's question, or the session went; it is not an answer.
+        if (answer !== null) void feature.answer(answer.choice === "once")
+        this.nextServerQuestion()
+      },
+    }
+    this.dock = entry
+    this.conversation.toBottom()
+    this.layout()
   }
 
   private async answerServer(session: BackendSession, server: McpServerInfo, start: boolean): Promise<void> {
@@ -1055,8 +1137,7 @@ export class App {
           const server = state.servers.find((candidate) => candidate.name === words[1])
           if (server === undefined) return this.say(`there is no MCP server "${words[1]}" in this session; /mcp lists them`, "warn")
           if (server.state !== "awaiting_approval" || server.question === null) return this.say(`the MCP server "${server.name}" does not wait for an approval: it is ${server.state.replace(/_/g, " ")}`)
-          if (!this.serverQuestions.some((candidate) => candidate.name === server.name) && this.dock?.server?.name !== server.name) this.serverQuestions.push(server)
-          return this.nextServerQuestion()
+          return this.askFeature(this.mcpQuestion(session, server))
         }
         case "skills":
           if (session.skills === undefined) return missing()
@@ -1451,7 +1532,7 @@ export class App {
     const palette = this.palette()
     this.hints.height = palette.length === 0 ? 1 : Math.min(palette.length, 6)
     const dock = this.dock !== null && !this.dock.state.withdrawn ? this.dock : null
-    if (dock?.server !== undefined) this.printWholeCommand(mcpAskId(dock.server), dock.state)
+    if (dock?.feature !== undefined) this.printWholeCommand(dock.feature.id, dock.state)
     this.dockView.visible = dock !== null
     this.dockView.height = dock === null ? 0 : dockLines(dock.state, this.renderer.width, this.dockRows(), this.now()).length
     this.redraw()

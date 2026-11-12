@@ -29,7 +29,7 @@
 import type { SessionUpdate, ToolCallContent, ToolCallLocation } from "@agentclientprotocol/sdk"
 import type { EngineEvent, EventData, ProviderError, SessionSettings, StoredEvent, Usage } from "@windlass/core"
 import { HARNESS_ORIGIN } from "@windlass/core"
-import { EXT, META, type StateNotification, type TurnNotification, type UsageNotification } from "./extensions.ts"
+import { EXT, META, type HookRun, type StateNotification, type ToolDiagnostics, type TurnNotification, type UsageNotification } from "./extensions.ts"
 import type { Logger } from "./log.ts"
 import { outcomeSuffix, parseInput, progressContent, rawInput, settledContent, toolKind, toolLocations, toolTitle } from "./tools.ts"
 
@@ -87,6 +87,8 @@ interface MessageParts {
 export class Translator {
   private readonly parts = new Map<string, MessageParts>()
   private readonly tools = new Map<string, ToolState>()
+  /** The hooks that refused a call, added a note to its result or could not answer, until the call settles (`hook.ran` comes first). */
+  private readonly hookRuns = new Map<string, HookRun[]>()
   private readonly inbox = new Map<string, { readonly text: string; readonly origin: string | null }>()
   private model: string | null = null
   private turn = freshTurn()
@@ -171,7 +173,8 @@ export class Translator {
       case "execution.succeeded": {
         const verification = item.data.verification
         const outcome = verification.status === "unresolved" ? "unresolved" : "succeeded"
-        out.push(...this.finishTools(update), ...this.end({ kind: "stop", stopReason: this.successReason() }, replay, { executionId: item.data.executionId, outcome, verification }))
+        const hooks = item.data.hooks === undefined ? {} : { hooks: { unsatisfied: [...item.data.hooks.unsatisfied] } }
+        out.push(...this.finishTools(update), ...this.end({ kind: "stop", stopReason: this.successReason() }, replay, { executionId: item.data.executionId, outcome, verification, ...hooks }))
         break
       }
       case "turn.ended": {
@@ -183,6 +186,7 @@ export class Translator {
           outcome: verification.status === "unresolved" ? "unresolved" : "succeeded",
           stopReason: this.successReason(),
           verification,
+          ...(item.data.hooks === undefined ? {} : { hooks: { unsatisfied: [...item.data.hooks.unsatisfied] } }),
           changedFiles: replay ? null : this.turn.changedFiles,
           continues: true,
           ...(replay ? { replay: true } : {}),
@@ -297,10 +301,26 @@ export class Translator {
       case "workspace.changes":
         this.turn.changedFiles = [...item.files]
         break
-      case "diagnostic":
+      case "diagnostic": {
         out.push({ type: "ext", method: EXT.diagnostic, params: { sessionId: this.options.sessionId, kind: item.kind, message: item.message } })
-        if (this.options.notices) update({ sessionUpdate: "notice", severity: "error", title: `Internal problem (${item.kind.replace(/_/g, " ")})`, description: item.message })
+        // What the engine says about a hook or a language server is for the user to read, and is no failure of the harness.
+        const feature = item.kind === "hooks" ? { severity: "warning" as const, title: "Hooks" } : item.kind === "lsp" ? { severity: "info" as const, title: "Language servers" } : null
+        if (this.options.notices) update({ sessionUpdate: "notice", ...(feature ?? { severity: "error", title: `Internal problem (${item.kind.replace(/_/g, " ")})` }), description: item.message })
         break
+      }
+      // One hook that applied. What it did to a call goes out with the call's result (which follows in the same
+      // append); a stop hook that sent the agent back is said at once, to a client that shows notices.
+      case "hook.ran": {
+        const data = item.data
+        if (data.answer !== "no" && data.answer !== "failed") break
+        const run: HookRun = { point: data.point, name: data.name, origin: data.origin, answer: data.answer, failure: data.answer === "failed" ? (data.detail ?? data.failure) : null, toModel: data.toModel, forUser: data.forUser }
+        if (data.messageId !== null && data.callId !== null) {
+          const key = toolKey(data.messageId, data.callId)
+          this.hookRuns.set(key, [...(this.hookRuns.get(key) ?? []), run])
+        } else if (data.answer === "no" && !replay && this.options.notices)
+          update({ sessionUpdate: "notice", severity: "warning", title: `The stop hook "${data.name}" did not let the turn end`, description: data.toModel ?? "It gave no reason. The agent carries on, unless it was sent back as often as a turn allows." })
+        break
+      }
       // ---- approval ----
       // The question itself is put by the server as `session/request_permission` (live only). What is shown here is
       // the call's state: waiting, and for a full replay the answer it got.
@@ -365,6 +385,18 @@ export class Translator {
     const rawOutput: Record<string, unknown> = { outcome: data.outcome, output: data.output }
     if (data.display !== null) rawOutput.display = data.display
     if (data.truncation !== null) rawOutput.truncation = data.truncation
+    const hooks = this.hookRuns.get(tool.id)
+    this.hookRuns.delete(tool.id)
+    const diagnostics: ToolDiagnostics | null =
+      data.diagnostics === undefined
+        ? null
+        : {
+            noteAdded: data.diagnostics.noteAdded,
+            listed: data.diagnostics.listed,
+            omitted: data.diagnostics.omitted,
+            waitedMs: data.diagnostics.waitedMs,
+            servers: data.diagnostics.servers.map((server) => ({ name: server.name, origin: server.origin, outcome: server.outcome, new: server.new, preExisting: server.preExisting, fixed: server.fixed })),
+          }
     return {
       sessionUpdate: "tool_call_update",
       toolCallId: tool.id,
@@ -373,7 +405,7 @@ export class Translator {
       content: shown.content satisfies ToolCallContent[],
       ...(shown.locations === null ? {} : { locations: shown.locations satisfies ToolCallLocation[] }),
       rawOutput,
-      _meta: { [META.outcome]: data.outcome },
+      _meta: { [META.outcome]: data.outcome, ...(diagnostics === null ? {} : { [META.diagnostics]: diagnostics }), ...(hooks === undefined ? {} : { [META.hooks]: hooks }) },
     }
   }
 
@@ -390,7 +422,7 @@ export class Translator {
   private end(
     end: TurnEnd,
     replay: boolean,
-    details: Pick<TurnNotification, "executionId" | "outcome" | "verification" | "message" | "reason">,
+    details: Pick<TurnNotification, "executionId" | "outcome" | "verification" | "hooks" | "message" | "reason">,
   ): Output[] {
     const turn: TurnNotification = {
       sessionId: this.options.sessionId,

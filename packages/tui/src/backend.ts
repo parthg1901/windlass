@@ -6,11 +6,11 @@
  */
 import type { ApprovalAnswer, ApprovalAsk } from "@windlass/acp/client"
 import type { AgentsResult, CompactResult } from "@windlass/acp/extensions"
-import type { DiffResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
+import type { DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult } from "@windlass/acp/extensions"
 import type { RevertResult } from "@windlass/core"
 import type { EngineEvent } from "./cli.ts"
 
-export type { AgentsResult, ApprovalAnswer, ApprovalAsk, CompactResult, DiffResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }
+export type { AgentsResult, ApprovalAnswer, ApprovalAsk, CompactResult, DiffResult, HooksStateResult, LspStateResult, McpStateResult, MemoryStateResult, SkillsResult, TurnNotification, WakeListResult, WakeSecretResult }
 
 export type Delivery = "steer" | "queue"
 
@@ -137,6 +137,14 @@ export interface BackendSession {
   approveMcp?(name: string, fingerprint: string): Promise<boolean>
   /** Called when the servers change (started, failed, waiting for approval). Returns the unsubscribe function. */
   onMcp?(listener: (state: McpStateResult) => void): () => void
+  /** The session's hooks, the user's approval of one the project names, and a listener for when they change. */
+  hooks?(): Promise<HooksStateResult>
+  approveHook?(fingerprint: string): Promise<boolean>
+  onHooks?(listener: (state: HooksStateResult) => void): () => void
+  /** The session's language servers, the user's approval of one the project names, and a listener for when they change. */
+  lsp?(): Promise<LspStateResult>
+  approveLsp?(name: string, fingerprint: string): Promise<boolean>
+  onLsp?(listener: (state: LspStateResult) => void): () => void
   skills?(): Promise<SkillsResult>
   wakeups?(): Promise<WakeListResult>
   cancelWake?(id: string): Promise<{ readonly cancelled: boolean; readonly message: string }>

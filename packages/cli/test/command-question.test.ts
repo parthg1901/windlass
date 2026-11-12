@@ -1,6 +1,6 @@
 /**
  * The question about a command a project's configuration names (an MCP
- * server) at the line CLI's prompt, in a terminal
+ * server, a hook, a language server) at the line CLI's prompt, in a terminal
  * of 80 columns: the whole command is shown, wrapped and never cut, each
  * argument quoted so that its boundaries are unambiguous, and its end is on
  * the screen before the question can be answered.
@@ -107,6 +107,38 @@ describe("at 80 columns", () => {
     for (const row of question.split("\n")) expect(row.length).toBeLessThanOrEqual(80)
   })
 
+  test("a project's hook and a project's language server: the command to its end, and the file that defines it in full", async () => {
+    const command = `case "$CMD" in *push*) ${LONG};; esac`
+    const cwd = workspace({
+      hooks: { stop: [{ name: "tidy", command }] },
+      lsp: { servers: { fixture: { command: "node", args: ["server.js", LONG, "--stdio"], languages: { plaintext: ["**/*.txt"] } } } },
+    })
+    const file = join(cwd, `.${brand.directory}`, "config.json")
+    let hook = ""
+    let server = ""
+    const run = await interactive(cwd, new FakeProvider([]), async (type, waitFor, screen) => {
+      await waitFor(`? This project's configuration asks to run a hook "tidy"`)
+      await waitFor("[y] allow it · [N] not now")
+      hook = screen()
+      type("n\r")
+      await waitFor('? Start the language server "fixture" that this project\'s configuration names?')
+      await waitFor(/\[y\] allow it · \[N\] not now[\s\S]*\[y\] allow it · \[N\] not now/)
+      server = screen()
+      type("n\r")
+      await waitFor('not allowed: the language server "fixture" is not started')
+      type("\x04")
+    })
+    expect(run.code).toBe(0)
+    // The question itself, to its last answer. (What the engine says once about a skipped hook, after it, shortens the command: that is its notice, not the question.)
+    const upTo = (text: string, start: string, end: string) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)) + end.length)
+    const asked = upTo(hook, "? This project's configuration asks to run a hook", "/hooks approve tidy asks again")
+    expect(squeezed(asked)).toContain(squeezed(command))
+    expect(squeezed(asked)).toContain(squeezed(`defined in ${file}`))
+    expect(asked).not.toContain("…")
+    const started = upTo(server, "? Start the language server", "approve fixture asks again")
+    expect(squeezed(started)).toContain(squeezed(`node server.js '${LONG}' --stdio`))
+    expect(started).not.toContain("…")
+  })
 })
 
 describe("the words", () => {

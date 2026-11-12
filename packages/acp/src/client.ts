@@ -47,6 +47,8 @@ import {
   EXT,
   type ForkParams,
   type ForkResult,
+  type HooksStateResult,
+  type LspStateResult,
   type McpStateResult,
   type MemoryChangeParams,
   type MemoryChangeResult,
@@ -90,6 +92,10 @@ export type SessionSignal =
   | { readonly kind: "update"; readonly update: SessionNotification["update"] }
   /** The session's MCP servers changed (`<prefix>/mcp_changed`). */
   | { readonly kind: "mcp"; readonly mcp: McpStateResult }
+  /** The session's hooks changed (`<prefix>/hooks_changed`). */
+  | { readonly kind: "hooks"; readonly hooks: HooksStateResult }
+  /** The session's language servers changed (`<prefix>/lsp_changed`). */
+  | { readonly kind: "lsp"; readonly lsp: LspStateResult }
 
 /** A tool call's approval question, as the server puts it (`session/request_permission` with `_meta[<ns>].approval`). */
 export interface ApprovalAsk {
@@ -712,6 +718,26 @@ export class ClientSession {
     return this.link.request(EXT.mcpApprove, { sessionId: this.id, name, fingerprint })
   }
 
+  /** `<prefix>/hooks`: the session's hooks, with their state and where each is defined. */
+  hooks(): Promise<HooksStateResult> {
+    return this.link.request<HooksStateResult>(EXT.hooks, { sessionId: this.id })
+  }
+
+  /** `<prefix>/hook_approve`: the user allows a hook the project's configuration names (this definition of it). */
+  approveHook(fingerprint: string): Promise<{ approved: boolean; hooks: HooksStateResult["hooks"] }> {
+    return this.link.request(EXT.hookApprove, { sessionId: this.id, fingerprint })
+  }
+
+  /** `<prefix>/lsp`: the session's language servers, with their state, the files they serve and where each is defined. */
+  lsp(): Promise<LspStateResult> {
+    return this.link.request<LspStateResult>(EXT.lsp, { sessionId: this.id })
+  }
+
+  /** `<prefix>/lsp_approve`: the user allows a language server the project's configuration names (this definition of it). */
+  approveLsp(name: string, fingerprint: string): Promise<{ approved: boolean; servers: LspStateResult["servers"] }> {
+    return this.link.request(EXT.lspApprove, { sessionId: this.id, name, fingerprint })
+  }
+
   /** `<prefix>/skills`. */
   skills(): Promise<SkillsResult> {
     return this.link.request<SkillsResult>(EXT.skills, { sessionId: this.id })
@@ -1037,6 +1063,28 @@ function signalOf(method: string, params: Record<string, unknown>): SessionSigna
       return { kind: "diagnostic", diagnostic: String(params.kind ?? ""), message: String(params.message ?? "") }
     case EXT.mcpChanged:
       return { kind: "mcp", mcp: { sessionId: String(params.sessionId), available: params.available === true, servers: Array.isArray(params.servers) ? (params.servers as McpStateResult["servers"]) : [] } }
+    case EXT.hooksChanged:
+      return {
+        kind: "hooks",
+        hooks: {
+          sessionId: String(params.sessionId),
+          available: params.available === true,
+          hooks: Array.isArray(params.hooks) ? (params.hooks as HooksStateResult["hooks"]) : [],
+          maxStopRounds: typeof params.maxStopRounds === "number" ? params.maxStopRounds : 0,
+          ignored: Array.isArray(params.ignored) ? (params.ignored as string[]) : [],
+        },
+      }
+    case EXT.lspChanged:
+      return {
+        kind: "lsp",
+        lsp: {
+          sessionId: String(params.sessionId),
+          available: params.available === true,
+          off: typeof params.off === "string" ? params.off : null,
+          waitMs: typeof params.waitMs === "number" ? params.waitMs : null,
+          servers: Array.isArray(params.servers) ? (params.servers as LspStateResult["servers"]) : [],
+        },
+      }
     default:
       return null
   }

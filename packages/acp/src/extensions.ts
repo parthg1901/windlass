@@ -74,6 +74,18 @@ export const EXT = {
   mcpApprove: `${prefix}/mcp_approve`,
   /** Notification `McpStateResult`: the session's servers changed (one started, failed, waits for approval, or was approved). */
   mcpChanged: `${prefix}/mcp_changed`,
+  /** Request `{ sessionId }` → `HooksStateResult`: the session's hooks, each with its point, command, state and the file that defines it. */
+  hooks: `${prefix}/hooks`,
+  /** Request `{ sessionId, fingerprint }` → `{ approved, hooks }`: the user allows a hook the project's configuration names (exactly this definition), remembered for the project. */
+  hookApprove: `${prefix}/hook_approve`,
+  /** Notification `HooksStateResult`: the session's hooks changed (the configuration was read again, one waits for approval, was approved, or could not answer). */
+  hooksChanged: `${prefix}/hooks_changed`,
+  /** Request `{ sessionId }` → `LspStateResult`: the session's language servers, their state, the files they serve and where each is configured. */
+  lsp: `${prefix}/lsp`,
+  /** Request `{ sessionId, name, fingerprint }` → `{ approved, servers }`: the user allows a language server the project's configuration names, remembered for the project. */
+  lspApprove: `${prefix}/lsp_approve`,
+  /** Notification `LspStateResult`: the session's language servers changed (one started, failed, waits for approval, or was approved). */
+  lspChanged: `${prefix}/lsp_changed`,
   /** Request `{ sessionId }` → `SkillsResult`: the skills of the session's directory, the shadowed ones and the ones that could not be loaded. */
   skills: `${prefix}/skills`,
   /** Request `{ sessionId }` → `WakeListResult`: the session's wake-ups, pending and ended, in the engine's words. */
@@ -93,6 +105,10 @@ export const META = {
   delivery: `${META_NAMESPACE}/delivery`,
   /** On a settled `tool_call_update`: the harness outcome (`success`, `error`, `not_started`, `effect_unknown`). */
   outcome: `${META_NAMESPACE}/outcome`,
+  /** On a settled `tool_call_update` of an edit a language server serves: `ToolDiagnostics`, what the servers said about it. */
+  diagnostics: `${META_NAMESPACE}/diagnostics`,
+  /** On a settled `tool_call_update`: `HookRun[]`, the hooks that applied to the call, when one refused it, added a note or could not answer. */
+  hooks: `${META_NAMESPACE}/hooks`,
   /** On `session/prompt`: the most model calls the turn this prompt starts may make (a whole number of at least 1). */
   maxSteps: `${META_NAMESPACE}/maxSteps`,
   /**
@@ -306,6 +322,8 @@ export interface TurnNotification {
   readonly stopReason: string
   /** The verification gate's outcome (`execution.succeeded`'s `verification`), when the turn ended as done. */
   readonly verification?: unknown
+  /** The stop hooks that still objected when the turn ended: it had been sent back as often as a turn may be (`hooks.unsatisfied` on the ending). */
+  readonly hooks?: { readonly unsatisfied: readonly string[] }
   /** On a failure: why. */
   readonly message?: string
   /** On an interrupt: `user` or `shutdown`. */
@@ -450,6 +468,114 @@ export interface McpStateResult {
   readonly sessionId: string
   readonly available: boolean
   readonly servers: readonly McpServerInfo[]
+}
+
+/** One hook of a session, as a client shows it. */
+export interface HookInfo {
+  readonly name: string
+  /** When it runs: before a tool call, after one, or when a turn is about to end. */
+  readonly point: "beforeTool" | "afterTool" | "stop"
+  /**
+   * `in_force` (it runs where it applies), `awaiting_approval` (the project's configuration names it and the user
+   * has not approved this definition: `question`; it is skipped until then), or `failed` (the last time it ran in
+   * this session it could not answer: `error`; it is still run the next time it applies).
+   */
+  readonly state: "in_force" | "awaiting_approval" | "failed"
+  /** The command, word for word. */
+  readonly command: string
+  /** The tools it applies to (`*` matches any run of characters); `null`: every tool, and always for a stop hook. */
+  readonly tools: readonly string[] | null
+  /** The path patterns it applies to; `null`: any call. */
+  readonly paths: readonly string[] | null
+  readonly timeoutSeconds: number
+  /** A before hook that cannot answer: `refuse` the call or `allow` it. */
+  readonly onError: "refuse" | "allow"
+  /** `false`: the user's own hook that asked to run outside the sandbox. */
+  readonly sandbox: boolean
+  /** Whose file defines it, and its path. */
+  readonly origin: "user" | "project"
+  readonly file: string | null
+  /** Identifies exactly this definition: what `<prefix>/hook_approve` takes. An edited hook has another. */
+  readonly fingerprint: string
+  /** For `failed`: why it could not answer (timed out, exit code, could not start). */
+  readonly error: string | null
+  /** For `awaiting_approval`: the engine's question, word for word (the command, what it applies to, how it runs). */
+  readonly question: string | null
+}
+
+/** Result of `<prefix>/hooks`, and `<prefix>/hooks_changed`. `available: false`: this engine runs no hooks. */
+export interface HooksStateResult {
+  readonly sessionId: string
+  readonly available: boolean
+  /** In the order they run: per point the user's first, then the project's. */
+  readonly hooks: readonly HookInfo[]
+  /** How often per turn stop hooks may send the agent back. */
+  readonly maxStopRounds: number
+  /** What the project's file asked for beyond what the user's allows, and did not get. */
+  readonly ignored: readonly string[]
+}
+
+/** One language server of a session, as a client shows it. */
+export interface LspServerInfo {
+  readonly name: string
+  /**
+   * `running`, `starting`, `failed` (it could not start or it crashed: `error`; it is started again at a later edit),
+   * `awaiting_approval` (the project's configuration names or changes it and the user has not approved it: `question`),
+   * `disabled` (`enabled: false`), `stopped`, or `not_started` (a server starts at the first file it serves).
+   */
+  readonly state: "running" | "starting" | "failed" | "awaiting_approval" | "disabled" | "stopped" | "not_started"
+  /** The command with its arguments. */
+  readonly command: string
+  /** The command and each of its arguments, one string each (`quotedCommand`); `null` when the definition a question is about is no longer the one in the file. */
+  readonly argv: readonly string[] | null
+  /** The files it serves: glob patterns relative to the working directory, by the language they are sent as. */
+  readonly languages: readonly { readonly languageId: string; readonly patterns: readonly string[] }[]
+  /** One process per workspace root it was started for. */
+  readonly processes: readonly { readonly root: string; readonly state: "running" | "starting" | "failed" | "stopped" | "not_started"; readonly error: string | null; readonly restarts: number; readonly openDocuments: number }[]
+  /** Why the last start failed or the server ended. */
+  readonly error: string | null
+  readonly origin: "user" | "project" | null
+  readonly file: string | null
+  /** For `awaiting_approval`: the engine's question, and the fingerprint of exactly this definition, to approve it by. */
+  readonly question: { readonly fingerprint: string; readonly subject: string; readonly details: readonly string[] } | null
+}
+
+/** Result of `<prefix>/lsp`, and `<prefix>/lsp_changed`. `available: false`: this engine offers no diagnostics. */
+export interface LspStateResult {
+  readonly sessionId: string
+  readonly available: boolean
+  /** Why no edit gets diagnostics although servers are configured (`lsp.enabled: false`, `lsp.waitMs: 0`), as a sentence; else `null`. */
+  readonly off: string | null
+  /** How long an edit's result may wait for diagnostics, in milliseconds; `null` when nothing is configured. */
+  readonly waitMs: number | null
+  readonly servers: readonly LspServerInfo[]
+}
+
+/** `_meta[<ns>/diagnostics]` of a settled edit: what the language servers said about it (`tool.settled.diagnostics`). */
+export interface ToolDiagnostics {
+  /** A note with the new diagnostics follows the tool's own output. */
+  readonly noteAdded: boolean
+  /** New diagnostics the note lists, and the ones it left out. */
+  readonly listed: number
+  readonly omitted: number
+  readonly waitedMs: number
+  /** `outcome`: `compared` (with `new` > 0 it made something worse), `unchanged`, `timeout`, `not_running`, `crashed`, `not_approved`, `interrupted`. */
+  readonly servers: readonly { readonly name: string; readonly origin: "user" | "project"; readonly outcome: string; readonly new: number; readonly preExisting: number; readonly fixed: number }[]
+}
+
+/** One hook that applied to a call or to a turn's ending (`hook.ran`), as a client that does not take the harness's events is told. */
+export interface HookRun {
+  readonly point: "beforeTool" | "afterTool" | "stop"
+  readonly name: string
+  readonly origin: "user" | "project"
+  /** `yes` (no objection), `no` (it refused the call, added a note, or sent the agent back), `failed`, `interrupted`, `skipped` (not approved). */
+  readonly answer: "yes" | "no" | "failed" | "interrupted" | "skipped"
+  /** On `failed`: why. */
+  readonly failure: string | null
+  /** The hook's own text that reached the model: the reason, the note, or the message that sent it back. */
+  readonly toModel: string | null
+  /** What it printed for the user (its stderr), bounded. */
+  readonly forUser: string
 }
 
 /** Result of `<prefix>/skills`. */

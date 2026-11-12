@@ -1,12 +1,12 @@
 /**
  * The question about a command a project's configuration names (an MCP
- * server) shows the whole command in the dock:
+ * server, a hook, a language server) shows the whole command in the dock:
  * wrapped and never cut, each argument quoted so that its boundaries are
  * unambiguous; a command too long for the dock is printed in full above it
  * before the question can be answered.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import type { McpServerInfo } from "@windlass/acp/extensions"
+import type { HookInfo, LspServerInfo, McpServerInfo } from "@windlass/acp/extensions"
 import { brand } from "@windlass/core"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
@@ -93,5 +93,51 @@ describe("the dock at 100 columns", () => {
     // All of it is in the conversation: scrolled to its top, the command starts there.
     const whole = mounted!.app.transcript.rows.flatMap((row) => (row.kind === "notice" ? row.detail.map((line) => line.map((part) => part.text).join("")) : []))
     expect(whole).toContain(`bash -c '${script}'`)
+  })
+
+  test("a hook's command and a language server's command are shown whole too", async () => {
+    const { session } = await open(100, 40)
+    const command = `case "$CMD" in *push*) ${longWord(300)};; esac`
+    const hook: HookInfo = {
+      name: "no-push",
+      point: "beforeTool",
+      state: "awaiting_approval",
+      command,
+      tools: ["shell"],
+      paths: null,
+      timeoutSeconds: 10,
+      onError: "refuse",
+      sandbox: true,
+      origin: "project",
+      file: FILE,
+      fingerprint: "a".repeat(64),
+      error: null,
+      question: `This project's configuration asks to run a hook "no-push" before a tool call runs, and can refuse the call:\n\n    ${command}\n\nIt applies to the tools shell.`,
+    }
+    mounted!.clock.now += QUIET_MS + 10
+    session.pushHooks({ sessionId: session.id, available: true, hooks: [hook], maxStopRounds: 3, ignored: [] })
+    await mounted!.settle()
+    expect(squeezed(await mounted!.frame())).toContain(squeezed(command))
+    mounted!.clock.now += ARMING_MS + 10
+    await mounted!.setup.mockInput.typeText("n")
+    await mounted!.settle()
+
+    const argument = longWord(300)
+    const server: LspServerInfo = {
+      name: "fixture",
+      state: "awaiting_approval",
+      command: `node server.js ${argument} --stdio`,
+      argv: ["node", "server.js", argument, "--stdio"],
+      languages: [{ languageId: "plaintext", patterns: ["**/*.txt"] }],
+      processes: [],
+      error: null,
+      origin: "project",
+      file: FILE,
+      question: { fingerprint: "0123456789abcdef", subject: `node server.js ${argument} --stdio`, details: [] },
+    }
+    mounted!.clock.now += QUIET_MS + 10
+    session.pushLsp({ sessionId: session.id, available: true, off: null, waitMs: 1500, servers: [server] })
+    await mounted!.settle()
+    expect(squeezed(await mounted!.frame())).toContain(squeezed(`node server.js '${argument}' --stdio`))
   })
 })
