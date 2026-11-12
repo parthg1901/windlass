@@ -128,3 +128,17 @@ describe("undo and redo", () => {
     expect(redone.at(-1)).toBe('↷ redone: turn 2 "Now add a test." · back in the conversation · no file was restored')
   })
 })
+
+describe("a steered message", () => {
+  test("says how it reached the agent in full, on its own line when the message fills the width", () => {
+    const transcript = play([...opening("start"), stepStarted("a1")])
+    const text = "also tell me the test's name and where the fixture for it lives"
+    transcript.apply({ ...event("inbox.enqueued", { messageId: m("u2"), origin: null, delivery: "steer", content: [{ type: "text", text }] }), sessionId: "s" as never, seq: 100, time: CLOCK_START })
+    transcript.apply({ ...event("inbox.delivered", { messageId: m("u2") }), sessionId: "s" as never, seq: 101, time: CLOCK_START })
+    const row = transcript.rows.at(-1)!
+    const at = (columns: number) => layoutRow(row, columns, { now: CLOCK_START, debug: false, color: false }).map((line) => line.map((part) => part.text).join(""))
+    expect(at(120)).toEqual([`› ${text}  ↳ steered into the turn`])
+    expect(at(78)).toEqual([`› ${text}`, "  ↳ steered into the turn"])
+    expect(at(78).every((line) => Bun.stringWidth(line) <= 78)).toBe(true)
+  })
+})

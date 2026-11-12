@@ -15,6 +15,7 @@
  * within two seconds exits at once, Ctrl-C at the prompt clears it, Ctrl-D on
  * an empty prompt leaves.
  */
+import { brand } from "@light-harness/core"
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
 import type { RevertPlan, RevertResult } from "@light-harness/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
@@ -100,6 +101,12 @@ export class App {
   private lastTyped = 0
   /** How the session's tool calls are approved, as the server last said. */
   approvalInfo: ApprovalInfo | null = null
+  /**
+   * Why no session is open, as a sentence, while that is so: the sign-in is
+   * missing, the session is in use elsewhere, the engine went away. Leaving
+   * then exits with 1 and says it, as the line CLI does.
+   */
+  problem: string | null = null
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -187,6 +194,7 @@ export class App {
       const session = await this.options.backend.open(target, this.options.cwd, this.options.settings)
       this.session = session
       this.connection = "connected"
+      this.problem = null
       this.target = { kind: "resume", id: session.id }
       this.conversation.empty = this.welcome()
       this.pump = this.consume(session)
@@ -207,9 +215,19 @@ export class App {
       const reason = error instanceof BackendError ? error.reason : null
       this.connection = reason === "auth_required" ? "not signed in" : "failed"
       this.conversation.empty = ""
-      this.transcript.note([span(reason === "auth_required" ? "not signed in: " : "could not open the session: ", "error", { bold: true }), span(message, "error")], "error", "✗", [
-        [span(reason === "auth_required" ? "Sign in, then type /reconnect (or /quit to leave)." : "Type /reconnect to try again, /sessions to pick another session, or /quit to leave.", "dim")],
-      ])
+      if (reason === "auth_required") {
+        // The way forward, step by step: the sign-in is made outside, and the engine reads it again on /reconnect.
+        this.problem = `${message}; run \`${brand.binary} login\` to sign in with ChatGPT, then try again`
+        this.transcript.note([span(message === "not signed in" ? "not signed in" : `the sign-in cannot be used: ${message}`, "error", { bold: true })], "error", "✗", [
+          [span("To sign in, run ", "dim"), span(`${brand.binary} login`, "accent"), span(" in another terminal (it opens a browser, or prints an address to open).", "dim")],
+          [span("Then type ", "dim"), span("/reconnect", "accent"), span(" here: it picks the sign-in up. ", "dim"), span("/quit", "accent"), span(" leaves.", "dim")],
+        ])
+      } else {
+        this.problem = `could not open the session: ${message}`
+        this.transcript.note([span("could not open the session: ", "error", { bold: true }), span(message, "error")], "error", "✗", [
+          [span("Type /reconnect to try again, /sessions to pick another session, or /quit to leave.", "dim")],
+        ])
+      }
       this.redraw()
       return false
     }
@@ -233,6 +251,7 @@ export class App {
     const lost = session.lost()
     if (lost === null) return
     this.connection = "disconnected"
+    this.problem = `the engine is gone: ${lost}`
     Object.assign(this.transcript.activity, { executing: false, call: null, checking: null, compacting: null, retry: null, stopping: false, waiting: null })
     this.closeDock()
     this.transcript.note([span("the engine is gone: ", "error", { bold: true }), span(lost, "error")], "error", "✗", [[span(this.options.backend.restartable ? "Type /reconnect to start it again and resume this session, or /quit to leave." : "Type /quit to leave.", "dim")]])
@@ -427,7 +446,15 @@ export class App {
 
   private send(text: string, delivery: Delivery): void {
     const session = this.session
-    if (session === null || this.connection !== "connected") return this.say(this.connection === "starting" ? "the engine is still starting; try again in a moment" : "not connected: /reconnect first, or /quit", "warn")
+    if (session === null || this.connection !== "connected")
+      return this.say(
+        this.connection === "starting"
+          ? "the engine is still starting; try again in a moment"
+          : this.connection === "not signed in"
+            ? `not sent: not signed in; run ${brand.binary} login in another terminal, then /reconnect`
+            : "not sent: no session is open; /reconnect first, or /quit",
+        "warn",
+      )
     this.conversation.toBottom()
     session.send(text, delivery).then(
       (id) => {
@@ -1035,7 +1062,9 @@ export class App {
   // ---------------------------------------------------------------- leaving
 
   /** Leaves through the one door: the session closes (as a shutdown, bounded), the server stops, the terminal is put back. */
-  leave(code: number): Promise<number> {
+  leave(asked: number): Promise<number> {
+    // Leaving without a session open is not a success: the reason is said after the TUI has gone, with status 1.
+    const code = asked === 0 && this.problem !== null ? 1 : asked
     if (this.leaving !== null) {
       this.exitNow(code)
       return this.leaving

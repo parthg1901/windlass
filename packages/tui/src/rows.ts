@@ -76,9 +76,13 @@ export function isLive(row: Row): boolean {
 // ---------------------------------------------------------------- user and assistant
 
 function userLines(row: UserRow, columns: number): Span[][] {
-  const tag = row.delivered === null ? [] : [span(row.delivered === "steer" ? "  ↳ steered into the turn" : "  ↳ delivered from the queue", "dim")]
   const lines = row.text.split("\n").flatMap((line, index) => wrapLine([span(index === 0 ? "› " : "  ", "accent"), span(line, "user")], columns, [span("  ")]))
-  if (tag.length > 0) lines[0] = [...lines[0]!, ...tag]
+  if (row.delivered === null) return lines
+  // How it reached the agent: after the message's last line when it fits there, otherwise on a line of its own; never cut.
+  const tag = row.delivered === "steer" ? "↳ steered into the turn" : "↳ delivered from the queue"
+  const last = lines.at(-1)!
+  if (textWidth(last.map((part) => part.text).join("")) + 2 + textWidth(tag) <= columns) lines[lines.length - 1] = [...last, span(`  ${tag}`, "dim")]
+  else lines.push([span(`  ${tag}`, "dim")])
   return lines
 }
 
@@ -196,7 +200,9 @@ function subagentLines(row: ToolRow, view: SubagentView, columns: number, contex
   const shown = body.length > limit ? [[span(`… ${plural(body.length - limit, "earlier line")}${row.expand === 2 ? "" : " (expand again for all)"}`, "dim")], ...body.slice(-limit)] : body
   const framed = shown.map((line) => [...bar, ...line])
   if (framed.length === 0) framed.push([...bar, span("nothing yet", "dim")])
-  return [...framed, ...wrapLine(status(), columns, [span(INDENT + "  ")]).slice(0, 2)]
+  // A subagent that ended has its own ending row inside the frame; the line under it would only say it again.
+  const ended = view.state !== "running" && !view.asking && rows.at(-1)?.kind === "outcome"
+  return ended ? framed : [...framed, ...wrapLine(status(), columns, [span(INDENT + "  ")]).slice(0, 2)]
 }
 
 /** Expanded: how the call ran, and the question it was asked under. */

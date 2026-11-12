@@ -6,7 +6,7 @@
  * saying rather than keeping a second copy of it.
  */
 export type { Engine, EngineEvent, ModelInfo, OpenRequest, SendOptions, Session, SessionSummary } from "../../cli/src/engine.ts"
-export { turnOutcomeOf, EXIT_UNRESOLVED, exitCodeOf } from "../../cli/src/engine.ts"
+export { turnOutcomeOf, EXIT_UNRESOLVED, exitCodeOf, signInReason } from "../../cli/src/engine.ts"
 export { callArgument, checkLines, checksSummary, detailLines, diffStat, errorSummary, fileList, firstLine, successSummary, unresolvedReason } from "../../cli/src/tools.ts"
 export { formatDuration, formatBytes, nearest } from "../../cli/src/text.ts"
 export { changeLabel, handEditChoices } from "../../cli/src/commands.ts"

@@ -79,12 +79,16 @@ export const SIGN_IN_ADVICE = `run \`${brand.binary} login\` to sign in with Cha
  * done, for a command that is not a session (`--models`).
  */
 export function signInSentence(message: string, what: string | null = null): string {
+  return `${signInReason(message)}${what === null ? "" : `, so ${what}`}; ${SIGN_IN_ADVICE}`
+}
+
+/** The engine's sign-in problem without its advice: `not signed in`, `token request failed (400 invalid_grant): ...`. */
+export function signInReason(message: string): string {
   const reason = message
     .replace(/^no usable access token:\s*/i, "")
     .replace(/\s*(Run the sign-in first|To sign in, .*)\.?\s*$/i, "")
     .replace(/[.\s]+$/, "")
-  const said = reason === "" ? "not signed in" : reason.charAt(0).toLowerCase() + reason.slice(1)
-  return `${said}${what === null ? "" : `, so ${what}`}; ${SIGN_IN_ADVICE}`
+  return reason === "" ? "not signed in" : reason.charAt(0).toLowerCase() + reason.slice(1)
 }
 
 /** Which session to work in. */

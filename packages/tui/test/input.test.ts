@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { type NewEvent, event } from "@light-harness/core"
+import { type NewEvent, brand, event } from "@light-harness/core"
 import { executionSucceeded, m, opening, say, stepStarted } from "@light-harness/core/testing/scenarios"
 import { BackendError } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
@@ -297,14 +297,30 @@ describe("robustness", () => {
     expect(frame).toContain("✗ disconnected")
   })
 
-  test("starting signed out says so and how to sign in, and stays open", async () => {
+  test("starting signed out says so and how to sign in, stays open, picks the sign-in up on /reconnect, and leaves with 1 until then", async () => {
     const backend = new ScriptBackend()
-    backend.failOpen = new BackendError("you are not signed in (sign in with ChatGPT, then try again)", "auth_required")
+    backend.failOpen = new BackendError("not signed in", "auth_required")
+    mounted = await mount({ width: 160, height: 20, backend })
+    let frame = await mounted.frame()
+    expect(frame).toContain("✗ not signed in ")
+    expect(frame).toContain(`To sign in, run ${brand.binary} login in another terminal`)
+    expect(frame).toContain("Then type /reconnect here: it picks the sign-in up. /quit leaves.")
+    expect(mounted.app.problem).toBe(`not signed in; run \`${brand.binary} login\` to sign in with ChatGPT, then try again`)
+    // Signed in meanwhile: /reconnect opens the session, and leaving is a success again.
+    backend.failOpen = null
+    await keys(mounted).typeText("/reconnect")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    frame = await mounted.frame()
+    expect(frame).toContain("● ready")
+    expect(mounted.app.problem).toBeNull()
+  })
+
+  test("leaving without a session open exits with 1", async () => {
+    const backend = new ScriptBackend()
+    backend.failOpen = new BackendError("session ses_x is in use by another lh process (pid 1)", "session_in_use")
     mounted = await mount({ width: 100, height: 20, backend })
-    const frame = await mounted.frame()
-    expect(frame).toContain("not signed in: you are not signed in")
-    expect(frame).toContain("Sign in, then type /reconnect")
-    expect(frame).toContain("✗ not signed in")
+    expect(await mounted.app.leave(0)).toBe(1)
   })
 
   test("a resize at any time re-lays out the frame to the new width", async () => {

@@ -34,7 +34,7 @@
  * - a subagent's question: `session/request_permission` on the parent with
  *   `approval.subagent`; its activity: `child.event` in the events
  */
-import { handEditChoices } from "./cli.ts"
+import { handEditChoices, signInReason } from "./cli.ts"
 import { type ClientSession, ClientError, HarnessClient, openWhenReleased } from "@light-harness/acp/client"
 import { EXT } from "@light-harness/acp/extensions"
 import { type RevertResult, brand } from "@light-harness/core"
@@ -63,7 +63,6 @@ export { EventQueue } from "@light-harness/acp/client"
 /** The compaction method, should the server offer it. */
 export const COMPACT_METHOD = EXT.compact
 export const START_TIMEOUT_MS = 20_000
-const SIGN_IN_ADVICE = `sign in with ChatGPT (\`${brand.binary} login\`), then try again`
 
 export interface AcpClientOptions {
   /** The command that serves ACP on stdio, such as `[bun, .../cli/src/main.ts, "acp"]`. */
@@ -278,7 +277,8 @@ class AcpSession implements BackendSession {
 /** The sentence for a refusal or for the server being gone. */
 function failure(error: unknown): BackendError {
   if (error instanceof BackendError) return error
-  if (error instanceof ClientError && error.reason === "auth_required") return new BackendError(`${error.message} (${SIGN_IN_ADVICE})`, "auth_required")
+  // The reason alone (`not signed in`); the TUI says how to sign in and how to carry on.
+  if (error instanceof ClientError && error.reason === "auth_required") return new BackendError(signInReason(error.message), "auth_required")
   if (error instanceof ClientError) return new BackendError(error.message, error.reason)
   return new BackendError(error instanceof Error ? error.message : String(error))
 }

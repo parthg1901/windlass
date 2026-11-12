@@ -141,6 +141,9 @@ describe("a subagent", () => {
     expect(body).toMatch(/✓ write \S+ · created/)
     expect(body).toContain("allowed once")
     expect(body).toContain("Written the note.")
+    // Its own ending row closes the frame, and nothing under it says the same again.
+    expect(body).toMatch(/○ done/)
+    expect(frame).not.toContain("↳ finished after")
   })
 
   test("a session opened again knows the subagent from its parent's log only: expanding the row reads the subagent's own", async () => {
@@ -173,7 +176,8 @@ describe("a subagent", () => {
     expect(frame).toContain("│ › Write the note outside")
     expect(frame).not.toContain("You are a subagent")
     expect(frame).toMatch(/│ ✓ write \S+ · created/)
-    expect(frame).toContain("↳ finished after 2 steps, 2 tool calls")
+    expect(frame).toMatch(/│ ○ done/)
+    expect(frame).not.toContain("↳ finished after")
   })
 
   test("in the background: the status line and the panel show it at work after its call returned", async () => {
