@@ -1091,6 +1091,8 @@ export class App {
     ]
     await this.dialog.show({
       title: "Help",
+      // As wide as the terminal allows: the commands' descriptions are long, and a narrow box only makes it taller.
+      maxWidth: 140,
       detail: [
         ...keys.map(([key, what]) => [span(key.padEnd(KEY_COLUMN), "accent"), span(what)]),
         [],
@@ -1098,15 +1100,13 @@ export class App {
         [span("⊘".padEnd(KEY_COLUMN), "accent"), span("a call that was not allowed (by you, or by the approval policy)")],
         [span("Tab".padEnd(KEY_COLUMN), "accent"), span("while a question waits: move between it and your message")],
         [],
-        ...COMMANDS.filter((spec) => this.available(spec) || ["undo", "redo", "compact", "queue", "rename"].includes(spec.name)).map((spec) => [
-          span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(KEY_COLUMN), "accent"),
-          span(spec.description),
-          span(this.available(spec) ? "" : " (not available now)", "dim"),
-        ]),
+        ...COMMANDS.filter((spec) => this.available(spec) || ["undo", "redo", "compact", "queue", "rename"].includes(spec.name)).flatMap((spec) =>
+          keyed(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`, [span(spec.description), span(this.available(spec) ? "" : " (not available now)", "dim")]),
+        ),
         // The command files: what each sends, and where it comes from (the file, in full).
         ...(files.length === 0 ? [] : [[], [span("Your commands", undefined, { bold: true }), span(" · command files: their text is sent as your message", "dim")]]),
         ...files.flatMap((spec) => [
-          [span(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`.padEnd(KEY_COLUMN), "accent"), span(spec.description)],
+          ...keyed(`/${spec.name}${spec.args === "" ? "" : ` ${spec.args}`}`, [span(spec.description)]),
           [span("".padEnd(KEY_COLUMN)), span(`${COMMAND_SCOPE[spec.file!.scope]}${spec.file!.agent === null ? "" : ` · runs as the agent ${spec.file!.agent}`}: ${spec.file!.path}`, "dim")],
         ]),
         ...(listing === null ? [] : inRows(commandProblemLines(listing)).map((line) => [span(`${" ".repeat(line.indent ?? 0)}${line.text}`, line.tone === "warn" ? "warn" : "dim")])),
@@ -2078,6 +2078,12 @@ function stackedUsage(lines: readonly Line[]): Line[] {
     const indent = entry.indent ?? 0
     return [{ ...entry, text: columns[1]!, tone: "plain" as const }, { ...entry, text: columns[2]!, indent: indent + 4 }]
   })
+}
+
+/** A line of the help: the key in its column and what it does; a key too long for the column has the text on the row under it. */
+function keyed(key: string, what: Span[]): Span[][] {
+  if (textWidth(key) < KEY_COLUMN) return [[span(key.padEnd(KEY_COLUMN), "accent"), ...what]]
+  return [[span(key, "accent")], [span("".padEnd(KEY_COLUMN)), ...what]]
 }
 
 function describePlan(plan: RevertPlan, undo: boolean): Span[][] {

@@ -159,4 +159,21 @@ describe("in the app", () => {
     expect(help).toContain("/work/.claude/commands/release-notes.md")
     expect(help).toContain("/broken: not usable: its `agent`")
   })
+
+  test("/help uses the width of the terminal, up to 140 columns", async () => {
+    for (const [width, box] of [[120, 118], [220, 140], [80, 78]] as const) {
+      await mounted?.dispose()
+      await open(width, 40)
+      await enter("/help")
+      const top = (await mounted!.frame()).split("\n").find((line) => line.includes("╭─ Help "))!
+      expect(Bun.stringWidth(top.slice(top.indexOf("╭"), top.indexOf("╮") + 1))).toBe(box)
+      const rows = (await mounted!.frame()).split("\n")
+      // At 120 columns a long description is one row beside its key.
+      if (width === 120) expect(rows.some((row) => /Ctrl-X\s+stop the selected running tool call \(or the only one running\): the turn goes on/.test(row))).toBe(true)
+      // A key longer than the key column has its description on the row under it, in the column, never run into it.
+      expect(rows.some((row) => row.includes("[previous-version]Draft"))).toBe(false)
+      const key = rows.findIndex((row) => row.includes("/release-notes <version> [previous-version]"))
+      if (key >= 0) expect(rows[key + 1]).toMatch(/│\s{30,}Draft release notes for a version/)
+    }
+  })
 })
