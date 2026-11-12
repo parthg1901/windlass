@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { event } from "@light-harness/core"
+import { type NewEvent, event } from "@light-harness/core"
 import { executionSucceeded, m, opening, say, stepStarted } from "@light-harness/core/testing/scenarios"
 import { BackendError } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
@@ -248,7 +248,7 @@ describe("scrolling", () => {
 describe("robustness", () => {
   test("thousands of rows and a huge output stay fast to render", async () => {
     const { mounted, backend } = await scripted(120, 40)
-    const events = [...opening("start")]
+    const events: NewEvent[] = [...opening("start")]
     for (let step = 1; step <= 1500; step += 1) {
       const id = `a${step}`
       events.push(stepStarted(id), say(id, `step ${step}: **checked** \`file${step}.ts\``))
