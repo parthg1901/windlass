@@ -6,13 +6,14 @@
 //            --out FILE (write the report as JSON), --max-requests N (default 66)
 //
 // A live run of the defaults makes at most 1-2 summary requests, 12 per strategy without tools,
-// up to 24 for the strategy with tools, and one judge request: 63 at most. Every one spends the
+// up to 24 for the strategy with tools, and one judge request: 63 at most, plus one retry per
+// failed call, all within --max-requests. Every one spends the
 // project owner's ChatGPT plan allowance. Nothing here prints, logs or writes a token or a header.
 
 import { evaluate, renderReport } from "./evaluate.ts"
 import { oracleModel } from "./fake.ts"
 import { generateSession } from "./generate.ts"
-import { LIVE_EFFORT, LIVE_MODEL, capped, liveModel } from "./model.ts"
+import { LIVE_EFFORT, LIVE_MODEL, capped, liveModel, retryOnce } from "./model.ts"
 import { compact } from "./strategies.ts"
 
 const args = process.argv.slice(2)
@@ -25,7 +26,7 @@ const out = args.includes("--out") ? args[args.indexOf("--out") + 1] : undefined
 
 const live = flag("live")
 const session = generateSession({ seed: option("seed", 7), tokens: option("tokens", 40_000), facts: option("questions", 12) })
-const model = capped(live ? await liveModel() : oracleModel(session), option("max-requests", 66))
+const model = live ? retryOnce(capped(await liveModel(), option("max-requests", 66))) : capped(oracleModel(session), option("max-requests", 66))
 // One cache key per run, so requests that share a prefix share the provider's cache.
 const cacheKey = `recall-${crypto.randomUUID()}`
 
@@ -41,5 +42,5 @@ const report = await evaluate({
   effort: live ? LIVE_EFFORT : "-",
 })
 console.log(renderReport(report))
-console.log(`requests made: ${model.used()}`)
+
 if (out !== undefined) await Bun.write(out, `${JSON.stringify({ report, summary: compaction.summary }, null, 2)}\n`)

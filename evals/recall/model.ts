@@ -30,6 +30,9 @@ export type ModelFn = (request: ModelRequest) => Promise<ModelReply>
 export const LIVE_MODEL = "gpt-6-luna"
 export const LIVE_EFFORT = "low"
 
+/** Wall-clock limit of one live call; a call still running then is aborted and counts as a failed call. */
+export const LIVE_CALL_LIMIT_MS = 240_000
+
 /** Counts requests and refuses to go past `limit`, so a bug cannot spend more than the budget. */
 export function capped(model: ModelFn, limit: number): ModelFn & { readonly used: () => number } {
   let used = 0
@@ -41,7 +44,23 @@ export function capped(model: ModelFn, limit: number): ModelFn & { readonly used
   return Object.assign(wrapped, { used: () => used })
 }
 
-/** The real provider. Imported lazily so tests never load the sign-in code. */
+/** Retries a failed call once, after a pause, when the failure was not the request's fault. Retries count toward `capped`. */
+export function retryOnce(model: ModelFn, pauseMs = 5_000): ModelFn {
+  return async (request) => {
+    const first = await model(request)
+    if (first.error === null || !RETRYABLE.test(first.error)) return first
+    process.stderr.write(`retrying after: ${first.error}\n`)
+    await Bun.sleep(pauseMs)
+    return model(request)
+  }
+}
+
+const RETRYABLE = /^(rate_limit|provider|transport|incomplete_stream|timeout)\b/
+
+/**
+ * The real provider. Imported lazily so tests never load the sign-in code.
+ * Progress goes to stderr as counts only (input items, output characters, time).
+ */
 export async function liveModel(): Promise<ModelFn> {
   const { RESOURCE, accessToken } = await import("../../packages/core/src/auth/chatgpt.ts")
   const { OpenAIResponsesProvider } = await import("../../packages/core/src/provider/openai-responses.ts")
@@ -52,13 +71,20 @@ export async function liveModel(): Promise<ModelFn> {
       throw new Error("no media in the recall evaluation")
     },
   })
+  let calls_ = 0
   return async (request) => {
+    calls_ += 1
+    const started = Date.now()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), LIVE_CALL_LIMIT_MS)
     const output: InputItem[] = []
     const calls: ModelCall[] = []
     let text = ""
     let usage: Usage | null = null
     let error: string | null = null
-    for await (const event of provider.stream(request, new AbortController().signal)) {
+    let chars = 0
+    for await (const event of provider.stream(request, controller.signal)) {
+      if (event.type === "text.delta" || event.type === "reasoning.delta") chars += event.text.length
       if (event.type === "text.end") {
         text += event.text
         output.push({ type: "assistant_text", text: event.text, providerData: event.providerData })
@@ -71,6 +97,11 @@ export async function liveModel(): Promise<ModelFn> {
       if (event.type === "usage") usage = event.usage
       if (event.type === "error") error = `${event.error.kind}: ${event.error.message}`
     }
+    clearTimeout(timer)
+    if (controller.signal.aborted && error === null) error = `timeout: no answer within ${LIVE_CALL_LIMIT_MS / 1000} s`
+    process.stderr.write(
+      `call ${calls_}: ${request.input.length} items in, ${chars} chars out, ${usage === null ? "no usage" : `${usage.inputTokens} in (${usage.cachedInputTokens} cached) ${usage.outputTokens} out`}, ${Math.round((Date.now() - started) / 1000)} s${error === null ? "" : `, ${error}`}\n`,
+    )
     // A reasoning item may not end a replayed response; drop trailing ones.
     while (output.length > 0 && output[output.length - 1]!.type === "reasoning") output.pop()
     return { text, calls, output, usage, error }

@@ -18,7 +18,8 @@ import type { MessageId } from "../../packages/core/src/id.ts"
 import type { CompactionMessage, Message } from "../../packages/core/src/message/message.ts"
 import { renderMessage } from "../../packages/core/src/request/build.ts"
 import type { InputItem, ModelRequest } from "../../packages/core/src/request/request.ts"
-import type { ToolSpec } from "../../packages/core/src/tool/tool.ts"
+import { type ToolSpec, specOf } from "../../packages/core/src/tool/tool.ts"
+import { createStandardTools } from "../../packages/core/src/tools/index.ts"
 import type { GeneratedSession } from "./generate.ts"
 import { HistoryIndex } from "./history.ts"
 import { LIVE_EFFORT, type ModelFn } from "./model.ts"
@@ -32,6 +33,14 @@ export const EVAL_INSTRUCTIONS = [
   "You are a coding agent continuing a long session with the user in a TypeScript project.",
   'Messages wrapped in <harness origin="..."> come from the harness, not from the user. A message with origin "compaction" is a checkpoint that stands in for the earlier part of the conversation, which was removed to save space.',
 ].join("\n")
+
+/**
+ * The harness's standard tool list, in every request: the history holds calls
+ * to these tools, and the engine never drops its tool list (a compaction
+ * request keeps it with tool calls switched off). Only the history tools are
+ * ever run here; strategies without them send `toolChoice: "none"`.
+ */
+export const STANDARD_TOOLS: readonly ToolSpec[] = createStandardTools({ spillDir: "/nonexistent" }).map(specOf)
 
 /** Tokens of verbatim history every compacting strategy keeps: enough for the final turn only. */
 export const TAIL_BUDGET = 1_500
@@ -77,7 +86,7 @@ export async function compact(session: GeneratedSession, model: ModelFn, cacheKe
   const removed = session.messages.slice(0, tail.keepFrom)
   const kept = session.messages.slice(tail.keepFrom)
   const input = [...render(removed), developer(summaryPrompt())]
-  const request = (items: readonly InputItem[]): ModelRequest => ({ params: params(cacheKey), tools: [], instructions: EVAL_INSTRUCTIONS, input: items, toolChoice: "none" })
+  const request = (items: readonly InputItem[]): ModelRequest => ({ params: params(cacheKey), tools: STANDARD_TOOLS, instructions: EVAL_INSTRUCTIONS, input: items, toolChoice: "none" })
   const first = await model(request(input))
   if (first.error !== null) throw new Error(`the summary request failed: ${first.error}`)
   const firstCheck = validateSummary(first.text, DEFAULT_COMPACTION_CONFIG.summaryMaxTokens)
@@ -102,14 +111,19 @@ export function buildContext(name: StrategyName, session: GeneratedSession, comp
     runTool,
     contextTokens: estimateRequest({ instructions: EVAL_INSTRUCTIONS, tools, input }),
   })
-  if (name === "full") return finish(render(session.messages), [], null)
-  if (name === "summary") return finish([...render([checkpointMessage(compaction.summary)]), ...render(compaction.kept)], [], null)
+  if (name === "full") return finish(render(session.messages), STANDARD_TOOLS, null)
+  if (name === "summary") return finish([...render([checkpointMessage(compaction.summary)]), ...render(compaction.kept)], STANDARD_TOOLS, null)
   const tools = name === "checkpoint+tools"
   const checkpoint = buildCheckpoint({ summary: compaction.summary, earlier: compaction.removed, historyTools: tools })
   const input = [...render([checkpointMessage(checkpoint.text)]), ...render(compaction.kept)]
-  if (!tools) return finish(input, [], null)
+  if (!tools) return finish(input, STANDARD_TOOLS, null)
   const index = new HistoryIndex(session.messages)
-  return finish(input, [historySearchTool, historyReadTool], (tool, args) => index.call(tool, args))
+  // The other tools are listed but not run: this session's workspace does not exist.
+  const run = (tool: string, args: string) =>
+    tool === historySearchTool.name || tool === historyReadTool.name
+      ? index.call(tool, args)
+      : `Error: ${tool} is not available while answering this question; use ${historySearchTool.name} or ${historyReadTool.name}.`
+  return finish(input, [...STANDARD_TOOLS, historySearchTool, historyReadTool], run)
 }
 
 /** A completed compaction message, so the request builder renders the checkpoint exactly as the engine would. */

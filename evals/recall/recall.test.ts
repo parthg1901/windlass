@@ -9,7 +9,7 @@ import { FACT_TYPES, type Fact, generateSession } from "./generate.ts"
 import { gradeAnswer, hasNeedle, namesToken, normalize, parseJudgeReply } from "./grade.ts"
 import { HistoryIndex } from "./history.ts"
 import type { ModelFn, ModelReply } from "./model.ts"
-import { buildContext, compact, render } from "./strategies.ts"
+import { STANDARD_TOOLS, buildContext, compact, render } from "./strategies.ts"
 
 const session = generateSession({ seed: 7, tokens: 40_000, facts: 12 })
 const textOf = (messages: typeof session.messages) => JSON.stringify(render(messages))
@@ -130,7 +130,7 @@ describe("strategies", () => {
 
     const full = buildContext("full", session, compaction)
     expect(full.input).toEqual(render(session.messages))
-    expect(full.tools).toEqual([])
+    expect(full.tools).toEqual(STANDARD_TOOLS)
 
     const summary = buildContext("summary", session, compaction)
     expect(firstText(summary.input)).toStartWith(harnessOpen("compaction"))
@@ -141,12 +141,13 @@ describe("strategies", () => {
     expect(checkpointText).toContain(INDEX_HEADING)
     expect(checkpointText).toContain(QUOTES_HEADING)
     expect(checkpointText).not.toContain("history_search")
-    expect(checkpoint.tools).toEqual([])
+    expect(checkpoint.tools).toEqual(STANDARD_TOOLS)
 
     const tools = buildContext("checkpoint+tools", session, compaction)
     expect(firstText(tools.input)).toContain(HISTORY_SENTENCE)
-    expect(tools.tools.map((tool) => tool.name)).toEqual(["history_search", "history_read"])
+    expect(tools.tools.map((tool) => tool.name)).toEqual([...STANDARD_TOOLS.map((tool) => tool.name), "history_search", "history_read"])
     expect(tools.runTool!("history_search", '{"query":"ledger"}')).toContain("[seq ")
+    expect(tools.runTool!("read", '{"path":"src/a.ts"}')).toStartWith("Error: read is not available")
 
     expect(summary.contextTokens).toBeLessThan(checkpoint.contextTokens)
     expect(checkpoint.contextTokens).toBeLessThan(tools.contextTokens)
