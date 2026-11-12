@@ -1,5 +1,6 @@
 /**
- * Exports a stored session as a prefixlens trace (prefixlens SPEC.md, format 1.1).
+ * Exports a stored session as a prefixlens trace (prefixlens SPEC.md, format 1.2;
+ * `format.ts` says which of its fields the harness cannot fill).
  *
  * The ledger keeps, per model call, only the block hashes of the request and
  * the usage. The request itself is rebuilt: it is a pure function of the log

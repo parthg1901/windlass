@@ -1,9 +1,21 @@
 /**
- * The prefixlens trace format, version 1.1 (prefixlens SPEC.md), as far as a
+ * The prefixlens trace format, version 1.2 (prefixlens SPEC.md), as far as a
  * Responses API harness writes it: the record and block types, the canonical
  * block view of a Responses request body, usage conversion, and a serializer
  * that writes each block's content once per file and reuses the previous
  * request's leading blocks (SPEC sections 4.5 and 4.6).
+ *
+ * Images and files in a request are written as their SHA-256 and size, never
+ * as their bytes (SPEC 4.5, "Binary data"); the block's hash is still that of
+ * the content as sent, so it is the hash the ledger proves.
+ *
+ * What 1.2 adds that the harness does not store is left out, as the spec
+ * says to for "unknown": `billing` (the ledger does not say which provider
+ * served a call, so a scripted session cannot be told from a signed-in one),
+ * and `cache_write_tokens` and `cache_write_12h_tokens` (the provider's
+ * decoder keeps only cached, input, output and reasoning tokens). An OpenAI
+ * stream reports usage only on its final event, so a call with usage was
+ * never cut off and `interrupted` is never written.
  *
  * Nothing here knows about sessions or the store; `export.ts` does.
  */
@@ -12,8 +24,10 @@ import type { Json } from "../json.ts"
 import type { Usage } from "../provider/usage.ts"
 import { canonicalJson } from "../request/canonical.ts"
 
-/** The major version every 1.x record carries in `v`; this file writes format 1.1. */
+/** The major version every 1.x record carries in `v`. */
 export const TRACE_VERSION = 1
+/** The version of prefixlens SPEC.md this file writes. A minor version only adds optional fields, so its records still carry `v: 1`. */
+export const TRACE_FORMAT_VERSION = "1.2"
 
 export type TraceBlockKind = "tool" | "system" | "message"
 
@@ -26,9 +40,17 @@ export interface TraceBlock {
   readonly hash: string
   readonly content?: Json
   readonly breakpoint?: boolean
+  /** SPEC 4.5 (format 1.2): binary data in `content` is written as its SHA-256 and size; `hash` is still over the content as sent. */
+  readonly elided?: boolean
 }
 
-/** SPEC 3. OpenAI caches implicitly and reports no writes, so `cache_write_tokens` is always `null` here. */
+/**
+ * SPEC 3. `cache_write_tokens` is always `null` here and the 1.2 field
+ * `cache_write_12h_tokens` is never written: the provider reports writes
+ * (`input_tokens_details.cache_write_tokens`, and their lifetimes in
+ * `cache_write_tokens_details`), but the harness's stored usage does not keep
+ * them, and `null` is what the spec says for writes that are not known.
+ */
 export interface TraceUsage {
   readonly input_tokens: number
   readonly cache_read_tokens: number
@@ -105,6 +127,68 @@ export function traceHash(content: unknown): string {
   return createHash("sha256").update(canonicalJson(content), "utf8").digest("hex")
 }
 
+/**
+ * SPEC 4.5, "Binary data" (format 1.2): `content` with the base64 data of
+ * every image, document, audio and file part replaced by
+ * `"<binary MEDIA_TYPE, N bytes, sha256 HEX>"` (HEX over the base64 text as
+ * sent, N the decoded size), and whether anything was replaced. The part
+ * shapes are the ones the spec lists for every provider, matched the way
+ * prefixlens's recorder matches them, so the same body gives the same blocks;
+ * a Responses body carries only `input_image` and `input_file`. A URL that is
+ * not a `data:` URL is kept.
+ */
+export function elideBinary(content: Json): { readonly content: Json; readonly elided: boolean } {
+  let elided = false
+  const walk = (value: Json): Json => {
+    if (Array.isArray(value)) return value.map(walk)
+    if (!isObject(value)) return value
+    const replaced = replaceBinary(value)
+    if (replaced !== undefined) {
+      elided = true
+      return replaced
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, walk(child)]))
+  }
+  const result = walk(content)
+  return { content: result, elided }
+}
+
+type JsonObject = { readonly [key: string]: Json }
+
+function replaceBinary(part: JsonObject): JsonObject | undefined {
+  const at = (object: Json | undefined, key: string, transform: (text: string) => string | undefined): JsonObject | undefined => {
+    if (!isObject(object)) return undefined
+    const text = object[key]
+    if (typeof text !== "string") return undefined
+    const next = transform(text)
+    return next === undefined ? undefined : { ...object, [key]: next }
+  }
+  const nested = (key: string, inner: string, transform: (text: string) => string | undefined): JsonObject | undefined => {
+    const replaced = at(part[key], inner, transform)
+    return replaced === undefined ? undefined : { ...part, [key]: replaced }
+  }
+  if (isObject(part.source) && part.source.type === "base64") return nested("source", "data", (data) => binaryMarker(data, field(part.source!, "media_type")))
+  if (part.type === "input_image") return at(part, "image_url", dataUrlMarker)
+  if (part.type === "input_file") return at(part, "file_data", (data) => dataUrlMarker(data) ?? binaryMarker(data))
+  if (part.type === "image_url") return nested("image_url", "url", dataUrlMarker)
+  if (part.type === "input_audio") return nested("input_audio", "data", (data) => binaryMarker(data, field(part.input_audio!, "format")))
+  if (part.type === "file") return nested("file", "file_data", (data) => dataUrlMarker(data) ?? binaryMarker(data))
+  for (const key of ["inlineData", "inline_data"])
+    if (isObject(part[key])) return nested(key, "data", (data) => binaryMarker(data, field(part[key]!, "mimeType") ?? field(part[key]!, "mime_type")))
+  return undefined
+}
+
+function binaryMarker(base64: string, mediaType?: string): string {
+  const bytes = Math.floor((base64.replace(/[^A-Za-z0-9+/]/g, "").length * 3) / 4)
+  return `<binary${mediaType ? ` ${mediaType}` : ""}, ${bytes} bytes, sha256 ${createHash("sha256").update(base64, "utf8").digest("hex")}>`
+}
+
+/** Only a `data:` URL carries the bytes. */
+function dataUrlMarker(url: string): string | undefined {
+  const match = /^data:([^;,]*)(?:;[^,]*)?;base64,/.exec(url)
+  return match ? binaryMarker(url.slice(match[0].length), match[1] || undefined) : undefined
+}
+
 export interface CanonicalTraceRequest {
   readonly model: string
   readonly params: Readonly<Record<string, Json>>
@@ -121,9 +205,11 @@ const NOT_PARAMS = new Set(["model", "tools", "functions", "instructions", "inpu
  * `developer` as a system block; every other input item as a message block.
  * `cache_control` is removed from each item and its content parts, and a
  * string `content` becomes one `input_text` part (`output_text` for the
- * assistant). Everything else is kept as sent. prefixlens's own canonicaliser
- * gives the same blocks for the same body; the tests check it when the
- * sibling repository is present.
+ * assistant). Everything else is kept as sent, except that a block's
+ * images and files are written as their digest and size (`elideBinary`;
+ * its hash is still over them). prefixlens's own recorder gives the same
+ * blocks for the same body; the tests check it when the sibling repository
+ * is present.
  */
 export function canonicalResponsesRequest(body: Readonly<Record<string, Json>>): CanonicalTraceRequest {
   const tools = list(body.tools).map((tool) => block("tool", tool, toolName(tool)))
@@ -195,8 +281,10 @@ function leadingRun(before: readonly TraceBlock[], after: readonly TraceBlock[])
   return index === -1 ? before.length : index
 }
 
+/** The hash is over the content as sent; the content written is the one with binary data elided. */
 function block(kind: TraceBlockKind, content: Json, key: string | undefined): TraceBlock {
-  return { kind, ...(key === undefined ? {} : { key }), hash: traceHash(content), content }
+  const written = elideBinary(content)
+  return { kind, ...(key === undefined ? {} : { key }), hash: traceHash(content), content: written.content, ...(written.elided ? { elided: true } : {}) }
 }
 
 function normalizeItem(item: Json): Json {

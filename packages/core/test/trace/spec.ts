@@ -1,6 +1,6 @@
 /**
  * A validator for prefixlens trace files, written from prefixlens SPEC.md
- * (format version 1.1) alone, without its code. It checks every rule a reader
+ * (format version 1.2) alone, without its code. It checks every rule a reader
  * enforces and the writer duties the spec states with MUST or SHOULD, and
  * resolves `request.reuse` and omitted content so the full block list of
  * each record can be compared with what was exported.
@@ -13,6 +13,7 @@ export interface ResolvedBlock {
   readonly hash: string
   readonly content?: unknown
   readonly breakpoint?: boolean
+  readonly elided?: boolean
 }
 
 export interface Validation {
@@ -84,6 +85,9 @@ export function validateTrace(text: string): Validation {
         }
     }
     if (value.source !== undefined && !isObject(value.source)) at("source must be an object")
+    // 1.2: `interrupted` and `billing` (SPEC 2).
+    if (value.interrupted !== undefined && typeof value.interrupted !== "boolean") at("interrupted must be a boolean")
+    if (value.billing !== undefined && value.billing !== "per_token" && value.billing !== "subscription") at('billing must be "per_token" or "subscription"')
 
     const lane = `${value.session ?? ""}\u0000${value.lane ?? "main"}`
     if (value.fidelity === "usage-only") {
@@ -105,11 +109,22 @@ export function validateTrace(text: string): Validation {
       if (block.key !== undefined && typeof block.key !== "string") at(`${where}.key must be a string`)
       if (block.breakpoint !== undefined && typeof block.breakpoint !== "boolean") at(`${where}.breakpoint must be a boolean`)
       if (block.hash === undefined && block.content === undefined) return at(`${where} needs hash or content`), []
+      // 1.2, SPEC 4.5 "Binary data": an elided block carries its hash, which is over the content as sent, not the content written.
+      if (block.elided !== undefined && typeof block.elided !== "boolean") at(`${where}.elided must be a boolean`)
+      const elided = block.elided === true
+      if (elided && block.hash === undefined) return at(`${where} is elided and needs a hash`), []
+      if (block.content !== undefined) {
+        const found = binaryParts(block.content)
+        // A writer SHOULD replace the base64 data; this harness always does, so any left is an error here.
+        if (found.raw > 0) at(`${where} carries ${found.raw} base64 binary part(s); write each as its digest and size`)
+        if (found.markers > 0 && !elided) at(`${where} has binary markers but is not marked elided`)
+        if (found.markers === 0 && elided) at(`${where} is marked elided but has no binary marker`)
+      }
       if (block.hash !== undefined && (typeof block.hash !== "string" || !HEX64.test(block.hash)))
         return at(`${where}.hash must be lowercase hex SHA-256`), []
       const hash = (block.hash as string | undefined) ?? traceHash(block.content)
       if (block.content !== undefined) {
-        if (traceHash(block.content) !== hash) at(`${where}.hash does not match its content`)
+        if (!elided && traceHash(block.content) !== hash) at(`${where}.hash does not match its content`)
         // SPEC 4.5: a writer SHOULD write each distinct block's content only the first time its hash appears.
         if (contents.has(hash)) at(`${where} repeats content already written for ${hash.slice(0, 12)}`)
         contents.set(hash, block.content)
@@ -155,10 +170,36 @@ function checkUsage(usage: unknown, at: (problem: string) => void) {
     if (!isCount(usage[field])) at(`usage.${field} must be a non-negative integer`)
   if (!("cache_write_tokens" in usage)) at("usage.cache_write_tokens is required (null when the provider does not report writes)")
   else if (usage.cache_write_tokens !== null && !isCount(usage.cache_write_tokens)) at("usage.cache_write_tokens must be an integer or null")
-  for (const field of ["cache_write_1h_tokens", "reasoning_tokens"])
+  for (const field of ["cache_write_1h_tokens", "cache_write_12h_tokens", "reasoning_tokens"])
     if (usage[field] !== undefined && !isCount(usage[field])) at(`usage.${field} must be a non-negative integer`)
   if (usage.reported_cost !== undefined && !(typeof usage.reported_cost === "number" && usage.reported_cost >= 0))
     at("usage.reported_cost must be a non-negative number")
+}
+
+const MARKER = /^<binary (?:[^,>]+, )?\d+ bytes, sha256 [0-9a-f]{64}>$/
+
+/**
+ * SPEC 4.5: the binary parts in a block's content, written as data (`raw`) or
+ * as the marker that replaces them (`markers`). Only the part shapes a
+ * Responses body carries are looked for: `input_image` with a `data:` URL and
+ * `input_file` with `file_data`.
+ */
+function binaryParts(content: unknown) {
+  let raw = 0
+  let markers = 0
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(walk)
+    if (!isObject(value)) return
+    const data = value.type === "input_image" ? value.image_url : value.type === "input_file" ? value.file_data : undefined
+    if (typeof data === "string") {
+      if (MARKER.test(data)) markers += 1
+      else if (value.type === "input_file" || data.startsWith("data:")) raw += 1
+      return
+    }
+    Object.values(value).forEach(walk)
+  }
+  walk(content)
+  return { raw, markers }
 }
 
 function isCount(value: unknown): value is number {
