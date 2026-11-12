@@ -488,13 +488,17 @@ type AnyEvent = Parameters<typeof tapeFromEvents>[0][number]
 export function compareReplay(recordedEvents: readonly AnyEvent[], replayEvents: readonly AnyEvent[], report: Pick<ReplayReport, "status" | "comparison">, options: EffectOptions & { readonly replayFinal?: string | null } = {}): ReplayComparison {
   const recordedFinal = lastSnapshot(recordedEvents)
   const final = options.replayFinal !== undefined ? options.replayFinal : finalSnapshot(replayEvents, recordedFinal)
-  const sameWorkspace = final === null || recordedFinal === null ? null : final === recordedFinal
+  let sameWorkspace = final === null || recordedFinal === null ? null : final === recordedFinal
   // Only a replay that reached an answer of its own made everything it was going to make.
   const whole = (report.status === "identical" || report.status === "diverged") && report.comparison.finalAnswer.replayed !== null
   if (!whole) return { effects: null, lenient: null, sameWorkspace }
   const walk = lenientWalk(tapeFromEvents(recordedEvents), tapeFromEvents(replayEvents), options)
   const effects = walk.effects
   const look = walk.firstMustRun
+  // It answered before leaving on a call: nothing ran for real, every recorded act was made and answered from the
+  // recording, and none is left, so its files are the recording's at the end.
+  const onlyFromTape = !replayEvents.some((item) => item.type === "replay.diverged")
+  if (sameWorkspace === null && onlyFromTape && effects.same && recordedFinal !== null) sameWorkspace = true
   return {
     effects: { same: effects.same, matched: effects.matched, recordedActs: effects.recorded.acts, replayedActs: effects.replayed.acts, first: effectPlace(effects) },
     lenient: { served: walk.looks.served, mustRun: walk.looks.mustRun, left: look !== null ? `step ${look.step + 1} ${callLabel(look)} (a look not on the recording)` : effectPlace(effects) },

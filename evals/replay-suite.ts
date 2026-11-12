@@ -382,7 +382,8 @@ function tally(list: readonly ReplayRow[]): Tally {
     pathsDiffer: measure(list, (row) => (row.samePaths === null ? null : !row.samePaths)),
     workspaceDiffers: measure(list, (row) => (row.sameWorkspace === null ? null : !row.sameWorkspace)),
     // A replay that stayed on the recording made the recorded calls, so its result is the recorded one.
-    passed: measure(list, (row) => (row.graded !== null ? row.graded.pass : row.status === "identical" ? row.recordedPass : null)),
+    // So did one that answered having made exactly the recorded acts, all answered from the recording (same files).
+    passed: measure(list, (row) => (row.graded !== null ? row.graded.pass : row.status === "identical" || (row.sameWorkspace === true && row.effects?.same === true) ? row.recordedPass : null)),
   }
 }
 

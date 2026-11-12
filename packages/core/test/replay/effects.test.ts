@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import type { NewEvent } from "../../src/event/durable.ts"
 import type { ToolOutcome } from "../../src/event/durable.ts"
-import { classifyCall, compareEffects, finalSnapshot, lenientWalk, readOnlyCommand, renderComparison } from "../../src/replay/effects.ts"
+import { classifyCall, compareEffects, compareReplay, finalSnapshot, lenientWalk, readOnlyCommand, renderComparison } from "../../src/replay/effects.ts"
 import { normalise } from "../../src/replay/match.ts"
 import type { TapeCall } from "../../src/replay/tape.ts"
 import type { ToolEffect } from "../../src/tool/tool.ts"
@@ -285,5 +285,21 @@ describe("the comparison as the replay report prints it", () => {
         "  files          the same as the recording's at its end",
       ].join("\n"),
     )
+  })
+})
+
+describe("the files of a replay that answered before it left on a call", () => {
+  const snap = (id: string) => ({ type: "snapshot.taken", data: { id, point: "step_end", messageId: null } }) as unknown as NewEvent
+  const answered = { status: "diverged", comparison: { finalAnswer: { replayed: "Done." } } } as unknown as Parameters<typeof compareReplay>[2]
+  const recorded = [...opening(), ...step(read("a.ts")), ...step(write("a.ts", "x")), snap("final"), ...step(read("a.ts")), ...answer(), executionSucceeded()]
+
+  test("made every recorded act from the recording and none is left: the recording's files", () => {
+    const replayed = [...opening(), ...step(read("a.ts")), ...step(write("a.ts", "x")), ...answer("Done."), replayEnded("diverged", "")]
+    expect(compareReplay(recorded, replayed, answered)).toMatchObject({ effects: { same: true }, sameWorkspace: true })
+  })
+
+  test("an act is left: not known", () => {
+    const replayed = [...opening(), ...step(read("a.ts")), ...answer("Done."), replayEnded("diverged", "")]
+    expect(compareReplay(recorded, replayed, answered)).toMatchObject({ effects: { same: false, first: 'act 1: recorded write "a.ts" (missing act)' }, sameWorkspace: null })
   })
 })
