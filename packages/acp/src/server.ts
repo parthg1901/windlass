@@ -26,7 +26,7 @@
  * in progress stops as a `shutdown`, which keeps it resumable, and every tool
  * process is stopped.
  */
-import { isAbsolute } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { statSync } from "node:fs"
 import {
   type AgentApp,
@@ -37,6 +37,7 @@ import {
   type ContentBlock,
   type InitializeResponse,
   type ListSessionsResponse,
+  type RequestPermissionRequest,
   PROTOCOL_VERSION,
   RequestError,
   type SessionConfigOption,
@@ -48,8 +49,35 @@ import {
   agent,
   methods,
 } from "@agentclientprotocol/sdk"
-import { EngineError, type EngineEvent, type EngineSession, type Harness, type MessageId, type ModelEntry, type SessionId, type SessionSettings, type StoredEvent, brand } from "@light-harness/core"
-import { EXT, META, type SessionState, type StateNotification } from "./extensions.ts"
+import {
+  EngineError,
+  type EngineEvent,
+  type EngineSession,
+  type Harness,
+  type HandEditPolicy,
+  type MessageId,
+  type ModelEntry,
+  ModelListError,
+  type RevertOptions,
+  type RevertPlan,
+  type RevertResult,
+  type SessionId,
+  type SessionSettings,
+  type StoredEvent,
+  StoreError,
+  brand,
+} from "@light-harness/core"
+import {
+  type ClientMeta,
+  type ErrorData,
+  EXT,
+  HAND_EDIT_OPTIONS,
+  META,
+  type OpenMeta,
+  type RevertParams,
+  type SessionState,
+  type StateNotification,
+} from "./extensions.ts"
 import { type Logger, describeError } from "./log.ts"
 import { type ModelCatalog, catalogOf } from "./models.ts"
 import { promptText } from "./prompt.ts"
@@ -92,20 +120,26 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
 export const EXTENSION_CAPABILITIES = {
-  methods: [EXT.steer, EXT.queue, EXT.models],
-  notifications: [EXT.usage, EXT.state],
-  promptMeta: [META.delivery],
+  methods: [EXT.steer, EXT.queue, EXT.models, EXT.revert, EXT.undoRevert, EXT.withdraw, EXT.unarchive, EXT.session, EXT.events, EXT.resolve],
+  notifications: [EXT.usage, EXT.state, EXT.turn, EXT.diagnostic, EXT.event],
+  promptMeta: [META.delivery, META.maxSteps],
+  /** Keys of `clientCapabilities._meta[<ns>]` this server reads (`ClientMeta`). */
+  clientMeta: ["events", "updates"],
+  /** Keys of `_meta[<ns>]` on `session/new`, `session/load` and `session/resume` (`OpenMeta`). */
+  openMeta: ["model", "effort"],
 } as const
 
 function buildAgent(state: ConnectionState): AgentApp {
   return agent({ name: brand.name })
     .onRequest(methods.agent.initialize, ({ params }) => state.initialize(params.protocolVersion, params.clientCapabilities ?? {}))
     .onRequest(methods.agent.authenticate, ({ params }) => state.authenticate(params.methodId))
-    .onRequest(methods.agent.session.new, ({ params }) => state.newSession(params.cwd, params.mcpServers.length))
-    .onRequest(methods.agent.session.load, ({ params }) => state.loadSession(params.sessionId, params.cwd, true))
-    .onRequest(methods.agent.session.resume, ({ params }) => state.loadSession(params.sessionId, params.cwd, false))
-    .onRequest(methods.agent.session.list, ({ params }) => state.listSessions(params.cwd ?? null, params.cursor ?? null))
-    .onRequest(methods.agent.session.close, ({ params }) => state.closeSession(params.sessionId))
+    .onRequest(methods.agent.session.new, ({ params }) => state.newSession(params.cwd, params.mcpServers.length, openMeta(params._meta)))
+    .onRequest(methods.agent.session.load, ({ params }) => state.loadSession(params.sessionId, params.cwd, true, openMeta(params._meta)))
+    .onRequest(methods.agent.session.resume, ({ params }) => state.loadSession(params.sessionId, params.cwd, false, openMeta(params._meta)))
+    .onRequest(methods.agent.session.list, ({ params }) =>
+      state.listSessions(params.cwd ?? null, params.cursor ?? null, namespaced(params._meta)?.archived === true),
+    )
+    .onRequest(methods.agent.session.close, ({ params }) => state.closeSession(params.sessionId, namespaced(params._meta)?.shutdown === true))
     .onRequest(methods.agent.session.delete, ({ params }) => state.deleteSession(params.sessionId))
     .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
       if (!("value" in params) || typeof params.value !== "string")
@@ -114,9 +148,20 @@ function buildAgent(state: ConnectionState): AgentApp {
     })
     .onRequest(methods.agent.session.prompt, ({ params, signal }) => state.prompt(params.sessionId, params.prompt, params._meta ?? null, signal))
     .onNotification(methods.agent.session.cancel, ({ params }) => state.cancel(params.sessionId))
-    .onRequest(EXT.steer, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "steer"))
-    .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue"))
+    .onRequest(EXT.steer, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "steer", params.maxSteps))
+    .onRequest(EXT.queue, parseInputParams, ({ params }) => state.admit(params.sessionId, params.prompt, "queue", params.maxSteps))
     .onRequest(EXT.models, (params) => params, () => state.models())
+    .onRequest(EXT.revert, parseRevertParams, ({ params }) => state.revert(params, false))
+    .onRequest(EXT.undoRevert, parseRevertParams, ({ params }) => state.revert(params, true))
+    .onRequest(EXT.withdraw, parseObject, ({ params }) => state.withdraw(requireString(params, "sessionId"), requireString(params, "messageId")))
+    .onRequest(EXT.unarchive, parseObject, ({ params }) => state.unarchive(requireString(params, "sessionId")))
+    .onRequest(EXT.session, parseObject, ({ params }) => state.sessionState(requireString(params, "sessionId")))
+    .onRequest(EXT.events, parseObject, ({ params }) =>
+      state.storedEvents(requireString(params, "sessionId"), optionalInteger(params, "afterSeq", 0) ?? 0, optionalInteger(params, "limit", 1)),
+    )
+    .onRequest(EXT.resolve, parseObject, ({ params }) =>
+      state.resolve(requireString(params, "cwd"), optionalString(params, "session")),
+    )
 }
 
 interface Pending {
@@ -124,7 +169,7 @@ interface Pending {
   delivered: boolean
   /** `seq` of its `inbox.enqueued`, once this connection has seen it. */
   enqueuedSeq: number | null
-  readonly resolve: (value: { stopReason: StopReason }) => void
+  readonly resolve: (value: { stopReason: StopReason; _meta?: Record<string, unknown> }) => void
   readonly reject: (error: unknown) => void
 }
 
@@ -132,6 +177,8 @@ class ConnectionState {
   client: AgentContext | null = null
   connectionSignal: AbortSignal | null = null
   private capabilities: ClientCapabilities = {}
+  /** What a full-fidelity client asked for in `initialize`. */
+  fidelity: { readonly events: boolean; readonly updates: boolean } = { events: false, updates: true }
   private readonly views = new Map<string, SessionView>()
   private closing: Promise<void> | null = null
 
@@ -156,6 +203,8 @@ class ConnectionState {
 
   initialize(requested: number, capabilities: ClientCapabilities): InitializeResponse {
     this.capabilities = capabilities
+    const asked = namespaced(capabilities._meta) as ClientMeta | null
+    this.fidelity = { events: asked?.events === true, updates: asked?.updates !== false }
     this.log.info(`client connected, protocol ${requested}${requested === PROTOCOL_VERSION ? "" : `, answering ${PROTOCOL_VERSION}`}`)
     const agentCapabilities: AgentCapabilities = {
       loadSession: true,
@@ -186,28 +235,38 @@ class ConnectionState {
 
   // ---- sessions ----
 
-  async newSession(cwd: string, mcpServers: number) {
+  async newSession(cwd: string, mcpServers: number, meta: OpenMeta | null) {
     requireDirectory(cwd)
     await this.requireSignIn()
     if (mcpServers > 0) this.log.warn(`ignoring ${mcpServers} MCP server(s): ${brand.name} does not connect to MCP servers yet`)
-    const settings = await this.harness.settingsFor(cwd)
+    const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
+    // A model the client names is checked before a session is created with it, as the command line does.
+    if (asked.model !== null) await this.validate(cwd, asked)
+    const settings = await this.harness.settingsFor(cwd, asked)
     const session = this.engineErrors(() => this.harness.engine.createSession({ cwd, settings }))
     const view = this.attach(session, cwd, session.projection().lastSeq)
+    // A full-fidelity client gets the session from its first event, as the engine's own stream has it.
+    if (this.fidelity.events) for (const item of session.readEvents()) view.queueEvent(item, false)
+    await view.flushed()
     return { sessionId: session.id, configOptions: await this.configOptions(view.settings) }
   }
 
-  async loadSession(sessionId: string, cwd: string, replay: boolean) {
+  async loadSession(sessionId: string, cwd: string, replay: boolean, meta: OpenMeta | null) {
     if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
     await this.requireSignIn()
+    const asked = { model: meta?.model ?? null, effort: meta?.effort ?? null }
+    if (asked.model !== null) await this.validate(cwd, asked)
     // Archived sessions are not offered: `session/delete` archives.
     const summary = this.engineErrors(() => this.harness.engine.getSession(sessionId as SessionId), sessionId)
-    if (summary === null || summary.session.archived) throw RequestError.sessionNotFound(sessionId)
+    if (summary === null || (summary.session.archived && meta?.archived !== true)) throw RequestError.sessionNotFound(sessionId)
     // Known before the state is reported, for the context window in `usage_update`.
     const models = this.catalog.list()
     if (summary.session.cwd !== cwd)
       throw RequestError.invalidParams({ cwd, sessionCwd: summary.session.cwd }, `session ${sessionId} works in ${summary.session.cwd}, not ${cwd}`)
     this.views.get(sessionId)?.detach()
     await models
+    // What the log held before this open: events after it (a crashed claim's recovery) are news to a client.
+    const openedAt = summary.lastSeq
     // A claim left by a process that died is repaired here; a suspended one (a clean shutdown in the middle of a
     // turn) stays suspended until the user says something, so their words are in front of the model in the first
     // step after the restart. A session another process holds is refused, with that process named.
@@ -219,32 +278,55 @@ class ConnectionState {
     const view = this.attach(session, cwd, lastSeq, (translator) => {
       // Without a replay the log is still folded, so the translator knows the model and the calls in it.
       const outputs = translator.replay(history)
-      return replay ? outputs.filter((output) => output.type === "update") : []
+      return replay ? outputs.filter((output) => output.type === "update" || (output.type === "ext" && output.method === EXT.turn)) : []
     })
+    // A full-fidelity client gets the log as it is: all of it on a load (marked as a replay up to this open), and on
+    // either the events this open appended, which are what a live session would have streamed.
+    if (this.fidelity.events)
+      for (const item of history) if (replay || item.seq > openedAt) view.queueEvent(item, item.seq <= openedAt)
     view.syncState(history)
+    // As the command line does on --session and --continue: the model or effort named is switched to, durably.
+    if (asked.model !== null || asked.effort !== null) {
+      const current = session.projection().session.settings
+      session.setSettings({ model: asked.model ?? current.model, reasoningEffort: asked.effort ?? current.reasoningEffort })
+    }
     await view.flushed()
     return { configOptions: await this.configOptions(view.settings) }
   }
 
-  async listSessions(cwd: string | null, cursor: string | null): Promise<ListSessionsResponse> {
+  async listSessions(cwd: string | null, cursor: string | null, archived = false): Promise<ListSessionsResponse> {
     if (cwd !== null && !isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
     const offset = cursor === null ? 0 : Number(cursor)
     if (!Number.isInteger(offset) || offset < 0) throw RequestError.invalidParams({ cursor }, "unknown cursor")
-    const all = this.engineErrors(() => this.harness.engine.listSessions(cwd === null ? {} : { cwd }))
+    const all = this.engineErrors(() => this.harness.engine.listSessions({ ...(cwd === null ? {} : { cwd }), ...(archived ? { includeArchived: true } : {}) }))
     const page = all.slice(offset, offset + LIST_PAGE)
     const sessions: SessionInfo[] = page.map((summary) => ({
       sessionId: summary.session.id,
       cwd: summary.session.cwd,
       title: summary.session.title,
       updatedAt: new Date(summary.updatedAt).toISOString(),
-      _meta: { [META.capabilities]: { model: summary.session.settings.model, effort: summary.session.settings.reasoningEffort } },
+      _meta: {
+        [META.capabilities]: {
+          model: summary.session.settings.model,
+          effort: summary.session.settings.reasoningEffort,
+          ...(summary.session.archived ? { archived: true } : {}),
+        },
+      },
     }))
     return offset + LIST_PAGE < all.length ? { sessions, nextCursor: String(offset + LIST_PAGE) } : { sessions }
   }
 
-  async closeSession(sessionId: string): Promise<Record<string, never>> {
+  async closeSession(sessionId: string, shutdown = false): Promise<Record<string, never>> {
     const view = this.views.get(sessionId)
     if (view === undefined) return {}
+    if (shutdown) {
+      // As a process that exits: work in progress stops as a shutdown and stays resumable. The client hears every
+      // event of it before the answer.
+      await view.session.close()
+      await view.drained()
+      view.detach()
+      return {}
+    }
     await view.cancelAndWait()
     view.detach()
     // This session only: its work stops as a shutdown and it is let go of. The engine and its other sessions carry on.
@@ -288,7 +370,8 @@ class ConnectionState {
     const view = this.requireView(sessionId)
     const text = requirePromptText(blocks)
     const delivery = meta?.[META.delivery] === "queue" ? "queue" : "steer"
-    const messageId = view.session.send(text, { delivery })
+    const maxSteps = stepLimit(meta?.[META.maxSteps])
+    const messageId = view.session.send(text, { delivery, ...(maxSteps === undefined ? {} : { maxSteps }) })
     return view.waitFor(messageId, signal)
   }
 
@@ -297,20 +380,150 @@ class ConnectionState {
   }
 
   /** `_<ns>/steer` and `_<ns>/queue`: admit input without waiting for the turn. */
-  admit(sessionId: string, blocks: readonly ContentBlock[], delivery: "steer" | "queue") {
+  admit(sessionId: string, blocks: readonly ContentBlock[], delivery: "steer" | "queue", maxSteps: number | undefined) {
     const view = this.requireView(sessionId)
     const text = requirePromptText(blocks)
-    const messageId = view.session.send(text, { delivery })
+    const messageId = view.session.send(text, { delivery, ...(maxSteps === undefined ? {} : { maxSteps }) })
     view.echo.add(messageId)
     return { messageId }
   }
 
   async models() {
-    const models = await this.catalog.list()
+    // Asked for afresh, so that a client that lists the models hears why they cannot be listed.
+    const models = await this.harness.listModels().catch((error: unknown) => {
+      if (!(error instanceof ModelListError)) throw error
+      const auth = error.error.kind === "auth"
+      throw new RequestError(auth ? -32000 : -32603, `could not list the models: ${error.message}`, errorData({ reason: auth ? "auth_required" : "model_list_failed", message: error.message }))
+    })
     return {
       defaultModel: this.harness.defaults.model,
       models: models.map((model) => ({ ...model, efforts: [...model.efforts] })),
     }
+  }
+
+  /** `_<ns>/revert` and `_<ns>/undo_revert`. With `handEdits: "ask"` (the default) the user is asked about files edited by hand. */
+  async revert(params: RevertParams, undo: boolean): Promise<RevertResult> {
+    const view = this.requireView(params.sessionId)
+    const session = view.session
+    const act = (options: Omit<RevertOptions, "messageId">) =>
+      undo ? session.undoRevert(options) : session.revert({ ...options, ...(params.messageId === undefined ? {} : { messageId: params.messageId as MessageId }) })
+    const dryRun = params.dryRun === true
+    const asked = params.handEdits ?? "ask"
+    if (dryRun || asked !== "ask") return act({ dryRun, handEdits: asked === "ask" ? "abort" : asked })
+    const first = await act({ handEdits: "abort" })
+    if (first.kind !== "hand_edited") return first
+    const answer = await this.askHandEdits(view, first.plan, undo)
+    // Declined: nothing changed, and the answer says why.
+    return answer === null ? first : act({ handEdits: answer })
+  }
+
+  /** The hand-edit question, as a permission request about the restore. `null`: change nothing. */
+  private async askHandEdits(view: SessionView, plan: RevertPlan, undo: boolean): Promise<HandEditPolicy | null> {
+    const client = this.client
+    if (client === null) return null
+    const byHand = plan.changes.filter((change) => change.handEdited).map((change) => change.path)
+    const cwd = view.session.projection().session.cwd
+    const command = undo ? "undo_revert" : "revert"
+    const files = byHand.length === 1 ? "1 file" : `${byHand.length} files`
+    const request: RequestPermissionRequest = {
+      sessionId: view.session.id,
+      toolCall: {
+        toolCallId: `${META.capabilities}-${command}-${plan.fromSeq}`,
+        title: undo ? `Redo: overwrite ${files} edited by hand since the undo?` : `Undo: overwrite ${files} edited by hand since then?`,
+        kind: "edit",
+        status: "pending",
+        locations: byHand.map((path) => ({ path: join(cwd, path) })),
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text: `Edited by hand: ${byHand.join(", ")}. ${undo ? "Overwriting them cannot be taken back." : "Overwriting them is safe: undoing the undo brings them back."}`,
+            },
+          },
+        ],
+        rawInput: { command, plan },
+      },
+      options: [
+        { optionId: HAND_EDIT_OPTIONS.overwrite, name: "Overwrite them", kind: "allow_once" },
+        { optionId: HAND_EDIT_OPTIONS.keep, name: "Keep my edits, restore the rest", kind: "allow_once" },
+        { optionId: HAND_EDIT_OPTIONS.cancel, name: "Change nothing", kind: "reject_once" },
+      ],
+      _meta: { [META.capabilities]: { command, plan, handEdited: byHand } },
+    }
+    const response = await client.request(methods.client.session.requestPermission, request)
+    const outcome = response.outcome
+    if (outcome.outcome !== "selected") return null
+    if (outcome.optionId === HAND_EDIT_OPTIONS.overwrite) return "overwrite"
+    if (outcome.optionId === HAND_EDIT_OPTIONS.keep) return "keep"
+    return null
+  }
+
+  withdraw(sessionId: string, messageId: string) {
+    const view = this.requireView(sessionId)
+    return { withdrawn: view.session.withdraw(messageId as MessageId) }
+  }
+
+  async unarchive(sessionId: string): Promise<Record<string, never>> {
+    await this.engineErrors(() => this.harness.engine.unarchiveSession(sessionId as SessionId), sessionId, true)
+    return {}
+  }
+
+  sessionState(sessionId: string) {
+    const view = this.requireView(sessionId)
+    const projection = view.session.projection()
+    const session = projection.session
+    const state: SessionState = view.session.working ? "running" : session.execution?.status === "suspended" ? "suspended" : "idle"
+    return {
+      sessionId,
+      state,
+      cwd: session.cwd,
+      title: session.title,
+      model: view.settings.model,
+      effort: view.settings.reasoningEffort,
+      archived: session.archived,
+      updatedAt: new Date(projection.updatedAt).toISOString(),
+      lastSeq: projection.lastSeq,
+      /** Admitted messages not yet delivered, oldest first. */
+      inbox: projection.inbox.map((item) => ({ messageId: item.messageId, delivery: item.delivery })),
+      canUndo: projection.messages.some((message) => message.kind === "user" && message.excluded === null),
+      canRedo: session.reverts.length > 0,
+    }
+  }
+
+  storedEvents(sessionId: string, afterSeq: number, limit: number | undefined) {
+    const events = this.engineErrors(
+      () => this.harness.engine.readEvents(sessionId as SessionId, { afterSeq, ...(limit === undefined ? {} : { limit }) }),
+      sessionId,
+    )
+    return { events }
+  }
+
+  /** `_<ns>/resolve`: the command line's `--session <id or start of one>` and `--continue`. Signed out is refused first, as there. */
+  async resolve(cwd: string, session: string | undefined) {
+    if (!isAbsolute(cwd)) throw RequestError.invalidParams({ cwd }, `cwd must be an absolute path: ${cwd}`)
+    await this.requireSignIn()
+    const engine = this.harness.engine
+    const id =
+      session !== undefined
+        ? this.engineErrors(() => engine.resolveSession(session))
+        : (this.engineErrors(() => engine.latestSession(cwd))?.session.id ?? null)
+    if (id === null) throw new RequestError(-32002, `there is no session to continue in ${cwd}`, errorData({ reason: "session_not_found", message: `there is no session to continue in ${cwd}` }))
+    const summary = this.engineErrors(() => engine.getSession(id), id)
+    if (summary === null) throw RequestError.sessionNotFound(id)
+    return { sessionId: id, cwd: summary.session.cwd }
+  }
+
+  private async validate(cwd: string, asked: { readonly model: string | null; readonly effort: string | null }): Promise<void> {
+    const settings = await this.harness.settingsFor(cwd, asked)
+    const refused = await this.harness.engine.validateSettings(settings).then(
+      () => null,
+      (error: unknown) => error,
+    )
+    if (refused !== null)
+      this.engineErrors(() => {
+        throw refused
+      })
   }
 
   // ---- shared ----
@@ -321,7 +534,7 @@ class ConnectionState {
 
   sendUpdate(sessionId: string, update: SessionUpdate): Promise<void> {
     const client = this.client
-    if (client === null) return Promise.resolve()
+    if (client === null || !this.fidelity.updates) return Promise.resolve()
     const notification: SessionNotification = { sessionId, update }
     return client.notify(methods.client.session.update, notification)
   }
@@ -368,7 +581,8 @@ class ConnectionState {
 
   private async requireSignIn(): Promise<void> {
     const state = await this.harness.signIn()
-    if (!state.signedIn) throw RequestError.authRequired({ methodId: AUTH_METHOD_ID }, `${state.message} To sign in, ${SIGN_IN_HINT}.`)
+    if (!state.signedIn)
+      throw RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: state.message }) }, `${state.message} To sign in, ${SIGN_IN_HINT}.`)
   }
 
   /**
@@ -383,9 +597,16 @@ class ConnectionState {
   private engineErrors<T>(work: () => T | Promise<T>, sessionId?: string, absentIsFine = false): T | Promise<T | undefined> {
     const translate = (error: unknown): never => {
       if (error instanceof EngineError && error.code === "session_in_use")
-        throw new RequestError(-32603, error.message, { [META.capabilities]: { reason: "session_in_use", holderPid: error.holderPid } })
-      if (error instanceof EngineError && error.code === "session_not_found") throw RequestError.sessionNotFound(sessionId ?? "")
-      if (error instanceof EngineError) throw RequestError.internalError({ reason: error.message }, error.message)
+        throw new RequestError(-32603, error.message, errorData({ reason: "session_in_use", holderPid: error.holderPid, message: error.message }))
+      if (error instanceof EngineError && error.code === "session_not_found")
+        throw new RequestError(-32002, "Resource not found", { sessionId: sessionId ?? "", ...errorData({ reason: "session_not_found", message: error.message }) })
+      if (error instanceof EngineError && (error.code === "ambiguous_session" || error.code === "unknown_model"))
+        throw new RequestError(-32602, error.message, errorData({ reason: error.code, message: error.message }))
+      if (error instanceof EngineError) throw new RequestError(-32603, error.message, { reason: error.message, ...errorData({ reason: "closed", message: error.message }) })
+      if (error instanceof StoreError && error.code === "schema_mismatch") {
+        const message = `that session was written by another version of ${brand.name} and cannot be opened by this one (${error.message})`
+        throw new RequestError(-32603, message, errorData({ reason: "schema_mismatch", message }))
+      }
       if (this.harness.closed) throw RequestError.internalError({ reason: "shutting down" }, `${brand.name} is shutting down`)
       throw error
     }
@@ -457,7 +678,7 @@ class SessionView {
   }
 
   /** Waits for the end of the execution that delivers `messageId`. */
-  waitFor(messageId: string, signal: AbortSignal): Promise<{ stopReason: StopReason }> {
+  waitFor(messageId: string, signal: AbortSignal): Promise<{ stopReason: StopReason; _meta?: Record<string, unknown> }> {
     return new Promise((resolve, reject) => {
       const pending: Pending = { messageId, delivered: false, enqueuedSeq: null, resolve, reject }
       this.pending.push(pending)
@@ -505,6 +726,23 @@ class SessionView {
     for (const output of outputs) this.handleOutput(output, replay, null)
   }
 
+  /** One harness event as is, for a client that asked for them (`ClientMeta.events`). */
+  queueEvent(item: EngineEvent, replay: boolean): void {
+    const params = { sessionId: this.session.id, event: item, ...(replay ? { replay: true } : {}) }
+    this.enqueue(() => this.connection.sendExt(EXT.event, params))
+  }
+
+  /** Resolves once every event the session has produced so far has been handled and sent. */
+  async drained(): Promise<void> {
+    for (;;) {
+      // Events are handled a microtask after they happen, and handling one may queue more sends.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      const outbox = this.outbox
+      await outbox
+      if (outbox === this.outbox) return
+    }
+  }
+
   /** After a load or resume: the title, the context use, and whether the session is working, idle or suspended. */
   syncState(history: readonly StoredEvent[]): void {
     const projection = this.session.projection()
@@ -534,6 +772,7 @@ class SessionView {
       if (pending !== undefined) pending.enqueuedSeq = item.seq
     }
     if (item.type === "settings.changed") this.requested = null
+    if (this.connection.fidelity.events) this.queueEvent(item, false)
     for (const output of this.translator.translate(item)) this.handleOutput(output, false, seq)
   }
 
@@ -583,8 +822,9 @@ class SessionView {
     for (const pending of chosen) this.pending.splice(this.pending.indexOf(pending), 1)
     // Every update sent so far goes out before the answer.
     void this.outbox.then(() => {
+      const meta = end.turn === undefined ? {} : { _meta: { [META.capabilities]: turnMeta(end.turn) } }
       for (const pending of chosen) {
-        if (end.kind === "stop") pending.resolve({ stopReason: end.stopReason })
+        if (end.kind === "stop") pending.resolve({ stopReason: end.stopReason, ...meta })
         else pending.reject(failure(end))
       }
     })
@@ -600,10 +840,84 @@ class SessionView {
 /** A failed turn, as the error `session/prompt` answers with. Signed out is the protocol's auth-required error. */
 function failure(end: Extract<TurnEnd, { kind: "failed" }>): RequestError {
   if (end.providerError?.kind === "auth")
-    return RequestError.authRequired({ methodId: AUTH_METHOD_ID }, `${end.message} To sign in, ${SIGN_IN_HINT}.`)
+    return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message }) }, `${end.message} To sign in, ${SIGN_IN_HINT}.`)
   const data: Record<string, unknown> = { [META.capabilities]: { reason: "execution_failed" } }
   if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind }
   return new RequestError(-32603, end.message, data)
+}
+
+/** The turn as the prompt response's `_meta[<ns>]` carries it: everything `<prefix>/turn` says but the session. */
+function turnMeta(turn: NonNullable<TurnEnd["turn"]>): Record<string, unknown> {
+  const { sessionId: _, ...rest } = turn
+  return rest
+}
+
+/** `data[<ns>]` of an error. */
+function errorData(data: ErrorData): Record<string, unknown> {
+  return { [META.capabilities]: data }
+}
+
+/** The value under the namespace key of a `_meta` object, when it is an object. */
+function namespaced(meta: unknown): Record<string, unknown> | null {
+  if (typeof meta !== "object" || meta === null) return null
+  const value = (meta as Record<string, unknown>)[META.capabilities]
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null
+}
+
+function openMeta(meta: unknown): OpenMeta | null {
+  const value = namespaced(meta)
+  if (value === null) return null
+  const text = (key: string) => {
+    const field = value[key]
+    if (field === undefined || field === null) return null
+    if (typeof field !== "string" || field === "") throw RequestError.invalidParams({ [key]: field }, `_meta.${META.capabilities}.${key} must be a non-empty string`)
+    return field
+  }
+  return { model: text("model"), effort: text("effort"), archived: value.archived === true }
+}
+
+function stepLimit(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw RequestError.invalidParams({ maxSteps: value }, "maxSteps must be a whole number of at least 1")
+  return value
+}
+
+function parseObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw RequestError.invalidParams(undefined, "expected an object of params")
+  return raw as Record<string, unknown>
+}
+
+function requireString(params: Record<string, unknown>, key: string): string {
+  const value = params[key]
+  if (typeof value !== "string" || value === "") throw RequestError.invalidParams(undefined, `${key} must be a non-empty string`)
+  return value
+}
+
+function optionalString(params: Record<string, unknown>, key: string): string | undefined {
+  return params[key] === undefined || params[key] === null ? undefined : requireString(params, key)
+}
+
+function optionalInteger(params: Record<string, unknown>, key: string, min: number): number | undefined {
+  const value = params[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min) throw RequestError.invalidParams(undefined, `${key} must be a whole number of at least ${min}`)
+  return value
+}
+
+function parseRevertParams(raw: unknown): RevertParams {
+  const params = parseObject(raw)
+  const sessionId = requireString(params, "sessionId")
+  const messageId = optionalString(params, "messageId")
+  if (params.dryRun !== undefined && typeof params.dryRun !== "boolean") throw RequestError.invalidParams(undefined, "dryRun must be a boolean")
+  const handEdits = params.handEdits
+  if (handEdits !== undefined && handEdits !== "ask" && handEdits !== "abort" && handEdits !== "overwrite" && handEdits !== "keep")
+    throw RequestError.invalidParams(undefined, 'handEdits must be "ask", "abort", "overwrite" or "keep"')
+  return {
+    sessionId,
+    ...(messageId === undefined ? {} : { messageId }),
+    ...(params.dryRun === undefined ? {} : { dryRun: params.dryRun as boolean }),
+    ...(handEdits === undefined ? {} : { handEdits }),
+  }
 }
 
 export function configOptionsFor(settings: SessionSettings, models: readonly ModelEntry[]): SessionConfigOption[] {
@@ -642,7 +956,7 @@ function requireDirectory(cwd: string): void {
 }
 
 /** Params of `_<ns>/steer` and `_<ns>/queue`. Content blocks are checked by `promptText`. */
-function parseInputParams(raw: unknown): { sessionId: string; prompt: ContentBlock[] } {
+function parseInputParams(raw: unknown): { sessionId: string; prompt: ContentBlock[]; maxSteps: number | undefined } {
   if (typeof raw !== "object" || raw === null) throw RequestError.invalidParams(undefined, "expected { sessionId, prompt }")
   const value = raw as Record<string, unknown>
   if (typeof value.sessionId !== "string") throw RequestError.invalidParams(undefined, "sessionId must be a string")
@@ -660,7 +974,7 @@ function parseInputParams(raw: unknown): { sessionId: string; prompt: ContentBlo
         throw RequestError.invalidParams(undefined, "a resource block needs resource.uri")
     }
   }
-  return { sessionId: value.sessionId, prompt: value.prompt as ContentBlock[] }
+  return { sessionId: value.sessionId, prompt: value.prompt as ContentBlock[], maxSteps: stepLimit(value.maxSteps) }
 }
 
 /** The context use after the latest model call of a stored log: its input plus output tokens. */

@@ -29,14 +29,18 @@
 import type { SessionUpdate, ToolCallContent, ToolCallLocation } from "@agentclientprotocol/sdk"
 import type { EngineEvent, EventData, ProviderError, SessionSettings, StoredEvent, Usage } from "@light-harness/core"
 import { HARNESS_ORIGIN } from "@light-harness/core"
-import { EXT, META, type StateNotification, type UsageNotification } from "./extensions.ts"
+import { EXT, META, type StateNotification, type TurnNotification, type UsageNotification } from "./extensions.ts"
 import type { Logger } from "./log.ts"
 import { outcomeSuffix, parseInput, progressContent, rawInput, settledContent, toolKind, toolLocations, toolTitle } from "./tools.ts"
 
 /** How an execution ended, for the prompt requests waiting on it. */
-export type TurnEnd =
+export type TurnEnd = (
   | { readonly kind: "stop"; readonly stopReason: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled" }
   | { readonly kind: "failed"; readonly message: string; readonly providerError: ProviderError | null }
+) & {
+  /** What `<prefix>/turn` says about it, for the `_meta` of the prompt response. */
+  readonly turn?: TurnNotification
+}
 
 export type Output =
   | { readonly type: "update"; readonly update: SessionUpdate }
@@ -159,22 +163,46 @@ export class Translator {
       case "execution.started":
       case "execution.resumed":
         this.turn = freshTurn()
+        this.turn.executionId = item.data.executionId
         if (!replay) out.push(this.state({ sessionId: this.options.sessionId, state: "running" }))
         break
-      case "execution.succeeded":
-        out.push(...this.finishTools(update), ...this.end({ kind: "stop", stopReason: this.successReason() }, replay))
+      case "execution.succeeded": {
+        const verification = item.data.verification
+        const outcome = verification.status === "unresolved" ? "unresolved" : "succeeded"
+        out.push(...this.finishTools(update), ...this.end({ kind: "stop", stopReason: this.successReason() }, replay, { executionId: item.data.executionId, outcome, verification }))
         break
+      }
+      case "turn.ended": {
+        // A queued message was waiting for this turn's answer: the turn ends here and the execution carries on with it.
+        const verification = item.data.verification
+        const params: TurnNotification = {
+          sessionId: this.options.sessionId,
+          executionId: this.turn.executionId ?? "",
+          outcome: verification.status === "unresolved" ? "unresolved" : "succeeded",
+          stopReason: this.successReason(),
+          verification,
+          changedFiles: replay ? null : this.turn.changedFiles,
+          continues: true,
+          ...(replay ? { replay: true } : {}),
+        }
+        this.turn.changedFiles = null
+        out.push({ type: "ext", method: EXT.turn, params: { ...params } })
+        break
+      }
       case "execution.failed": {
         const end: TurnEnd = this.turn.refused
           ? { kind: "stop", stopReason: "refusal" }
           : this.turn.stepLimit
             ? { kind: "stop", stopReason: "max_turn_requests" }
             : { kind: "failed", message: item.data.message, providerError: this.turn.providerError }
-        out.push(...this.finishTools(update), ...this.end(end, replay))
+        out.push(...this.finishTools(update), ...this.end(end, replay, { executionId: item.data.executionId, outcome: "failed", message: item.data.message }))
         break
       }
       case "execution.interrupted":
-        out.push(...this.finishTools(update), ...this.end({ kind: "stop", stopReason: "cancelled" }, replay))
+        out.push(
+          ...this.finishTools(update),
+          ...this.end({ kind: "stop", stopReason: "cancelled" }, replay, { executionId: item.data.executionId, outcome: "interrupted", reason: item.data.reason }),
+        )
         break
       case "step.started":
         this.model = item.data.model
@@ -262,6 +290,13 @@ export class Translator {
             error: stepErrorText(item.data.error),
           })
         break
+      case "workspace.changes":
+        this.turn.changedFiles = [...item.files]
+        break
+      case "diagnostic":
+        out.push({ type: "ext", method: EXT.diagnostic, params: { sessionId: this.options.sessionId, kind: item.kind, message: item.message } })
+        if (this.options.notices) update({ sessionUpdate: "notice", severity: "error", title: `Internal problem (${item.kind.replace(/_/g, " ")})`, description: item.message })
+        break
       // Facts with nothing to show: the frozen prompt, instruction updates, the claim's bookkeeping, history ranges.
       case "baseline.set":
       case "instruction.appended":
@@ -316,8 +351,19 @@ export class Translator {
     return []
   }
 
-  private end(end: TurnEnd, replay: boolean): Output[] {
-    const out: Output[] = [{ type: "end", end }]
+  private end(
+    end: TurnEnd,
+    replay: boolean,
+    details: Pick<TurnNotification, "executionId" | "outcome" | "verification" | "message" | "reason">,
+  ): Output[] {
+    const turn: TurnNotification = {
+      sessionId: this.options.sessionId,
+      ...details,
+      stopReason: end.kind === "stop" ? end.stopReason : "error",
+      changedFiles: replay ? null : this.turn.changedFiles,
+      ...(replay ? { replay: true } : {}),
+    }
+    const out: Output[] = [{ type: "ext", method: EXT.turn, params: { ...turn } }]
     if (!replay)
       out.push(
         this.state({
@@ -327,6 +373,8 @@ export class Translator {
           ...(end.kind === "failed" ? { message: end.message } : {}),
         }),
       )
+    // Last, so that the prompts it answers are answered after everything it says.
+    out.push({ type: "end", end: { ...end, turn } })
     return out
   }
 
@@ -404,6 +452,8 @@ export class Translator {
 
 function freshTurn() {
   return {
+    executionId: null as string | null,
+    changedFiles: null as string[] | null,
     stepLimit: false,
     refused: false,
     lastFinish: null as EventData<"step.ended">["finish"] | null,

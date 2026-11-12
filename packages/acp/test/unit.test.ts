@@ -73,10 +73,14 @@ test("outcomes ACP has no status for are failed, say so in the title and the con
 test("stop reasons follow how the execution ended", () => {
   const ends = (events: [string, Record<string, unknown>][]) => {
     const t = translator()
-    return events.flatMap(([type, data]) => t.translate(durable(type, data))).flatMap((output) => (output.type === "end" ? [output.end] : []))
+    return events.flatMap(([type, data]) => t.translate(durable(type, data))).flatMap((output) => {
+      if (output.type !== "end") return []
+      const { turn: _, ...end } = output.end
+      return [end]
+    })
   }
   const start: [string, Record<string, unknown>] = ["execution.started", { executionId: "exe_1" }]
-  expect(ends([start, ["step.ended", { messageId: M, finish: "length", usage: null }], ["execution.succeeded", { executionId: "exe_1" }]])).toEqual([
+  expect(ends([start, ["step.ended", { messageId: M, finish: "length", usage: null }], ["execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } }]])).toEqual([
     { kind: "stop", stopReason: "max_tokens" },
   ])
   expect(ends([start, ["step.refused", { messageId: M, message: "No.", excludeFromSeq: 1, usage: null }], ["execution.failed", { executionId: "exe_1", message: "The provider refused the request." }]])).toEqual([

@@ -32,10 +32,26 @@
  * - `revert` and `undoRevert` are what `/undo` and `/redo` call. An engine
  *   that leaves them out has no undo, and the commands say so.
  */
-import type { EphemeralEvent, MessageId, RevertOptions, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
+import type { EphemeralEvent, HandEditPolicy, MessageId, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@light-harness/core"
 
 /** One item of a session's event stream. Durable and ephemeral type names are disjoint, so `type` tells them apart. */
 export type EngineEvent = StoredEvent | EphemeralEvent
+
+/**
+ * What `/undo` and `/redo` ask when the restore would overwrite files edited
+ * by hand: how to treat them, or `null` to change nothing.
+ */
+export type HandEditQuestion = (plan: RevertPlan) => Promise<HandEditPolicy | null>
+
+/** The engine's `RevertOptions`, where `handEdits: "ask"` puts `confirm` to the user when it comes to that. */
+export interface SessionRevertOptions extends Omit<RevertOptions, "handEdits"> {
+  readonly handEdits?: HandEditPolicy | "ask"
+  /** With `handEdits: "ask"`: asked once the engine finds files edited by hand that the restore would overwrite. */
+  readonly confirm?: HandEditQuestion
+}
+
+/** What the CLI suggests when the saved sign-in is missing or rejected. */
+export const SIGN_IN_ADVICE = "sign in with ChatGPT, then try again"
 
 /** Which session to work in. */
 export type SessionTarget =
@@ -130,11 +146,17 @@ export interface Session {
   /** Asks the running execution to stop with reason `user`. A no-op when nothing runs. */
   interrupt(): void
   /** `/undo`: goes back to before a user message (the latest by default), files and conversation. Only while idle. */
-  revert?(options?: RevertOptions): Promise<RevertResult>
+  revert?(options?: SessionRevertOptions): Promise<RevertResult>
   /** `/redo`: undoes the latest revert. Only while idle. */
-  undoRevert?(options?: Omit<RevertOptions, "messageId">): Promise<RevertResult>
+  undoRevert?(options?: Omit<SessionRevertOptions, "messageId">): Promise<RevertResult>
   /** Stops anything still running (as a shutdown) and ends `events`. */
   close(): Promise<void>
+  /**
+   * Why `events` ended without `close`, as a sentence for the user: the
+   * engine went away (its process died). `null` while all is well. Engines
+   * in this process never lose their sessions and leave it out.
+   */
+  lost?(): string | null
 }
 
 /** How long the CLI waits for `Session.close` before it exits anyway. */

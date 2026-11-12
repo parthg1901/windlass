@@ -1,5 +1,6 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
 import { brand } from "@light-harness/core"
+import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 
 export interface Options {
   /** The prompt given as arguments, joined with spaces; `null` when none was given. */
@@ -17,6 +18,8 @@ export interface Options {
   readonly demo: string | null
   readonly demoSpeed: number
   readonly demoGraceMs: number | null
+  /** `--engine`: how the real engine is reached; through ACP with a child process unless asked otherwise. */
+  readonly engine: EngineKind
 }
 
 export type Parsed =
@@ -29,7 +32,7 @@ export type Parsed =
   | { readonly kind: "acp" }
   | { readonly kind: "error"; readonly message: string }
 
-const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--cwd", "--demo", "--demo-speed", "--demo-grace"] as const
+const VALUE_FLAGS = ["--session", "--model", "--effort", "--max-steps", "--cwd", "--demo", "--demo-speed", "--demo-grace", "--engine"] as const
 type ValueFlag = (typeof VALUE_FLAGS)[number]
 
 const SHORT: Record<string, string> = { "-h": "--help", "-v": "--version", "-c": "--continue", "-q": "--quiet", "-i": "--interactive", "-m": "--model" }
@@ -76,6 +79,9 @@ export function parseArgs(argv: readonly string[]): Parsed {
   if ((values["--demo-speed"] !== undefined || grace !== null) && values["--demo"] === undefined) return error("--demo-speed and --demo-grace only apply with --demo")
   const maxSteps = values["--max-steps"] === undefined ? null : Number(values["--max-steps"])
   if (maxSteps !== null && (!Number.isInteger(maxSteps) || maxSteps < 1)) return error("--max-steps must be a whole number of at least 1")
+  const engine = values["--engine"] ?? "acp"
+  if (!(ENGINE_KINDS as readonly string[]).includes(engine)) return error(`--engine must be one of: ${ENGINE_KINDS.join(", ")}`)
+  if (values["--engine"] !== undefined && values["--demo"] !== undefined) return error("--engine does not apply to --demo, which plays a script without an engine")
   const output = flags.has("--json") ? "json" : flags.has("--quiet") ? "quiet" : "pretty"
   if (flags.has("--interactive") && output !== "pretty") return error("interactive mode cannot be combined with --json or --quiet")
   const listing = flags.has("--list-sessions") ? "sessions" : flags.has("--models") ? "models" : null
@@ -97,6 +103,7 @@ export function parseArgs(argv: readonly string[]): Parsed {
     demo: values["--demo"] ?? null,
     demoSpeed: speed,
     demoGraceMs: grace,
+    engine: engine as EngineKind,
   }
   return listing === null ? { kind: "run", options } : { kind: "list", what: listing, options }
 }
@@ -140,6 +147,11 @@ Demo (replays a scripted session; no model, no tools):
   --demo <name|number>   play one
   --demo-speed <x>       playback speed (default 1; 0 is instant)
   --demo-grace <ms>      how long a stopped command takes to wind down
+
+Debugging:
+  --engine <how>         how the engine is reached: acp (the default: \`${b} acp\` as a child
+                         process, as an editor runs it), acp-memory (the same protocol, the
+                         server in this process) or direct (no protocol)
 
 Interactive keys:
   Enter sends; end a line with \\ (or press Alt-Enter) to continue on a new line;

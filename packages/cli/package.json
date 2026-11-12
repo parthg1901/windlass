@@ -11,6 +11,7 @@
     "./engine": "./src/engine.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "2.5.0",
     "@light-harness/core": "workspace:*",
     "@light-harness/acp": "workspace:*"
   }

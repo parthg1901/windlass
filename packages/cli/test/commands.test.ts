@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import type { RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
-import { type RevertableSession, revertable, sessionCommand } from "../src/commands.ts"
+import { type RevertableSession, askLocally, revertable, sessionCommand } from "../src/commands.ts"
 import { type EditorAction, Screen } from "../src/terminal.ts"
 import { VirtualTerminal } from "./vt.ts"
 
@@ -35,14 +35,25 @@ const withHandEdit = plan([
   { path: "notes.md", status: "modified", handEdited: true },
 ])
 
-/** A session whose revert answers a dry run with `preview` and records every call it gets. */
-function session(preview: RevertResult, done: (options: RevertOptions) => RevertResult = (options) => ({ kind: "reverted", plan: (preview as { plan: RevertPlan }).plan, restore: null })) {
+/** What the engine does without a dry run: refuses to overwrite hand edits unless told how, as the real one does. */
+const restored = (preview: RevertResult) => (options: RevertOptions): RevertResult => {
+  const planned = (preview as { plan: RevertPlan }).plan
+  if ((options.handEdits ?? "abort") === "abort" && planned.changes.some((change) => change.handEdited)) return { kind: "hand_edited", plan: planned }
+  return { kind: "reverted", plan: planned, restore: null }
+}
+
+/**
+ * A session whose engine answers a dry run with `preview` and records every
+ * call it gets. The question about hand edits is put as the direct engine's
+ * adapter puts it (`askLocally`).
+ */
+function session(preview: RevertResult, done: (options: RevertOptions) => RevertResult = restored(preview)) {
   const calls: string[] = []
   const answer = (name: string) => async (options: RevertOptions = {}) => {
     calls.push(`${name} ${JSON.stringify(options)}`)
     return options.dryRun ? preview : done(options)
   }
-  const fake: RevertableSession = { revert: answer("revert"), undoRevert: answer("undoRevert") }
+  const fake: RevertableSession = { revert: (options = {}) => askLocally(answer("revert"), options), undoRevert: (options = {}) => askLocally(answer("undoRevert"), options) }
   offerSession(fake)
   return calls
 }
@@ -99,7 +110,8 @@ describe("/undo", () => {
     await type("/undo\r")
     expect(output().slice(-2)).toEqual(["  you edited 1 file by hand since then: notes.md", "  overwriting them is safe: /redo brings them back"])
     expect(prompt()).toBe("overwrite them? [y]es · [k]eep mine · [N]o ›")
-    expect(calls).toEqual(['revert {"dryRun":true}'])
+    // The engine found them when asked to change nothing that was edited by hand, and changed nothing.
+    expect(calls).toEqual(['revert {"dryRun":true}', 'revert {"handEdits":"abort"}'])
     await type("y\r")
     expect(calls.at(-1)).toBe('revert {"handEdits":"overwrite"}')
     // The answer was the command's, not a message for the agent, and the usual prompt is back.
@@ -122,7 +134,7 @@ describe("/undo", () => {
       const { type, actions, output, prompt } = setup()
       await type("/undo\r")
       await type(answer)
-      expect(calls).toEqual(['revert {"dryRun":true}'])
+      expect(calls).toEqual(['revert {"dryRun":true}', 'revert {"handEdits":"abort"}'])
       expect(output().at(-1)).toBe("  nothing was changed")
       // Ctrl-C answered the question; it did not interrupt anything or leave the program.
       expect(actions).toEqual([])

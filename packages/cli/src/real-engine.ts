@@ -23,14 +23,15 @@ import {
   brand,
   createHarness,
 } from "@light-harness/core"
-import { type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, type Session, type SessionSummary } from "./engine.ts"
+import { askLocally } from "./commands.ts"
+import { type Engine, EngineUnavailable, type ModelInfo, type OpenRequest, SIGN_IN_ADVICE, type Session, type SessionSummary } from "./engine.ts"
 
 export { DEFAULT_EFFORT, DEFAULT_MODEL } from "@light-harness/core"
 
 /** For tests and scripts. The CLI passes nothing. */
 export type RealEngineOptions = HarnessOptions
 
-const SIGN_IN = "sign in with ChatGPT, then try again"
+const SIGN_IN = SIGN_IN_ADVICE
 
 export function createRealEngine(options: RealEngineOptions = {}): Engine {
   const harness = createHarness(options)
@@ -50,8 +51,8 @@ export function createRealEngine(options: RealEngineOptions = {}): Engine {
             ...(request.maxSteps === null ? {} : { maxSteps: request.maxSteps }),
           }),
         interrupt: () => session.interrupt(),
-        revert: (revert) => session.revert(revert),
-        undoRevert: (undo) => session.undoRevert(undo),
+        revert: (revert = {}) => askLocally(session.revert, revert),
+        undoRevert: (undo = {}) => askLocally(session.undoRevert, undo),
         close: () => harness.close(),
       }
     },

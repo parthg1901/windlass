@@ -37,9 +37,10 @@ export async function serveStdio(options: StdioOptions): Promise<number> {
 
   const scriptPath = options.env[SCRIPT_ENV]
   const provider = scriptPath === undefined || scriptPath === "" ? undefined : await scriptedProvider(scriptPath)
-  if (provider !== undefined) log.warn(`using the scripted model in ${scriptPath} (${SCRIPT_ENV}); no real model is called`)
-  // The same harness the command line builds: one data directory, a store per session, the saved sign-in.
-  const harness = createHarness({ log: (line) => log.info(line), ...(provider === undefined ? {} : { provider }) })
+  if (provider !== undefined) log.info(`using the scripted model in ${scriptPath} (${SCRIPT_ENV}); no real model is called`)
+  // The same harness the command line builds: one data directory, a store per session, the saved sign-in. Its lines
+  // (the engine's diagnostics, notices about the data directory) are what the command line prints as warnings too.
+  const harness = createHarness({ log: (line) => log.warn(line), ...(provider === undefined ? {} : { provider }) })
 
   let outputClosed = false
   const output = new WritableStream<Uint8Array>({

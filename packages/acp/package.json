@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./extensions": "./src/extensions.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.5.0",

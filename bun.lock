@@ -24,6 +24,7 @@
         "lh": "./src/main.ts",
       },
       "dependencies": {
+        "@agentclientprotocol/sdk": "2.5.0",
         "@light-harness/acp": "workspace:*",
         "@light-harness/core": "workspace:*",
       },

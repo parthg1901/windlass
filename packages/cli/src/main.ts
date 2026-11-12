@@ -197,6 +197,9 @@ export async function run(io: Io): Promise<number> {
     // The terminal is put back before anything else is written, so nothing lands inside the input footer.
     terminal?.restore()
     if (!closed) io.stderr.write(`${brand.binary}: the engine did not stop within ${formatDuration(CLOSE_TIMEOUT_MS)}; exiting anyway\n`)
+    // The engine went away on its own (its process died): said last, where it is seen.
+    const lost = session.lost?.() ?? null
+    if (lost !== null) io.stderr.write(`${brand.binary}: ${lost}\n`)
   }
 }
 
@@ -216,6 +219,8 @@ async function engineFor(io: Io, options: Options, demo: DemoScenario | null): P
           },
         },
     io.realEngineModule,
+    options.engine,
+    { env: io.env, stderr: (text) => io.stderr.write(text), version: await version() },
   )
   if (selected.kind === "engine") return selected.engine
   const why = selected.reason === null ? "" : ` (${selected.reason})`
@@ -308,7 +313,8 @@ async function interactiveLoop(context: Interactive): Promise<number> {
       renderer.prompt(text)
     }
     screen.show("› ", STEER_HINT)
-    if ((await context.turn(text)) === "closed") break
+    // The events ended under a running turn: the engine went away. Leaving is the only thing left to do.
+    if ((await context.turn(text)) === "closed") return 1
   }
   return 0
 }

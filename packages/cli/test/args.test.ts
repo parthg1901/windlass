@@ -28,6 +28,7 @@ describe("parseArgs", () => {
       demo: null,
       demoSpeed: 1,
       demoGraceMs: null,
+      engine: "acp",
     })
   })
 

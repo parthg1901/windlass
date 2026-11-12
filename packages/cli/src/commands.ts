@@ -17,14 +17,32 @@
  * attached to the editor when it opened it (`Screen.attach`). An engine
  * whose sessions cannot revert attaches none, and the commands say so.
  */
-import type { RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
+import type { HandEditPolicy, RevertOptions, RevertPlan, RevertResult } from "@light-harness/core"
+import type { SessionRevertOptions } from "./engine.ts"
 import { type Segment, plural, seg } from "./text.ts"
 import { fileList } from "./tools.ts"
 
-/** What `/undo` and `/redo` need from a session: the engine's revert and its undo. */
+/** What `/undo` and `/redo` need from a session: the engine's revert and its undo, which may ask about hand edits. */
 export interface RevertableSession {
-  revert(options?: RevertOptions): Promise<RevertResult>
-  undoRevert(options?: Omit<RevertOptions, "messageId">): Promise<RevertResult>
+  revert(options?: SessionRevertOptions): Promise<RevertResult>
+  undoRevert(options?: Omit<SessionRevertOptions, "messageId">): Promise<RevertResult>
+}
+
+/**
+ * `handEdits: "ask"` for an engine whose revert only takes a policy: it is
+ * tried with `abort`, and when that finds files edited by hand, the question
+ * is put and the revert done again with the answer. The engine changes
+ * nothing before it has looked for hand edits, so the first try leaves no
+ * trace. An engine reached over the protocol asks the same through the
+ * protocol instead.
+ */
+export async function askLocally(act: (options: RevertOptions) => Promise<RevertResult>, options: SessionRevertOptions): Promise<RevertResult> {
+  const { confirm, handEdits, ...rest } = options
+  if (handEdits !== "ask") return act({ ...rest, ...(handEdits === undefined ? {} : { handEdits }) })
+  const first = await act({ ...rest, handEdits: "abort" })
+  if (first.kind !== "hand_edited" || confirm === undefined) return first
+  const answer = await confirm(first.plan)
+  return answer === null ? first : act({ ...rest, handEdits: answer })
 }
 
 /** What a command needs from the terminal: lines of output, and an answer to a question. */
@@ -55,28 +73,33 @@ export async function runSessionCommand(command: Command, session: RevertableSes
   const undo = command === "/undo"
   const note = (text: string, tone: "dim" | "yellow" | "red" = "dim") => io.print([seg(text, tone)])
   if (session === null) return note(`${command} is not available with this engine`, "yellow")
-  const act = (options: Omit<RevertOptions, "messageId">) => (undo ? session.revert(options) : session.undoRevert(options))
+  const act = (options: Omit<SessionRevertOptions, "messageId">) => (undo ? session.revert(options) : session.undoRevert(options))
   try {
     const preview = await act({ dryRun: true })
     if (preview.kind !== "preview") return note(refusal(command, preview), "yellow")
     const plan = preview.plan
     for (const line of describePlan(plan, undo)) io.print(line)
     const byHand = plan.changes.filter((change) => change.handEdited).map((change) => change.path)
-    let handEdits: RevertOptions["handEdits"] = "abort"
-    if (byHand.length > 0) {
-      io.print([seg(`  you edited ${plural(byHand.length, "file")} by hand since then: `, "yellow"), seg(fileList(byHand, 6))])
-      // Only an undo keeps a way back: /redo restores the workspace as it was right before it, hand edits included.
-      io.print([seg(undo ? "  overwriting them is safe: /redo brings them back" : "  overwriting them cannot be taken back: /undo returns to before the turn, not to your edits", undo ? "dim" : "yellow")])
-      const answer = (await io.ask("overwrite them? [y]es · [k]eep mine · [N]o › "))?.trim().toLowerCase() ?? ""
-      if (answer === "y" || answer === "yes") handEdits = "overwrite"
-      else if (answer === "k" || answer === "keep") handEdits = "keep"
-      else return note("  nothing was changed")
-    } else if (plan.target === null && undo) {
+    if (byHand.length === 0 && plan.target === null && undo) {
       // The conversation would go back and the files would not: that is worth a question too.
       const answer = (await io.ask("rewind the conversation without restoring files? [y/N] › "))?.trim().toLowerCase() ?? ""
       if (answer !== "y" && answer !== "yes") return note("  nothing was changed")
     }
-    const result = await act({ handEdits })
+    // The engine asks about files edited by hand when it finds them, which is right before it would overwrite them.
+    let declined = false
+    const confirm = async (asked: RevertPlan): Promise<HandEditPolicy | null> => {
+      const edited = asked.changes.filter((change) => change.handEdited).map((change) => change.path)
+      io.print([seg(`  you edited ${plural(edited.length, "file")} by hand since then: `, "yellow"), seg(fileList(edited, 6))])
+      // Only an undo keeps a way back: /redo restores the workspace as it was right before it, hand edits included.
+      io.print([seg(undo ? "  overwriting them is safe: /redo brings them back" : "  overwriting them cannot be taken back: /undo returns to before the turn, not to your edits", undo ? "dim" : "yellow")])
+      const answer = (await io.ask("overwrite them? [y]es · [k]eep mine · [N]o › "))?.trim().toLowerCase() ?? ""
+      if (answer === "y" || answer === "yes") return "overwrite"
+      if (answer === "k" || answer === "keep") return "keep"
+      declined = true
+      return null
+    }
+    const result = await act({ handEdits: "ask", confirm })
+    if (declined) return note("  nothing was changed")
     if (result.kind !== "reverted" && result.kind !== "failed") note(refusal(command, result), "yellow")
     // A failure is shown by the `revert.failed` event; one that never got that far is said here.
     if (result.kind === "failed" && result.plan === null) note(result.message, "red")
