@@ -7,6 +7,8 @@
 import { describe, expect, test } from "bun:test"
 import { type CallId, type EphemeralEvent, type MessageId, type NewEvent, type SessionId, type StoredEvent, event, text } from "@light-harness/core"
 import { render, stored } from "./helpers.ts"
+import { COPY_NOTE } from "../src/features.ts"
+import { wrap } from "../src/text.ts"
 
 const PARENT = "ses_test" as SessionId
 const CHILD = "ses_0123456789abcdef" as SessionId
@@ -75,7 +77,8 @@ describe("a subagent", () => {
     )
     expect(out).toContain("    ? subagent ses_01234567 asks: Allow shell: curl example.com with network\n      access?\n")
     expect(lines.at(-1)).toBe("? subagent ses_01234567 waits for your answer · Ctrl-C stops the turn")
-    expect(lines.at(-2)).toBe("⋯ subagent ses_01234567: 0 steps, 1 tool")
+    // What it is doing, not only that it runs: its tool call that is open.
+    expect(lines.at(-2)).toBe("⋯ subagent ses_01234567: running shell · 0 steps, 1 tool")
   })
 })
 
@@ -85,7 +88,7 @@ describe("a background command", () => {
   const told = event("inbox.enqueued", { messageId: m("s9"), origin: "background_command", delivery: "steer", content: text("Background command bg_7 exited with code 0 after 2.5 s.\nCommand: bun test\nOutput:\n3 pass") })
 
   test("is a start line with the command, and a completion line that says how it ended and that the agent is told", () => {
-    expect(render(stored([command(), exit(0), told]))).toBe(["  ▸ background bg_7 · bun test --watch", "  ✓ background bg_7 exited with code 0 · 100ms", "  ↳ its result is sent to the agent, which carries on", ""].join("\n"))
+    expect(render(stored([command(), exit(0), told]))).toBe(["  ▸ background bg_7 · bun test --watch", "    output:", "      /tmp/.spill/bg.log", "  ✓ background bg_7 exited with code 0 · 100ms", "  ↳ its result is sent to the agent, which carries on", ""].join("\n"))
     expect(render(stored([command(), exit(3)]))).toContain("  ✗ background bg_7 exited with code 3")
     expect(render(stored([command(), exit(null, "stopped")]))).toContain("  ■ background bg_7 stopped")
     expect(render(stored([command(), exit(null, "lost")]))).toContain("  ⚠ background bg_7 lost")
@@ -103,6 +106,6 @@ describe("a replay session", () => {
         event("replay.ended", { outcome: "diverged", reason: "left the recording at step 2, call 1: arguments differ", report: {} }),
       ]),
     )
-    expect(out).toBe(["· replay left its recording (arguments differ) · continuing in a copy", "  /data/replays/ses_r", "⚠ replay diverged · left the recording at step 2, call 1: arguments differ", ""].join("\n"))
+    expect(out).toBe(["· replay left its recording (arguments differ) · continuing in a copy", "  /data/replays/ses_r", ...wrap(COPY_NOTE, 78).map((line) => `  ${line}`), "⚠ replay diverged · left the recording at step 2, call 1: arguments differ", ""].join("\n"))
   })
 })

@@ -239,6 +239,10 @@ export interface ReplayResult {
   readonly report: { readonly status: string; readonly reason: string } & Record<string, unknown>
   /** The report as the harness prints it. */
   readonly text: string
+  /** The comparison that carries the signal (`compareReplay`): side effects, the files it ended with, and the grade; `null` when it could not be made. */
+  readonly compared: Record<string, unknown> | null
+  /** The comparison as the harness prints it (`renderComparison`). */
+  readonly comparison: string | null
 }
 
 /** Result of `<prefix>/approval`. */

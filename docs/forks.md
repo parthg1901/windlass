@@ -27,7 +27,14 @@ Continue in the fork:
 ```
 
 In the full-screen interface, `/fork` does the same for the session on screen and switches to the fork; `/fork copy`
-gives it a copy of the workspace (below). It works while the agent is idle.
+gives it a copy of the workspace (below). It works while the agent is idle, and only once the session has a turn: in a
+session without one there is nothing to carry over, and it says so. `/sessions` marks a fork with `⑂`, shows the
+start of its ID and of the one it was forked from, and the directory it works in when that is a copy elsewhere; a
+fork's panel counts its own model calls, with the inherited ones on a line of their own.
+
+`--session` and `lh fork <session>` take an ID, its start, or its start without `ses_`; a start that names one
+session of the current directory picks it even when other directories have sessions that start the same. With
+`--list-sessions`, `--session` narrows the listing to the sessions that start so.
 
 ## Options
 
@@ -70,7 +77,9 @@ without asking.
 of the workspace as they are now if you fork the latest point of an idle session (your uncommitted edits included),
 otherwise as they were at the fork point. It does not hold ignored files, large untracked files, nested
 repositories, or `.git`: **the copy is not a git repository**, so git commands and a subagent's `worktree` do not
-work in it. At its first step the model is told the working directory changed. A fork in a copy is listed by
+work in it. `lh fork` and `/fork copy` say so when they make it, with what follows: commands that need installed
+dependencies (and the project's checks) fail there until they are installed in the copy. At its first step the model
+is told the working directory changed. A fork in a copy is listed by
 `lh --list-sessions` in the copy's directory, not in the original's.
 
 ## What a fork has and has not

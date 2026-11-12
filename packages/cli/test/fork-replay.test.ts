@@ -101,6 +101,20 @@ describe("as a process", () => {
     expect(copy.copiedFrom).toBe(at.workspace)
     expect(readFileSync(join(copy.cwd, "b.txt"), "utf8")).toBe("bee\n")
 
+    // A copy says what it holds and lacks, so a failing check there is not a mystery.
+    const pretty = await cli(at, [], ["fork", parent!, "--copy"])
+    expect(pretty.out).toContain("It works in a copy of")
+    expect(pretty.out).toContain("no ignored files (such as node_modules or build output)")
+    expect(pretty.out).toContain("so it is not a git repository")
+
+    // The start of an ID without `ses_`; the listing narrowed to the sessions that start so.
+    const hex = await cli(at, [], ["fork", parent!.slice(4, 14), "--json"])
+    expect((JSON.parse(hex.out) as { parentSessionId: string }).parentSessionId).toBe(parent!)
+    const narrowed = await cli(at, [], ["--list-sessions", "--session", parent!.slice(4, 14)])
+    expect(narrowed.out.trim().split("\n").map((line) => sessionIds(line)[0])).toEqual([parent])
+    const none = await cli(at, [], ["--list-sessions", "--session", "ffffffffff"])
+    expect(none.out).toBe(`no session in ${at.workspace} starts with ses_ffffffffff\n`)
+
     const missing = await cli(at, [], ["fork", "ses_nothing"])
     expect(missing.code).toBe(1)
     expect(missing.err).toStartWith(`${brand.binary}: `)
@@ -154,12 +168,17 @@ describe("as a process", () => {
     expect(same.err).toMatch(/^replaying ses_[0-9a-f]+ as ses_[0-9a-f]+\n {2}step 1 · write b\.txt · as recorded\n$/)
     expect(same.out).toMatch(/^replay ses_[0-9a-f]+: IDENTICAL {2}all 2 recorded steps replayed without a divergence/)
     expect(same.out).toContain("(2 model calls)")
+    // The comparison that carries the signal, as scripts/replay.ts prints it.
+    expect(same.out).toContain("compared on what it did (reads ignored)")
+    expect(same.out).toContain("  side effects   ")
+    expect(same.out).toContain("  files          ")
     expect(readFileSync(join(at.workspace, "b.txt"), "utf8")).toBe("bee\n")
 
     const changed = await cli(at, [[write("BEE\n")], [say("Wrote.")]], ["replay", "--json"])
     expect(changed.code).toBe(0)
     expect(changed.err).toBe("")
-    const result = JSON.parse(changed.out) as { report: { status: string; divergence: { kind: string } }; policy: string }
+    const result = JSON.parse(changed.out) as { report: { status: string; divergence: { kind: string } }; policy: string; compared: { sameWorkspace: unknown } | null }
+    expect(result.compared).not.toBeNull()
     expect(result.report.status).toBe("diverged")
     expect(result.report.divergence.kind).toBe("arguments_differ")
     expect(result.policy).toBe("stop")

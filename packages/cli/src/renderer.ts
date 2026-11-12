@@ -9,7 +9,7 @@
  */
 import { type EventData, type ProviderError, type SessionSettings, type StepError, type Usage, type VerificationOutcome, brand, describeNeed } from "@light-harness/core"
 import type { EngineEvent } from "./engine.ts"
-import { type Line, type LineTone, wakeMessageSummary } from "./features.ts"
+import { COPY_NOTE, type Line, type LineTone, wakeMessageSummary } from "./features.ts"
 import type { DiffFile } from "@light-harness/acp/extensions"
 import { type TurnEvent, type TurnInfo, TurnTracker } from "@light-harness/acp/turns"
 import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
@@ -40,6 +40,8 @@ export interface PrettyOptions {
   readonly showReasoning: boolean
   /** Print user prompts found in the stream (`› ...`), for replays where nobody typed them here. */
   readonly echoPrompts: boolean
+  /** `exits`: the process leaves when the turn ends (a one-shot run), so background work still running is stopped then. */
+  readonly afterTurn?: "exits" | "stays"
   /**
    * Where the transient status line goes when something else owns the bottom
    * of the terminal (the interactive input). Without it, and with `live`, the
@@ -82,6 +84,10 @@ interface Turn {
   lastError: string | null
   /** The provider's request ID of the last failed call, for the failure line: what a bug report quotes. */
   requestId: string | null
+  /** What the turn's subagents used (`spawn.ended`'s usage): their own model calls, not in `usage`. */
+  childUsage?: Usage | null
+  /** Calls refused because they needed approval and nobody was there (`--unattended deny`). */
+  refused?: number
 }
 
 interface InboxItem {
@@ -156,8 +162,10 @@ export class PrettyRenderer implements Sink {
    */
   private readonly spawned = new Map<
     string,
-    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string }> }
+    { readonly kind: "subagent" | "command"; readonly label: string; readonly startedAt: number; readonly background: boolean; title: string | null; steps: number; tools: number; asking: boolean; readonly calls: Map<string, { readonly name: string; readonly arg: string }> }
   >()
+  /** How the latest spawned work ended, for the line about the message that tells the agent. */
+  private lastSpawnEnd: { readonly outcome: string; readonly detail: string } | null = null
 
   /** The session's turns, as a person counts them: what `/undo` and `/redo` name. */
   private turns = new TurnTracker()
@@ -285,18 +293,22 @@ export class PrettyRenderer implements Sink {
         const where = [...(event.data.background ? ["in the background"] : []), ...(work.kind === "subagent" && work.worktree !== null ? ["in its own worktree"] : [])]
         if (work.kind === "subagent") {
           const label = `subagent ${shortId(work.sessionId)}`
-          this.spawned.set(event.data.spawnId, { kind: "subagent", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
+          this.spawned.set(event.data.spawnId, { kind: "subagent", label, startedAt: event.time, background: event.data.background, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
           this.line("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(` started${where.length === 0 ? "" : ` ${where.join(", ")}`}`, "dim")])
         } else {
           const label = `background ${event.data.spawnId}`
-          this.spawned.set(event.data.spawnId, { kind: "command", label, startedAt: event.time, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
+          this.spawned.set(event.data.spawnId, { kind: "command", label, startedAt: event.time, background: true, title: null, steps: 0, tools: 0, asking: false, calls: new Map() })
           this.lineWithArg("info", [seg(`  ${SYMBOL.call} `, "cyan"), seg(label, "bold"), seg(" · ", "dim")], flatten(work.command), [])
+          // Where the user can read its output: the file on this machine, not the sandbox's name for it.
+          if (work.logPath !== null) this.pathLines("    output:", work.logPath)
         }
         return
       }
       case "spawn.ended": {
         const known = this.spawned.get(event.data.spawnId)
         this.spawned.delete(event.data.spawnId)
+        this.lastSpawnEnd = { outcome: event.data.outcome, detail: event.data.detail }
+        if (known?.kind === "subagent" && !known.background && event.data.usage !== null && this.turn !== null) this.turn.childUsage = addUsage(this.turn.childUsage ?? null, event.data.usage)
         const { outcome, merge } = event.data
         const label = known?.label ?? `background work ${event.data.spawnId}`
         const failed = outcome === "failed" || (known?.kind === "command" && outcome === "completed" && event.data.exitCode !== 0)
@@ -323,6 +335,7 @@ export class PrettyRenderer implements Sink {
       case "replay.diverged":
         this.line("info", [seg(`${SYMBOL.note} replay left its recording (${event.data.divergence.replaceAll("_", " ")}) · continuing in a copy`, "dim")])
         this.uncut("info", `  ${event.data.workspace}`, "dim")
+        for (const line of wrap(COPY_NOTE, this.width - 2)) this.line("info", [seg(`  ${line}`, "dim")])
         return
       case "replay.ended": {
         const outcome = event.data.outcome
@@ -370,6 +383,7 @@ export class PrettyRenderer implements Sink {
       case "approval.denied": {
         // Refused without a question. An unattended run says so: nothing waited, and this is what became of the call.
         const needs = event.data.needs.map(describeNeed)
+        if (event.data.reason === "unattended" && this.turn !== null) this.turn.refused = (this.turn.refused ?? 0) + 1
         const why =
           event.data.reason === "unattended"
             ? `needs approval for ${needs.join(", ")}; nobody is here to give it, so it was refused${event.data.stop ? " and the run ends (--unattended stop)" : " (--unattended deny)"}`
@@ -501,6 +515,12 @@ export class PrettyRenderer implements Sink {
         const item = this.inbox.get(event.data.messageId)
         this.inbox.delete(event.data.messageId)
         if (item === undefined || !item.midTurn) return
+        // The end of spawned work reaching the model is not the user's message: its own line said what it was.
+        if (item.origin === "background_command" || item.origin === "subagent_result" || item.origin === "spawn_lost") {
+          this.line("info", [seg(`  ${SYMBOL.inbox} `, "magenta"), seg(item.origin === "subagent_result" ? "the subagent's answer reached the agent" : "the result reached the agent", "dim")])
+          return
+        }
+        if (item.origin !== null) return
         this.line("info", [seg(`${SYMBOL.inbox} `, "magenta"), seg("delivered to the agent: ", "dim"), seg(quote(item.text))])
         return
       }
@@ -642,7 +662,7 @@ export class PrettyRenderer implements Sink {
         const kept = record?.kept ?? []
         const byHand = kept.filter((item) => item.reason === "hand_edited").map((item) => item.path)
         const other = kept.filter((item) => item.reason !== "hand_edited").map((item) => item.path)
-        if (byHand.length > 0) this.lineWithArg("info", [seg(undone ? "  left as they are now, your edits and the agent's changes both: " : "  left as they are now, with your edits: ", "dim")], fileList(byHand, 6), [])
+        if (byHand.length > 0) this.lineWithArg("info", [seg(undone ? "  left as they are now, the outside changes and the agent's both: " : "  left as they are now, with the outside changes: ", "dim")], fileList(byHand, 6), [])
         if (other.length > 0 || (record?.keptOmitted ?? 0) > 0)
           this.lineWithArg("info", [seg("  left alone (ignored or never recorded): ", "dim")], fileList(other, 6), [seg((record?.keptOmitted ?? 0) > 0 ? ` and ${record!.keptOmitted} more` : "", "dim")])
         return
@@ -769,7 +789,9 @@ export class PrettyRenderer implements Sink {
     const tail: Segment[] = [seg(outcome.text === "" ? "" : outcome.text, outcome.tone === "green" ? undefined : outcome.tone), ...sandboxMark(call), seg(suffix([duration]), "dim")]
     if (adjacent) this.line("info", [...head, ...trimLeadingDot(tail, outcome.text)])
     else this.lineWithArg("info", [...head, seg(call.name, "bold"), seg(call.arg === "" ? "" : " ")], call.arg, [seg(" · ", "dim"), ...tail])
-    for (const detail of detailLines(call.name, data)) this.line("info", [seg(`    ${detail}`, "dim")])
+    // A command started in the background: its line above says where its output is, as this machine names the file.
+    const background = call.name === "shell" && typeof (data.display as { background?: unknown } | null)?.background === "string"
+    if (!background) for (const detail of detailLines(call.name, data)) this.line("info", [seg(`    ${detail}`, "dim")])
     if (data.truncation !== null) {
       const spill = data.truncation.spillPath
       if (spill === null) this.line("info", [seg(`    output capped · ${plural(data.truncation.originalLines, "line")} in full`, "dim")])
@@ -915,7 +937,8 @@ export class PrettyRenderer implements Sink {
     this.inbox.set(data.messageId, { text, delivery: data.delivery, midTurn, origin: data.origin })
     // The end of spawned work was just said on its own line; what the model is sent about it is that line's detail.
     if (data.origin === "background_command" || data.origin === "subagent_result" || data.origin === "spawn_lost") {
-      this.line("info", [seg(`  ${SYMBOL.inbox} `, "magenta"), seg(midTurn ? "its result is sent to the agent after the current step" : "its result is sent to the agent, which carries on", "dim")])
+      wrap(spawnMessageText(data.origin, this.lastSpawnEnd, midTurn), this.width - 4).forEach((line, index) => this.line("info", [seg(index === 0 ? `  ${SYMBOL.inbox} ` : "    ", "magenta"), seg(line, "dim")]))
+      this.lastSpawnEnd = null
       return
     }
     // A wake-up's message is not something the user typed: it says which wake-up, why, and the message it was set up with.
@@ -998,6 +1021,26 @@ export class PrettyRenderer implements Sink {
     for (const line of more) this.line("summary", line)
     const usage = turn?.usage
     if (usage !== null && usage !== undefined) this.line("summary", [seg(`  ${usageText(usage, this.width - 2)}`, "dim")])
+    // A run that went on without what it asked for says so where it ends, whatever the ending.
+    const refused = turn?.refused ?? 0
+    if (refused > 0)
+      for (const [index, line] of wrap(`${refused === 1 ? "1 call was" : `${refused} calls were`} refused: ${refused === 1 ? "it" : "they"} needed your approval and nobody was here to give it (--unattended deny). Run interactively to answer, or use --unattended stop to end the run instead.`, this.width - 4).entries())
+        this.line("summary", [seg(index === 0 ? `  ${SYMBOL.notRun} ` : "    ", "yellow"), seg(line, "yellow")])
+    const children = turn?.childUsage
+    if (children !== null && children !== undefined) this.line("summary", [seg(`  + subagents: ${usageText(children, this.width - 16).replace(/^tokens · /, "")}`, "dim")])
+    // Background work outlives the turn: said where the turn ends, with what becomes of it.
+    const running = [...this.spawned.entries()].filter(([, entry]) => entry.background)
+    if (running.length > 0) {
+      const ids = running.map(([id]) => id).join(", ")
+      const what = running.every(([, entry]) => entry.kind === "command") ? plural(running.length, "background command") : plural(running.length, "background job")
+      const then = this.options.afterTurn === "exits" ? `${running.length === 1 ? "it is" : "they are"} stopped now that ${brand.binary} exits; the agent is told when the session is next opened` : `the agent is told when ${running.length === 1 ? "it ends" : "each ends"}`
+      for (const line of wrap(`◌ ${what} still running (${ids}): ${then}`, this.width - 2)) this.line("summary", [seg(`  ${line}`, "dim")])
+    }
+  }
+
+  /** Background work still running, by ID: what leaving stops. */
+  runningBackground(): string[] {
+    return [...this.spawned.entries()].filter(([, entry]) => entry.background).map(([id]) => id)
   }
 
   // ---------------------------------------------------------------- output
@@ -1103,6 +1146,14 @@ export class PrettyRenderer implements Sink {
     if (!this.executing) return null
     // Not hung: the turn waits for the user.
     if (this.asking !== null && this.stop !== "shown") return "? waiting for your answer · Ctrl-C stops the turn"
+    // A subagent at work in the foreground: what it is doing, not just that the call runs.
+    const children = [...this.spawned.values()].filter((entry) => entry.kind === "subagent")
+    const onlySubagents = this.running.size > 0 && [...this.running].every((id) => this.calls.get(id)?.name === "subagent")
+    if (onlySubagents && children.length > 0 && this.stop !== "shown") {
+      const asking = children.find((entry) => entry.asking)
+      if (asking !== undefined) return `? ${asking.label} waits for your answer · Ctrl-C stops the turn`
+      return `⋯ ${children.map((entry) => `${entry.label}: ${subagentDoing(entry)}`).join(" · ")}`
+    }
     if (this.running.size > 0) {
       const [first] = this.running
       const call = first === undefined ? undefined : this.calls.get(first)
@@ -1113,12 +1164,11 @@ export class PrettyRenderer implements Sink {
       const what = this.running.size > 1 ? `${this.running.size} tools running` : `running ${call?.name ?? "tool"} ${call?.arg ?? ""}`.trimEnd()
       return `⋯ ${what}${tail}`
     }
-    // Subagents at work: what each has done so far, in one line.
-    const children = [...this.spawned.values()].filter((entry) => entry.kind === "subagent")
+    // Subagents at work: what each is doing, in one line.
     if (children.length > 0 && this.stop !== "shown") {
       const asking = children.find((entry) => entry.asking)
       if (asking !== undefined) return `? ${asking.label} waits for your answer · Ctrl-C stops the turn`
-      return `⋯ ${children.map((entry) => `${entry.label}: ${plural(entry.steps, "step")}, ${plural(entry.tools, "tool")}`).join(" · ")}`
+      return `⋯ ${children.map((entry) => `${entry.label}: ${subagentDoing(entry)}`).join(" · ")}`
     }
     if (this.checking !== null) {
       const tail = this.checking.progress?.split("\n").filter((line) => line.trim() !== "").at(-1)
@@ -1398,6 +1448,33 @@ function count(value: number): string {
 }
 
 /** The token line of a turn; when `width` is too small for it, the short form without the cached and reasoning counts. */
+/** What a subagent is doing now: its running tool call, or how far it has got. */
+function subagentDoing(entry: { readonly steps: number; readonly tools: number; readonly calls: Map<string, { readonly name: string; readonly arg: string }> }): string {
+  const current = [...entry.calls.values()].at(-1)
+  const counts = `${plural(entry.steps, "step")}, ${plural(entry.tools, "tool")}`
+  return current === undefined ? counts : `running ${`${current.name} ${current.arg}`.trim().slice(0, 50)} · ${counts}`
+}
+
+function addUsage(sum: Usage | null, usage: Usage): Usage {
+  const base = sum ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }
+  return {
+    inputTokens: base.inputTokens + usage.inputTokens,
+    cachedInputTokens: base.cachedInputTokens + usage.cachedInputTokens,
+    outputTokens: base.outputTokens + usage.outputTokens,
+    reasoningTokens: base.reasoningTokens + usage.reasoningTokens,
+  }
+}
+
+/** What becomes of the message that tells the agent how spawned work ended: true in each case. */
+export function spawnMessageText(origin: string, end: { readonly outcome: string; readonly detail: string } | null, midTurn: boolean): string {
+  if (origin === "spawn_lost") return "it was lost with the process that ran it; the agent is told at its next turn"
+  if (end?.outcome === "stopped" || end?.outcome === "interrupted") {
+    if (/shut down|shutdown/.test(end.detail)) return "it was stopped because the session closed; the agent is told when the session is next opened"
+    return midTurn ? "it was stopped; the agent is told after the current step" : "it was stopped; the agent is told with your next message"
+  }
+  return midTurn ? "its result is sent to the agent after the current step" : "its result is sent to the agent, which carries on"
+}
+
 export function usageText(usage: Usage, width = Number.POSITIVE_INFINITY): string {
   const n = (value: number) => value.toLocaleString("en-US")
   const share = usage.inputTokens === 0 ? 0 : Math.round((usage.cachedInputTokens / usage.inputTokens) * 100)

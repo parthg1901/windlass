@@ -13,6 +13,7 @@ import type { ForkResult, ReplayParams, ReplayResult } from "@light-harness/acp/
 import { brand } from "@light-harness/core"
 import { type Engine, type EngineEvent, EngineUnavailable, exitCodeOfRefusal } from "./engine.ts"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
+import { COPY_NOTE } from "./features.ts"
 import { flatten, nearest, plural, truncate } from "./text.ts"
 import { callArgument } from "./tools.ts"
 
@@ -218,7 +219,7 @@ export async function runFork(io: SubcommandIo, engine: Engine, options: ForkOpt
   const where =
     forked.copiedFrom === null
       ? `It works in the same directory as the original, ${forked.cwd}: both sessions change the same files.`
-      : `It works in a copy of ${forked.copiedFrom}: ${forked.cwd}`
+      : `It works in a copy of ${forked.copiedFrom}: ${forked.cwd}\n${COPY_NOTE}`
   io.stdout.write(
     [
       `Forked ${forked.parentSessionId} ${options.turn !== null ? `after turn ${options.turn} (event ${forked.throughSeq})` : options.throughSeq === null ? "after its latest step" : `after event ${forked.throughSeq}`}.`,
@@ -274,6 +275,7 @@ export async function runReplay(io: SubcommandIo, engine: Engine, options: Repla
   if (options.json) io.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   else {
     io.stdout.write(`${result.text}\n\n`)
+    if (result.comparison !== null) io.stdout.write(`${result.comparison}\n\n`)
     const usage = result.usage === null ? "" : `, ${result.usage.inputTokens} tokens in of which ${result.usage.cachedInputTokens} cached, ${result.usage.outputTokens} out`
     io.stdout.write(`  replay session  ${result.sessionId}  (${plural(result.requests, "model call")}${usage})\n`)
     if (result.workspace !== null) io.stdout.write(`  workspace       ${result.workspace}  (the copy the replay carried on in; delete it when you are done)\n`)
@@ -347,7 +349,7 @@ export class ReplayProgressLines {
         return
       }
       case "replay.diverged":
-        this.write(`  left the recording: carrying on in a copy of the workspace, ${event.data.workspace}\n`)
+        this.write(`  left the recording: carrying on in a copy of the workspace, ${event.data.workspace}\n  ${COPY_NOTE}\n`)
         return
       case "step.failed": {
         const error = event.data.error as { readonly kind?: string; readonly message?: string }

@@ -6,6 +6,7 @@
  * next. Nothing here is ever cut: long paths and reasons wrap where they are shown.
  */
 import { brand } from "@light-harness/core"
+import { isUndone, turnsOf } from "@light-harness/acp/turns"
 import type { McpServerInfo, McpStateResult, MemoryStateResult, SkillsResult, WakeListResult, WakeSecretResult } from "@light-harness/acp/extensions"
 
 export type LineTone = "plain" | "dim" | "warn" | "error" | "ok" | "bold" | "accent"
@@ -231,3 +232,51 @@ export function memoryAction(rest: string): { readonly action: "confirm" | "reje
   if (action === undefined || words.length !== 2) return { problem: "/memory takes nothing (the listing), or confirm, reject, renew or forget and a note's ID: /memory confirm m_1a2b3c4d" }
   return { action, id: words[1]! }
 }
+
+// ---------------------------------------------------------------- a resumed session
+
+/**
+ * The end of a resumed session, compactly, so the user knows where they are:
+ * the last `count` turns, each its prompt, the agent's last words and how it
+ * ended. From the stored log; `[]` for a session without a turn.
+ */
+export function recapLines(events: readonly { readonly seq: number; readonly type: string; readonly data?: unknown }[], count = 2): Line[] {
+  const turns = turnsOf(events).filter((turn) => !isUndone(turn)).slice(-count)
+  if (turns.length === 0) return []
+  const clip = (text: string, max: number) => {
+    const flat = text.replace(/\s+/g, " ").trim()
+    return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`
+  }
+  const lines: Line[] = [line(turns.length === 1 ? "Where you left off:" : `Where you left off (the last ${turns.length} turns):`, "dim")]
+  for (const turn of turns) {
+    const end = turn.endSeq ?? Number.POSITIVE_INFINITY
+    const inside = events.filter((item) => item.seq >= turn.messageSeq && item.seq <= end)
+    const said = inside.findLast((item) => item.type === "text.ended")
+    const ending = turn.endSeq === null ? null : events.find((item) => item.seq === turn.endSeq)
+    const data = (ending?.data ?? {}) as { verification?: { status?: string }; message?: string; reason?: string }
+    const how =
+      ending === undefined || ending === null
+        ? "not finished: it resumes with your next message"
+        : ending.type === "execution.succeeded" || ending.type === "turn.ended"
+          ? data.verification?.status === "unresolved"
+            ? "stopped with failing checks"
+            : "done"
+          : ending.type === "execution.failed"
+            ? `failed: ${clip(data.message ?? "", 100)}`
+            : ending.type === "execution.interrupted"
+              ? data.reason === "shutdown"
+                ? "stopped for a shutdown: it resumes with your next message"
+                : "interrupted"
+              : "ended"
+    lines.push(line(`› ${clip(turn.prompt === "" ? "(started without a message)" : turn.prompt, 100)}`, "plain", 2))
+    if (said !== undefined) lines.push(line(clip(String((said.data as { text?: unknown }).text ?? ""), 220), "dim", 4))
+    lines.push(line(`turn ${turn.number}: ${how}`, how === "done" ? "dim" : "warn", 4))
+  }
+  return lines
+}
+
+// ---------------------------------------------------------------- copies of the workspace
+
+/** What a copy of the workspace (a `--copy` fork, a replay under `execute`) holds and lacks, and what follows from it. */
+export const COPY_NOTE =
+  "The copy holds the workspace's tracked and small untracked files; it has no ignored files (such as node_modules or build output), no large untracked files and no .git, so it is not a git repository. Commands that need installed dependencies, git or the project's checks fail there until the dependencies are installed in the copy (for example with the project's install command)."

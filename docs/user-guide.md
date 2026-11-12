@@ -66,7 +66,9 @@ Before every tool call the program decides whether it runs, runs in a sandbox, a
 - Choose with `--approval <mode>`, or `/approval ask|auto|full` while working. A project's own configuration can make
   the policy stricter, never looser.
 - When nobody can answer (a one-shot run, `--json`, a pipe), a call that would ask is refused and the agent is told
-  (`--unattended deny`, the default), or the run stops with exit code 4 (`--unattended stop`). A stopped run ends
+  (`--unattended deny`, the default), or the run stops with exit code 4 (`--unattended stop`). With `deny` the agent
+  carries on without those calls and the run can still end as done, with exit code 0: its ending says how many calls
+  were refused. A script that must not count such a run as done uses `--unattended stop`. A stopped run ends
   with `■ stopped for your approval` and the two ways on: run it interactively (`lh -i "<prompt>"`) and answer the
   question, or choose what such a call becomes (`--unattended deny`, or another `--approval` mode).
 - In the interactive mode a question shows the command and the choices: `a` allow once, `s` for this session, `p`
@@ -183,9 +185,10 @@ At the interactive prompt, while the agent is idle:
 it put back. In the full-screen interface an undone turn is one dim line where it was (`↶ undone turn 2: "add a
 test"`), also in a session opened again, until `/redo` shows it as before.
 
-When a file the restore would change was edited by hand since, the question says what each answer does to it:
-overwrite (it goes back, and your edits are lost; after `/undo`, `/redo` brings them back), keep (it stays exactly as
-it is now: your edits and the agent's changes in it both, while the other files are restored), or change nothing.
+When a file the restore would change was changed outside the session since (by you, another program, or another
+session in the same directory: the program cannot tell which), the question says so and what each answer does to it:
+overwrite (it goes back, and those changes are lost; after `/undo`, `/redo` brings them back), keep (it stays exactly
+as it is now: those changes and the agent's in it both, while the other files are restored), or change nothing.
 
 Undo needs `git` (2.25 or newer) on `PATH`, but the project does not have to be a git repository: snapshots are
 kept in a private git directory per project inside the data directory, and your own repository is never touched. A steer you sent while the agent
@@ -207,7 +210,7 @@ the new prefix. `lh --demo list` has scripted compactions under "Compaction".
 
 | Code | Meaning |
 |---|---|
-| 0 | done |
+| 0 | done; with `--unattended deny` also when calls were refused for lack of approval (the ending says how many) |
 | 1 | failed |
 | 2 | usage error: an unknown option (the nearest one is suggested), a wrong value, an unknown model or an ambiguous session ID |
 | 3 | done, but the project's checks still fail and were left unresolved |

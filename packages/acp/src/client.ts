@@ -339,6 +339,23 @@ export class HarnessConnection {
     return this.request<{ sessionId: string; cwd: string }>(EXT.resolve, { cwd, ...(session === undefined ? {} : { session }) })
   }
 
+  /**
+   * What a user types after `--session`: a whole ID, its start, or its hex part
+   * without `ses_`. A start that names one session of `cwd` picks it, however
+   * many other directories have sessions that start the same; otherwise the
+   * store decides (`<prefix>/resolve`), across every directory.
+   */
+  async resolveTyped(cwd: string, typed: string): Promise<{ sessionId: string; cwd: string }> {
+    const given = typed.trim()
+    const id = given.startsWith("ses_") || !/^[0-9a-f]+$/i.test(given) ? given : `ses_${given.toLowerCase()}`
+    const here = await this.listSessions(cwd, { archived: true }).catch(() => [])
+    const exact = here.find((row) => row.id === id)
+    const starting = here.filter((row) => row.id.startsWith(id))
+    const chosen = exact ?? (starting.length === 1 ? starting[0] : undefined)
+    if (chosen !== undefined) return { sessionId: chosen.id, cwd: chosen.cwd }
+    return this.resolve(cwd, id)
+  }
+
   /** `session/load` (`replay`: the stored log arrives first, marked) or `session/resume`. */
   async openSession(sessionId: string, cwd: string, options: { readonly replay: boolean; readonly meta?: OpenMeta }): Promise<ClientSession> {
     // Attached before the answer, so that the replay and the recovery events that come with it have a place to go.
@@ -757,7 +774,7 @@ export class ClientSession {
       if (plan === undefined || answerer === null) return { outcome: { outcome: "cancelled" } }
       const ask: HandEditAsk = {
         sessionId: this.id,
-        title: params.toolCall.title ?? "Overwrite files edited by hand?",
+        title: params.toolCall.title ?? "Overwrite files changed outside this session?",
         command: meta?.command === "undo_revert" ? "undo_revert" : "revert",
         plan,
         handEdited: Array.isArray(meta?.handEdited) ? (meta.handEdited as string[]) : [],

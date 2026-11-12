@@ -90,7 +90,8 @@ export async function runSessionCommand(command: Command, session: RevertableSes
     const confirm = async (asked: RevertPlan): Promise<HandEditPolicy | null> => {
       const edited = asked.changes.filter((change) => change.handEdited).map((change) => change.path)
       const them = edited.length === 1 ? "it" : "them"
-      io.print([seg(`  you edited ${plural(edited.length, "file")} by hand ${undo ? "since the turn" : "since the /undo"}: `, "yellow"), seg(fileList(edited, 6))])
+      // Who changed them cannot be told (you, another program, another session in the same directory): the words fit all three.
+      io.print([seg(`  ${plural(edited.length, "file")} changed outside this session ${undo ? "since the turn" : "since the /undo"} (by you, another program or another session): `, "yellow"), seg(fileList(edited, 6))])
       // What each answer does to those files, said before it is asked. Only an undo keeps a way back: /redo restores
       // the workspace as it was right before it, hand edits included.
       for (const line of handEditChoices(undo, them)) io.print([seg(line, "dim")])
@@ -117,13 +118,13 @@ export async function runSessionCommand(command: Command, session: RevertableSes
 export function handEditChoices(undo: boolean, them = "them"): string[] {
   return undo
     ? [
-        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to before the turn and your edits are lost (/redo brings them back)`,
-        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, your edits and the agent's changes in ${them} both; the other files go back`,
+        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to before the turn and those changes are lost (/redo brings them back)`,
+        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, those changes and the agent's in ${them} both; the other files go back`,
         "  n  change nothing",
       ]
     : [
-        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to how the turn left ${them}, and your edits since the /undo are lost for good`,
-        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, with your edits; the other files come back`,
+        `  y  overwrite: ${them} go${them === "it" ? "es" : ""} back to how the turn left ${them}, and the changes since the /undo are lost for good`,
+        `  k  keep: ${them} stay${them === "it" ? "s" : ""} exactly as now, with those changes; the other files come back`,
         "  n  change nothing",
       ]
 }
@@ -132,7 +133,7 @@ export function handEditChoices(undo: boolean, them = "them"): string[] {
 function refusal(command: Command, result: RevertResult): string {
   if (result.kind === "refused" && result.reason === "busy") return `${command} works only while the agent is idle; stop it first (Ctrl-C)`
   if (result.kind === "refused" && result.reason === "nothing_to_revert") return command === "/undo" ? "there is no turn to undo" : "there is nothing to redo"
-  if (result.kind === "hand_edited") return "files were edited by hand in the meantime; nothing was changed"
+  if (result.kind === "hand_edited") return "files changed outside this session in the meantime; nothing was changed"
   return `${command}: ${"message" in result ? result.message : "nothing was changed"}`
 }
 

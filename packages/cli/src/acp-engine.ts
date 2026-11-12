@@ -143,7 +143,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
     fork: (request: ForkRequest): Promise<ForkResult> =>
       listing(async (connected) => {
         try {
-          const named = await connected.resolve(request.cwd, request.session ?? undefined)
+          const named = request.session === null ? await connected.resolve(request.cwd) : await connected.resolveTyped(request.cwd, request.session)
           // A turn is where the user sees it: its event number, from the session's own log.
           let throughSeq = request.throughSeq
           if (request.turn != null) {
@@ -167,7 +167,7 @@ export function createAcpEngine(options: AcpEngineOptions = {}): Engine {
     replay: (request: ReplayCommand, progress: ReplayProgress): Promise<ReplayResult> =>
       listing(async (connected) => {
         try {
-          const named = await connected.resolve(request.cwd, request.session ?? undefined)
+          const named = request.session === null ? await connected.resolve(request.cwd) : await connected.resolveTyped(request.cwd, request.session)
           let reading: Promise<void> = Promise.resolve()
           const result = await connected.replay(
             { sessionId: named.sessionId, ...request.params },
@@ -196,7 +196,7 @@ async function openSession(connected: HarnessConnection, request: OpenRequest, s
   const target = request.session
   try {
     if (target.kind === "new") return new AcpSession(await connected.newSession(request.cwd, meta), request.maxSteps)
-    const named = await connected.resolve(request.cwd, target.kind === "resume" ? target.id : undefined)
+    const named = target.kind === "resume" ? await connected.resolveTyped(request.cwd, target.id) : await connected.resolve(request.cwd)
     // Right after an earlier run was killed its engine may still be closing the session: that is waited for, and said.
     const opened = await openWhenReleased(
       () => connected.openSession(named.sessionId, named.cwd, { replay: false, meta: { ...meta, archived: true } }),

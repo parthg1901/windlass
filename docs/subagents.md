@@ -38,6 +38,11 @@ ended without an answer comes back as an error that says so.
   them.
 - **Stopping.** Ctrl-C (or closing the session) stops the parent and everything it started.
 
+While a subagent works in the foreground, the status line of `lh` says what it is running (`⋯ subagent ses_3ebb35c4:
+running read a.txt · 1 step, 1 tool`), as `lh tui` does. Its model calls are its own: the turn's ending adds a line
+`+ subagents: ...` with their tokens beside the turn's own. When its answer reaches the agent the line says so
+(`the subagent's answer reached the agent`), not as if you had typed it.
+
 ### In the background
 
 With `background: true` the call returns at once (`Started subagent <id> in the background. ...`) and the parent
@@ -104,20 +109,31 @@ directory; the model reads it so far with `background_output` and stops it with 
 ```text
 ▸ shell sleep 3; echo built
   ▸ background bg_98843659 · sleep 3; echo built
+    output:
+      /tmp/light-harness-1001/ses_4c844fa2174d10de4f809972/.spill/shell-bg-msg_ca1d1a8f0a6e0cacde8ae5a3-c1.log
   ✓ shell sleep 3; echo built ·  ⊡ · 23ms
 Started the build.
 ✓ done · no checks configured · 2 steps · 643ms
+  ◌ 1 background command still running (bg_98843659): the agent is told when it ends
   ✓ background bg_98843659 exited with code 0 · 3.1s
   ↳ its result is sent to the agent, which carries on
 The build finished and printed built.
 ```
 
-When it exits, the model is sent a message with its exit code and the end of its output. In the interactive mode
-that message starts a new turn if the session is idle, as above.
+`output:` is the file as this machine names it, which you can open; the agent is told the sandbox's name for the same
+file, under the sandbox's temp directory. When the command exits, the model is sent a message with its exit code and the end of its output.
+In the interactive mode that message starts a new turn if the session is idle, as above. A turn that ends while
+background work runs says so on its ending lines, and `lh tui` shows each running command in the status line and the
+session panel until it ends.
+
+When it is stopped instead (Ctrl-C stops the turn and its background work), the line says what is true:
+`it was stopped; the agent is told with your next message`. Leaving `lh` (or `lh tui`) with a command still running
+says first that leaving stops it; its end is told to the agent when the session is next opened.
 
 **In a one-shot run** the turn does not wait for a background command: when the agent's turn is done, `lh` exits
-and the command is stopped (`Background command <id> was stopped (the harness shut down) after <n> s.`). Its end is
-kept for the session's next turn (`lh -c`). For work that must finish, ask for a foreground command.
+and the command is stopped (`Background command <id> was stopped (the harness shut down) after <n> s.`), which the
+ending says (`it is stopped now that lh exits; the agent is told when the session is next opened`). Its end is kept
+for the session's next turn (`lh -c`). For work that must finish, ask for a foreground command.
 
 ## Recovery
 

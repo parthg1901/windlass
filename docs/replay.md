@@ -33,16 +33,28 @@ many model calls as the recording has steps (5.9 per replay here), per replay.
 One session:
 
 ```
-bun scripts/replay.ts <session-id> [--system-prompt <file>] [--tool-description <tool>=<file>]...
-                      [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute]
-                      [--strict] [--json] [--through <seq>] [--workspace <dir>] [--data-dir <dir>]
+lh replay [<session-id>] [--system-prompt <file>] [--tool-description <tool>=<file>]...
+          [--model <m>] [--effort <e>] [--policy stop|execute-read-only|execute]
+          [--strict] [--json] [--through <seq>] [--workspace <dir>]
 ```
 
-- `<session-id>` is a session of the harness data directory, or a unique prefix of one.
+`lh replay` prints the replay's report, then the comparison that carries the signal (its side effects against the
+recording's, reads ignored, and whether it ended with the recording's files; the grade is the eval suite's, below),
+then the replay session and the copy it worked in. `--json` prints the same as one object,
+the comparison under `compared` (and as printed under `comparison`). It runs through `lh acp` like every subcommand
+(`_light-harness/replay`, [acp.md](acp.md)). `bun scripts/replay.ts` takes the same options and `--data-dir <dir>`,
+and runs the engine in its own process.
+
+- `<session-id>` is a session of the harness data directory, or a unique prefix of one (the most recent session of
+  the directory when left out).
 - `--system-prompt <file>` replaces the base system prompt. The recording's own sections (its AGENTS.md files, its
   environment, its date) stay as they were recorded: today's date and today's files are not the recording's.
 - `--tool-description <tool>=<file>` replaces one tool's description. Names and schemas stay the recording's.
 - `--model`, `--effort` (`default` for the model's own) change the settings of the whole replay.
+- Under `execute` the copy holds the recorded workspace's tracked and small untracked files, and not the ignored
+  ones (`node_modules`, build output), large untracked files or `.git`: it is not a git repository. A check or
+  command that needs installed dependencies fails there unless the replay installs them first. `lh replay` says so
+  when it makes the copy.
 - `--strict` compares arguments byte for byte after JSON canonicalisation and requires the same step boundaries.
   Without it a path given relative or absolute is the same path, trailing whitespace of a command does not matter,
   parallel calls match in any order, and a run of read-only steps may be split or merged.

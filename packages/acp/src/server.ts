@@ -72,6 +72,8 @@ import {
   renderReplayReport,
 } from "@light-harness/core"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
+import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
+import { compareReplay, renderComparison } from "../../core/src/replay/effects.ts"
 import {
   APPROVAL_META,
   type ApprovalRequestMeta,
@@ -142,6 +144,13 @@ export function serve(harness: Harness, stream: Stream, options: ServeOptions): 
     () => state.shutdown(),
   )
   return { connection, done }
+}
+
+/** The snapshot of a replay's copy of the workspace as it ended, for comparing the files it ended with. */
+async function snapshotOfCopy(copy: string, dataDir: string, session: string): Promise<string | null> {
+  const snapshots = await openSnapshots(copy, { dataDir: join(dataDir, "snapshots") }).catch(() => null)
+  if (snapshots === null || snapshots.kind !== "ready") return null
+  return (await snapshots.take({ session }).catch(() => null))?.id ?? null
 }
 
 /** Advertised in `initialize` under `agentCapabilities._meta[<ns>]`. */
@@ -510,7 +519,8 @@ class ConnectionState {
       sessionId: view.session.id,
       toolCall: {
         toolCallId: `${META.capabilities}-${command}-${plan.fromSeq}`,
-        title: undo ? `Redo: ${files} edited by hand since the undo` : `Undo: ${files} edited by hand since the turn`,
+        // Who changed them cannot be told (the user, another program, another session in the same directory).
+        title: undo ? `Redo: ${files} changed outside this session since the undo` : `Undo: ${files} changed outside this session since the turn`,
         kind: "edit",
         status: "pending",
         locations: byHand.map((path) => ({ path: join(cwd, path) })),
@@ -519,10 +529,10 @@ class ConnectionState {
             type: "content",
             content: {
               type: "text",
-              text: `Edited by hand: ${byHand.join(", ")}. ${
+              text: `Changed outside this session (by you, another program or another session): ${byHand.join(", ")}. ${
                 undo
-                  ? "Overwrite: they go back to how the turn left them, and your edits since the undo are lost for good. Keep: they stay exactly as they are now, with your edits; the other files come back."
-                  : "Overwrite: they go back to before the turn and your edits are lost (redo brings them back). Keep: they stay exactly as they are now, your edits and the agent's changes in them both; the other files go back."
+                  ? "Overwrite: they go back to how the turn left them, and the changes since the undo are lost for good. Keep: they stay exactly as they are now, with those changes; the other files come back."
+                  : "Overwrite: they go back to before the turn and those changes are lost (redo brings them back). Keep: they stay exactly as they are now, those changes and the agent's in them both; the other files go back."
               }`,
             },
           },
@@ -708,7 +718,19 @@ class ConnectionState {
       const outcome = await run.done
       await session.settled()
       await view.drained()
+      // The part that carries a signal: the side effects, the files it ended with, and the grade (`replay/effects.ts`).
+      const replayFinal = outcome.workspace === null ? undefined : await snapshotOfCopy(outcome.workspace, this.harness.dataDir, outcome.sessionId)
+      const compared = (() => {
+        try {
+          return compareReplay(engine.readEvents(params.sessionId as SessionId), engine.readEvents(outcome.sessionId as SessionId), outcome.report, { normalisers: DEFAULT_NORMALISERS, ...(replayFinal === undefined ? {} : { replayFinal }) })
+        } catch (error) {
+          this.log.warn(`the replay of ${params.sessionId} could not be compared: ${describeError(error)}`)
+          return null
+        }
+      })()
       return {
+        compared: compared as unknown as ReplayResult["compared"],
+        comparison: compared === null ? null : renderComparison(compared),
         sourceSessionId: params.sessionId,
         sessionId: outcome.sessionId,
         policy: params.policy ?? "stop",

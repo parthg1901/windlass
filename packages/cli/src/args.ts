@@ -259,7 +259,8 @@ work at once, each in its own session. A session another process is working in
 cannot be opened until that process lets go of it.
 
 Exit codes:
-  0    done
+  0    done (with --unattended deny, also when calls were refused for lack of
+       approval: the ending says how many; --unattended stop exits 4 instead)
   1    failed
   2    usage error: an unknown option, a wrong value, an unknown model or session ID
   3    done, but the project's checks still fail and were left unresolved (the model

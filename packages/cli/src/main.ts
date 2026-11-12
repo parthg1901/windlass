@@ -17,6 +17,7 @@ import { resolve } from "node:path"
 import { brand, versionLine, versionString } from "@light-harness/core"
 import { helpText, type Options, parseArgs } from "./args.ts"
 import { revertable } from "./commands.ts"
+import { recapLines } from "./features.ts"
 import { type FeatureCommand, type FeatureIo, FeatureWatch, runFeatureCommand } from "./feature-commands.ts"
 import { type DemoScenario, findScenario, listScenarios } from "./demo/scenarios.ts"
 import {
@@ -170,6 +171,9 @@ export async function run(io: Io): Promise<number> {
   if (engine === null) return EXIT.usage
   const screen = interactive ? new Screen({ write: (text) => io.stdout.write(text), columns: () => io.stdout.columns(), color: colorEnabled(io.stdout.isTTY, io.env) }) : null
   const sink = makeSink(io, options, autoplay, screen)
+  // Keys typed while the engine starts are kept for the prompt: raw mode from now on, so nothing is echoed as if sent.
+  const early = screen === null ? null : new TerminalMode(io, screen)
+  early?.capture()
 
   let session: Session
   try {
@@ -185,6 +189,7 @@ export async function run(io: Io): Promise<number> {
       attended: interactive,
     })
   } catch (error) {
+    early?.restore()
     if (!(error instanceof EngineUnavailable)) throw error
     io.stderr.write(`${brand.binary}: ${error.message}\n`)
     return exitCodeOfRefusal(error)
@@ -199,7 +204,7 @@ export async function run(io: Io): Promise<number> {
   const features: FeatureIo | null = options.output === "json" ? null : { out: featureOutput(sink), ask: questions === null ? null : (question, print) => questions.patient(question, print) }
   const watch = features === null ? null : new FeatureWatch(session, features, { attended: interactive, secrets: options.output === "pretty" && (interactive || io.stdout.isTTY) })
   watch?.start()
-  const terminal = screen === null ? null : new TerminalMode(io, screen)
+  const terminal = early
   const leaving = new Deferred<number>()
   const control = { running: false, lastInterrupt: 0, leaving: false }
   /** Leaves through the common door: close the engine (bounded), tidy up, exit with `code`. A second request leaves at once. */
@@ -258,6 +263,12 @@ export async function run(io: Io): Promise<number> {
   } finally {
     // From here a Ctrl-C or SIGTERM leaves at once instead of waiting for the engine.
     control.leaving = true
+    // Leaving stops background work: said before it happens, with what becomes of it.
+    if (terminal !== null && sink instanceof PrettyRenderer) {
+      const running = sink.runningBackground()
+      if (running.length > 0)
+        sink.notice(`leaving stops ${running.length === 1 ? "the background work still running" : `${running.length} background jobs still running`} (${running.join(", ")}); the agent is told when the session is next opened`, "warn")
+    }
     // What was started for the user (a secret fetched, a server's state said) is finished first, briefly.
     if (watch !== null) await within(CLOSE_TIMEOUT_MS, watch.finish())
     watch?.stop()
@@ -451,6 +462,8 @@ async function sayOpened(renderer: PrettyRenderer, session: Session, resumed: bo
   const title = described.title === null ? "" : ` "${truncate(flatten(described.title), 50)}"`
   const turns = `${described.turns === 1 ? "1 turn" : `${described.turns} turns`}${described.undone > 0 ? ` (${described.undone} undone)` : ""}`
   renderer.notice(`resumed session ${session.id}${title} · ${turns}${hint}`)
+  // Where the conversation stands, so the user knows what they are coming back to.
+  renderer.printLines(recapLines(described.events))
 }
 
 /**
@@ -576,16 +589,29 @@ function featureOutput(sink: Sink): FeatureIo["out"] {
 class TerminalMode {
   private stop: (() => void) | null = null
   private restored = false
+  private handler: ((data: string) => void) | null = null
+  private readonly early: string[] = []
 
   constructor(
     private readonly io: Io,
     readonly screen: Screen,
   ) {}
 
+  /** Starts reading keys (raw mode) before the prompt is shown: what is typed meanwhile waits for `start`. */
+  capture(): void {
+    if (this.stop !== null || this.restored || this.io.stdin.listen === undefined) return
+    this.stop = this.io.stdin.listen((data) => (this.handler === null ? void this.early.push(data) : this.handler(data)))
+  }
+
   start(handle: (action: EditorAction) => void): void {
     if (this.io.stdin.listen === undefined) throw new Error("interactive mode needs keyboard input")
-    this.stop = this.io.stdin.listen((data) => this.screen.input(data, handle))
+    this.capture()
+    this.handler = (data) => this.screen.input(data, handle)
     this.io.stdout.write("\x1b[?2004h")
+    // Typed before the prompt was there: given to it once it waits. A line ended before raw mode began (the
+    // terminal's own line editing, which also echoed it) ends with a newline, and is sent as a message.
+    const early = this.early.splice(0)
+    if (early.length > 0) setTimeout(() => early.forEach((chunk) => this.handler?.(chunk.replace(/\n$/, "\r"))), 0)
   }
 
   /** Idempotent: removes the footer, turns bracketed paste and raw mode off, and lets go of stdin. */
@@ -663,6 +689,17 @@ async function listing(io: Io, engine: Engine, what: "sessions" | "models", opti
     io.stderr.write(`${brand.binary}: ${flag} is not supported by this engine\n`)
     return 1
   }
+  // `--session` names sessions by the start of their ID: with the listing it narrows it to those.
+  const typed = options.session
+  if (typed !== null && what === "models") io.stderr.write(`${brand.binary}: --session does not apply to --models; it is ignored\n`)
+  const prefix = typed === null || what === "models" ? null : typed.startsWith("ses_") || !/^[0-9a-f]+$/i.test(typed) ? typed : `ses_${typed.toLowerCase()}`
+  if (prefix !== null) {
+    table = table.filter(({ row }) => "id" in row && row.id.startsWith(prefix))
+    if (table.length === 0 && options.output !== "json") {
+      io.stdout.write(`no session in ${cwd} starts with ${prefix}\n`)
+      return 0
+    }
+  }
   if (options.output === "json") {
     for (const { row } of table) io.stdout.write(`${JSON.stringify(row)}\n`)
     return 0
@@ -700,6 +737,8 @@ function makeSink(io: Io, options: Options, echoPrompts: boolean, screen: Screen
         live: io.stdout.isTTY && screen === null,
         showReasoning: options.showReasoning,
         echoPrompts,
+        // A one-shot run leaves when its turn ends; a scripted demo plays on, as the interactive mode stays.
+        afterTurn: screen === null && !echoPrompts ? "exits" : "stays",
         ...(screen === null ? {} : { status: (text: string | null) => screen.setStatus(text) }),
       })
   }

@@ -110,9 +110,9 @@ describe("/undo", () => {
     await type("/undo\r")
     // What each answer does to the file, before it is asked: keep leaves the agent's change in it too.
     expect(output().slice(-4)).toEqual([
-      "  you edited 1 file by hand since the turn: notes.md",
-      "  y  overwrite: it goes back to before the turn and your edits are lost (/redo brings them back)",
-      "  k  keep: it stays exactly as now, your edits and the agent's changes in it both; the other files go back",
+      "  1 file changed outside this session since the turn (by you, another program or another session): notes.md",
+      "  y  overwrite: it goes back to before the turn and those changes are lost (/redo brings them back)",
+      "  k  keep: it stays exactly as now, those changes and the agent's in it both; the other files go back",
       "  n  change nothing",
     ])
     expect(prompt()).toBe("[y] overwrite · [k] keep as they are now · [N] change nothing ›")

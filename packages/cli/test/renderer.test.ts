@@ -476,7 +476,7 @@ describe("verification, the workspace and reverts", () => {
     const restore = { target: "w0", before: "w1", after: "w0", changed: 3, kept: [{ path: "notes.md", reason: "hand_edited" as const }, { path: "dist/app.js", reason: "ignored" as const }], keptOmitted: 0 }
     expect(lines([event("history.reverted", { fromSeq: 6, restore })])).toEqual([
       "↶ went back · 3 files restored · /redo brings it back",
-      "  left as they are now, your edits and the agent's changes both: notes.md",
+      "  left as they are now, the outside changes and the agent's both: notes.md",
       "  left alone (ignored or never recorded): dist/app.js",
     ])
     expect(lines([event("history.reverted", { fromSeq: 6, restore: null })])).toEqual(["↶ went back · no file was restored · /redo brings it back"])
