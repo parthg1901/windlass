@@ -42,6 +42,7 @@ const ALLOWED: Record<string, { readonly count: number; readonly why: string }> 
   "packages/core/test/mcp/fixtures/behaviour.ts": { count: 1, why: "the slow tool reports progress over the time it is asked to take" },
   "packages/core/test/mcp/fixtures/stdio-server.ts": { count: 1, why: "a server that is slow to start, on request" },
   "packages/core/test/provider/openai-responses.test.ts": { count: 5, why: "fake servers that stall, trickle or drop a connection on purpose" },
+  "packages/core/test/store/fixtures/read-holder.ts": { count: 1, why: "another process holds a read on a session file for half a second while the store opens it" },
   "packages/core/test/store/directory-process.e2e.test.ts": { count: 2, why: "listings taken while other processes write, and processes killed at a moment that varies by round" },
   "packages/core/test/store/process.e2e.test.ts": { count: 1, why: "a writer killed at a random moment" },
   "packages/core/test/telemetry/exporter.test.ts": { count: 1, why: "a collector that answers after 5 s, against a 100 ms attempt timeout" },

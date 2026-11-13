@@ -1,8 +1,11 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const HOLDER = join(import.meta.dir, "fixtures", "read-holder.ts")
 const dirs: string[] = []
@@ -28,4 +31,4 @@ test("a new session store opens while another process holds a read on the file, 
   } finally {
     holder.kill("SIGKILL")
   }
-}, 30_000)
+})

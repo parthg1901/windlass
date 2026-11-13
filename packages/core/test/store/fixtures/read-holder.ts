@@ -1,6 +1,6 @@
 /**
  * Another process reading a session file while it is being created: opens the file, holds a read transaction
- * (a shared lock) for half a second, then lets go. Used by `wal-open.test.ts`.
+ * (a shared lock) for half a second, then lets go. Used by `wal-open.e2e.test.ts`.
  *
  *   bun read-holder.ts <database file>
  */
