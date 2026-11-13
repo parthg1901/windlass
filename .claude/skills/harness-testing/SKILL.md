@@ -256,3 +256,20 @@ Reading a result:
 - To make a message wait across a Ctrl-C: send a steer while a command runs, Ctrl-C before the command ends; the ending says `1 message still waiting`, `/undo` passes over it, and it goes out with the next prompt (`↳ delivered to the agent: "…" · held since the turn was stopped`).
 - The interactive helper of `packages/cli/test/typed.ts` hands the drive a fourth argument, `rows()`: the terminal as it shows now, the input at its foot. Use it for what is above the prompt; the returned `screen` is the final state, with the input gone.
 - The live pass of 2026-11-12 (read-only agent, fix, steer, `/queue`, three `/undo` and two `/redo`, refuse, Ctrl-C at a question, allow once, `/stop` of one of two calls, Ctrl-C twice, a real compaction at 80 columns in a 106-character path, fork and continue, SIGTERM, Ctrl-C, stdin, `-i`, parallel shells) spent 51 requests in 10 sessions.
+
+## Code mode (`run_code`, 2026-11-13)
+
+- To compare with and without the tool, drive `createHarness` from a scratch script: `engine: { codeMode: null }`
+  builds a harness without it; the default has it. Count `step.started` events for requests and sum
+  `step.ended.data.usage`; nested calls are the `tool.called` events with `parent`.
+- Test a feature that needs the sandbox through the real assembly with the approval layer on, not only with
+  `approval: null`. The first live program was refused as "no sandbox" while commands ran sandboxed:
+  `assembly.ts`'s lazy sandbox wrapper did not forward the new `CommandSandbox.confined`. Scripted runs with the
+  approval layer off could not show it.
+- Programs read files and write them back. `read`'s text is numbered for the model (padded: ` 9\t`), and a program
+  that wrote it back corrupted three files; a program's `read` now resolves with the file's own lines. Check a
+  program's writes byte for byte (the final newline was the next thing lost).
+- gpt-6-luna at low effort, asked to count TODO comments in 20 files and remove them from the top three: without
+  the tool 5 requests (`grep -c`, `sed`); told to use one program 3 requests and about 40% fewer input tokens; left
+  to choose, it used a command as often as a program, and once wrote `functions.glob(...)` (now an alias).
+- The frozen tool list has 21 tools, about 3,700 estimated tokens (`run_code` is about 380).
