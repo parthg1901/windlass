@@ -36,7 +36,7 @@ const sandbox: CommandSandbox = {
   },
 }
 // An unattended run that ends at the first call that would ask (`--unattended stop`).
-const approval: ApprovalSetup = { sandbox, secrets: [], home: "/home/user", user: { mode: "auto", unattended: "stop" } }
+const approval: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user", user: { mode: "auto", unattended: "stop" } }
 
 test("with content off, no file path reaches the collector, also when the turn fails", async () => {
   const batches: Span[][] = []

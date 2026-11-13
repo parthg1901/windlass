@@ -36,7 +36,7 @@ const sandbox: CommandSandbox = {
     throw new Error("a scripted tool spawns nothing")
   },
 }
-const approval: ApprovalSetup = { sandbox, secrets: [], home: "/home/user" }
+const approval: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user" }
 const CHILD = "ses_2" as SessionId
 const until = async (check: () => boolean) => {
   for (let waited = 0; !check(); waited += 2) {

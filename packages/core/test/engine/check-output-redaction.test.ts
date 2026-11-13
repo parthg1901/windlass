@@ -52,7 +52,7 @@ const sandbox: CommandSandbox = {
   },
 }
 // `full`: the project's checks run unsandboxed, so the real check runner runs a harmless `cat` here.
-const approval: ApprovalSetup = { sandbox, secrets: [VALUE], home: "/home/user", user: { mode: "full" } }
+const approval: ApprovalSetup = { sandbox, secrets: [VALUE], home: "/Users/user", user: { mode: "full" } }
 
 function filesUnder(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {

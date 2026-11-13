@@ -35,7 +35,7 @@ const sandbox = (): CommandSandbox => ({
     throw new Error("a scripted tool spawns nothing")
   },
 })
-const approval = (): ApprovalSetup => ({ sandbox: sandbox(), secrets: [SECRET], home: "/home/user" })
+const approval = (): ApprovalSetup => ({ sandbox: sandbox(), secrets: [SECRET], home: "/Users/user" })
 
 function inputOf(h: Harness, id: string = h.session.id): SessionInput {
   return { sessionId: id, events: h.store.readEvents(id as SessionId), requests: h.store.readRequests(id as SessionId) }

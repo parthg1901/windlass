@@ -40,7 +40,7 @@ const sandbox: CommandSandbox = {
   },
 }
 /** The default the real harness runs with: mode `auto` in a sandbox, nobody present. */
-const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox, secrets: [], home: "/home/user", ...more })
+const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox, secrets: [], home: "/Users/user", ...more })
 
 async function withHarness(options: HarnessOptions, run: (h: Harness) => Promise<void>) {
   const h = new Harness(options)

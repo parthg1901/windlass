@@ -48,7 +48,7 @@ const sandbox: CommandSandbox = {
     throw new Error("a scripted tool spawns nothing")
   },
 }
-const approval: ApprovalSetup = { sandbox, secrets: [], home: "/home/user" }
+const approval: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user" }
 const NETWORKED = { kind: "sandboxed", network: true, writableRoots: [] } as const
 const OFFLINE = { kind: "sandboxed", network: false, writableRoots: [] } as const
 /** The user's own configuration file: every workspace file is untrusted (a repository from someone else). */

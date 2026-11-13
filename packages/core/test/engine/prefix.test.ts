@@ -320,7 +320,7 @@ describe("the approval layer keeps the prefix property", () => {
         throw new Error("a scripted tool spawns nothing")
       },
     }
-    const h = new Harness({ approval: { sandbox, secrets: [], home: "/home/user" }, attended: true })
+    const h = new Harness({ approval: { sandbox, secrets: [], home: "/Users/user" }, attended: true })
     try {
       const fetch = (command: string) => [script.toolCall("call_1", "shell", { command, sandbox: { network: true } }), usage]
       h.tools.on("shell", "fetched").on("read", "notes")

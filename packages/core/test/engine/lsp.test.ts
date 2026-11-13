@@ -216,7 +216,7 @@ describe("a project's server", () => {
       throw new Error("a scripted tool spawns nothing")
     },
   }
-  const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox, secrets: [], home: "/home/user", ...more })
+  const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox, secrets: [], home: "/Users/user", ...more })
 
   test("is not started until the user approved it; then its note is a taint source where the repository is marked untrusted", async () => {
     const { cwd, pidFile } = project()

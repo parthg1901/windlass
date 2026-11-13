@@ -492,7 +492,7 @@ export const CRASH_EFFECT_UNKNOWN =
 // ---------------------------------------------------------------- approval
 
 /** The home directory of the scenarios' user. */
-export const HOME = "/home/user"
+export const HOME = "/Users/user"
 /** Why the scenarios' machine has no sandbox, where it has none. */
 export const NO_SANDBOX = "bubblewrap (bwrap) is not installed."
 /** What a sandboxed command without extra access runs with. */

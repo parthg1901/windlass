@@ -171,7 +171,7 @@ describe("the other calls of the step", () => {
         expect(settledOf(h).map(([, outcome]) => outcome)).toEqual(["error", "success"])
         expect(verdicts(h)).toEqual(["first", "extension"])
       },
-      { approval: { sandbox, secrets: [], home: "/home/user", user: { mode: "full", unattended: "deny" } } },
+      { approval: { sandbox, secrets: [], home: "/Users/user", user: { mode: "full", unattended: "deny" } } },
     ))
 
   test("the model reads the stopped call's result in its next request, like any other", () =>

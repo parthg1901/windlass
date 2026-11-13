@@ -32,7 +32,7 @@ const sandbox: CommandSandbox = {
     throw new Error("a scripted tool spawns nothing")
   },
 }
-const APPROVAL: ApprovalSetup = { sandbox, secrets: [], home: "/home/user" }
+const APPROVAL: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user" }
 
 async function withHarness(run: (h: Harness) => Promise<void>, options: HarnessOptions = {}) {
   const h = new Harness(options)

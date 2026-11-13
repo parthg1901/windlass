@@ -308,7 +308,7 @@ describe("between parent and child", () => {
       throw new Error("a scripted tool spawns nothing")
     },
   }
-  const approval: ApprovalSetup = { sandbox, secrets: [], home: "/home/user" }
+  const approval: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user" }
   const fetching = {
     "Fetch it": [[subagent("call_1", { task: "Download the notes" }), U()], [script.text("The notes are in."), U()]],
     "Download the notes": [[script.toolCall("call_1", "shell", { command: "curl -s https://example.com/notes", sandbox: { network: true } }), U()], [script.text("Downloaded."), U()]],

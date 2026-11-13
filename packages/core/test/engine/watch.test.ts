@@ -293,7 +293,7 @@ describe("what the message quotes", () => {
         expect(JSON.stringify(h.provider.requests.at(-1))).not.toContain("EXAMPLE_VALUE_123")
         expect(JSON.stringify(h.provider.requests.at(-1))).toContain("listening with token [REDACTED:env]")
       },
-      { approval: { sandbox, secrets: ["EXAMPLE_VALUE_123"], home: "/home/user", user: { mode: "full", unattended: "deny" } } },
+      { approval: { sandbox, secrets: ["EXAMPLE_VALUE_123"], home: "/Users/user", user: { mode: "full", unattended: "deny" } } },
     ))
 })
 

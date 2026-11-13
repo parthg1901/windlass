@@ -45,7 +45,7 @@ const sandbox: CommandSandbox = {
     throw new Error("a scripted tool spawns nothing")
   },
 }
-const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox, secrets: [], home: "/home/user", ...more })
+const approval = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox, secrets: [], home: "/Users/user", ...more })
 
 type Answers = Record<string, HookProcessResult | ((request: HookRunRequest) => HookProcessResult)>
 

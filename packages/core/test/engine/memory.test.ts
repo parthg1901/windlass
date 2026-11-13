@@ -162,7 +162,7 @@ describe("with the flag on", () => {
         throw new Error("a scripted tool spawns nothing")
       },
     }
-    const approval: ApprovalSetup = { sandbox, secrets: [], home: "/home/user", user: { mode: "full" } }
+    const approval: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user", user: { mode: "full" } }
     const h = new Harness({ memory: withIds, approval, userConfig: ON })
     try {
       await turn(h)

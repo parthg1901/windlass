@@ -2888,7 +2888,7 @@ The model tries to write into a credential store. No mode but `full` allows that
   6  step.started a1 attempt=1
   7  tool.called a1/call_1 write {"path":"~/.ssh/authorized_keys","content":"ssh-ed25519 AAAA"}
   8  approval.denied a1/call_1 policy
-  9  tool.settled a1/call_1 error "Not run: write may not write /home/user/.ssh/authorized_k..."
+  9  tool.settled a1/call_1 error "Not run: write may not write /Users/user/.ssh/authorized_..."
  10  step.ended a1 finish=tool_calls
  11  step.started a2 attempt=1
  12  text.ended a2 "I cannot change that file."
