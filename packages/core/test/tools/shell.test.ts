@@ -155,7 +155,7 @@ describe("shell", () => {
     const baseline = process.memoryUsage().rss
     let peak = baseline
     const sampler = setInterval(() => (peak = Math.max(peak, process.memoryUsage().rss)), 5)
-    const size = 200 * 1024 * 1024
+    const size = 400 * 1024 * 1024
     const outcome = await ws.call("shell", { command: `yes 'a line of output that repeats' | head -c ${size}; echo; echo the end` })
     clearInterval(sampler)
     const settlement = outcome.settlement
@@ -166,10 +166,13 @@ describe("shell", () => {
     expect(Buffer.byteLength(settlement.output)).toBeLessThanOrEqual(50 * 1024)
     expect(settlement.output.split("\n").length).toBeLessThanOrEqual(2000)
     expect(settlement.output).toStartWith("a line of output that repeats\n")
-    expect(settlement.output).toMatch(/\na line of output that repeats\na line of output tha\nthe end\n$/)
+    // `head -c` cuts the last line where the size falls.
+    const line = "a line of output that repeats\n"
+    expect(settlement.output).toEndWith(`\n${line}${line.slice(0, size % line.length)}\nthe end\n`)
     expect(settlement.output).toContain(`of ${truncation.originalLines} lines. Full output: ${truncation.spillPath} (read it with offset `)
-    // 200 MB went through; holding it would cost far more than this.
-    expect(peak - baseline).toBeLessThan(96 * 1024 * 1024)
+    // 400 MB went through; holding it would cost far more than this. The bound leaves room for chunks read and
+    // dropped that the garbage collector has not freed yet, which on a CI runner has reached over 110 MB.
+    expect(peak - baseline).toBeLessThan(160 * 1024 * 1024)
   }, 30_000)
 
   test("the spill file stops at its limit and the marker says how much it holds", async () => {
