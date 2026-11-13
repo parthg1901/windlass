@@ -13,4 +13,11 @@ export const brand = {
   extensionPrefix: "_windlass",
   /** Prefix of every environment variable the program reads or sets, e.g. `WINDLASS_TUI`. */
   envPrefix: "WINDLASS_",
+  /**
+   * The package on npm that installs the binary and its aliases (`npm install -g <it>`). Each target's
+   * executable is in a package of its own, `<it>-<os>-<arch>` (scripts/npm.ts, npm/README.md).
+   */
+  npmPackage: "windlass-agent",
+  /** The GitHub repository, `<owner>/<repo>`: releases, and the `repository` field of the npm packages. */
+  repository: "parthg1901/windlass",
 } as const

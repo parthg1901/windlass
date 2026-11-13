@@ -81,7 +81,7 @@ export interface Assets {
 const sha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex")
 
 /** Every build-info.json under `dir` (one level of subdirectories, or `dir` itself), with the directory it is in. */
-function buildRecords(dir: string): { readonly dir: string; readonly binary: string; readonly aliases: readonly string[]; readonly builds: readonly Built[] }[] {
+export function buildRecords(dir: string): { readonly dir: string; readonly binary: string; readonly aliases: readonly string[]; readonly builds: readonly Built[] }[] {
   const dirs = [dir, ...readdirSync(dir).map((name) => join(dir, name)).filter((path) => statSync(path).isDirectory())]
   return dirs.filter((path) => existsSync(join(path, "build-info.json"))).map((path) => ({ dir: path, ...(JSON.parse(readFileSync(join(path, "build-info.json"), "utf8")) as { binary: string; aliases: string[]; builds: Built[] }) }))
 }
