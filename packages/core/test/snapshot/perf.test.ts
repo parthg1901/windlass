@@ -3,7 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { open, removeTempDirs, tempDir } from "./helpers.ts"
 
-afterEach(removeTempDirs)
+// Removing the 20,000 files and their stored copies takes longer than a hook's default 5 s on a macOS runner.
+afterEach(removeTempDirs, 60_000)
 
 test("a second snapshot of an unchanged 20,000-file tree only stats files", async () => {
   // The 20,000 files are removed inside the test, under its own time limit: on macOS deleting them can take longer
