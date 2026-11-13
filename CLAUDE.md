@@ -71,10 +71,12 @@ the requests. Never print, log or commit tokens.
 
 ## Testing like a user
 
-Two skills hold the procedures and the problems found so far. Read the relevant one before testing, and add to it
-when a run teaches something:
+Two skills hold the procedures. Read the relevant one before testing. When a run shows that a step is wrong or a
+rule is missing, fix that line in place: a rule that still holds and changes what an agent does, with its reason,
+and no dates, stories or one-off numbers.
 
-- `.claude/skills/harness-testing/SKILL.md` — headless: sign-in, real tasks, reading eval results.
+- `.claude/skills/harness-testing/SKILL.md` — headless: a demo, a scripted model, the live model, eval results,
+  sign-in.
 - `.claude/skills/tui-tmux-testing/SKILL.md` — the full-screen interface through tmux.
 
 ## Changing the event log
