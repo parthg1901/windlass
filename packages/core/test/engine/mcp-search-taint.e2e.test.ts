@@ -15,7 +15,7 @@
  * server's notes (`instructions`) and an error or stderr text in a status
  * line. A call's result is a source as always.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -28,6 +28,10 @@ import { script } from "../../src/testing/fake-provider.ts"
 import { Harness, removeHarnessDirectories } from "./harness.ts"
 import { fixtureServer } from "../mcp/helpers.ts"
 import { measured } from "../scenarios/script.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

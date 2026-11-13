@@ -1,11 +1,14 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { brand } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { SIGN_IN_HINT } from "../src/server.ts"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const harnesses: Harness[] = []
 afterEach(async () => {

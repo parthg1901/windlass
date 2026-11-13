@@ -9,7 +9,7 @@
  * where every session was updated in the same millisecond and only the ID
  * tells two apart.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -17,6 +17,10 @@ import { createHarness } from "../../src/assembly.ts"
 import { EngineError } from "../../src/engine/engine.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { Harness, removeHarnessDirectories } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-listing-page-")))
 afterAll(() => {

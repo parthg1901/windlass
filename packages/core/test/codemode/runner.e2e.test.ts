@@ -4,13 +4,17 @@
  * itself. The engine side (calls as calls of the step) is in
  * `test/engine/codemode.e2e.test.ts`.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { CODE_TOOL_SPEC, PROGRAM_LIMITS, type ProgramCallResult, type ProgramHost, renderOutcome, runProgram } from "../../src/codemode/index.ts"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import type { Confine } from "../../src/codemode/runner.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const base = mkdtempSync(join(tmpdir(), "wl-codemode-"))
 afterAll(() => rmSync(base, { recursive: true, force: true }))
@@ -73,10 +77,12 @@ describe("a program", () => {
   })
 
   test("its own time is limited, not the time its calls take", async () => {
-    const slow: ProgramHost = { call: async () => (await Bun.sleep(700), { status: "success", output: "ok" }) }
-    const waited = await run(`await read({ path: "a" })\nreturn "done"`, slow, { limits: { ownTimeMs: 400 } })
+    // The call takes twice the limit. The program's own time includes its process starting, which takes most of a
+    // second on a loaded runner, so the limit leaves room for that and the call is what would go over it.
+    const slow: ProgramHost = { call: async () => (await Bun.sleep(3000), { status: "success", output: "ok" }) }
+    const waited = await run(`await read({ path: "a" })\nreturn "done"`, slow, { limits: { ownTimeMs: 1500 } })
     expect(waited.end).toEqual({ kind: "returned", value: "done" })
-    const spun = await run(`while (true) {}`, slow, { limits: { ownTimeMs: 400 } })
+    const spun = await run(`while (true) {}`, slow, { limits: { ownTimeMs: 1500 } })
     expect(spun.end).toEqual({ kind: "limit", limit: "time" })
   })
 
@@ -89,9 +95,19 @@ describe("a program", () => {
   test("a stop ends the program, and it resolves only once every call that reached the host has its result", async () => {
     const controller = new AbortController()
     let finished = false
-    const host: ProgramHost = { call: async () => (await Bun.sleep(300), (finished = true), { status: "success", output: "late" }) }
+    let reached: () => void = () => {}
+    const reachedHost = new Promise<void>((resolve) => (reached = resolve))
+    // The call reaches the host, the stop comes, and the call's result arrives a moment after the stop.
+    const host: ProgramHost = {
+      call: async () => {
+        reached()
+        await new Promise((resolve) => controller.signal.addEventListener("abort", () => setTimeout(resolve, 200), { once: true }))
+        finished = true
+        return { status: "success", output: "late" }
+      },
+    }
     const running = run(`await read({ path: "a" })`, host, { signal: controller.signal })
-    await Bun.sleep(150)
+    await reachedHost
     controller.abort()
     const outcome = await running
     expect(outcome.end).toEqual({ kind: "stopped" })

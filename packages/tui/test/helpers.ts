@@ -17,6 +17,16 @@ import { Theme } from "../src/theme.ts"
 
 export const CLOCK_START = Date.UTC(2026, 10, 12, 9, 0, 0)
 
+/**
+ * Presses Esc on its own. The terminal's input parser tells a lone Esc from the start of an escape sequence only
+ * after a short timer, so the key takes effect once that has run. This waits on a longer timer: timers fire in the
+ * order they are due, so the parser's has always run first, however loaded the machine is.
+ */
+export async function pressEscapeAlone(input: { pressEscape(): void }): Promise<void> {
+  input.pressEscape()
+  await Bun.sleep(80)
+}
+
 /** The conversation's text on one line: each row up to the panel's `│`, the rows joined, runs of space as one. */
 export function said(frame: string): string {
   return frame

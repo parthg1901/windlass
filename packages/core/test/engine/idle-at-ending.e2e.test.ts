@@ -7,7 +7,7 @@
  * configured, and with a stop hook, an after hook and a language server
  * that all ran in the turn.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -19,6 +19,10 @@ import { exited, scriptedRunner } from "../hooks/helpers.ts"
 import { fixture, waitFor } from "../lsp/helpers.ts"
 import { measured } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, type HarnessOptions, failed, removeHarnessDirectories, untilAbort } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

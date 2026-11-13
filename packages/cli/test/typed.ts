@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentRecord, type NewEvent, brand, event } from "@windlass/core"
-import type { FakeProvider } from "@windlass/core/testing"
+import { type FakeProvider, waitFor as waitUntil } from "@windlass/core/testing"
 import { c, m, x } from "@windlass/core/testing/scenarios"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { runCli } from "./helpers.ts"
@@ -77,12 +77,8 @@ export function typedSessions(prefix: string) {
     const vt = new VirtualTerminal(120)
     let seen = ""
     let typer: ((data: string) => void) | null = null
-    const waitFor = async (needle: string | RegExp, ms = 15_000) => {
-      const deadline = Date.now() + ms
-      while (!(typeof needle === "string" ? seen.includes(needle) : needle.test(seen))) {
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${String(needle)}; screen:\n${vt.text}`)
-        await Bun.sleep(5)
-      }
+    const waitFor = async (needle: string | RegExp, ms = 15_000): Promise<void> => {
+      await waitUntil(() => (typeof needle === "string" ? seen.includes(needle) : needle.test(seen)), { timeoutMs: ms, intervalMs: 5, what: String(needle), describe: () => `screen:\n${vt.text}` })
     }
     const running = runCli(argv, {
       engine,

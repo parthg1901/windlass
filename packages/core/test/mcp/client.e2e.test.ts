@@ -1,5 +1,5 @@
 /** The session layer against real scripted servers: era detection, listing with pagination, calls, list changes, both transports. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { openSession } from "../../src/mcp/client.ts"
 import { openHttpChannel } from "../../src/mcp/http.ts"
@@ -7,6 +7,10 @@ import { type McpToolDefinition, parseToolDefinition } from "../../src/mcp/proto
 import { openStdioChannel } from "../../src/mcp/stdio.ts"
 import { type HttpFixture, startHttpFixture } from "./fixtures/http-server.ts"
 import { STDIO_SERVER, cleanup, never, onCleanup, readLog, tempDir, waitFor } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 
@@ -98,7 +102,7 @@ describe("stdio", () => {
     await waitFor(() => readLog(log).includes("call hang"))
     controller.abort(new Error("the user cancelled"))
     await expect(call).rejects.toMatchObject({ kind: "cancelled" })
-    await waitFor(() => readLog(log).some((line) => line.startsWith("cancelled ")), 5000, "the server to see the cancellation")
+    await waitFor(() => readLog(log).some((line) => line.startsWith("cancelled ")), 10_000, "the server to see the cancellation")
     // The server is still usable.
     expect((await session.callTool(named(tools, "echo"), { text: "after" }, { signal: never })).content).toEqual([{ type: "text", text: "after" }])
   })
@@ -108,10 +112,10 @@ describe("stdio", () => {
       const session = await openSession(stdio(["--era", era]), { signal: timeout(), protocol: "auto", probeMs: 300 })
       const tools = (await session.listTools(timeout())).tools
       let changes = 0
+      // Over stdio the watch's request goes out before the call that changes the list, and is read first.
       session.watchTools(() => (changes += 1))
-      await Bun.sleep(100)
       await session.callTool(named(tools, "add_tool"), { name: "late_tool" }, { signal: never })
-      await waitFor(() => changes > 0, 5000, "a list change")
+      await waitFor(() => changes > 0, 10_000, "a list change")
       expect((await session.listTools(timeout())).tools.map((tool) => tool.name)).toContain("late_tool")
     })
   }
@@ -168,10 +172,10 @@ describe("streamable HTTP", () => {
     expect(progress.length).toBe(3)
     const controller = new AbortController()
     const call = session.callTool(named(tools, "hang"), {}, { signal: controller.signal })
-    await Bun.sleep(150)
+    await waitFor(() => fixture.events.includes("call hang"), 10_000, "the call to reach the server")
     controller.abort(new Error("stop"))
     await expect(call).rejects.toMatchObject({ kind: "cancelled" })
-    await waitFor(() => fixture.events.some((event) => event.startsWith("cancelled")), 5000, "the server to see the stream close")
+    await waitFor(() => fixture.events.some((event) => event.startsWith("cancelled")), 10_000, "the server to see the stream close")
   })
 
   test("a modern server's list changes arrive on subscriptions/listen", async () => {
@@ -180,9 +184,9 @@ describe("streamable HTTP", () => {
     const tools = (await session.listTools(timeout())).tools
     let changes = 0
     session.watchTools(() => (changes += 1))
-    await Bun.sleep(150)
+    await waitFor(() => fixture.events.includes("listening"), 10_000, "the change stream to be open")
     await session.callTool(named(tools, "add_tool"), { name: "remote_late" }, { signal: never })
-    await waitFor(() => changes > 0, 5000, "a list change")
+    await waitFor(() => changes > 0, 10_000, "a list change")
     await session.close()
   })
 
@@ -195,12 +199,12 @@ describe("streamable HTTP", () => {
     expect(tools.length).toBe(13)
     let changes = 0
     session.watchTools(() => (changes += 1))
-    await Bun.sleep(150)
+    await waitFor(() => fixture.events.includes("listening"), 10_000, "the change stream to be open")
     await session.callTool(named(tools, "add_tool"), { name: "legacy_late" }, { signal: never })
-    await waitFor(() => changes > 0, 5000, "a list change")
+    await waitFor(() => changes > 0, 10_000, "a list change")
     const controller = new AbortController()
     const call = session.callTool(named(tools, "hang"), {}, { signal: controller.signal })
-    await Bun.sleep(150)
+    await waitFor(() => fixture.events.includes("call hang"), 10_000, "the call to reach the server")
     controller.abort(new Error("stop"))
     await expect(call).rejects.toMatchObject({ kind: "cancelled" })
     await session.close()

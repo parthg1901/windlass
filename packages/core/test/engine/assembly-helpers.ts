@@ -13,6 +13,7 @@ import type { EngineSession } from "../../src/engine/engine.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { Json } from "../../src/json.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 
 const scratch: string[] = []
 const open: Harness[] = []
@@ -73,13 +74,8 @@ export function start(data: string, responses: readonly ScriptedResponse[], more
 export function watch(session: EngineSession) {
   const events: EngineEvent[] = []
   session.subscribe((item) => events.push(item))
-  const seen = async (predicate: (item: EngineEvent) => boolean, timeoutMs = 15_000) => {
-    for (let waited = 0; !events.some(predicate); waited += 5) {
-      if (waited > timeoutMs) throw new Error("timed out waiting for an event")
-      await Bun.sleep(5)
-    }
-    return events.find(predicate)!
-  }
+  const seen = (predicate: (item: EngineEvent) => boolean, timeoutMs = 15_000) =>
+    waitFor(() => events.find(predicate), { timeoutMs, intervalMs: 5, what: "an event", describe: () => events.map((item) => item.type).join(", ") })
   return { events, seen }
 }
 
@@ -88,8 +84,5 @@ export const typesOf = (events: readonly StoredEvent[]) => events.map((item) => 
 
 /** Waits until `check` holds. */
 export async function until(check: () => boolean, timeoutMs = 15_000) {
-  for (let waited = 0; !check(); waited += 5) {
-    if (waited > timeoutMs) throw new Error("timed out waiting")
-    await Bun.sleep(5)
-  }
+  await waitFor(check, { timeoutMs, intervalMs: 5 })
 }

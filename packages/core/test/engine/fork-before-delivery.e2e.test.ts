@@ -21,9 +21,13 @@
  * from the first `inbox.enqueued` of the log, delivered or not, names the
  * fork after it.)
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import { SETTINGS, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)

@@ -1,5 +1,5 @@
 /** Shared test helpers for the tools: real temporary directories, a real context, a real runtime. */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
@@ -14,7 +14,7 @@ const created: string[] = []
 export function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "wl-tools-"))
   created.push(dir)
-  return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()
+  return realpathSync(dir)
 }
 
 /** Removes every directory `tempDir` made. Each test file registers it with `afterEach(removeTempDirs)`. */

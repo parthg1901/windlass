@@ -95,7 +95,7 @@ describe("hooks", () => {
     )
     const sessionId = await harness.newSession()
     // Told unasked a moment after the session opened: the client has the question before the first message.
-    await until(() => notes<HooksStateResult>(harness, EXT.hooksChanged).length > 0, 5000, "the hooks to be announced")
+    await until(() => notes<HooksStateResult>(harness, EXT.hooksChanged).length > 0, 10_000, "the hooks to be announced")
     const announced = notes<HooksStateResult>(harness, EXT.hooksChanged)[0]!
     expect(announced).toMatchObject({ sessionId, available: true, hooks: [{ name: "no-secrets", point: "beforeTool", state: "awaiting_approval", origin: "project", file, command: "exit 0", tools: ["write"], paths: null }] })
     const waiting = announced.hooks[0]!
@@ -127,7 +127,7 @@ describe("hooks", () => {
     // The same hook with another command is another hook: the next turn reads it and it waits again.
     projectConfig(harness.workspace, hook("exit 2"))
     await prompt(harness, sessionId, "And again.")
-    await until(() => notes<HooksStateResult>(harness, EXT.hooksChanged).at(-1)?.hooks[0]?.command === "exit 2", 5000, "the edited hook to be announced")
+    await until(() => notes<HooksStateResult>(harness, EXT.hooksChanged).at(-1)?.hooks[0]?.command === "exit 2", 10_000, "the edited hook to be announced")
     const edited = notes<HooksStateResult>(harness, EXT.hooksChanged).at(-1)!.hooks[0]!
     expect(edited.state).toBe("awaiting_approval")
     expect(edited.fingerprint).not.toBe(waiting.fingerprint)
@@ -205,7 +205,7 @@ describe("language servers", () => {
       },
     )
     const sessionId = await harness.newSession()
-    await until(() => notes<LspStateResult>(harness, EXT.lspChanged).length > 0, 5000, "the servers to be announced")
+    await until(() => notes<LspStateResult>(harness, EXT.lspChanged).length > 0, 10_000, "the servers to be announced")
     const waiting = notes<LspStateResult>(harness, EXT.lspChanged)[0]!.servers[0]!
     expect(waiting).toMatchObject({ name: "fixture", state: "awaiting_approval", origin: "project", file, languages: [{ languageId: "plaintext", patterns: ["**/*.txt"] }], processes: [] })
     expect(waiting.command).toContain("fixtures/server.ts")

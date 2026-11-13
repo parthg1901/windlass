@@ -5,7 +5,7 @@
  * point with no snapshot). The last group runs the real snapshot module and
  * the real tools in a temporary directory.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -18,10 +18,14 @@ import { selectModelHistory } from "../../src/message/history.ts"
 import { openSnapshots } from "../../src/snapshot/index.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, removeHarnessDirectories } from "./harness.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const scratch: string[] = []
 afterAll(() => {
@@ -670,8 +674,8 @@ describe("with the real snapshot module and the real tools", () => {
       const session = engine.createSession({ cwd: workspace, settings: { model: "gpt-test", reasoningEffort: null } })
       session.send("Wait for the server.")
       // The command is running: the user creates a file and edits an existing one in their editor.
-      while (!store.readEvents(session.id).some((item) => item.type === "tool.started")) await Bun.sleep(10)
-      await Bun.sleep(200)
+      // The turn's snapshot was taken when its input was delivered, before the call started.
+      await waitFor(() => store.readEvents(session.id).some((item) => item.type === "tool.started"), { what: "the command to start" })
       writeFileSync(join(workspace, "mine.txt"), "written by hand\n")
       writeFileSync(join(workspace, "a.txt"), "alpha, edited by hand\n")
       await session.settled()

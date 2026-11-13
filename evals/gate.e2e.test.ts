@@ -1,5 +1,5 @@
 // The regression gate and the baseline generator, on crafted results directories. No agent runs here.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -7,6 +7,10 @@ import { type Baseline, BASELINE_FILE, buildBaseline, loadResults } from "./base
 import { skipped } from "./classify.ts"
 import { RULES, fisherLower, formatGate, gate, passRateRegression } from "./gate.ts"
 import { type Report, type RunResult, computeMetrics, totalsOf } from "./run-agent.ts"
+import { E2E_TIMEOUT_MS } from "../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const scratch = { dir: "" }
 beforeAll(async () => {

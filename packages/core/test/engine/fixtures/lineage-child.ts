@@ -20,6 +20,7 @@ import { responsesFromTape } from "../../../src/replay/fake.ts"
 import { tapeFromEvents } from "../../../src/replay/tape.ts"
 import type { ModelRequest } from "../../../src/request/request.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../../../src/testing/fake-provider.ts"
+import { waitFor } from "../../../src/testing/wait.ts"
 
 const [data, workspace, name] = process.argv.slice(2)
 if (data === undefined || workspace === undefined || name === undefined) throw new Error("usage: lineage-child.ts <data> <workspace> <script>")
@@ -88,12 +89,16 @@ if (name === "fork") {
     }),
   )
   session.send("Start both.")
-  // Both run: the background command, and the subagent's own command.
-  for (;;) {
-    if (existsSync(join(workspace, "command.pid")) && existsSync(join(workspace, "child.pid")) && session.readEvents().some((item) => item.type === "text.ended" && item.data.text === "Both are running.")) break
-    await Bun.sleep(20)
-  }
-  await Bun.sleep(100)
+  // Both run: the background command, and the subagent's own command (its call is recorded as started before it
+  // runs). The parent has answered and ended its step; its execution stays open while the subagent works.
+  await waitFor(
+    () =>
+      existsSync(join(workspace, "command.pid")) &&
+      existsSync(join(workspace, "child.pid")) &&
+      session.readEvents().findLastIndex((item) => item.type === "step.ended") >
+        session.readEvents().findIndex((item) => item.type === "text.ended" && item.data.text === "Both are running."),
+    { timeoutMs: 30_000, intervalMs: 20, what: "both to run and the parent to have answered" },
+  )
   die()
 } else if (name === "merge") {
   provider.enqueue(

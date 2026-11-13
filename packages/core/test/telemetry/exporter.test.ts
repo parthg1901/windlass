@@ -141,10 +141,11 @@ describe("the OTLP/HTTP exporter", () => {
   })
 
   test("a slow collector: each attempt times out, is retried a bounded number of times, and the export ends", async () => {
-    const fake = collector(() => new Promise<Response>((resolve) => setTimeout(() => resolve(new Response("{}")), 1_000)))
+    const fake = collector(() => new Promise<Response>((resolve) => setTimeout(() => resolve(new Response("{}")), 5_000)))
     const started = Date.now()
     const result = await exportOtlpHttp(spans(1), { endpoint: fake.url, timeoutMs: 100, retries: 1, ...fast })
-    expect(Date.now() - started).toBeLessThan(900)
+    // Two attempts of 100 ms, not one 5 s answer; the slack is for a loaded runner.
+    expect(Date.now() - started).toBeLessThan(2_500)
     expect(result.batches[0]).toMatchObject({ ok: false, attempts: 2, status: null, error: "no response within 100 ms" })
     expect(result.failed).toBe(1)
   })

@@ -5,15 +5,18 @@
  * once, and a loaded session shows an asked-and-answered call as history.
  * The real tools and the real sandbox, with a scripted model.
  */
-import { afterAll, afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { createCommandSandbox } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { APPROVAL_META, EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NS = META.capabilities
 const sandboxed = createCommandSandbox().state.available

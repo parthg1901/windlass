@@ -5,17 +5,21 @@
  * and how (the fence, the cut, the redaction), a real command whose earlier
  * output is looked at too, and the properties that hold afterwards.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { EngineError, type EngineSession } from "../../src/engine/engine.ts"
 import { renderWatchFired } from "../../src/engine/spawn.ts"
 import { type StoredEvent, WATCH_LIMITS } from "../../src/event/durable.ts"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import type { ToolContext } from "../../src/tool/tool.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SETTINGS, call as realCall, closeHarnesses, place, removePlaces, say, start, until } from "./assembly-helpers.ts"
 import { Harness, type HarnessOptions, converse, removeHarnessDirectories } from "./harness.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(() => {
@@ -61,10 +65,7 @@ async function started(h: Harness, command: ReturnType<typeof scriptedCommand>, 
 
 /** Waits until the session has answered whatever woke it and is idle again. */
 async function idleAgain(h: Harness, executions: number) {
-  for (let waited = 0; of(h.log(), "execution.succeeded").length < executions; waited += 2) {
-    if (waited > 10_000) throw new Error("timed out waiting for the session to answer")
-    await Bun.sleep(2)
-  }
+  await waitFor(() => of(h.log(), "execution.succeeded").length >= executions, { intervalMs: 2, what: "the session to answer" })
   await h.settled()
 }
 

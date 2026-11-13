@@ -24,7 +24,7 @@
  * throwaway directory: `--version` (process start), and `--list-sessions`.
  * Asserted: a warm listing opens no session file, and generous bounds.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -32,6 +32,10 @@ import { createHarness } from "../../src/assembly.ts"
 import { brand } from "../../src/brand.ts"
 import type { SessionId } from "../../src/id.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const COUNT = Number(process.env[`${brand.envPrefix}LISTING_SESSIONS`] ?? 60)
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-listing-")))

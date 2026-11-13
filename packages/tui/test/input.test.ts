@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { type NewEvent, brand, event } from "@windlass/core"
 import { executionSucceeded, m, opening, say, stepStarted } from "@windlass/core/testing/scenarios"
 import { BackendError } from "../src/backend.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, pressEscapeAlone } from "./helpers.ts"
 
 let mounted: Mounted | null = null
 afterEach(async () => {
@@ -194,9 +194,8 @@ describe("the command palette and dialogs", () => {
     expect(mounted.app.dialog.open).toBe(true)
     expect(frame).toContain("Help")
     expect(frame).toContain("Ctrl-T")
-    keys(mounted).pressEscape()
     // A lone Esc is told from the start of an escape sequence only after a short wait.
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys(mounted))
     await mounted.settle()
     expect(mounted.app.dialog.open).toBe(false)
   })
@@ -258,9 +257,8 @@ describe("scrolling", () => {
     const after = await mounted.frame()
     expect(after.split("\n")[0]).toBe(top)
     expect(after).toMatch(/↑ scrolled · \d+ new lines below · Esc follows/)
-    keys(mounted).pressEscape()
     // A lone Esc is told from the start of an escape sequence only after a short wait.
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys(mounted))
     await mounted.settle()
     expect(await mounted.frame()).toContain("something new arrived")
   })

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
+import { waitFor as waitForCondition } from "../../src/testing/wait.ts"
 import type { SandboxRun, ToolContext } from "../../src/tool/tool.ts"
 import type { CheckOutcome, CheckRequest, CheckRunner } from "../../src/wake/check.ts"
 import type { WakeClock } from "../../src/wake/clock.ts"
@@ -147,9 +148,5 @@ export function toolContext(overrides: { sessionId?: string; cwd?: string; sandb
 
 /** Waits until `condition` holds, polling on the real clock; fails after `ms`. */
 export async function until(condition: () => boolean, ms = 20_000, what = "condition") {
-  const deadline = performance.now() + ms
-  while (!condition()) {
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    await Bun.sleep(20)
-  }
+  await waitForCondition(condition, { timeoutMs: ms, intervalMs: 20, what })
 }

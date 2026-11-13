@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type CallId, type MessageId, event } from "@windlass/core"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { FakeProvider, script, waitFor as waitUntil } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { spawnMessageText } from "../src/renderer.ts"
 import { render, runCli, stored } from "./helpers.ts"
@@ -30,12 +30,8 @@ async function interactive(args: readonly string[], provider: FakeProvider, earl
   const vt = new VirtualTerminal(100)
   let seen = ""
   let typer: ((data: string) => void) | null = null
-  const waitFor = async (needle: string | RegExp) => {
-    const deadline = Date.now() + 15_000
-    while (!(typeof needle === "string" ? seen.includes(needle) : needle.test(seen))) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${String(needle)}; screen:\n${vt.text}`)
-      await Bun.sleep(5)
-    }
+  const waitFor = async (needle: string | RegExp): Promise<void> => {
+    await waitUntil(() => (typeof needle === "string" ? seen.includes(needle) : needle.test(seen)), { timeoutMs: 15_000, intervalMs: 5, what: String(needle), describe: () => `screen:\n${vt.text}` })
   }
   const running = runCli(["--cwd", workspace, ...args], {
     engine: engineFor(provider),

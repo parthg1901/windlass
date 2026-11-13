@@ -49,7 +49,10 @@ export interface FakeOptions {
   readonly graceMs?: number
   /** Start of the virtual clock that stamps event times. Default: the wall clock when the session opens. */
   readonly clockStart?: number
-  /** Told `close` when `close` is called and `closed` when it has finished; for tests of the CLI's exit paths. */
+  /**
+   * Told `started <tool>` when a scripted call starts running, `close` when `close` is called and `closed` when it
+   * has finished; for tests of the CLI's exit paths, which wait for a command to be running before they signal.
+   */
   readonly trace?: (line: string) => void
 }
 
@@ -577,6 +580,7 @@ export class FakeSession implements Session {
           call.started = true
           call.effect = item.data.effect
           call.startedAt = this.now()
+          this.options.trace?.(`started ${call.name}`)
         }
         return
       }

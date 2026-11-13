@@ -1,11 +1,15 @@
 /** The file store on real temporary directories: every operation, the file format, hand edits, corruption, and several processes at once. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import { type MemoryEntry, parseEntryFile, renderEntryFile } from "../../src/memory/entry.ts"
 import { defaultDataDir, memoryPaths, openMemoryStore, projectKey } from "../../src/memory/store.ts"
 import { cleanup, fixture, modelProvenance, save, tempDir, userProvenance } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 

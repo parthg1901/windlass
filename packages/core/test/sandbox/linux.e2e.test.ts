@@ -2,13 +2,17 @@
  * Real processes under bubblewrap. Every test spawns the sandbox the way the
  * shell tool will: detached, with the planned argv, env and cwd.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import { type SandboxPolicy, defaultPolicy, sandboxCommand } from "../../src/sandbox/index.ts"
 import { descendants, isRunning, plan, removeTempDirs, run, skipReason, spawnPlan, tempDir, waitUntil } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 
@@ -186,19 +190,19 @@ describe.skipIf(skipReason !== null)(title, () => {
           f.workspace,
         ),
       )
-      const pids = await readyThenDescendants(child)
+      const pids = await readyThenDescendants(child, 3)
       expect(pids.length).toBeGreaterThanOrEqual(6)
 
       process.kill(-child.pid, "SIGTERM")
       expect(await child.exited).toBe(3)
       expect(readFileSync(join(f.workspace, "cleanup-ran"), "utf8")).toBe("cleaned\n")
-      expect(await waitUntil(() => !pids.some(isRunning), 2000)).toBe(true)
+      expect(await waitUntil(() => !pids.some(isRunning), 10_000)).toBe(true)
     })
 
     test("SIGKILL to the group kills a tree that ignores SIGTERM, including a setsid escapee", async () => {
       const f = fixture()
       const child = spawnPlan(plan(f.policy, `trap '' TERM\nbash -c 'sleep 300 & wait' &\nsetsid sleep 300 &\necho ready\nwait`, f.workspace))
-      const pids = await readyThenDescendants(child)
+      const pids = await readyThenDescendants(child, 2)
 
       process.kill(-child.pid, "SIGTERM")
       await Bun.sleep(300)
@@ -207,7 +211,7 @@ describe.skipIf(skipReason !== null)(title, () => {
 
       process.kill(-child.pid, "SIGKILL")
       await child.exited
-      expect(await waitUntil(() => !pids.some(isRunning), 2000)).toBe(true)
+      expect(await waitUntil(() => !pids.some(isRunning), 10_000)).toBe(true)
     })
 
     test("the sandbox sees only its own processes", async () => {
@@ -284,8 +288,8 @@ describe.skipIf(skipReason !== null)(title, () => {
   })
 })
 
-/** Waits for the command's "ready" line, then lists its host-side process tree. */
-async function readyThenDescendants(child: ReturnType<typeof spawnPlan>) {
+/** Waits for the command's "ready" line and for its `sleeps` background `sleep` processes, then lists its host-side process tree. */
+async function readyThenDescendants(child: ReturnType<typeof spawnPlan>, sleeps: number) {
   const reader = child.stdout.getReader()
   let seen = ""
   while (!seen.includes("ready")) {
@@ -294,7 +298,14 @@ async function readyThenDescendants(child: ReturnType<typeof spawnPlan>) {
     seen += new TextDecoder().decode(next.value)
   }
   reader.releaseLock()
-  // Background jobs may still be forking; let the tree settle.
-  await Bun.sleep(200)
+  // Background jobs may still be forking after "ready": the tree is complete once every one of them runs its sleep.
+  const sleeping = () => descendants(child.pid).filter((pid) => readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "sleep").length
+  await waitUntil(() => {
+    try {
+      return sleeping() >= sleeps
+    } catch {
+      return false
+    }
+  }, E2E_TIMEOUT_MS)
   return descendants(child.pid)
 }

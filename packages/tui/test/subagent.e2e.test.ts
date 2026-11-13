@@ -6,15 +6,18 @@
  * parent and child, the subagent's question answered in-process), played
  * into the app as the server would send them.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { type EngineEvent, type StoredEvent, createHarness } from "@windlass/core"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, FakeProvider, script } from "@windlass/core/testing"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
 import type { ApprovalAsk } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-tui-child-")))
 const elsewhere = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-child-")))

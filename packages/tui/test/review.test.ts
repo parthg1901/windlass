@@ -12,7 +12,7 @@ import type { DiffFile, DiffResult } from "@windlass/acp/extensions"
 import { families } from "@windlass/core/testing/scenarios"
 import { COMMENT_MARK, Review, type ReviewKey, ReviewScreen, fileLines, reviewMessage } from "../src/review.ts"
 import { reviewTarget } from "../src/review-view.ts"
-import { type Mounted, ScriptBackend, mount, stamp } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, stamp, pressEscapeAlone } from "./helpers.ts"
 
 const file = (path: string, patch: string | null, more: Partial<DiffFile> = {}): DiffFile => ({
   path,
@@ -335,8 +335,7 @@ const DIFF: DiffResult = { available: true, scope: "turn", executionId: "exe_1",
 async function command(text: string): Promise<void> {
   await keys().typeText(text)
   // The palette is open while a command is typed: Esc first, so Enter runs what was typed.
-  keys().pressEscape()
-  await Bun.sleep(80)
+  await pressEscapeAlone(keys())
   keys().pressEnter()
   await mounted!.settle()
 }
@@ -439,8 +438,7 @@ describe("/review in the app", () => {
     keys().pressEnter()
     await mounted!.settle()
     expect(await mounted!.frame()).toContain(`▌${COMMENT_MARK}    21 +// one more\n▌         ╰ one more what?`)
-    keys().pressEscape()
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys())
     await mounted!.settle()
     expect(app.review.open).toBe(false)
     expect(backend.sent).toEqual([])
@@ -578,10 +576,8 @@ describe("a review that could not be sent, and a question under the view", () =>
     keys().pressKey("s")
     await mounted!.settle()
     expect(await mounted!.frame()).toContain("? a question is waiting for your answer · Esc back, Esc again leaves to answer it: comments are kept")
-    keys().pressEscape()
-    await Bun.sleep(80)
-    keys().pressEscape()
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys())
+    await pressEscapeAlone(keys())
     await mounted!.settle()
     expect(app.review.open).toBe(false)
     const under = await mounted!.frame()
@@ -592,8 +588,7 @@ describe("a review that could not be sent, and a question under the view", () =>
     await command("/diff")
     expect(app.pager.open).toBe(true)
     expect((await mounted!.frame()).split("\n").at(-1)).toStartWith("? a question is waiting for your answer · Esc closes this view to answer it · ↑↓ PgUp")
-    keys().pressEscape()
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys())
     await mounted!.settle()
     expect(app.pager.open).toBe(false)
     keys().pressTab()

@@ -13,7 +13,7 @@
  *
  * `projectApprovalHome` (engine/approval.ts) is the one key the three kinds of approval are kept under.
  */
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -28,6 +28,10 @@ import { Harness, converse, removeHarnessDirectories } from "./harness.ts"
 import { exited, scriptedRunner } from "../hooks/helpers.ts"
 import { fixtureServer, waitFor } from "../mcp/helpers.ts"
 import { measured } from "../scenarios/script.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

@@ -8,7 +8,7 @@
  * reads a PNG from the workspace, and the image goes back to the model as an
  * attachment of the tool result.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { createHash } from "node:crypto"
 import { deflateSync } from "node:zlib"
 import { blobRefs, encodeRequest } from "../../src/provider/openai-responses-encode.ts"
@@ -19,6 +19,10 @@ import { TRACE_FORMAT_VERSION, elideBinary, serializeTrace, traceHash } from "..
 import { SETTINGS, USAGE, call, closeHarnesses, place, removePlaces, start } from "../engine/assembly-helpers.ts"
 import {report, prefixlens } from "./prefixlens.ts"
 import { validateTrace } from "./spec.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)

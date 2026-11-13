@@ -4,11 +4,14 @@
  * a `/queue` message started the turn itself, the prompt arrived as a steer into it, and neither was said as what
  * it was.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { brand } from "@windlass/core"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, FakeProvider, script } from "@windlass/core/testing"
 import type { Engine, Session } from "../src/engine.ts"
 import { typedSessions } from "./typed.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 describe("typed while the prompt is on its way", () => {
   const { workspace, engineFor, interactive } = typedSessions(`${brand.binary}-cli-sending-`)

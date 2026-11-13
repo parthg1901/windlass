@@ -9,7 +9,7 @@
  * whole process group of an engine whose shell tool is running a command,
  * and checks that nothing of that command survives.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -24,11 +24,15 @@ import type { ModelRequest } from "../../src/request/request.ts"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, isAlive, waitFor } from "../../src/testing/wait.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
 import { exportSession } from "../../src/trace/export.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 import { danglingCalls } from "./harness.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const FIXTURE = join(import.meta.dir, "fixtures", "engine-child.ts")
 
@@ -270,19 +274,9 @@ describe("a process killed inside a compaction", () => {
 })
 
 describe("no tool subprocess outlives the engine's process", () => {
-  const alive = (pid: number) => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
-  const until = async (condition: () => boolean, ms: number) => {
-    const deadline = Date.now() + ms
-    while (!condition() && Date.now() < deadline) await Bun.sleep(20)
-    return condition()
-  }
+  const alive = isAlive
+  /** Whether `condition` came to hold within `ms`. */
+  const until = (condition: () => boolean, ms: number) => waitFor(condition, { timeoutMs: ms, intervalMs: 20 }).then(() => true, () => false)
 
   test(
     "killing the engine's process group with SIGKILL also ends the command its shell tool was running, and the call is recovered as effect unknown",
@@ -299,7 +293,7 @@ describe("no tool subprocess outlives the engine's process", () => {
 
       process.kill(-child.pid, "SIGKILL")
       await child.exited
-      expect(await until(() => !pids.some(alive), 5000)).toBe(true)
+      expect(await until(() => !pids.some(alive), 10_000)).toBe(true)
 
       const result = await recoverAndContinue(where)
       expect(outcomes(result.recovered)).toEqual(["call_1 effect_unknown"])
@@ -367,16 +361,12 @@ describe.skipIf(!createCommandSandbox().state.available)("the approval layer and
       const child = Bun.spawn([process.execPath, FIXTURE, where.database, where.workspace, "sandboxed"], { stdout: "ignore", stderr: "pipe", detached: true })
       children.push(child)
       const running = () => Bun.spawnSync(["pgrep", "-f", "^sleep 300\\.7731$"]).exitCode === 0
-      const until = async (condition: () => boolean, ms: number) => {
-        const deadline = Date.now() + ms
-        while (!condition() && Date.now() < deadline) await Bun.sleep(20)
-        return condition()
-      }
+      const until = (condition: () => boolean, ms: number) => waitFor(condition, { timeoutMs: ms, intervalMs: 20 }).then(() => true, () => false)
       if (!(await until(() => existsSync(join(where.workspace, "started.txt")) && running(), 10_000))) throw new Error("the sandboxed command never started")
       // Only the engine's own process: the command is in a group of its own and has to be ended by the guard.
       process.kill(child.pid, "SIGKILL")
       await child.exited
-      expect(await until(() => !running(), 5000)).toBe(true)
+      expect(await until(() => !running(), 10_000)).toBe(true)
 
       const result = await recoverGuarded(where)
       expect(outcomes(result.recovered)).toEqual(["call_1 effect_unknown"])
@@ -412,8 +402,7 @@ describe("a process killed inside a run of checks", () => {
       const child = Bun.spawn([process.execPath, FIXTURE, where.database, where.workspace, "checks"], { stdout: "ignore", stderr: "pipe", detached: true })
       children.push(child)
       const pidFile = join(where.workspace, "check.pid")
-      const deadline = Date.now() + 15_000
-      while (!(existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "") && Date.now() < deadline) await Bun.sleep(20)
+      await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", { timeoutMs: 15_000, intervalMs: 20, what: "the check command to write its pid" })
       const pid = Number(readFileSync(pidFile, "utf8").trim())
       const alive = () => {
         try {
@@ -426,9 +415,7 @@ describe("a process killed inside a run of checks", () => {
       expect(alive()).toBe(true)
       process.kill(-child.pid, "SIGKILL")
       await child.exited
-      const gone = Date.now() + 5000
-      while (alive() && Date.now() < gone) await Bun.sleep(20)
-      expect(alive()).toBe(false)
+      await waitFor(() => !alive(), { timeoutMs: 10_000, intervalMs: 20, what: "the check command to be gone" })
 
       // The configuration is read when an execution starts: the project's check is fixed before the restart.
       rmSync(pidFile)

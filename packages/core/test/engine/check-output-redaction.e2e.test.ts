@@ -18,7 +18,7 @@
  * the hash of the redacted output, and a wake-up check's `on_change` fingerprint is of the redacted output and
  * the exit code: output that differs only in a credential's value is the same output.
  */
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -33,6 +33,10 @@ import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { measured } from "../scenarios/script.ts"
 import { FakeWorkspace, ScriptedTools } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const directories: string[] = []
 afterAll(() => {

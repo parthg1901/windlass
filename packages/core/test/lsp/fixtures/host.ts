@@ -9,6 +9,7 @@
 import { join } from "node:path"
 import { planLspServers } from "../../../src/lsp/config.ts"
 import { createLspRegistry } from "../../../src/lsp/registry.ts"
+import { waitFor } from "../../../src/testing/wait.ts"
 
 const [workspace, pidFile, grandchildFile] = process.argv.slice(2)
 const registry = createLspRegistry({
@@ -20,7 +21,6 @@ const registry = createLspRegistry({
   cwd: workspace!,
 })
 registry.observe(join(workspace!, "a.txt"), "hello")
-const deadline = Date.now() + 10_000
-while (registry.status()[0]?.state !== "ready" && Date.now() < deadline) await Bun.sleep(20)
+await waitFor(() => registry.status()[0]?.state === "ready", { timeoutMs: 20_000, intervalMs: 20 }).catch(() => {})
 console.log(registry.status()[0]?.state === "ready" ? "ready" : `not ready: ${registry.status()[0]?.error}`)
 await new Promise(() => {})

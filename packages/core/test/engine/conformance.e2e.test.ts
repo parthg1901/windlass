@@ -12,7 +12,7 @@
  * `DEVIATIONS` with the reason; its expectation is the scenario's events with
  * exactly that difference applied, never a looser comparison.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -22,6 +22,7 @@ import type { StoredEvent } from "../../src/event/durable.ts"
 import { callStopReasonOf, createInterrupt } from "../../src/interrupt.ts"
 import type { Json } from "../../src/json.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor as waitUntil } from "../../src/testing/wait.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
@@ -72,6 +73,9 @@ import { HARNESS_ORIGIN } from "../../src/event/durable.ts"
 import type { MessageId } from "../../src/id.ts"
 import { fixtureServer, waitFor } from "../mcp/helpers.ts"
 import { FakeWorkspace, Harness, ScriptedTools, comparable, converse, failed, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const projects: string[] = []
 afterAll(() => {
@@ -1263,7 +1267,7 @@ const PLAYS: Record<string, Play> = {
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "compaction.started")
     // The summary is streaming; nothing of it is shown or stored.
-    while (h.provider.calls.length < 2 || h.provider.calls[1]!.events.length < 2) await new Promise((resolve) => setTimeout(resolve, 1))
+    await waitUntil(() => !(h.provider.calls.length < 2 || h.provider.calls[1]!.events.length < 2), { intervalMs: 1 })
     h.session.interrupt()
     await h.settled()
     expect(h.session.projection().session.execution).toBeNull()

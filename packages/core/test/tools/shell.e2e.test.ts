@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { statSync } from "node:fs"
 import { createCallStop, createInterrupt } from "../../src/interrupt.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import type { ToolProgress } from "../../src/tool/tool.ts"
 import { context, isRunning, outputOf, workspace, removeTempDirs } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 
@@ -11,9 +15,8 @@ type ShellDisplay = { exitCode: number | null; signal: string | null; timedOut: 
 const STOPPED = "The command and its child processes were stopped; the output above is everything it printed before that."
 
 /** Waits until every pid is gone (or fails after `ms`); the kill sequence has already run when this is called. */
-async function expectAllGone(pids: number[], ms = 500) {
-  const deadline = performance.now() + ms
-  while (pids.some(isRunning) && performance.now() < deadline) await Bun.sleep(20)
+async function expectAllGone(pids: number[], ms = 10_000) {
+  await waitFor(() => !pids.some(isRunning), { timeoutMs: ms, intervalMs: 20 }).catch(() => {})
   expect(pids.filter(isRunning)).toEqual([])
 }
 
@@ -76,7 +79,7 @@ describe("shell", () => {
     expect(elapsed).toBeLessThan(5500)
     expect(outcome.settlement.display).toMatchObject({ timedOut: true, signal: "SIGKILL" })
     await expectAllGone(pidsIn(outputOf(outcome)))
-  }, 10_000)
+  }, E2E_TIMEOUT_MS)
 
   test("a grandchild that outlives the command is stopped with the whole group", async () => {
     const ws = workspace()
@@ -91,7 +94,7 @@ describe("shell", () => {
     expect(stubborn.settlement.outcome).toBe("success")
     expect(pidsIn(outputOf(stubborn))).toHaveLength(1)
     await expectAllGone([...pidsIn(outputOf(stubborn)), Number(/parent=(\d+)/.exec(outputOf(stubborn))![1])])
-  }, 10_000)
+  }, E2E_TIMEOUT_MS)
 
   test("abort mid-output returns what was printed so far, after progress was reported", async () => {
     const ws = workspace()
@@ -103,10 +106,11 @@ describe("shell", () => {
       { command: "echo pid=$$; i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.05; done" },
       { signal: token.signal, progress },
     )
-    while (!progress.some((update) => update.text.includes("tick 3"))) await Bun.sleep(10)
+    await waitFor(() => progress.some((update) => update.text.includes("tick 3")), { what: "the third tick" })
     token.interrupt("user")
     const outcome = await running
-    expect(performance.now() - begin).toBeLessThan(2000)
+    // The loop never ends on its own: it returned because it was stopped. The slack is for a loaded runner.
+    expect(performance.now() - begin).toBeLessThan(10_000)
     const output = outputOf(outcome)
     expect(output).toStartWith("pid=")
     expect(output).toContain("tick 1\ntick 2\ntick 3\n")
@@ -121,7 +125,7 @@ describe("shell", () => {
     const stop = createCallStop(createInterrupt().signal)
     const progress: ToolProgress[] = []
     const running = ws.call("shell", { command: "echo pid=$$; i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.05; done" }, { signal: stop.signal, progress })
-    while (!progress.some((update) => update.text.includes("tick 3"))) await Bun.sleep(10)
+    await waitFor(() => progress.some((update) => update.text.includes("tick 3")), { what: "the third tick" })
     stop.cancel()
     const outcome = await running
     const output = outputOf(outcome)

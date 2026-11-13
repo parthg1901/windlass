@@ -1,16 +1,21 @@
 /**
  * Every way out of the CLI, with the CLI as a real subprocess: it calls the
  * engine's close, waits for it a bounded time, and exits with the code that
- * says why. The fake engine reports `close` and `closed` to a trace file.
+ * says why. The fake engine reports `started <tool>`, `close` and `closed` to a
+ * trace file; a test that signals mid-turn waits for the command to be running.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Subprocess } from "bun"
 import { CLOSE_TIMEOUT_MS } from "../src/engine.ts"
 import { DEMO_TRACE_ENV } from "../src/main.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "@windlass/core/testing"
 import { CLI } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const dir = mkdtempSync(join(tmpdir(), "cli-exit-"))
 const running: Subprocess[] = []
@@ -38,21 +43,24 @@ function start(args: string[], options: { shell?: boolean } = {}) {
       for await (const chunk of proc.stderr) output.err += errors.decode(chunk, { stream: true })
     })(),
   ])
-  const waitFor = async (needle: string, timeoutMs = 20_000) => {
-    const until = Date.now() + timeoutMs
-    while (!output.out.includes(needle)) {
-      if (Date.now() > until) throw new Error(`timed out waiting for ${JSON.stringify(needle)}; output so far:\n${output.out}`)
-      await Bun.sleep(25)
-    }
-  }
-  const traced = () => {
+  const read = () => {
     try {
       return readFileSync(trace, "utf8")
     } catch {
       return ""
     }
   }
-  return { proc, output, done, waitFor, traced }
+  /** What the engine was told about closing, in order. */
+  const traced = () =>
+    read()
+      .split("\n")
+      .filter((line) => line === "close" || line === "closed")
+      .map((line) => `${line}\n`)
+      .join("")
+  const shown = (needle: string) => waitFor(() => output.out.includes(needle), { timeoutMs: 20_000, what: JSON.stringify(needle), describe: () => `output so far:\n${output.out}` })
+  /** Waits until the scripted shell command is running, so a signal stops a running command. */
+  const commandRunning = () => waitFor(() => read().includes("started shell\n"), { timeoutMs: 20_000, what: "the command to start", describe: () => `output so far:\n${output.out}` })
+  return { proc, output, done, waitFor: shown, commandRunning, traced }
 }
 
 describe("exit paths", () => {
@@ -77,8 +85,7 @@ describe("exit paths", () => {
 
   test("Ctrl-C mid-turn: the engine is closed after the stop and the code is 130", async () => {
     const cli = start(["--demo", "a-long-build-command", "--demo-grace", "100"])
-    await cli.waitFor("▸ shell")
-    await Bun.sleep(400)
+    await cli.commandRunning()
     cli.proc.kill("SIGINT")
     expect(await cli.proc.exited).toBe(130)
     expect(cli.traced()).toBe("close\nclosed\n")
@@ -86,8 +93,7 @@ describe("exit paths", () => {
 
   test("SIGTERM mid-turn stops the work as a shutdown, closes the engine and exits with 143", async () => {
     const cli = start(["--demo", "a-long-build-command", "--demo-grace", "100"])
-    await cli.waitFor("▸ shell")
-    await Bun.sleep(400)
+    await cli.commandRunning()
     cli.proc.kill("SIGTERM")
     expect(await cli.proc.exited).toBe(143)
     await cli.done
@@ -98,12 +104,13 @@ describe("exit paths", () => {
 
   test("an engine that does not stop in time does not hold the exit up", async () => {
     const cli = start(["--demo", "a-long-build-command", "--demo-grace", "60000"])
-    await cli.waitFor("▸ shell")
-    await Bun.sleep(400)
+    await cli.commandRunning()
     const sent = Date.now()
     cli.proc.kill("SIGTERM")
     expect(await cli.proc.exited).toBe(143)
-    expect(Date.now() - sent).toBeLessThan(CLOSE_TIMEOUT_MS + 2_000)
+    // The engine would take a minute; the exit waits only the close timeout. The slack is for a loaded runner,
+    // where the process takes a few seconds to wind down and exit, and is still far below the engine's minute.
+    expect(Date.now() - sent).toBeLessThan(CLOSE_TIMEOUT_MS + 8_000)
     await cli.done
     expect(cli.output.err).toContain("the engine did not stop within 3.0s; exiting anyway\n")
     expect(cli.traced()).toBe("close\n")

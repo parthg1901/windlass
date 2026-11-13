@@ -3,12 +3,16 @@
  * placeholder (docs/safety.md, "Secrets in tool output"), so a credential that lies across a cut is not shown, not
  * even in part. The firing's text goes into the session's log and to the model provider.
  */
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { redact } from "../../src/approval/redact.ts"
 import { createCheckRunner } from "../../src/wake/check.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const directories: string[] = []
 afterAll(() => {

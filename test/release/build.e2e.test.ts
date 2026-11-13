@@ -1,5 +1,5 @@
 /** The build script's pure parts and the version string. Nothing here builds: see `binary.test.ts` for the executable. */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +9,10 @@ import { brand } from "../../packages/core/src/brand.ts"
 import { platformString, userAgent, versionLine, versionString } from "../../packages/core/src/version.ts"
 import { selfCommand } from "../../packages/cli/src/self.ts"
 import { ROOT, TARGETS, artifactName, buildPlugin, gitState, hostTarget, nativeLibrary, parseBuildArgs, stampModule } from "../../scripts/build.ts"
+import { E2E_TIMEOUT_MS } from "../../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const stamp = { commit: "0123456789", dirty: false, target: "bun-linux-x64", tui: true } as const
 

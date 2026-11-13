@@ -4,11 +4,15 @@
  * output in full, and in the result that is stored, also when the value
  * arrives split across two reads or sits where the output is capped.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { redactPieces, unfinishedSecret } from "../../src/approval/redact.ts"
 import type { ToolProgress } from "../../src/tool/tool.ts"
 import { context, removeTempDirs, workspace } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 

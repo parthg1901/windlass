@@ -2,14 +2,17 @@
  * The listing (a page at a time from the engine, titles without reading a log)
  * and a setting the engine refuses, over the wire.
  */
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { SUMMARY } from "../../core/test/scenarios/script.ts"
 import type { CompactResult } from "../src/extensions.ts"
 import { EXT, META } from "../src/extensions.ts"
 import { TurnTracker } from "../src/turns.ts"
 import { type Harness, startHarness } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const harnesses: Harness[] = []
 afterEach(async () => {

@@ -3,7 +3,7 @@
  * nested under the program's call, decided, recorded, stopped and recovered
  * like any; the model sees the program's result and never its calls.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { CODE_TOOL_NAME } from "../../src/codemode/index.ts"
 import { CODE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
@@ -12,6 +12,10 @@ import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import type { AnyTool, ToolResult } from "../../src/tool/tool.ts"
 import { Harness, ScriptedTools, removeHarnessDirectories } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterAll(removeHarnessDirectories)
 

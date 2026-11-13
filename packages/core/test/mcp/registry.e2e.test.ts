@@ -1,10 +1,14 @@
 /** The registry with real child processes: background start, timeouts, cancellation, crashes and restarts, list changes, shutdown. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { isRunning } from "../tools/helpers.ts"
 import { HOST_SCRIPT, cleanup, configOf, fixtureServer, never, readLog, registry, tempDir, waitFor } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 
@@ -115,7 +119,7 @@ describe("calls", () => {
     expect(outcome.kind === "failed" && outcome.message).toBe(
       "The call to s/hang timed out after 1 s and was cancelled. It may or may not have taken effect; check before calling it again.",
     )
-    await waitFor(() => readLog(log).some((line) => line.startsWith("cancelled")), 5000, "the cancellation")
+    await waitFor(() => readLog(log).some((line) => line.startsWith("cancelled")), 10_000, "the cancellation")
     expect(await call(r, "s", "echo", { text: "still alive" })).toMatchObject({ kind: "result" })
   })
 
@@ -130,7 +134,7 @@ describe("calls", () => {
     interrupt.interrupt("user")
     const outcome = await pending
     expect(outcome.kind === "failed" && outcome.message).toStartWith("Interrupted: the call to s/hang was cancelled.")
-    await waitFor(() => readLog(log).some((line) => line.startsWith("cancelled")), 5000, "the cancellation")
+    await waitFor(() => readLog(log).some((line) => line.startsWith("cancelled")), 10_000, "the cancellation")
   })
 
   test("a server that crashes mid-call is restarted and the next call works", async () => {
@@ -162,7 +166,7 @@ describe("calls", () => {
     process.kill(Number(readFileSync(join(dir, "pid"), "utf8")), "SIGKILL")
     await waitFor(() => r.status()[0]!.state === "retrying")
     expect(r.catalogue()).not.toBeNull()
-    await waitFor(() => r.catalogue() === null, 5000, "the drop")
+    await waitFor(() => r.catalogue() === null, 10_000, "the drop")
     expect(changes).toBe(1)
   })
 
@@ -173,13 +177,12 @@ describe("calls", () => {
     const before = r.catalogue()!.value
     let changes = 0
     r.onChange(() => (changes += 1))
-    await Bun.sleep(100)
     await call(r, "s", "add_tool", { name: "zeta" })
-    await waitFor(() => r.catalogue()!.value.includes("zeta"), 5000, "the new tool")
+    await waitFor(() => r.catalogue()!.value.includes("zeta"), 10_000, "the new tool")
     expect(changes).toBeGreaterThan(0)
     expect(await call(r, "s", "zeta")).toMatchObject({ kind: "result", result: { content: [{ type: "text", text: "zeta ran" }] } })
     await call(r, "s", "remove_tool", { name: "zeta" })
-    await waitFor(() => !r.catalogue()!.value.includes("zeta"), 5000, "the removal")
+    await waitFor(() => !r.catalogue()!.value.includes("zeta"), 10_000, "the removal")
     expect(r.catalogue()!.value).toBe(before)
   })
 
@@ -242,7 +245,7 @@ describe("shutdown", () => {
     const pids = ["a", "a-child", "b"].map((name) => Number(readFileSync(join(dir, name), "utf8")))
     expect(pids.every(isRunning)).toBe(true)
     await r.stop()
-    await waitFor(() => pids.every((pid) => !isRunning(pid)), 5000, "every process to exit")
+    await waitFor(() => pids.every((pid) => !isRunning(pid)), 10_000, "every process to exit")
     expect(r.status().map((s) => s.state)).toEqual(["stopped", "stopped"])
     expect(await call(r, "a", "echo", { text: "x" })).toEqual({ kind: "refused", message: "The MCP servers have been shut down." })
   })
@@ -254,7 +257,7 @@ describe("shutdown", () => {
     await waitFor(() => Bun.file(join(dir, "pid")).size > 0)
     const pid = Number(readFileSync(join(dir, "pid"), "utf8"))
     await r.stop()
-    await waitFor(() => !isRunning(pid), 5000, "the server to exit")
+    await waitFor(() => !isRunning(pid), 10_000, "the server to exit")
   })
 
   test("a harness that dies without shutting down takes its servers with it", async () => {
@@ -267,6 +270,6 @@ describe("shutdown", () => {
     expect(pids.every(isRunning)).toBe(true)
     host.kill("SIGKILL")
     await host.exited
-    await waitFor(() => pids.every((pid) => !isRunning(pid)), 5000, "the guard to kill the server group")
+    await waitFor(() => pids.every((pid) => !isRunning(pid)), 10_000, "the guard to kill the server group")
   })
 })

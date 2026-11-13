@@ -5,13 +5,17 @@
  * request in the ledger is the previous step request plus appended blocks,
  * except exactly where an event in the log allows a break.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import { checkPrefix } from "../../src/request/build-break.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
 import { script } from "../../src/testing/fake-provider.ts"
 import { NOT_A_SUMMARY, SUMMARY, measured } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, removeHarnessDirectories } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterAll(removeHarnessDirectories)
 

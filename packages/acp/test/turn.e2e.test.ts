@@ -1,9 +1,12 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 let h: Harness | null = null
 afterEach(async () => {
@@ -141,7 +144,7 @@ test("a prompt sent while the session works steers it, and both prompts end with
     ],
   })
   const first = prompt(harness, sessionId, "run the slow thing")
-  await until(() => harness.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 5000, "the command to start")
+  await until(() => harness.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 10_000, "the command to start")
   let firstDone = false
   void first.then(() => (firstDone = true))
   const second = prompt(harness, sessionId, "also: be brief")
@@ -172,7 +175,7 @@ test("the extension methods: models, steer and queue, and queue delivery on sess
   expect(models.models[0]!.efforts).toEqual(["low", "medium", "high"])
 
   const first = prompt(harness, sessionId, "start")
-  await until(() => harness.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 5000, "the command to start")
+  await until(() => harness.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 10_000, "the command to start")
   const steered = await harness.connection.agent.request<{ messageId: string }>(EXT.steer, { sessionId, prompt: [{ type: "text", text: "steered note" }] })
   const queued = await harness.connection.agent.request<{ messageId: string }>(EXT.queue, { sessionId, prompt: [{ type: "text", text: "queued follow-up" }] })
   expect(steered.messageId).toMatch(/^msg_/)

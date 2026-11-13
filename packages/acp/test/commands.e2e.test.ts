@@ -3,16 +3,19 @@
  * record of which file produced the message), a prompt that is `/name args`,
  * the refusals that send nothing, and how the commands are advertised.
  */
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { brand } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import type { CommandsResult, ExpandCommandResult, SendCommandResult } from "../src/extensions.ts"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NOTES = "---\ndescription: Draft release notes for a version\nargument-hint: <version> [previous-version]\n---\nDraft the release notes for version $1.\nLook at the commits since $2.\n"
 const STATUS = "Summarise !`git status` and @src/app.ts for me. $ARGUMENTS\n"
@@ -110,7 +113,7 @@ test("a command is sent as its expansion, the log records which file produced it
   const sent = await request<SendCommandResult>(harness, EXT.sendCommand, { sessionId, name: "release-notes", args: "1.4", builtins: BUILTINS })
   expect(sent.command.name).toBe("release-notes")
   expect(sent.missing).toEqual([2])
-  await until(() => events(harness, "execution.succeeded").length === 1, 5000, "the turn's ending")
+  await until(() => events(harness, "execution.succeeded").length === 1, 10_000, "the turn's ending")
   const admitted = events(harness, "inbox.enqueued")[0]!.data as { messageId: string; origin: unknown; content: { text: string }[] }
   expect(admitted.messageId).toBe(sent.messageId)
   expect(admitted.origin).toBeNull()
@@ -157,7 +160,7 @@ test("a prompt that is /name args is expanded; one that names no command is refu
 test("the commands are advertised after a session is opened, and again when a file was added by the next prompt", async () => {
   const harness = await start({ "release-notes.md": NOTES }, { responses: [[script.text("ok")]] })
   const sessionId = await harness.newSession()
-  await until(() => harness.of(sessionId, "available_commands_update").length === 1, 5000, "the commands")
+  await until(() => harness.of(sessionId, "available_commands_update").length === 1, 10_000, "the commands")
   const first = harness.of(sessionId, "available_commands_update")[0] as { availableCommands: { name: string; description: string; input?: { hint: string } }[] }
   expect(first.availableCommands.map((command) => [command.name, command.description, command.input?.hint])).toEqual([["release-notes", "Draft release notes for a version", "<version> [previous-version]"]])
   // The answer that names the session comes before its commands.

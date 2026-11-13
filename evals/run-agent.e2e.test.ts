@@ -1,5 +1,5 @@
 // The agent runner, driven end to end with the scripted stand-in agent in place of the CLI.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtemp, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -12,6 +12,10 @@ import { brand } from "../packages/core/src/brand.ts"
 import { NOTES_WRITTEN_AS_OF, arrangeMemorySide, memoryTaskSource, notesOf, redateNote } from "./memory-tasks/source.ts"
 import { projectKey } from "../packages/core/src/memory/store.ts"
 import { grade, prepareWorkspace } from "./run-check.ts"
+import { E2E_TIMEOUT_MS } from "../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const STAND_IN = ["bun", join(import.meta.dir, "testing", "stand-in-agent.ts")]
 const scratch = { dir: "", tmp: "", previousTmp: process.env.TMPDIR }

@@ -54,7 +54,7 @@ packages/core/src
   snapshot/       the working tree as git tree objects in a private git directory: take, diff, restore, prune
   config/         the user and project configuration files: checks, verification mode
   verify/         which checks apply, running them, the report the model is shown, the gate decision, the evidence
-  testing/        fake-provider.ts (scripted provider for tests)
+  testing/        fake-provider.ts (scripted provider for tests), wait.ts (waitFor: wait for a state, not a time)
   auth/           ChatGPT sign-in (owned by the model layer)
   sandbox/        the OS sandbox for commands: policy.ts (what a command may write, read and reach), bwrap.ts
                   and seatbelt.ts (Linux and macOS), detect.ts, command.ts (the policy of a command in a

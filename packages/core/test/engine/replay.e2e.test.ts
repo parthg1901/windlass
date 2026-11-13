@@ -6,7 +6,7 @@
  * `execute` the replay carries on in a copy of the workspace as it was at
  * the point it left.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { resolveConfig } from "../../src/config/schema.ts"
@@ -22,8 +22,12 @@ import { tapeFromEvents } from "../../src/replay/tape.ts"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { openSnapshots } from "../../src/snapshot/index.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SETTINGS, type Started, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)
@@ -329,8 +333,9 @@ describe("a replay that cannot run to its end", () => {
   test("is incomplete when it is interrupted, and when its process stops: a replay is not taken up again", async () => {
     const recording = await record()
     recording.provider.enqueue([script.text("Thinking"), script.hang()])
+    const calls = recording.provider.calls.length
     const run = await recording.harness.engine.replaySession(recording.session.id)
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await waitFor(() => recording.provider.calls[calls]?.hanging, { what: "the replay's model call to be under way" })
     run.session.interrupt()
     const outcome = await run.done
     expect(outcome.report.status).toBe("incomplete")
@@ -341,8 +346,9 @@ describe("a replay that cannot run to its end", () => {
 
     // The process stops in the middle of a replay (a shutdown here; a kill leaves the same claim behind).
     recording.provider.enqueue([script.text("Thinking"), script.hang()])
+    const before = recording.provider.calls.length
     const second = await recording.harness.engine.replaySession(recording.session.id)
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await waitFor(() => recording.provider.calls[before]?.hanging, { what: "the second replay's model call to be under way" })
     const id = second.session.id
     await recording.harness.close()
     const next = start(recording.data, [])

@@ -7,7 +7,7 @@
  * the session, an interrupt cancels a call on the wire, and a server the
  * project's file names is not started until the user approved it.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -22,6 +22,10 @@ import { script } from "../../src/testing/fake-provider.ts"
 import { fixtureServer, readLog, waitFor } from "../mcp/helpers.ts"
 import { measured } from "../scenarios/script.ts"
 import { Harness, type HarnessOptions, removeHarnessDirectories } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

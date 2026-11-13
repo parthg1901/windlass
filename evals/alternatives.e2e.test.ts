@@ -1,13 +1,17 @@
 // Graders must accept every reasonable way of doing what the prompt asks, and still reject plausible wrong answers.
 // Each case starts from the untouched workspace or the reference solution, changes it the way a different (correct or
 // wrong) agent might, and grades it. The "accepts" cases are ones an earlier, stricter grader rejected.
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtemp, rename, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "./grader.ts"
 import { memoryTaskSource } from "./memory-tasks/source.ts"
 import { applySolution, grade, prepareWorkspace } from "./run-check.ts"
+import { E2E_TIMEOUT_MS } from "../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 interface Case {
   readonly task: string

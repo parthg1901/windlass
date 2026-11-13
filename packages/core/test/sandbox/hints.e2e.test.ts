@@ -6,7 +6,7 @@
  *
  * Skipped, visibly, where bubblewrap cannot run.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { sandboxHint } from "../../src/approval/escalation.ts"
@@ -15,6 +15,10 @@ import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { type SandboxRun, noBlobStore } from "../../src/tool/tool.ts"
 import { shellTool } from "../../src/tools/shell.ts"
 import { removeTempDirs, skipReason, tempDir } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterAll(removeTempDirs)
 

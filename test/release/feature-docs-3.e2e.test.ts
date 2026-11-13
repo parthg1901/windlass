@@ -22,11 +22,12 @@
  *   run says about a project's hook and servers, a wake-up it cannot fire) is
  *   printed by such a run.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { brand } from "../../packages/core/src/brand.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../packages/core/src/testing/wait.ts"
 import { MAX_COMMAND_BYTES, MAX_COMMAND_DEPTH, MAX_COMMAND_NAME_LENGTH, commandRoots, discoverCommands } from "../../packages/core/src/commands/discover.ts"
 import { expandCommand } from "../../packages/core/src/commands/lookup.ts"
 import { parseConfigFile } from "../../packages/core/src/config/schema.ts"
@@ -35,6 +36,9 @@ import { NAMESPACE } from "../../packages/core/src/telemetry/span.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { BUILTIN_COMMANDS } from "../../packages/cli/src/slash.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const ROOT = join(import.meta.dir, "..", "..")
 const PAGES = ["docs/commands.md", "docs/telemetry.md"] as const
@@ -452,7 +456,8 @@ describe("telemetry, run (docs/telemetry.md)", () => {
     received.length = 0
     const run = await at.run(["what is a in a.ts?"], turn, env)
     expect(run.code, run.err).toBe(0)
-    await Bun.sleep(300)
+    // The run sends what it has before it exits; what reached the collector is in once nothing is still being read.
+    await waitFor(() => collector.pendingRequests === 0, { what: "the collector to finish reading" })
     return { run, got: [...received] }
   }
 

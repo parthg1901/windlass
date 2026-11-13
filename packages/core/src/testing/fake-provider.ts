@@ -117,6 +117,11 @@ export interface FakeCall {
   /** Every event the consumer received, in order. */
   readonly events: readonly StreamEvent[]
   readonly outcome: FakeCallOutcome
+  /**
+   * The script reached `hang`: the consumer has handled every event before it and asked for the next. A test that
+   * stops a hanging stream waits for this rather than for an amount of time.
+   */
+  readonly hanging: boolean
 }
 
 export interface FakeProviderOptions {
@@ -176,17 +181,18 @@ export class FakeProvider implements Provider {
       throw new Error(`FakeProvider: call ${callIndex} was not scripted (${callIndex} response(s) were)`)
     const recorded = structuredClone(request)
     const items = typeof response === "function" ? check(response(recorded, callIndex)) : response
-    const call: { request: ModelRequest; events: StreamEvent[]; outcome: FakeCallOutcome } = {
+    const call: { request: ModelRequest; events: StreamEvent[]; outcome: FakeCallOutcome; hanging: boolean } = {
       request: recorded,
       events: [],
       outcome: "abandoned",
+      hanging: false,
     }
     this.calls.push(call)
     return this.play(call, items, signal)
   }
 
   private async *play(
-    call: { events: StreamEvent[]; outcome: FakeCallOutcome },
+    call: { events: StreamEvent[]; outcome: FakeCallOutcome; hanging: boolean },
     items: readonly ScriptItem[],
     signal: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
@@ -195,6 +201,7 @@ export class FakeProvider implements Provider {
       for (const action of expand(items)) {
         if (signal.aborted) break
         if (action.type === "hang") {
+          call.hanging = true
           await sleep(Number.POSITIVE_INFINITY, signal)
           break
         }

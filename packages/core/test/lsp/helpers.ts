@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type LspConfigSection, planLspServers } from "../../src/lsp/config.ts"
 import { type LspNotice, type LspRegistry, type LspRegistryOptions, createLspRegistry } from "../../src/lsp/registry.ts"
+import { waitFor as waitForCondition } from "../../src/testing/wait.ts"
 
 export const SERVER = join(import.meta.dir, "fixtures", "server.ts")
 
@@ -54,11 +55,7 @@ export async function cleanup() {
 }
 
 export async function waitFor(predicate: () => boolean, timeoutMs = 10_000, what = "condition"): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    await Bun.sleep(20)
-  }
+  await waitForCondition(predicate, { timeoutMs, intervalMs: 20, what })
 }
 
 export function readLines(path: string): string[] {

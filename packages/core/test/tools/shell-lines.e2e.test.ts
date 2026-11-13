@@ -3,10 +3,14 @@
  * which is what a watch on its output reads: the lines still in memory, then
  * each further line as it completes, redacted as the log is.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { redactPieces, unfinishedSecret } from "../../src/approval/redact.ts"
 import type { BackgroundCommand } from "../../src/tool/tool.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { context, removeTempDirs, workspace } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 
@@ -34,12 +38,7 @@ async function background(command: string, options: { redact?: boolean } = {}): 
   return work!
 }
 
-const until = async (check: () => boolean) => {
-  for (let waited = 0; !check(); waited += 5) {
-    if (waited > 10_000) throw new Error("timed out waiting")
-    await Bun.sleep(5)
-  }
-}
+const until = (check: () => boolean) => waitFor(check, { intervalMs: 5 }).then(() => {})
 
 describe("a background command's output, a line at a time", () => {
   test("a listener gets the lines already printed, then each further line, then a last line without a line break", async () => {
