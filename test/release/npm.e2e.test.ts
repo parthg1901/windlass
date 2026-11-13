@@ -5,13 +5,14 @@
  * that reports what it was given, so the launcher runs here on Node and on
  * Bun without a real build.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import workspace from "../../package.json" with { type: "json" }
 import { brand } from "../../packages/core/src/brand.ts"
+import { E2E_TIMEOUT_MS } from "../../packages/core/src/testing/wait.ts"
 import { TARGETS, hostTarget, type Target } from "../../scripts/build.ts"
 import { CHECKSUMS } from "../../scripts/release.ts"
 import {
@@ -29,6 +30,8 @@ import {
   type PackReport,
   type StagedPackage,
 } from "../../scripts/npm.ts"
+
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const scratch = mkdtempSync(join(tmpdir(), "release-npm-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
