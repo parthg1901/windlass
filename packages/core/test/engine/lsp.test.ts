@@ -156,7 +156,8 @@ describe("an edit of a file a server serves", () => {
 describe("the bound", () => {
   test("a server that never answers costs an edit at most the configured wait, adds nothing, and the user is told why once", async () => {
     const { cwd } = project()
-    const h = harness(cwd, { user: { lsp: { waitMs: 300, servers: { fixture: fixture(["--silent"], { startupTimeoutSeconds: 1 }) } } } })
+    // Its start must not give up while the test runs, or the user is rightly told a second thing: that it could not be started.
+    const h = harness(cwd, { user: { lsp: { waitMs: 300, servers: { fixture: fixture(["--silent"], { startupTimeoutSeconds: 300 }) } } } })
     h.provider.enqueue([call("write", { path: "src/a.txt", content: AFTER }), U], [call("write", { path: "src/a.txt", content: BEFORE }), U], answer("Done."))
     const times: number[] = []
     h.tools.on("write", async (input, context) => {
@@ -177,8 +178,8 @@ describe("the bound", () => {
     expect(settledAt[0]! - times[0]!).toBeLessThan(300 + 600)
     expect(settled[0]!.data.diagnostics).toMatchObject({ noteAdded: false, servers: [{ name: "fixture", outcome: "timeout", new: 0 }] })
     expect(settled[0]!.data.diagnostics!.waitedMs).toBeLessThan(300 + 600)
-    expect(said(h, "lsp")).toHaveLength(1)
-    expect(said(h, "lsp")[0]).toContain('The language server "fixture"')
+    expect(settled[1]!.data.diagnostics).toMatchObject({ noteAdded: false, servers: [{ name: "fixture", outcome: "timeout", new: 0 }] })
+    expect(said(h, "lsp")).toEqual([expect.stringContaining('The language server "fixture" was still starting')])
     h.verify()
     await h.dispose()
   }, 60_000)
