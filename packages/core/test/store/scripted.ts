@@ -390,18 +390,12 @@ export const SCRIPTS: Record<string, Script> = {
       stepStarted("a1"),
       textEnded("a1", "Fixing it."),
       stepEnded("a1"),
-      turnEnded(),
-      deliver("u1"),
-      stepStarted("a2"),
-      textEnded("a2", "Logs are clean."),
-      stepEnded("a2"),
-      turnEnded(),
-      deliver("b1"),
-      stepStarted("a3"),
-      textEnded("a3", "And the job succeeded."),
-      stepEnded("a3"),
-      executionSucceeded("exe_1"),
     )
+    // The end of a turn and the delivery it makes room for are one append, as the step loop writes them.
+    d.batch(turnEnded(), deliver("u1"))
+    d.add(stepStarted("a2"), textEnded("a2", "Logs are clean."), stepEnded("a2"))
+    d.batch(turnEnded(), deliver("b1"))
+    d.add(stepStarted("a3"), textEnded("a3", "And the job succeeded."), stepEnded("a3"), executionSucceeded("exe_1"))
     // Waiting items stay in the inbox.
     d.add(enqueue("u4", "Later: update the docs.", "queue"))
     return [d.id]
