@@ -40,8 +40,9 @@ test(
     const matched = matcher.matches(line)
     const elapsed = performance.now() - started
     expect(matched).toBe(false)
-    // Generous for a line of thirty characters: the budget is 50 ms, and unbounded it takes about a second.
-    expect(elapsed).toBeLessThan(100)
+    // The budget is 50 ms, and unbounded it takes about a second. This first match also starts the helper thread,
+    // which takes a few milliseconds here and about 75 on a macOS CI runner: 250 ms is still a quarter of the second.
+    expect(elapsed).toBeLessThan(250)
     // The match was given up on, and the expression is not tried again: every later line is no match, at once.
     expect(matcher.gaveUp()).toBe(true)
     const again = performance.now()
