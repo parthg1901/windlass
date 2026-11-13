@@ -2,7 +2,7 @@
  * A long-lived harness process as the `acp` server builds it: the real
  * assembly on a data directory, told to fire wake-ups (`wake.run`), with a
  * scripted model that answers every turn in one line. Used by
- * `wake-servers.test.ts` to run several of them at once.
+ * `wake-servers.e2e.test.ts` to run several of them at once.
  *
  *   bun wake-server.ts <data dir> <webhook port>
  *

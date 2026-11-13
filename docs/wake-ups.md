@@ -3,7 +3,7 @@
 A wake-up is a message the agent leaves for its own session, to be delivered later when something happens: a time
 comes, a command starts to succeed or its output changes, or a signed HTTP request arrives. It is how the agent waits
 for CI, a deploy or a reminder without keeping a turn open or polling. `windlass` checks the condition itself, with no
-model call, and the wake-up survives restarts. `test/release/feature-docs.test.ts` checks the keys, limits, headers
+model call, and the wake-up survives restarts. `test/release/feature-docs.e2e.test.ts` checks the keys, limits, headers
 and messages on this page against the code.
 
 ## Where wake-ups fire today

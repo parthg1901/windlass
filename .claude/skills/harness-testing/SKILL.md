@@ -140,7 +140,7 @@ Reading a result:
 - An agent is chosen with `--agent <name>` or `/agent`; `agents.default` in the user's config file (a throwaway `XDG_CONFIG_HOME` in tests) sets the one a new session starts as.
 - In tmux, wait for the `›` prompt before sending keys: under load a fixed 6-second wait lost the Enter.
 - Under heavy load (five agents on two cores: load average 15 to 20) tests time out at the default 5 s. Re-run a timeout alone, or with `--timeout 60000`, before believing it.
-- A failing `packages/core/test/trace/export.test.ts` or `media.test.ts` after the prefixlens version in `package.json` was raised means the package's trace format or its recorder changed: read its CHANGELOG (`node_modules/prefixlens/CHANGELOG.md`) before touching the harness's exporter.
+- A failing `packages/core/test/trace/export.e2e.test.ts` or `media.e2e.test.ts` after the prefixlens version in `package.json` was raised means the package's trace format or its recorder changed: read its CHANGELOG (`node_modules/prefixlens/CHANGELOG.md`) before touching the harness's exporter.
 
 ## Client commands for MCP, skills, wake-ups and memory (2026-11-12)
 
@@ -169,7 +169,7 @@ Reading a result:
 
 ## Slash commands and telemetry (wired 2026-11-12)
 
-- A session is idle by the time a reader sees its turn's ending event: an undo sent at that instant is accepted (it was refused as busy for a while; `packages/core/test/engine/idle-at-ending.test.ts` holds it).
+- A session is idle by the time a reader sees its turn's ending event: an undo sent at that instant is accepted (it was refused as busy for a while; `packages/core/test/engine/idle-at-ending.e2e.test.ts` holds it).
 - A user-defined slash command is expanded by the engine and recorded with the message it produced (`command.expanded`); clients send it with `session.sendCommand`. The client commands for it may lag behind the engine.
 - Telemetry is off unless the user's own config file turns it on; a project's file can only turn it off. To look at a real turn's spans, point it at a local file or a local fake collector: one turn gives a turn span, a span per model call (token counts, response model, request ID) and a span per tool call, with no content.
 

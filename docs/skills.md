@@ -4,7 +4,7 @@ A skill is a set of instructions for one kind of task, kept as a file: how to wr
 how to run its slow test suite, how to commit in a shared checkout. The model is told which skills exist (a name and
 a one-line description each) and loads the whole skill when a task calls for it, so long instructions cost nothing
 until they are needed. Everything on this page was run against the program with a scripted model;
-`test/release/feature-docs.test.ts` checks the paths, keys and messages against the code.
+`test/release/feature-docs.e2e.test.ts` checks the paths, keys and messages against the code.
 
 ## The smallest working example
 

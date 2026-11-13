@@ -11,7 +11,7 @@ The scenarios live in `packages/core/test/scenarios/`, one module per family, an
 `@windlass/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state
 after each phase, and checks, one test per entry, that the reducer rejects every wrong move listed with a phase.
 
-`packages/core/test/engine/conformance.test.ts` drives the real loop through every scenario (117 of them) with the
+`packages/core/test/engine/conformance.e2e.test.ts` drives the real loop through every scenario (117 of them) with the
 scripted provider and compares the events it wrote with the scenario's. One scenario differs from what the loop writes, by one stated
 detail (the runtime's wording for malformed arguments, in "Malformed tool arguments"); the test lists it with the
 reason. Every other scenario, the eight of the Compaction family included, is reproduced event for event.
@@ -4345,7 +4345,7 @@ What the reducer enforces for compaction, each with a scenario of the Compaction
 | `compaction.repair_requested` needs the open compaction and is accepted once. `compaction.ended` with `source: repaired` is rejected unless a repair was asked for. | "An invalid summary is repaired" |
 | A compaction ends as interrupted only after `execution.interrupt_requested`, for its reason; recovery closes one a dead process left as crashed. Either way model history is unchanged. | "Cancel while the summary is being written", "The process dies during a compaction" |
 | `baseline.set` is accepted again only after a compaction has completed. | "A compaction that is due waits for the next user message" |
-| A revert or refusal range may hold a compaction. The compaction is then excluded like any message, and model history starts from the latest completed compaction that is not excluded; undoing the revert brings it back. | the reducer tests under "revert"; `test/engine/workspace.test.ts`, `test/engine/prefix.test.ts` |
+| A revert or refusal range may hold a compaction. The compaction is then excluded like any message, and model history starts from the latest completed compaction that is not excluded; undoing the revert brings it back. | the reducer tests under "revert"; `test/engine/workspace.e2e.test.ts`, `test/engine/prefix.e2e.test.ts` |
 
 How the loop decides (the policy is `packages/core/src/context/policy.ts`; the numbers are shares of the usable
 window, which is the model's context window minus what is kept free for the answer):

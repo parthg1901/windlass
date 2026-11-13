@@ -3,7 +3,7 @@
 Two kinds of work can run beside the agent's own steps: a **subagent**, a second agent the first one hands a
 self-contained task to, and a **background command**, a shell command that keeps running while the agent does other
 things. Both are started by the model; you do not configure anything. Everything on this page was run against the
-program with a scripted model; `test/release/feature-docs.test.ts` checks the names and messages against the code.
+program with a scripted model; `test/release/feature-docs.e2e.test.ts` checks the names and messages against the code.
 
 ## Subagents
 

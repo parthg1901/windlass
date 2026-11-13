@@ -3,7 +3,7 @@
 An MCP (Model Context Protocol) server gives the agent tools that live outside `windlass`: an issue tracker, a database, a
 documentation search. You name the server in a configuration file; `windlass` starts it (or reaches it over HTTP), lists
 its tools to the model, and runs a tool when the model asks and you allow it. Everything on this page was run against
-the program with a scripted model and a test server; `test/release/feature-docs.test.ts` checks the keys, options
+the program with a scripted model and a test server; `test/release/feature-docs.e2e.test.ts` checks the keys, options
 and messages against the code.
 
 ## The smallest working example

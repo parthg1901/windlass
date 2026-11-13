@@ -4,7 +4,7 @@ Memory is short notes that carry over from one session to the next: a preference
 short"), a correction you gave ("this repo is pnpm only"), a project fact that was costly to find, a pointer to a
 resource. The agent saves a note when you say something worth keeping; later sessions are given the notes that apply
 to them. Every note says who wrote it, where and when, and it lapses unless confirmed again. Everything on this page
-was run against the program with a scripted model; `test/release/feature-docs.test.ts` checks the keys, paths and
+was run against the program with a scripted model; `test/release/feature-docs.e2e.test.ts` checks the keys, paths and
 messages against the code.
 
 ## Off by default

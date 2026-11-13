@@ -7,7 +7,7 @@ two terminals, an editor and the eval runner each work in their own sessions at 
 
 This page describes the contracts in `packages/core`: the event schema, the reducer that folds it, and what the
 store, the request builder, the provider and the tools promise each other. The step loop (`engine/`) is built on
-them; `docs/step-loop-scenarios.md` is its specification, and `test/engine/conformance.test.ts` drives the loop
+them; `docs/step-loop-scenarios.md` is its specification, and `test/engine/conformance.e2e.test.ts` drives the loop
 through every scenario in it.
 
 Two things make a turn's work checkable and undoable, and both are recorded in the same log. The workspace is
@@ -583,7 +583,7 @@ is a new version with a decoder for the old one.
   listeners once the run that wrote them has let go of the session (with everything published after them, in
   order). A client that sees the ending and at once asks for something that needs an idle session (`revert`,
   `undoRevert`, `compact`, `setAgent`, a new prompt) is therefore never refused as busy, however many turns of the
-  event loop the loop takes to return (`test/engine/idle-at-ending.test.ts`).
+  event loop the loop takes to return (`test/engine/idle-at-ending.e2e.test.ts`).
 - `Engine.close()` is the hook a process calls before it exits: every session is stopped as a shutdown, which leaves
   its execution suspended and resumable, and is let go of (an execution that has no turn, a compaction the user
   asked for while idle, is ended instead: see "Compaction", *On request*). If the process dies without it, a guard process kills
@@ -1133,7 +1133,7 @@ client opened it meanwhile.
   from its start and not from its first session, unless its environment says `<BINARY>_WAKE=off`. It is the
   long-lived process: an editor, the terminal interface and an interactive command line keep it for as long as
   they run. Several may run at once: each firing is delivered by exactly one of them (the store's leases), the
-  listener's port belongs to whichever bound it first, and the others carry on (`test/engine/wake-servers.test.ts`
+  listener's port belongs to whichever bound it first, and the others carry on (`test/engine/wake-servers.e2e.test.ts`
   runs two). An engine used directly, and the in-process transport, do not fire. A client that starts the server
   for one prompt should set the variable to `off`: its server would otherwise start other sessions' wake-up turns
   and cut them short when it exits (they stay resumable, and resume when their session is next opened). What a
@@ -1241,7 +1241,7 @@ Two more modules that were built apart (`hooks/`, `lsp/`; each has a README) and
 which hooks and servers exist is configuration the model is never told. What they say reaches the model inside
 something that is appended anyway: the result of a call, or a harness message. `EngineOptions.commandHooks` and
 `lsp` switch them on; `createHarness` passes both. **With no hook and no language server configured a session's
-requests and its log are byte for byte those of an engine without either** (`test/engine/hooks.test.ts` holds
+requests and its log are byte for byte those of an engine without either** (`test/engine/hooks.e2e.test.ts` holds
 this): the two call sites below are not even entered, so a call is decided, run and capped exactly as before.
 
 **The three points of a hook.** The configuration is read when an execution starts, so a change takes effect at the

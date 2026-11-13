@@ -7,17 +7,17 @@ and a grader that checks the finished workspace.
 evals/
   grader.ts          helpers for graders (pass/fail, run a command, compare with the original workspace)
   run-check.ts       copy a workspace, run setup, optionally apply the reference solution, grade
-  graders.test.ts    every untouched workspace fails its grader; every reference solution passes
-  alternatives.test.ts  other correct solutions each grader must accept, and wrong ones it must reject
+  graders.e2e.test.ts    every untouched workspace fails its grader; every reference solution passes
+  alternatives.e2e.test.ts  other correct solutions each grader must accept, and wrong ones it must reject
   run-agent.ts       run the agent on tasks, grade, and report metrics from its event stream
-  run-agent.test.ts  the runner, driven by testing/stand-in-agent.ts
+  run-agent.e2e.test.ts  the runner, driven by testing/stand-in-agent.ts
   classify.ts        export a run's session as a trace and have prefixlens explain its cache misses
   baseline.ts        build baseline.json from results directories
   baseline.json      the committed baseline the gate compares against
   gate.ts            the regression gate: new results against the baseline
-  gate.test.ts       the gate and the baseline generator, on crafted results
+  gate.e2e.test.ts       the gate and the baseline generator, on crafted results
   memory-compare.ts  the A/B comparison that decides whether memory stays: the same tasks with and without it
-  memory-compare.test.ts  the comparison, on crafted results
+  memory-compare.e2e.test.ts  the comparison, on crafted results
   memory-tasks/      the memory A/B task set (see "The memory A/B task set"), never part of --all
   tasks/<id>/
     task.json        { id, title, prompt | prompts, tags, timeoutSeconds, maxSteps, setup?, run? }
@@ -132,7 +132,7 @@ packages/core/test/trace/sessions.ts into a real session database under `XDG_DAT
 export and classification run for real; `STAND_IN_BUILDER=broken` makes its ledger unreproducible). Given
 `--session`, it continues that session, and in `solve` mode applies the reference solution only on a task's last
 prompt. The CLI's own scripted demos work too: `--cli "bun packages/cli/src/main.ts --demo 5 --demo-speed 0"`.
-`run-agent.test.ts` covers the runner with it.
+`run-agent.e2e.test.ts` covers the runner with it.
 
 ## The regression gate
 
@@ -262,7 +262,7 @@ recorded: against it the gate warns about cost and does not fail on it. Record i
    answer (hard-coding, editing the tests instead of the code, touching files it should not), and must never need
    the network. Prefer hidden inputs the agent has not seen over checking the exact diff. See the rules below.
 4. Write the reference solution, add at least one other correct solution and one plausible wrong one to
-   `alternatives.test.ts`, and run `bun test evals`.
+   `alternatives.e2e.test.ts`, and run `bun test evals`.
 
 ## Writing a fair grader
 
@@ -283,13 +283,13 @@ its prompt as a careful engineer would, list the reasonable ways to satisfy it, 
 - Do not depend on the reference solution's incidental choices. Write a second correct solution that differs from it
   where the prompt allows, and check it passes.
 - Be strict where the task's purpose is: a rule in a nested AGENTS.md, a frozen API, not editing the tests. Those must
-  still fail when broken, and `alternatives.test.ts` holds a case that breaks them.
+  still fail when broken, and `alternatives.e2e.test.ts` holds a case that breaks them.
 - Make sure nothing done, a hard-coded answer and the most likely wrong reading all fail.
 - No dependence on time, the machine, ordering of directory listings or the network; generated inputs come from a
   fixed seed.
 - If the prompt is ambiguous and both readings are defensible, accept both. Change the prompt instead, in the user's
   own voice and without saying how to do the job, only when the task exists to test one reading.
-- Every fix gets a case in `alternatives.test.ts`: the correct solution the old grader rejected, and for a tightened
+- Every fix gets a case in `alternatives.e2e.test.ts`: the correct solution the old grader rejected, and for a tightened
   grader the wrong one it now rejects.
 
 ## The rule
@@ -314,7 +314,7 @@ low effort, on the final version of the task (2026-11-12, a busy two-core machin
 | `follow-a-skill` | a schema change done the way `.claude/skills/schema-change/SKILL.md` says (new migration, regenerated snapshot, changelog line, API field null when unset); the prompt states none of it | 3/3 | 46s, 88k |
 | `nested-agents-md` | the same helper in two packages; a nested AGENTS.md says one package returns results instead of throwing | 3/3 | 88s, 76k |
 | `generated-file-trap` | add an error code where the obvious file is generated (with a content hash) from `errors.json` | 3/3 | 41s, 75k |
-| `read-chart-image` | which services to scale, readable only from a bar chart PNG (`make-chart.ts` in the task, outside the workspace, makes it; `graders.test.ts` checks the committed image is its output) | 0/3 | 62s, 83k |
+| `read-chart-image` | which services to scale, readable only from a bar chart PNG (`make-chart.ts` in the task, outside the workspace, makes it; `graders.e2e.test.ts` checks the committed image is its output) | 0/3 | 62s, 83k |
 | `due-dates-feature` | harder: a CLI feature across parsing, storage, ordering and output, with exact behaviour specified, driven through the CLI on unseen scenarios | 2/3 | 86s, 158k |
 | `reconcile-several-bugs` | harder: a report wrong for three reasons in three Python modules (a dropped last page, a sign, rounding per SKU); a hidden second day of data | 1/3 | 53s, 107k |
 
@@ -337,7 +337,7 @@ What the failures were, read against prompt and grader:
   first failing); `follow-a-skill` shows a workspace skill being loaded and followed; `nested-agents-md` and
   `generated-file-trap` are guards against carelessness that would show a regression.
 
-Grader fixes made after reading failures (each has a case in `alternatives.test.ts`): `nested-agents-md` no longer
+Grader fixes made after reading failures (each has a case in `alternatives.e2e.test.ts`): `nested-agents-md` no longer
 requires `"1e3"` and `"0x50"` to be rejected (whether they are whole numbers is a matter of reading);
 `due-dates-feature` compares `list --overdue` as a set (the prompt fixes the order of `list` only);
 `rename-across-files` accepts the reminder's `to` field renamed too, and its type probe no longer passes when
@@ -479,7 +479,7 @@ While the baseline holds one batch, cost above it is listed under Warnings in `s
 exit code. `--dry-run` uses the stand-in agent in
 `scripted` mode (set `STAND_IN_MODE` for another) with its sessions in a data directory inside the summary, so the
 trace export and the classification run for real; its tasks are graded as failed because nothing solved them, and
-it is compared with the committed baseline only as "not comparable". `nightly.test.ts` runs the whole flow this way.
+it is compared with the committed baseline only as "not comparable". `nightly.e2e.test.ts` runs the whole flow this way.
 
 ### Scheduling it
 
