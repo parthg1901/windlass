@@ -146,4 +146,10 @@ describe("read in a program", () => {
     const outcome = await run(`return await read({ path: "a" })`, host)
     expect(outcome.end).toEqual({ kind: "returned", value: "const a = 1\n\n  // TODO: x\n\n[Showing lines 9-11 of 40. Call read with offset 12 to continue.]" })
   })
+
+  test("ends with a line break where the file does, as read's display says", async () => {
+    const whole = (endsWithNewline: boolean) => recording(() => ({ status: "success", output: "1\ta\n2\tb", display: { endsWithNewline } })).host
+    expect((await run(`return JSON.stringify(await read({ path: "a" }))`, whole(true))).end).toEqual({ kind: "returned", value: JSON.stringify("a\nb\n") })
+    expect((await run(`return JSON.stringify(await read({ path: "a" }))`, whole(false))).end).toEqual({ kind: "returned", value: JSON.stringify("a\nb") })
+  })
 })

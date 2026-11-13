@@ -3938,7 +3938,7 @@ class LiveSession implements EngineSession {
       const resultOf = (callId: CallId): ProgramCallResult => {
         const part = openStep(this.projection())?.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === callId)
         if (part?.type !== "tool_call" || part.state.status !== "settled") return { status: "effect_unknown", output: TOOL_TEXT.effectUnknown }
-        return { status: part.state.outcome, output: part.state.output }
+        return { status: part.state.outcome, output: part.state.output, display: part.state.display }
       }
       const call = async (name: string, argumentsText: string): Promise<ProgramCallResult> => {
         const outerStop = stopOf(outer)

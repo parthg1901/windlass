@@ -20,12 +20,15 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomBytes } from "node:crypto"
+import type { Json } from "../json.ts"
 import { PRELUDE, programModule } from "./prelude.ts"
 
 /** The result of one call, as the program's function resolves or rejects with it. */
 export interface ProgramCallResult {
   readonly status: "success" | "error" | "not_started" | "effect_unknown"
   readonly output: string
+  /** The result's structured data for a client, where a function needs a fact of it (`read`: whether the file ends with a line break). */
+  readonly display?: Json | null
 }
 
 /** Who carries out the program's calls: the step loop, for a session. */
@@ -168,7 +171,7 @@ export async function runProgram(options: RunProgramOptions): Promise<ProgramOut
   const answer = (id: unknown, result: ProgramCallResult) => {
     if (end !== null) return
     try {
-      child.stdin.write(`${JSON.stringify({ id, status: result.status, output: result.output })}\n`)
+      child.stdin.write(`${JSON.stringify({ id, status: result.status, output: result.output, display: result.display ?? null })}\n`)
       child.stdin.flush()
     } catch {
       // The process is gone; its end is reported by itself.

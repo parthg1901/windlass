@@ -62,7 +62,8 @@ export function readTool(): Tool<ReadInput> {
       const body = page.lines.map((line, index) => `${String(offset + index).padStart(width, " ")}\t${line}`).join("\n")
       const footer =
         last < page.totalLines ? `\n\n[Showing lines ${offset}-${last} of ${page.totalLines}. Call read with offset ${last + 1} to continue.]` : ""
-      return success(`${body}${footer}`, { path: shown, offset, lines: page.lines.length, totalLines: page.totalLines })
+      // Whether the file's last line ends with a line break, for a program that writes back what it read (`codemode/`).
+      return success(`${body}${footer}`, { path: shown, offset, lines: page.lines.length, totalLines: page.totalLines, ...(footer === "" ? { endsWithNewline: page.endsWithNewline } : {}) })
     },
   }
 }
@@ -138,7 +139,7 @@ async function readPage(stream: ReadableStream<Uint8Array>, offset: number, limi
     append(chunk.subarray(start))
   }
   if (sawBytes && !endsWithNewline) finishLine()
-  return { lines, totalLines: lineNumber - 1 }
+  return { lines, totalLines: lineNumber - 1, endsWithNewline }
 
   function append(bytes: Uint8Array) {
     currentLength += bytes.length

@@ -81,16 +81,18 @@ const call = (name, input) => {
 // read's text has every line numbered, for the model. A program is given the file's own lines: the numbers are
 // taken off (the call's recorded result keeps them), and the note that says there is more stays at the end.
 const NOTE = /\n\n(\[Showing lines \d+-\d+ of \d+\. Call read with offset \d+ to continue\.\])$/
-const unnumbered = (output) => {
+// Where read reached the end of the file, its display says whether the last line ends with a line break.
+const unnumbered = (output, display) => {
   const note = NOTE.exec(output)
   const body = note === null ? output : output.slice(0, note.index)
   const lines = body.split("\n")
   if (!lines.every((line) => /^ *\d+\t/.test(line))) return output
-  return lines.map((line) => line.replace(/^ *\d+\t/, "")).join("\n") + (note === null ? "" : "\n\n" + note[1])
+  const end = note === null && display !== null && typeof display === "object" && display.endsWithNewline === true ? "\n" : ""
+  return lines.map((line) => line.replace(/^ *\d+\t/, "")).join("\n") + end + (note === null ? "" : "\n\n" + note[1])
 }
 const tools = {}
 for (const name of names) {
-  const fn = name === "read" ? (input) => call(name, input).then(unnumbered) : (input) => call(name, input)
+  const fn = (input) => call(name, input)
   Object.defineProperty(fn, "name", { value: name })
   tools[name] = fn
   globalThis[name] = fn
@@ -113,7 +115,7 @@ process.stdin.on("data", (chunk) => {
     const entry = waiting.get(message.id)
     if (entry === undefined) continue
     waiting.delete(message.id)
-    if (message.status === "success") entry.resolve(message.output)
+    if (message.status === "success") entry.resolve(entry.name === "read" ? unnumbered(message.output, message.display) : message.output)
     else entry.reject(new ToolError(entry.name, message.status, message.output, entry.site))
   }
 })
