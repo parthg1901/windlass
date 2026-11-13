@@ -17,7 +17,7 @@ Component tests (`packages/tui/test/frames.test.ts`, `input.test.ts`) render the
 ## Start the TUI at a fixed size
 
 ```sh
-cd /home/ubuntu/projects/light-harness
+cd "$(git rev-parse --show-toplevel)"
 T="tmux -L windlass-manual"
 # Scripted demo engine (no model, no server): any of `bun packages/cli/src/main.ts --demo list`
 $T new-session -d -s tui -x 100 -y 30 "bun packages/cli/src/main.ts tui --demo find-and-fix-a-failing-test; echo status=\$?; sleep 600"

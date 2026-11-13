@@ -1,9 +1,9 @@
 # Dogfood kit
 
 A repeatable pass of the product used the way a developer would use it, on a real repository, with the live model.
-Run it after every change that a user could notice. Findings go in the owner's notes, not in this repository.
+Run it after every change that a user could notice. Keep findings out of this repository.
 
-The kit uses prefixlens (`/home/ubuntu/projects/prefixlens`), a real TypeScript/Bun project (about 26 commits,
+The kit uses prefixlens (a checkout beside this repository at `../prefixlens`, or `--source <repo>`), a real TypeScript/Bun project (about 26 commits,
 203 tests in about 4 s, `tsc --noEmit` in about 1 s). The source repository is only cloned, never changed.
 
 ## Files

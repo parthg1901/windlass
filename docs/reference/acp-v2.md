@@ -7,7 +7,7 @@ stdio, and to build the harness's own CLI client on the same protocol. It was wr
 
 | Tag | Source |
 | --- | --- |
-| `S:Name` | Definition `Name` in `schema/v2/schema.json` of `@agentclientprotocol/sdk` 2.5.0 (checkout `/home/ubuntu/projects/acp-typescript-sdk`, commit `74c7833`, generated from schema `v2.0.0-alpha.14`). A line number is given for the main shapes, e.g. `S:PromptRequest@7251`. |
+| `S:Name` | Definition `Name` in `schema/v2/schema.json` of `@agentclientprotocol/sdk` 2.5.0 (commit `74c7833`, generated from schema `v2.0.0-alpha.14`). A line number is given for the main shapes, e.g. `S:PromptRequest@7251`. |
 | `U:Name` | Definition `Name` in `schema/v2/schema.unstable.json` (same checkout). |
 | `meta` / `meta.u` | `schema/v2/meta.json` / `schema/v2/meta.unstable.json` (the method-name tables). |
 | `sdk:path:line` | A file in the SDK checkout. |

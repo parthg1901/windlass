@@ -4,9 +4,8 @@ The step loop (`packages/core/src/engine/`) takes a prompt, calls the model, run
 and crash recovery. It records the workspace as snapshots around everything that can change it, runs the project's
 configured checks before a turn may end as done, and reverts a turn (files and conversation) on request. This page
 is its specification: for each situation, the exact durable events the loop must write, in
-order, what a UI and the model should see afterwards, and the wrong moves the reducer rejects at that point. The rules
-come from the blueprint *Agent session core — storage, cancel, retries, context* (vault `Blueprints/`), cited below
-as e.g. "cancel rule 4".
+order, what a UI and the model should see afterwards, and the wrong moves the reducer rejects at that point. Rules are cited
+by family and number, e.g. "cancel rule 4".
 
 The scenarios live in `packages/core/test/scenarios/`, one module per family, and are exported for other packages as
 `@windlass/core/testing/scenarios`. `scenarios.test.ts` folds every one through the real reducer, checks the state

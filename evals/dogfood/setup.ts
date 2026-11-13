@@ -17,7 +17,7 @@ import { join, resolve } from "node:path"
 import { brand } from "../../packages/core/src/brand.ts"
 
 const REPO = resolve(import.meta.dir, "../..")
-const DEFAULT_SOURCE = "/home/ubuntu/projects/prefixlens"
+const DEFAULT_SOURCE = resolve(REPO, "../prefixlens")
 
 /** The project's real check commands (prefixlens: `bun test`, 203 tests in about 4 s; `tsc --noEmit`, about 1 s). */
 const CHECKS = [

@@ -17,8 +17,8 @@ full-screen interface, and a server for editors (the Agent Client Protocol).
 
 ## Install
 
-You need [Bun](https://bun.sh) 1.4 to build, and at run time `git`, GNU `env` (coreutils) and, on Linux, `bwrap`
-(bubblewrap) for the sandbox. In a checkout of this repository:
+You need [Bun](https://bun.sh) 1.4 to build it. To run it you need `git`, GNU `env` (coreutils) and, on Linux,
+`bwrap` (bubblewrap) for the sandbox. Clone this repository, then from its folder:
 
 ```sh
 bun install
@@ -27,8 +27,9 @@ sh scripts/install.sh
 windlass --version
 ```
 
-This builds one executable for your machine and copies it to `~/.local/bin/windlass`. The install script says which
-requirements are missing and what each one costs; `sh scripts/install.sh --check` only checks. The
+This builds one executable for your machine and copies it to `~/.local/bin/windlass`, with `wl` as a short alias.
+The install script tells you if anything is missing and what you lose without it; `sh scripts/install.sh --check`
+only checks. The
 [user guide](docs/user-guide.md#installing) has the details, uninstalling, and running from source.
 
 Then sign in with your ChatGPT plan:
@@ -42,36 +43,38 @@ It opens a browser, or on a remote machine prints an address to open anywhere
 
 ## Quickstart
 
-See it work without a model or a sign-in: the demos are scripted sessions.
+**Try it without signing in.** The demos are scripted sessions, so no model is called:
 
 ```sh
 windlass --demo list
 windlass --demo find-and-fix-a-failing-test
 ```
 
-In a project of yours, give it one task and let it finish:
-
-```sh
-windlass --model gpt-6-luna --effort low "the add test fails; find out why and fix it"
-```
-
-It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 6 steps · 16s`.
-
-Or work interactively: type a message and press Enter.
-
-```sh
-windlass
-```
-
-- Type while the agent works to steer it; `/queue <message>` holds a message until the turn ends.
-- `/undo` and `/redo` at the prompt; `/diff` shows what the last turn changed; `/help` lists every command.
-- Ctrl-C stops the agent; Ctrl-D leaves. `windlass -c` resumes the most recent session in this directory.
-
-The full-screen interface does the same in one screen, with a panel for tokens and the prompt cache:
+**Work in a project.** In the project's folder, open the full-screen interface:
 
 ```sh
 windlass tui
 ```
+
+Type what you want changed and press Enter. The agent reads, edits and runs commands while you watch; the panel on
+the right shows the session, the tokens used and how much of each request came from the prompt cache.
+
+- Type while it works to steer it; `/queue <message>` holds a message until the turn ends instead.
+- `/diff` shows what the last turn changed, `/review` lets you comment on its lines, `/undo` and `/redo` take it
+  back or put it back.
+- `/help` lists every key and command. Ctrl-C stops the agent; pressed twice it leaves.
+
+`windlass` on its own gives the same in a plain line interface, and `windlass -c` resumes the most recent session
+in the folder. For a single task that runs to the end without you:
+
+```sh
+windlass "the add test fails; find out why and fix it"
+```
+
+It prints each tool call as it runs and ends with a line such as `✓ done · no checks configured · 6 steps · 16s`.
+
+**Choosing a model.** The default is `gpt-6.1-sol`. For quick, cheap tasks use `--model gpt-6-luna --effort low`;
+`/model` switches during a session.
 
 ## Limits
 
