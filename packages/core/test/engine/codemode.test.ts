@@ -45,7 +45,7 @@ function settledOutput(events: readonly StoredEvent[], callId: string): string {
 
 /** The tool-call items of a request: what the model is shown of the calls. */
 function requestCalls(request: { readonly input: readonly { readonly type: string }[] }): string[] {
-  return request.input.flatMap((item) => (item.type === "tool_call" || item.type === "tool_result" ? [`${item.type} ${(item as { callId: string }).callId}`] : []))
+  return request.input.flatMap((item) => (item.type === "tool_call" || item.type === "tool_result" ? [`${item.type} ${(item as unknown as { callId: string }).callId}`] : []))
 }
 
 function harness(options: ConstructorParameters<typeof Harness>[0] = {}) {

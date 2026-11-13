@@ -502,6 +502,8 @@ Version 1.
 
 The model asked for a tool call. Written before anything runs; if this write fails, nothing runs (cancel rule 1). `input` is the argument text exactly as the model produced it. Keyed by `(messageId, callId)` because providers reuse call IDs across steps.
 
+`parent` is set for a call a program made (`run_code`, `codemode/`): the program's own call, of the same message, which is running. Such a call is the harness's, not the model's: it is decided, started, stopped and settled like any call, and taints like any, but it is not part of a request (the model sees the program's result), and its `input` is the arguments as the program gave them. The program's call settles after every call nested under it.
+
 | Field | Type | Required |
 | --- | --- | --- |
 | `messageId` | string, not empty | yes |
@@ -509,6 +511,7 @@ The model asked for a tool call. Written before anything runs; if this write fai
 | `name` | string, not empty | yes |
 | `input` | string | yes |
 | `providerData` | any JSON (`null` included) | yes |
+| `parent` | string, not empty | may be absent |
 
 ### `tool.started`
 

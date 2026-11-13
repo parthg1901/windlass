@@ -6,6 +6,7 @@
 import { agentScenarios } from "./agents.ts"
 import { approvalScenarios } from "./approval.ts"
 import { callStopScenarios } from "./call-stop.ts"
+import { codeModeScenarios } from "./codemode.ts"
 import { cancelScenarios } from "./cancel.ts"
 import { commandScenarios } from "./commands.ts"
 import { compactionScenarios } from "./compaction.ts"
@@ -42,6 +43,7 @@ export const families: Record<string, readonly Scenario[]> = {
   Agents: agentScenarios,
   "Hooks and diagnostics": hookScenarios,
   "Slash commands and telemetry": commandScenarios,
+  "Code mode": codeModeScenarios,
 }
 
 /**

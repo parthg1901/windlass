@@ -104,6 +104,8 @@ export interface FeatureSetting {
   readonly commands?: boolean
   /** The user's own configuration turns live telemetry on, toward a collector the play stands in for. */
   readonly telemetry?: boolean
+  /** The engine offers code mode: `run_code`, whose programs call the scenario's tools. */
+  readonly codeMode?: boolean
 }
 
 export interface SpawnSetting {
@@ -400,6 +402,9 @@ export const think = (id: string, value: string) =>
 
 export const called = (id: string, callId: string, name: ToolName | (string & {}), input: string) =>
   event("tool.called", { messageId: m(id), callId: c(callId), name, input, providerData: null })
+/** A call a program made (`run_code`), nested under the program's call `parent`: the harness's, not the model's. */
+export const calledBy = (id: string, parent: string, callId: string, name: ToolName | (string & {}), input: string) =>
+  event("tool.called", { messageId: m(id), callId: c(callId), name, input, providerData: null, parent: c(parent) })
 /** The tool begins. `name` picks the effect class the loop records with the start (see `TOOLS`). */
 export const toolStarted = (id: string, callId: string, name: ToolName) =>
   event("tool.started", { messageId: m(id), callId: c(callId), effect: TOOLS[name] })
@@ -773,7 +778,7 @@ export function view(projection: Projection): MessageView[] {
           text: message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("|"),
           calls: message.parts.flatMap((part) =>
             part.type === "tool_call"
-              ? [`${part.callId} ${part.name} ${part.state.status === "settled" ? part.state.outcome : part.state.status}${part.cancel === undefined ? "" : " (stopped by the user)"}`]
+              ? [`${part.callId} ${part.name} ${part.state.status === "settled" ? part.state.outcome : part.state.status}${part.cancel === undefined ? "" : " (stopped by the user)"}${part.parent === undefined ? "" : ` (by ${part.parent})`}`]
               : [],
           ),
           error: message.error === null ? null : errorText(message.error),
@@ -873,7 +878,7 @@ export function describeEvent(item: NewEvent): string {
     case "reasoning.ended":
       return `${item.type} ${d.messageId} ${quote(d.text)}`
     case "tool.called":
-      return `tool.called ${d.messageId}/${d.callId} ${d.name} ${d.input}`
+      return `tool.called ${d.messageId}/${d.callId} ${d.name} ${d.input}${d.parent === undefined ? "" : ` parent=${d.parent}`}`
     case "tool.started": {
       const run = item.data.run
       if (run === undefined) return `tool.started ${d.messageId}/${d.callId} effect=${d.effect}`

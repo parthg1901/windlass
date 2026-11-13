@@ -4164,9 +4164,89 @@ The user's own configuration turns `telemetry` on and names a collector. Nothing
 
 *Model sees next:* u1, a1, a2.
 
+### Code mode
+
+#### 118. A program's calls are calls of the step, nested under the program's call
+
+The model writes one program instead of three calls: it reads two files and writes a third. The program's call starts like any (it needs no question of its own: it can change nothing by itself), and each call the program makes is recorded with `parent`, the program's call, before anything about it is decided; it is then started and settled like a call of the model's, by the same approval layer, schedule and runtime. The program's call settles last, with what the program printed. The next request shows the model the program's call and its result, and nothing of the three calls it made. A call is nested only under a program's call that is running, one level deep, and the program's call cannot settle while one of its calls has no result.
+
+*Provider:* step 1 calls run_code with a program that reads a.ts and b.ts and writes c.ts; step 2 answers.
+
+*Engine:* offers code mode (`run_code`; its programs call the scenario's tools).
+
+```
+-- the program runs and makes its calls
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 run_code {"code":"const a = await read({ path: \"a.ts\" })\nconst b = await read({ path: \"b.ts\" })\nawait write({ path: \"c.ts\", content: a + b })\nconsole.log(\"joined\", (a + b).length, \"characters\")"}
+  8  tool.started a1/call_1 effect=exec
+  9  tool.called a1/call_1.1 read {"path":"a.ts"} parent=call_1
+ 10  tool.started a1/call_1.1 effect=read
+ 11  tool.settled a1/call_1.1 success "aaa"
+ 12  tool.called a1/call_1.2 read {"path":"b.ts"} parent=call_1
+ 13  tool.started a1/call_1.2 effect=read
+ 14  tool.settled a1/call_1.2 success "bbb"
+ 15  tool.called a1/call_1.3 write {"path":"c.ts","content":"aaabbb"} parent=call_1
+ 16  tool.started a1/call_1.3 effect=write
+-- the write is done, then the program; the model reads the program's result
+ 17  tool.settled a1/call_1.3 success "Wrote c.ts"
+ 18  tool.settled a1/call_1 success "joined 6 characters\n"
+ 19  step.ended a1 finish=tool_calls
+ 20  step.started a2 attempt=1
+ 21  text.ended a2 "c.ts now holds both files: 6 characters."
+ 22  step.ended a2 finish=stop
+ 23  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 completed [run_code success, read success (by call_1), read success (by call_1), write success (by call_1)] · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, a2.
+
+*The reducer rejects:*
+- after "the program runs and makes its calls": `tool.settled a1/call_1 success "joined 6 characters\n"` (invalid_transition). A program's call settles after every call it made, and call_1.3 has no result.
+- after "the program runs and makes its calls": `tool.called a1/call_7.1 read {"path":"a.ts"} parent=call_7` (not_found). A call is nested under a call of the step.
+- after "the program runs and makes its calls": `tool.called a1/call_1.1.1 read {"path":"a.ts"} parent=call_1.1` (invalid_transition). A program's calls are not nested further: one level of programs.
+- after "the write is done, then the program; the model reads the program's result": `tool.called a1/call_1.4 read {"path":"a.ts"} parent=call_1` (invalid_transition). A program makes its calls while its call runs, within the open step.
+
+#### 119. The process dies while a program's command runs
+
+A program wrote a file and then started the tests, and the process died while they ran. At the next start recovery settles the calls of the open step from what the log says, the program's calls first: the command started and nobody saw it finish, so it is `effect_unknown`; then the program's own call, which had started too. Nothing is run again: the resumed step tells the model that the program was cut off, and the model looks before repeating anything. The write that had its result keeps it.
+
+*Provider:* step 1 calls run_code with a program that writes a.ts and runs the tests, which never return; the process is killed; after restart the model answers.
+
+*Engine:* offers code mode (`run_code`; its programs call the scenario's tools).
+
+```
+-- the process dies while the program's command runs
+1-5  opening: session.created, inbox.enqueued u1, execution.started exe_1, baseline.set, inbox.delivered u1
+  6  step.started a1 attempt=1
+  7  tool.called a1/call_1 run_code {"code":"await write({ path: \"a.ts\", content: \"fixed\" })\nawait shell({ command: \"bun test\" })"}
+  8  tool.started a1/call_1 effect=exec
+  9  tool.called a1/call_1.1 write {"path":"a.ts","content":"fixed"} parent=call_1
+ 10  tool.started a1/call_1.1 effect=write
+ 11  tool.settled a1/call_1.1 success "Wrote a.ts"
+ 12  tool.called a1/call_1.2 shell {"command":"bun test"} parent=call_1
+ 13  tool.started a1/call_1.2 effect=exec
+-- at next start-up the program's calls are settled first, then the program's
+ 14  tool.settled a1/call_1.2 effect_unknown "Started, but the harness restarted before its result was ..."
+ 15  tool.settled a1/call_1 effect_unknown "Started, but the harness restarted before its result was ..."
+ 16  step.failed a1 crashed
+ 17  synthetic.appended s1 origin=interrupt "The previous response was cut short when the harness rest..."
+ 18  execution.resumed exe_1
+-- the model looks before repeating
+ 19  step.started a2 attempt=1
+ 20  text.ended a2 "The program was cut off while the tests ran; a.ts was wri..."
+ 21  step.ended a2 finish=stop
+ 22  execution.succeeded exe_1
+```
+
+*UI:* u1 user · a1 failed crashed [run_code effect_unknown, write success (by call_1), shell effect_unknown (by call_1)] · s1 synthetic · a2 completed. *Claim:* released.
+
+*Model sees next:* u1, a1, s1, a2.
+
 ### Forks
 
-#### 118. A fork continues from its parent's history
+#### 120. A fork continues from its parent's history
 
 A session is forked at a step boundary. The fork is a session of its own (its own file, its own events from here on) whose history is the parent's up to the fork point: the first event of its own names the parent and the last inherited seq. It starts idle with an empty inbox, with the parent's baseline, settings and taint and the root session's cache key, so its first request is the parent's last request plus the new prompt. The parent is only read and may be working elsewhere meanwhile.
 

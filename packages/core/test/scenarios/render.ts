@@ -82,6 +82,7 @@ function describeFeatures(features: NonNullable<Scenario["features"]>): string {
     ...(features.telemetry === true ? ["live telemetry (the user's configuration turns it on and names a collector)"] : []),
     ...(features.hooks === undefined ? [] : [`hooks (the user's configuration: \`${JSON.stringify(features.hooks)}\`)`]),
     ...(features.lsp === true ? ["language-server diagnostics (the user's configuration names one server, `fixture`, for `*.txt` files)"] : []),
+    ...(features.codeMode === true ? ["code mode (`run_code`; its programs call the scenario's tools)"] : []),
   ]
   return `*Engine:* offers ${offered.join("; ")}.`
 }

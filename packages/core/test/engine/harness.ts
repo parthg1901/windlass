@@ -779,6 +779,8 @@ function copies(item: Plain): Plain {
   // What a client is given besides the text of a subagent's result (its session, its counts): the scenario writes the text.
   const display = (item.data as { display?: unknown }).display
   if (item.type === "tool.settled" && typeof display === "object" && display !== null && "subagent" in display) return { type: item.type, data: { ...item.data, display: null } }
+  // And a program's (its counts and how long it took): the scenario writes the text.
+  if (item.type === "tool.settled" && typeof display === "object" && display !== null && "code" in display) return { type: item.type, data: { ...item.data, display: null } }
   return item
 }
 

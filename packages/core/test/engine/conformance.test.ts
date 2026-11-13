@@ -52,6 +52,7 @@ import {
 import { FIRING, MCP_CALL_INPUT, SKILL_EDITED, SKILL_FIRST, WAKE_TEXT, WEBHOOK_BODY, WEBHOOK_TEXT } from "../scenarios/features.ts"
 import { EDIT } from "../scenarios/revert.ts"
 import { CHILD_WORDS, INTERRUPTED_LINT, STOPPED_TESTS } from "../scenarios/call-stop.ts"
+import { FIX_PROGRAM, JOIN_PROGRAM } from "../scenarios/codemode.ts"
 import { ERROR_WATCH, SLOW_LINE, SLOW_WATCH, UP_WATCH } from "../scenarios/lineage.ts"
 import { ACKNOWLEDGEMENT, FIRST_FIX, HAND_EDITED, SECOND_FIX } from "../scenarios/verification.ts"
 import type { AnyTool, ToolContext, ToolResult } from "../../src/tool/tool.ts"
@@ -1926,6 +1927,26 @@ Object.assign(PLAYS, {
     expect(JSON.stringify(exportedSpans)).not.toContain("expect(add")
     expect(JSON.stringify(h.provider.requests)).not.toContain("telemetry")
   },
+
+  // ---------------------------------------------------------------- code mode
+
+  "A program's calls are calls of the step, nested under the program's call": async (h, say) => {
+    h.provider.enqueue([call("call_1", "run_code", { code: JOIN_PROGRAM }), U], answer("c.ts now holds both files: 6 characters."))
+    h.tools.on("read", "aaa", "bbb").on("write", "Wrote c.ts")
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
+  "The process dies while a program's command runs": async (h, say) => {
+    h.provider.enqueue([call("call_1", "run_code", { code: FIX_PROGRAM }), U])
+    h.tools.on("write", "Wrote a.ts").on("shell", forever)
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "tool.started" && item.data.callId === "call_1.2")
+    h.kill()
+    h.provider.enqueue(answer("The program was cut off while the tests ran; a.ts was written. I will run the tests again to see where they stand."))
+    h.restart()
+    await h.settled()
+  },
 } satisfies Record<string, Play>)
 
 const scenarios = Object.entries(families).flatMap(([family, list]) => list.map((scenario) => ({ family, scenario })))
@@ -1965,6 +1986,7 @@ describe("the loop writes each scenario's events", () => {
             }
           : {}),
         ...(features?.todo === true ? { extraTools: [todoTool() as unknown as AnyTool] } : {}),
+        ...(features?.codeMode === true ? { codeMode: {} } : {}),
         ...(features?.agents === true ? { agents: { configDir: join(dirname(cwd!), "config") } } : {}),
         ...(features?.commands === true ? { commands: { configDir: join(dirname(cwd!), "config") } } : {}),
         // Telemetry of the user's own configuration, toward a collector that is this test: every closed span, as it closes.
