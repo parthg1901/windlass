@@ -73,6 +73,7 @@ import { type BlobStore, createFileBlobStore, createMemoryBlobStore } from "./bl
 import { createHistoryIndex } from "./history-index.ts"
 import { CONNECTION_PRAGMAS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema.ts"
 import { acquireWriterLock, isBusy } from "./sqlite-lock.ts"
+import { enableWal } from "./wal.ts"
 import {
   type AppendOptions,
   type OpenStore,
@@ -478,9 +479,11 @@ openSqliteStore satisfies OpenStore
 function openDatabase(path: string, inMemory: boolean, busyTimeoutMs: number, lock: Database | null): Database {
   const database = new Database(path, { create: true })
   try {
-    for (const pragma of CONNECTION_PRAGMAS) database.run(pragma)
     database.run(`PRAGMA busy_timeout = ${integer(0)(busyTimeoutMs, "busyTimeoutMs")}`)
-    const mode = database.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode
+    // Several processes may create sessions at once; switching a new file to WAL can be refused as busy straight
+    // away, whatever the busy timeout, so it is retried (store/wal.ts).
+    const mode = enableWal(database, busyTimeoutMs)
+    for (const pragma of CONNECTION_PRAGMAS) if (!pragma.startsWith("PRAGMA journal_mode")) database.run(pragma)
     if (!inMemory && mode !== "wal") throw new StoreSchemaError(`${path} could not be switched to WAL (got ${mode})`)
     const version = database.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version
     if (version === 0)
