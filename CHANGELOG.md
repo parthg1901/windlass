@@ -6,6 +6,13 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-13
+
+### Changed
+
+- The npm packages are published by the release workflow, each with a provenance statement that ties it to the
+  commit and the build that made it.
+
 ## [0.1.0] - 2026-11-13
 
 The first release: a coding agent for the terminal that signs in with a ChatGPT plan.
@@ -29,5 +36,6 @@ The first release: a coding agent for the terminal that signs in with a ChatGPT 
 - **Executables** for Linux and macOS, x64 and arm64, with SHA-256 checksums and an install script, and on npm:
   `npm install -g windlass-agent` installs the one for your machine.
 
-[Unreleased]: https://github.com/parthg1901/windlass/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/parthg1901/windlass/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/parthg1901/windlass/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/parthg1901/windlass/releases/tag/v0.1.0
