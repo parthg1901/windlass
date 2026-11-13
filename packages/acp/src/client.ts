@@ -1050,19 +1050,53 @@ export const WINDING_DOWN_MS = 6000
  * Whether `pid` is a server whose client went away, finishing its shutdown
  * (it closes its sessions on its own, within its shutdown limit): an `acp`
  * process whose parent is gone, so it was handed to init or a subreaper.
- * Read from `/proc`; `false` where that cannot be told.
+ * Read from `/proc` on Linux and from `ps` elsewhere (macOS has no `/proc`);
+ * `false` where that cannot be told.
  */
 export function windingDown(pid: number): boolean {
+  const facts = process.platform === "linux" ? processFromProc(pid) : processFromPs(pid)
+  if (facts === null || facts.lastArg !== "acp") return false
+  return facts.parent === 1 || facts.parentName === "systemd" || facts.parentName === "init"
+}
+
+interface ProcessFacts {
+  readonly lastArg: string | undefined
+  readonly parent: number
+  readonly parentName: string | null
+}
+
+function processFromProc(pid: number): ProcessFacts | null {
   try {
     const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter((arg) => arg !== "")
-    if (args.at(-1) !== "acp") return false
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
     const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
-    if (parent === 1) return true
-    const comm = readFileSync(`/proc/${parent}/comm`, "utf8").trim()
-    return comm === "systemd" || comm === "init"
+    const parentName = (() => {
+      try {
+        return readFileSync(`/proc/${parent}/comm`, "utf8").trim()
+      } catch {
+        return null
+      }
+    })()
+    return { lastArg: args.at(-1), parent, parentName }
   } catch {
-    return false
+    return null
+  }
+}
+
+/** The same from `ps`: the parent's pid and the command line, whose words are split at spaces (enough for the last one). */
+function processFromPs(pid: number): ProcessFacts | null {
+  const ps = (fields: string, of: number) => {
+    const done = Bun.spawnSync(["ps", "-o", fields, "-p", String(of)], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { PATH: "/bin:/usr/bin", LC_ALL: "C" } })
+    return done.exitCode === 0 ? (done.stdout.toString().split("\n")[0] ?? "") : null
+  }
+  try {
+    const match = /^\s*(\d+)\s+(.*?)\s*$/.exec(ps("ppid=,command=", pid) ?? "")
+    if (match === null) return null
+    const parent = Number(match[1])
+    const parentName = parent === 1 ? null : (ps("comm=", parent)?.trim().split("/").at(-1) ?? null)
+    return { lastArg: match[2]!.split(/\s+/).at(-1), parent, parentName }
+  } catch {
+    return null
   }
 }
 
