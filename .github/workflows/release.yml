@@ -1,0 +1,91 @@
+name: Release
+
+# Pushing a tag v<version> releases that version: the tag, package.json and CHANGELOG.md are
+# checked (scripts/release.ts check), every CI job runs, each executable is built and run on its own
+# platform, and a GitHub release is created with the four executables, build-info.json, the install
+# script and SHA256SUMS, its notes the version's CHANGELOG.md section.
+#
+# Run by hand (workflow_dispatch), it is a dry run on that branch: the same jobs, the checks as
+# warnings, and the release's files kept as a workflow artifact instead of a release.
+# The checklist is docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DRY_RUN: ${{ github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  check:
+    name: Check the tag, version and changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: The tag is v + the package.json version, and CHANGELOG.md has its section
+        shell: bash
+        run: |
+          if [ "$DRY_RUN" = true ]; then bun scripts/release.ts check --dry-run; else bun scripts/release.ts check "$GITHUB_REF_NAME"; fi
+
+  ci:
+    name: CI
+    needs: check
+    uses: ./.github/workflows/ci.yml
+    with:
+      artifacts: true
+
+  release:
+    name: Create the GitHub release (a dry run keeps its files instead)
+    needs: [check, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Creating the release. Nothing else in this workflow can write.
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: The same checks, in the job that releases, writing the release notes
+        id: check
+        shell: bash
+        run: |
+          if [ "$DRY_RUN" = true ]; then bun scripts/release.ts check --dry-run --notes release-notes.md; else bun scripts/release.ts check "$GITHUB_REF_NAME" --notes release-notes.md; fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*
+          path: built
+      - name: Collect the executables, build-info.json, the install script and SHA256SUMS
+        run: bun scripts/release.ts assets built release
+      - name: Verify the checksums
+        working-directory: release
+        run: sha256sum -c SHA256SUMS
+      - name: Keep the files (dry run)
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ steps.check.outputs.version }}-dry-run
+          path: |
+            release/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+      - name: Create the GitHub release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.check.outputs.title }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$TITLE" --notes-file release-notes.md release/*
