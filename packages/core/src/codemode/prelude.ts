@@ -98,6 +98,8 @@ for (const name of names) {
   globalThis[name] = fn
 }
 globalThis.tools = tools
+// Models name function calls functions.<name> (the first program of a live run did): the same functions under that name.
+globalThis.functions = tools
 
 let pending = ""
 process.stdin.setEncoding("utf8")

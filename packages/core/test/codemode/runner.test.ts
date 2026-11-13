@@ -42,6 +42,12 @@ describe("a program", () => {
     expect(outcome.calls).toBe(2)
   })
 
+  test("the functions are globals, and the same under `tools` and `functions`", async () => {
+    const { asked, host } = recording()
+    await run(`await read({ path: "1" }); await tools.read({ path: "2" }); await functions.read({ path: "3" })`, host)
+    expect(asked).toEqual(['read {"path":"1"}', 'read {"path":"2"}', 'read {"path":"3"}'])
+  })
+
   test("a failed call rejects with the tool's output and status, and the program can catch it", async () => {
     const { host } = recording(() => ({ status: "error", output: "no matches" }))
     const outcome = await run(`try { await grep({ pattern: "x" }) } catch (e) { return [e.name, e.tool, e.status, e.output] }`, host)
