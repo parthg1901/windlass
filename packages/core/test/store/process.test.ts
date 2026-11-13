@@ -62,10 +62,13 @@ describe("crash safety", () => {
       const progress: number[] = []
       for (let run = 0; run < runs; run++) {
         const child = await spawnWriter("crash-loop", path)
-        await Bun.sleep(Math.floor(Math.random() * 400))
+        const pause = Math.floor(Math.random() * 400)
+        await Bun.sleep(pause)
         child.kill("SIGKILL")
         await child.exited
-        expect(child.signalCode).toBe("SIGKILL")
+        // A writer that ended by itself failed: say how, so that a failure on a machine far away explains itself.
+        if (child.signalCode !== "SIGKILL")
+          throw new Error(`run ${run + 1}: the writer ended by itself within ${pause} ms, exit code ${child.exitCode}, signal ${child.signalCode}; its stderr:\n${await new Response(child.stderr).text()}`)
 
         const store = openSqliteStore({ path })
         expect(store.database.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" })

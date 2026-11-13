@@ -134,7 +134,7 @@ describe("subagents in git worktrees", () => {
   test("each works on its own branch from the workspace as it stands; their changes are merged back into the working tree and nothing else of the repository changes", async () => {
     const { data, directory, state } = repository()
     const before = state()
-    const { harness } = start(
+    const { harness, logged } = start(
       data,
       converse({
         "Fix both": [[call("subagent", { task: "Fix a", worktree: true }, "call_1"), call("subagent", { task: "Fix b", worktree: true }, "call_2")], say("Both merged.")],
@@ -149,6 +149,9 @@ describe("subagents in git worktrees", () => {
     await session.settled()
     const log = session.readEvents()
     const ended = of(log, "spawn.ended")
+    // Should a subagent not end merged, say what each call returned and what the harness logged.
+    if (ended.length !== 2 || ended.some((item) => item.data.merge?.status !== "merged"))
+      console.error(`spawn-real: the parent's results:\n${of(log, "tool.settled").map((item) => `- ${item.data.outcome}: ${item.data.output}`).join("\n")}\nended: ${JSON.stringify(ended.map((item) => item.data))}\nlogged:\n${logged.join("\n")}`)
     expect(ended.map((item) => item.data.merge?.status)).toEqual(["merged", "merged"])
     expect(ended.flatMap((item) => item.data.merge!.files).sort()).toEqual(["a.txt", "b.txt", "shared.txt", "shared.txt", "sub/new.txt", "untracked.txt"])
     // Both sets of changes are in the working tree, the shared file merged line by line.
