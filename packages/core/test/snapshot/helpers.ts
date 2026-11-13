@@ -25,13 +25,23 @@ export function removeTempDirs() {
   }
 }
 
-/** The environment for the "user's" own git: a private HOME, no system config, a fixed identity. */
+/**
+ * The environment for the "user's" own git: a private HOME, no system config, a fixed identity, and no automatic
+ * maintenance. Since git 2.47 a commit starts `git maintenance run --auto` in the background, which takes
+ * `.git/objects/maintenance.lock` after the commit returned; a fingerprint of `.git` taken then would see the test's
+ * own git at work, not the harness.
+ */
 export function userEnv(home: string): Record<string, string> {
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "maintenance.auto",
+    GIT_CONFIG_VALUE_0: "false",
+    GIT_CONFIG_KEY_1: "gc.auto",
+    GIT_CONFIG_VALUE_1: "0",
     GIT_AUTHOR_NAME: "User",
     GIT_AUTHOR_EMAIL: "user@example.com",
     GIT_COMMITTER_NAME: "User",
