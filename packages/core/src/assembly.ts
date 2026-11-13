@@ -126,6 +126,11 @@ function lazySandbox(): CommandSandbox {
     temp: (sessionId) => get().temp(sessionId),
     plan: (input) => get().plan(input),
     policy: (input) => get().policy(input),
+    confined: (input) => {
+      const confined = get().confined
+      if (confined === undefined) throw new Error("this sandbox cannot confine a process")
+      return confined(input)
+    },
   }
 }
 
