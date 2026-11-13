@@ -19,7 +19,7 @@ setDefaultTimeout(30_000)
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-cli-child-")))
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-cli-child-"))
+const elsewhere = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-cli-child-")))
 afterAll(() => {
   rmSync(root, { recursive: true, force: true })
   rmSync(elsewhere, { recursive: true, force: true })

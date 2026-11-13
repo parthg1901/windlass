@@ -497,6 +497,10 @@ describe("what sessions share", () => {
     legacy.append(sid("ses_old"), [created()])
     legacy.close()
     writeFileSync(join(dir, `${LEGACY_DATABASE}-lock`), "")
+    // The database and what belonged to it: its lock, the record of its last holder and, where SQLite keeps them
+    // after the last connection closes (as the SQLite macOS ships does), its -wal and -shm files.
+    const belonging = readdirSync(dir).filter((name) => name.startsWith(LEGACY_DATABASE)).sort()
+    expect(belonging).toEqual(expect.arrayContaining([LEGACY_DATABASE, `${LEGACY_DATABASE}-holder`, `${LEGACY_DATABASE}-lock`]))
     const notices: string[] = []
     const directory = openSessionDirectory({ dataDir: dir, notice: (line) => notices.push(line) })
     expect(notices).toHaveLength(1)
@@ -504,9 +508,9 @@ describe("what sessions share", () => {
     const backups = readdirSync(dir).filter((name) => name.startsWith(LEGACY_BACKUP_PREFIX))
     expect(backups).toHaveLength(1)
     expect(notices[0]).toContain(join(dir, backups[0]!))
-    // The database and what belonged to it (its lock, the record of its last holder).
-    expect(readdirSync(join(dir, backups[0]!)).sort()).toEqual([LEGACY_DATABASE, `${LEGACY_DATABASE}-holder`, `${LEGACY_DATABASE}-lock`])
-    expect(existsSync(join(dir, LEGACY_DATABASE))).toBe(false)
+    // All of it is moved, and nothing of it is left behind.
+    expect(readdirSync(join(dir, backups[0]!)).sort()).toEqual(belonging)
+    expect(readdirSync(dir).filter((name) => name.startsWith(LEGACY_DATABASE))).toEqual([])
     expect(listed(directory)).toEqual([])
     directory.close()
     // The backup still opens as what it was.

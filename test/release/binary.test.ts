@@ -6,7 +6,7 @@
  * does, a build takes a while).
  */
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import workspace from "../../package.json" with { type: "json" }
@@ -18,7 +18,8 @@ const executable = host === null ? null : join(ROOT, "dist", artifactName(host))
 const built = executable !== null && existsSync(executable)
 if (!built) console.warn(`binary.test.ts: SKIPPED, no executable at ${executable ?? `(no target for ${process.platform}-${process.arch})`}; build it with \`bun scripts/build.ts\``)
 
-const home = mkdtempSync(join(tmpdir(), "release-binary-"))
+// Its real path: the program names its working directory as the system gives it (on macOS /var/folders is /private/var/folders).
+const home = realpathSync(mkdtempSync(join(tmpdir(), "release-binary-")))
 const work = join(home, "work")
 mkdirSync(work)
 afterAll(() => rmSync(home, { recursive: true, force: true }))

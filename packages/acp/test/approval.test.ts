@@ -6,7 +6,7 @@
  * The real tools and the real sandbox, with a scripted model.
  */
 import { afterAll, afterEach, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
@@ -23,7 +23,7 @@ const sandboxed = createCommandSandbox().state.available
  * workspaces here are in /tmp, where a path beside the workspace means the
  * session's own temp directory (commands see nothing else of /tmp).
  */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-acp-outside-"))
+const elsewhere = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-acp-outside-")))
 afterAll(() => rmSync(elsewhere, { recursive: true, force: true }))
 
 let h: Harness | null = null

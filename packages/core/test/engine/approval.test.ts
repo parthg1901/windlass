@@ -9,7 +9,7 @@
  * its log. Real sandboxed processes are in `test/sandbox/workflows.test.ts`.
  */
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 import type { ApprovalSetup } from "../../src/engine/approval.ts"
 import { FAILURE_TEXT, TOOL_TEXT } from "../../src/engine/constants.ts"
@@ -39,7 +39,7 @@ const sandbox = (available = true): CommandSandbox => ({
   },
 })
 
-const setup = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox: sandbox(), secrets: [SECRET], home: "/home/user", ...more })
+const setup = (more: Partial<ApprovalSetup> = {}): ApprovalSetup => ({ sandbox: sandbox(), secrets: [SECRET], home: "/Users/user", ...more })
 
 async function withHarness(run: (h: Harness) => Promise<void>, options: HarnessOptions = {}) {
   const h = new Harness({ approval: setup(), ...options })
@@ -101,15 +101,17 @@ describe("mode auto with a sandbox", () => {
         const session = h.create()
         session.send("Go.")
         const question = await asked(h)
-        expect(question.question.title).toBe("Allow write: writing /etc/motd?")
-        expect(question.needs).toEqual([{ kind: "write", path: "/etc/motd", root: "/etc", protectedRoot: null }])
-        expect(session.approval()?.pending?.question.subject).toBe("/etc/motd")
+        // The question names the file with every link followed: on macOS /etc is a link to /private/etc.
+        const etc = realpathSync("/etc")
+        expect(question.question.title).toBe(`Allow write: writing ${etc}/motd?`)
+        expect(question.needs).toEqual([{ kind: "write", path: `${etc}/motd`, root: etc, protectedRoot: null }])
+        expect(session.approval()?.pending?.question.subject).toBe(`${etc}/motd`)
         expect(session.answer(target(question), { choice: "once" })).toBe(true)
         await h.settled()
         expect(of(h, "approval.denied").map((item) => [String(item.data.callId), item.data.reason, item.data.stop])).toEqual([["call_2", "policy", false]])
         // The writes name different files, so the refusal does not wait behind the question.
         expect(settled(h)).toEqual([
-          ["call_2", "error", "Not run: write may not write /home/user/.ssh/authorized_keys: it is a credential store or the harness's own data."],
+          ["call_2", "error", "Not run: write may not write /Users/user/.ssh/authorized_keys: it is a credential store or the harness's own data."],
           ["call_1", "success", "written"],
         ])
         // The denial and the result the model sees are one append.
@@ -327,14 +329,14 @@ describe("mode full", () => {
   test("nothing asks and nothing is sandboxed, until untrusted content is in the conversation: then commands run in the sandbox", () =>
     withHarness(async (h) => {
       const ran: (SandboxRun | null | undefined)[] = []
-      h.provider.enqueue([shell("make", "call_1"), write("/etc/motd", "call_2")], [read("/home/user/notes.txt")], [shell("make")], [script.text("Done.")])
+      h.provider.enqueue([shell("make", "call_1"), write("/etc/motd", "call_2")], [read("/Users/user/notes.txt")], [shell("make")], [script.text("Done.")])
       h.tools.on("shell", (_, context: ToolContext) => (ran.push(context.sandbox), "ok"), (_, context: ToolContext) => (ran.push(context.sandbox), "ok")).on("write", "written").on("read", "notes")
       const session = h.create()
       session.setApproval({ mode: "full" })
       session.send("Go.")
       await h.settled()
       expect(types(h).filter((type) => type.startsWith("approval."))).toEqual([])
-      expect(of(h, "taint.noticed").map((item) => [item.data.source.kind, item.data.source.path])).toEqual([["outside-file", "/home/user/notes.txt"]])
+      expect(of(h, "taint.noticed").map((item) => [item.data.source.kind, item.data.source.path])).toEqual([["outside-file", "/Users/user/notes.txt"]])
       expect(ran).toEqual([null, { network: false, writableRoots: [] }])
     }))
 })
@@ -501,13 +503,13 @@ describe("a pending question and what else can happen", () => {
 describe("taint", () => {
   test("a read outside the workspace taints, the user is told once, clearing it is an event, and the fold starts again from there", () =>
     withHarness(async (h) => {
-      h.provider.enqueue([read("/home/user/notes.txt", "call_1"), read("../other/x.txt", "call_2")], [script.text("Done.")])
+      h.provider.enqueue([read("/Users/user/notes.txt", "call_1"), read("../other/x.txt", "call_2")], [script.text("Done.")])
       h.tools.on("read", "notes", "x")
       const session = h.create()
       session.send("Read them.")
       await h.settled()
       expect(of(h, "taint.noticed")).toHaveLength(1)
-      expect(session.approval()?.taint).toMatchObject({ tainted: true, sources: [{ kind: "outside-file", path: "/home/user/notes.txt" }, { kind: "outside-file", path: "/other/x.txt" }] })
+      expect(session.approval()?.taint).toMatchObject({ tainted: true, sources: [{ kind: "outside-file", path: "/Users/user/notes.txt" }, { kind: "outside-file", path: "/other/x.txt" }] })
       expect(session.clearTaint()).toBe(true)
       expect(session.clearTaint()).toBe(false)
       expect(session.approval()?.taint.tainted).toBe(false)
@@ -517,7 +519,7 @@ describe("taint", () => {
 
   test("a revert, its undo and a restart leave it as it was: it is derived from the log, which they do not shorten", () =>
     withHarness(async (h) => {
-      h.provider.enqueue([read("/home/user/notes.txt")], [script.text("Done.")])
+      h.provider.enqueue([read("/Users/user/notes.txt")], [script.text("Done.")])
       h.tools.on("read", "notes")
       const session = h.create()
       session.send("Read it.")
@@ -535,7 +537,7 @@ describe("taint", () => {
     withHarness(
       async (h) => {
         const big = "x".repeat(6000)
-        h.provider.enqueue([read("/home/user/notes.txt")], [script.text("Read.")], [script.text("## Goal\n- g")], [script.text("Done.")])
+        h.provider.enqueue([read("/Users/user/notes.txt")], [script.text("Read.")], [script.text("## Goal\n- g")], [script.text("Done.")])
         h.tools.on("read", big)
         const session = h.create()
         session.send("Read it.")

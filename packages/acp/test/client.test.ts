@@ -25,7 +25,7 @@ const dirs: string[] = []
 const links: HarnessConnection[] = []
 const clients: HarnessClient[] = []
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-client-outside-"))
+const elsewhere = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-client-outside-")))
 
 afterEach(async () => {
   for (const link of links.splice(0)) await link.stop()

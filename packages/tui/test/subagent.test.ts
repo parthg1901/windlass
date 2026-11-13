@@ -17,7 +17,7 @@ import type { ApprovalAsk } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-tui-child-")))
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-child-"))
+const elsewhere = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-child-")))
 const note = join(elsewhere, "note.txt")
 const TASK = "Write the note outside"
 

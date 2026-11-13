@@ -140,7 +140,9 @@ describe.if(sandbox.state.available)("under the sandbox", () => {
       host,
       { confine },
     )
-    expect(outcome.end).toEqual({ kind: "returned", value: JSON.stringify(["EROFS", "no network", 'read({"path":"a"})'], null, 2) })
+    // Bubblewrap mounts what it may not write read-only (EROFS); Seatbelt (macOS) refuses the write itself (EPERM).
+    const refused = process.platform === "darwin" ? "EPERM" : "EROFS"
+    expect(outcome.end).toEqual({ kind: "returned", value: JSON.stringify([refused, "no network", 'read({"path":"a"})'], null, 2) })
     expect(existsSync(target)).toBe(false)
   })
 })

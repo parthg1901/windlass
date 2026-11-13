@@ -110,9 +110,10 @@ test("a slash command typed at an approval question does not answer it: the ques
   ])
   const run = await session(provider, ["--approval", "ask"], async (type, waitFor) => {
     type("write two files\r")
-    await waitFor(/one\.txt\?[\s\S]*\[N\]o › /)
+    // The question's first line may be cut at the width (a long temporary directory, as on macOS); the line under it names the file in full.
+    await waitFor(new RegExp(`${RegExp.escape(join(workspace, "one.txt"))}[\\s\\S]*\\[N\\]o › `))
     type("a\r")
-    await waitFor(/two\.txt\?[\s\S]*\[N\]o › /)
+    await waitFor(new RegExp(`${RegExp.escape(join(workspace, "two.txt"))}[\\s\\S]*\\[N\\]o › `))
     type("/mcp\r")
     await waitFor("so /mcp was not run")
     type("a\r")
@@ -128,5 +129,6 @@ test("a slash command typed at an approval question does not answer it: the ques
   expect(flat.match(/✓ allowed once/g)).toHaveLength(2)
   expect([existsSync(join(workspace, "one.txt")), existsSync(join(workspace, "two.txt"))]).toEqual([true, true])
   // What became of the first answer is said before the second question is put.
-  expect(flat.indexOf("✓ allowed once")).toBeLessThan(flat.indexOf("two.txt?"))
+  expect(flat.indexOf(join(workspace, "two.txt"))).toBeGreaterThan(0)
+  expect(flat.indexOf("✓ allowed once")).toBeLessThan(flat.indexOf(join(workspace, "two.txt")))
 })

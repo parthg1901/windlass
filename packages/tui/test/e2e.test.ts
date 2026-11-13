@@ -5,7 +5,7 @@
  * No model requests are made.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tmux, killServer } from "./tmux.ts"
@@ -246,7 +246,7 @@ describe("against windlass acp with a scripted model", () => {
  * under /tmp (a path beside a /tmp workspace is the session's temp directory).
  */
 describe("approvals and safety, against windlass acp", () => {
-  const outside = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-outside-"))
+  const outside = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-tui-outside-")))
   dirs.push(outside)
   const target = join(outside, "out.txt")
   const writeOutside = [[{ type: "text", text: "Writing outside." }, { type: "tool_call", callId: "c1", name: "write", input: { path: target, content: "outside\n" } }], [{ type: "text", text: "Finished." }]]

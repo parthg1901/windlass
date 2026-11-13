@@ -28,7 +28,8 @@ describe.if(available)("a program in the real harness", () => {
     expect(result?.type === "tool.settled" ? result.data.outcome : null).toBe("success")
     const [own, text] = result?.type === "tool.settled" ? (JSON.parse(result.data.output) as string[]) : []
     // The workspace is read-only to it, or (a workspace under the machine's /tmp, which bubblewrap replaces with the run's own) not there at all.
-    expect(["EROFS", "ENOENT"]).toContain(own!)
+    // Seatbelt (macOS) refuses the write itself: EPERM.
+    expect(process.platform === "darwin" ? ["EPERM"] : ["EROFS", "ENOENT"]).toContain(own!)
     expect(text).toBe("one")
     const started = events.find((item) => item.type === "tool.started" && item.data.callId === "call_1")
     expect(started?.type === "tool.started" ? started.data.run?.sandbox : undefined).toEqual({ network: false, writableRoots: [] })

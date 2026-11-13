@@ -8,7 +8,7 @@
  * to any other. Real tools, a scripted model shared by parent and child.
  */
 import { afterAll, afterEach, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
@@ -18,7 +18,7 @@ import { type Harness, startHarness } from "./helpers.ts"
 
 const NS = META.capabilities
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
-const elsewhere = mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-acp-child-"))
+const elsewhere = realpathSync(mkdtempSync(join(existsSync("/var/tmp") ? "/var/tmp" : homedir(), "wl-acp-child-")))
 afterAll(() => rmSync(elsewhere, { recursive: true, force: true }))
 
 let h: Harness | null = null
