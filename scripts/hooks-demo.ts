@@ -23,7 +23,7 @@ await Bun.write(join(cwd, "a.ts"), "export const a = 1   \n")
 const user = parseHooksSection(
   {
     beforeTool: [{ name: "no-push", tools: ["shell"], command: `case "$${P}COMMAND" in *"git push"*) echo "Pushing is not allowed here; commit locally and tell the user."; exit 2;; esac` }],
-    afterTool: [{ name: "trim", tools: ["edit", "write"], paths: ["**/*.ts"], command: `printf '%s\\n' "$${P}PATHS" | while read -r f; do sed -i 's/[ ]*$//' "$f"; done; echo "Trimmed trailing spaces in $${P}PATHS."; exit 2` }],
+    afterTool: [{ name: "trim", tools: ["edit", "write"], paths: ["**/*.ts"], command: `printf '%s\\n' "$${P}PATHS" | while read -r f; do sed -i.bak 's/[ ]*$//' "$f" && rm "$f.bak"; done; echo "Trimmed trailing spaces in $${P}PATHS."; exit 2` }],
     stop: [{ name: "no-scratch", command: "if [ -e SCRATCH.md ]; then echo 'Delete SCRATCH.md before you finish.'; exit 2; fi" }],
     maxStopRounds: 2,
   },

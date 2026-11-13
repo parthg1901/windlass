@@ -139,9 +139,9 @@ describe("subagents in git worktrees", () => {
       converse({
         "Fix both": [[call("subagent", { task: "Fix a", worktree: true }, "call_1"), call("subagent", { task: "Fix b", worktree: true }, "call_2")], say("Both merged.")],
         // It sees the user's uncommitted edit, edits another line of the shared file, and commits by itself.
-        "Fix a": [[call("shell", { command: "cat a.txt untracked.txt && sed -i 's/line 1/line one/' shared.txt && echo a2 >> a.txt && git add -A && git commit -q -m 'child commit' && pwd" })], say("a is fixed.")],
+        "Fix a": [[call("shell", { command: "cat a.txt untracked.txt && sed -i.bak 's/line 1/line one/' shared.txt && rm shared.txt.bak && echo a2 >> a.txt && git add -A && git -c user.name=child -c user.email=child@localhost commit -q -m 'child commit' && pwd" })], say("a is fixed.")],
         // It leaves its changes uncommitted, adds a file and removes one.
-        "Fix b": [[call("write", { path: "b.txt", content: "b2\n" }, "call_1"), call("write", { path: "sub/new.txt", content: "new\n" }, "call_2"), call("shell", { command: "sed -i 's/line 3/line three/' shared.txt && rm untracked.txt" }, "call_3")], say("b is fixed.")],
+        "Fix b": [[call("write", { path: "b.txt", content: "b2\n" }, "call_1"), call("write", { path: "sub/new.txt", content: "new\n" }, "call_2"), call("shell", { command: "sed -i.bak 's/line 3/line three/' shared.txt && rm shared.txt.bak untracked.txt" }, "call_3")], say("b is fixed.")],
       }),
     )
     const session = harness.engine.createSession({ cwd: directory, settings: SETTINGS })
@@ -188,7 +188,7 @@ describe("subagents in git worktrees", () => {
             // While the child works, the parent's workspace changes the same line.
             writeFileSync(join(directory, "shared.txt"), "line 1\nline 2 by the parent\nline 3\n")
             edited = true
-            return [call("shell", { command: "sed -i 's/line 2/line two by the child/' shared.txt && echo extra > extra.txt" })]
+            return [call("shell", { command: "sed -i.bak 's/line 2/line two by the child/' shared.txt && rm shared.txt.bak && echo extra > extra.txt" })]
           },
           say("Rewrote it."),
         ],
