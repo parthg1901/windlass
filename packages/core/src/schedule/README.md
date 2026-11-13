@@ -13,7 +13,7 @@ conflict therefore run in the order the model wrote them; the rest run side by s
 | `none` | reads, subagent calls (`Tool.delegates`), tools nobody knows, network tools of the harness's own | nothing |
 | `files` | a write or an edit that names its paths (`Tool.touches`) | `files` that overlap, `command`, `unknown` |
 | `command` | a command (`exec`), an MCP server's tool (it runs outside the sandbox, whatever it declares) | `files`, `unknown` |
-| `unknown` | a write that names no path (records-only tools such as memory and wake-ups) | `files`, `command`, `unknown` |
+| `unknown` | a write that names no path (records-only tools such as memory and wake-ups), a program (`run_code`, `Tool.nests`) | `files`, `command`, `unknown` |
 
 Two paths overlap when they are one path or one lies inside the other, by the path the tool opens or by the path
 with every link followed. A path whose links could not be followed meets every path.
@@ -21,6 +21,10 @@ with every link followed. A path whose links could not be followed meets every p
 Why commands run beside each other: the model asked for them in one response, before it saw any of their results,
 so it treats them as independent. Why a command and a write never overlap: a command can change the file a write
 was decided about, or put a link in its way, between the decision and the write.
+
+A program's own calls (`codemode/`) are scheduled by these rules too, in a schedule of their own: the program
+call holds every other side-effecting call of the response off while it runs, and its calls wait for each other
+exactly as the calls of a response do, in the order the program makes them.
 
 ## What the engine must do to use it
 

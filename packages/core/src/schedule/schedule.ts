@@ -33,12 +33,15 @@ export interface CallTraits {
   readonly origin: "builtin" | "mcp"
   /** The call hands its work to a subagent, whose own calls are decided and scheduled in its own session. */
   readonly delegates: boolean
+  /** The call runs a program whose own calls are its effects (`Tool.nests`): it changes something and names nothing. */
+  readonly nests?: boolean
   /** The paths the call names (`Tool.touches`), resolved. */
   readonly paths: readonly PathKey[]
 }
 
 export function footprintOf(call: CallTraits): Footprint {
   if (call.effect === undefined || call.effect === "read" || call.delegates) return { kind: "none" }
+  if (call.nests === true) return { kind: "unknown" }
   if (call.origin === "mcp" || call.effect === "exec") return { kind: "command" }
   if (call.effect === "network") return { kind: "none" }
   return call.paths.length === 0 ? { kind: "unknown" } : { kind: "files", paths: call.paths }

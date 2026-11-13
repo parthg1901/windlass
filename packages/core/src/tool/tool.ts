@@ -246,6 +246,19 @@ export interface Tool<Input = Json> extends ToolSpec {
    */
   readonly delegates?: boolean
   /**
+   * The tool runs a program whose every effect is a call of other tools
+   * (`run_code`, `codemode/`). Each of those calls is a call of the step,
+   * nested under this one, and is decided, recorded and scheduled like any
+   * call; the program itself runs confined and can change nothing. So this
+   * call needs no question of its own: the approval layer only says how it
+   * runs (in the sandbox, with nothing writable and no network). For the
+   * schedule it is a call that changes something and names nothing: it
+   * waits for the response's earlier writes and commands, and the later ones
+   * wait for it, so the program's calls never run beside a command or a
+   * write of the response. Not part of the tool's spec.
+   */
+  readonly nests?: boolean
+  /**
    * The result of a call depends on something that changes without any call
    * of the model's: work that runs in the background, a clock, a server
    * elsewhere. The same call made twice with the same result then says
