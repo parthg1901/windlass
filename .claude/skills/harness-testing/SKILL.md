@@ -60,6 +60,7 @@ Reading a result:
 - `cache-drop` in the anomalies column means a step read fewer cached tokens than the one before. Do not assume a harness bug. Export the session and ask prefixlens:
   `bun scripts/export-trace.ts <session-id> -o /tmp/t.jsonl && bunx prefixlens report /tmp/t.jsonl --all`
   "provider-side miss, not caused by the harness" with all records full-request means the prefix was intact (seen on 4 of 10 runs; it is the provider's lag on quick follow-ups). Any other cause is a real bug.
+  The provider can also drop to 0 cached in the middle of a fast turn with the prefix intact: on 2026-11-13, call 9 of 9 (about 20 s in all, one `session-id`) read 0 of 5,659 tokens 76 ms after call 8 had read 5,376 of the same prefix. The ledger hashes, params block, response model and token were all unchanged. That is not the delay before a cold prefix can be read (the older, already readable prefix was missed too). It looks like the request was routed to another cache machine. Treat it like the lag above.
 - "N full-request, 0 usage-only" in the report is itself a check: every request rebuilt from the log matched the hashes in the ledger.
 - A failed task is not always the agent's fault. Read the task prompt against the grader's reason before blaming either (one grader demanded behaviour the prompt never asked for).
 - `retry-after-error` fails on gpt-6-luna at low effort because the model refuses to remove a stale lock without confirmation. That is model caution, a useful signal when comparing prompts or models.
