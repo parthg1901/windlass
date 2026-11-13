@@ -80,6 +80,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup
+      # The full-screen interface's end-to-end tests drive a terminal through tmux, which the Linux images have and macOS's has not.
+      - name: tmux
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: command -v tmux >/dev/null || brew install tmux
       # No sign-in exists on the runner and none is given: nothing here may reach the model.
       - run: bun test --shard=${{ matrix.shard }}/3
 

@@ -22,7 +22,8 @@ Its notes are the version's section of `CHANGELOG.md`.
 - **typecheck**: `bun run typecheck`.
 - **test**: `bun test`, split into three shards, on Linux x64 and arm64 and on macOS arm64. On Linux the job
   installs bubblewrap and, when AppArmor refuses it user namespaces, adds the profile from
-  [troubleshooting](troubleshooting.md), so the sandbox tests run instead of skipping. No test reaches the model: the runners have no sign-in.
+  [troubleshooting](troubleshooting.md), so the sandbox tests run instead of skipping. On macOS it installs tmux, which
+  the full-screen interface's end-to-end tests drive. No test reaches the model: the runners have no sign-in.
 - **build**: each executable built on its own platform (Linux x64 and arm64, macOS arm64 and x64), so the
   full-screen interface's native library is in it, then run there: `--version`, a demo, the install script, and
   `test/release/binary.test.ts`.
