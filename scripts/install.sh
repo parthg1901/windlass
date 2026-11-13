@@ -163,13 +163,14 @@ case $(basename -- "$exe") in
     ;;
 esac
 
-# Run it before installing: an executable for another platform, or a broken one, stops here.
-version=$("$exe" --version 2>&1) || die "$exe does not run here: $version"
-
+# Run the copy before it takes the name: an executable for another platform, or a broken one, stops here.
+# The copy, because a downloaded file is not executable yet, and so that a name without a directory
+# (the file in the current directory) is not looked up on PATH.
 mkdir -p -- "$bin_dir"
 tmp=$bin_dir/.$name.installing.$$
 cp -- "$exe" "$tmp"
 chmod 755 "$tmp"
+version=$("$tmp" --version 2>&1) || { rm -f -- "$tmp"; die "$exe does not run here: $version"; }
 mv -f -- "$tmp" "$bin_dir/$name"
 say "installed $bin_dir/$name: $version"
 for alias in $(built_aliases "$exe"); do

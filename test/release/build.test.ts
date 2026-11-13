@@ -1,6 +1,6 @@
 /** The build script's pure parts and the version string. Nothing here builds: see `binary.test.ts` for the executable. */
 import { describe, expect, test } from "bun:test"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import workspace from "../../package.json" with { type: "json" }
@@ -141,6 +141,35 @@ describe("the build script", () => {
       expect(removed.code).toBe(0)
       expect(existsSync(join(bin, brand.binary)) || existsSync(join(bin, "short"))).toBe(false)
       expect(existsSync(join(bin, "other"))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a downloaded executable: named without a directory, not yet executable, with its record beside it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "release-install-download-"))
+    const bin = join(dir, "bin")
+    const name = `${brand.binary}-${platformString()}`
+    // As `curl -O` leaves it: mode 644, in the current directory.
+    await Bun.write(join(dir, name), "#!/bin/sh\necho stand-in 2.0\n")
+    Bun.spawnSync(["chmod", "644", join(dir, name)])
+    await Bun.write(join(dir, "build-info.json"), `${JSON.stringify({ binary: brand.binary, aliases: ["short"], builds: [] }, null, 2)}\n`)
+    const install = (exe: string) => {
+      const result = Bun.spawnSync(["sh", join(ROOT, "scripts/install.sh"), exe, "--bin-dir", bin, "--no-profile"], { cwd: dir, env: { HOME: dir, PATH: "/usr/bin:/bin" }, stdout: "pipe", stderr: "pipe" })
+      return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() }
+    }
+    try {
+      const installed = install(name)
+      expect(installed.code).toBe(0)
+      expect(installed.out).toContain(`installed ${join(bin, brand.binary)}: stand-in 2.0\n`)
+      expect(readlinkSync(join(bin, "short"))).toBe(brand.binary)
+      // One that does not run is not installed, and leaves nothing behind.
+      await Bun.write(join(dir, name), "#!/bin/sh\nexit 3\n")
+      const broken = install(name)
+      expect(broken.code).toBe(1)
+      expect(broken.err).toContain(`install: ${name} does not run here`)
+      expect(readdirSync(bin).toSorted()).toEqual([brand.binary, "short"].toSorted())
+      expect(Bun.spawnSync([join(bin, brand.binary)]).stdout.toString()).toBe("stand-in 2.0\n")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
