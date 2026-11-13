@@ -5,13 +5,17 @@
  * it has not been built: `bun scripts/build.ts` builds it (this test never
  * does, a build takes a while).
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import workspace from "../../package.json" with { type: "json" }
 import { brand } from "../../packages/core/src/brand.ts"
 import { ROOT, artifactName, hostTarget } from "../../scripts/build.ts"
+
+// Each test starts the executable one or more times, and a command starts the server child and a sandboxed shell
+// too. On the slowest runner (Intel macOS) one start costs most of a second, so five seconds is not enough.
+setDefaultTimeout(30_000)
 
 const host = hostTarget()
 const executable = host === null ? null : join(ROOT, "dist", artifactName(host))
