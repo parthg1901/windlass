@@ -7,6 +7,8 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun test",
+    "test:unit": "bun test --preload ./test/unit-preload.ts --path-ignore-patterns='**/*.e2e.test.ts'",
+    "test:e2e": "bun test .e2e.test.ts",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json && bunx tsc --noEmit -p evals/tsconfig.json"
   },
   "devDependencies": {
