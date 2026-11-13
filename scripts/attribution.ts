@@ -21,14 +21,14 @@
  * cause in the log, or a rebuilt request differs from its ledger row; 1 on usage
  * errors. See packages/core/src/trace/attribution.ts.
  */
-import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { brand } from "../packages/core/src/brand.ts"
 import { forkOf } from "../packages/core/src/event/durable.ts"
 import type { SessionId } from "../packages/core/src/id.ts"
+import { copyDatabase as snapshot } from "../packages/core/src/store/copy.ts"
 import { SESSIONS_DIRECTORY, openSessionDirectory } from "../packages/core/src/store/directory.ts"
 import { openSqliteStore } from "../packages/core/src/store/sqlite.ts"
 import { type Store, StoreError } from "../packages/core/src/store/store.ts"
@@ -135,14 +135,6 @@ function fromSingleDatabase(path: string): Source {
   }
 }
 
-/** A consistent copy of a database through a read-only connection, so the live file is never locked or written. */
-function snapshot(source: string, target: string): string {
-  const reader = new Database(source, { readonly: true })
-  const bytes = reader.serialize()
-  reader.close()
-  writeFileSync(target, bytes)
-  return target
-}
 
 function fail(message: string): never {
   console.error(message)

@@ -21,8 +21,7 @@
  * row (the trace is still written, with those calls usage-only), 1 on usage
  * errors. Nothing from the sign-in is read; see packages/core/src/trace.
  */
-import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
@@ -30,6 +29,7 @@ import { brand } from "../packages/core/src/brand.ts"
 import { forkOf } from "../packages/core/src/event/durable.ts"
 import type { SessionId } from "../packages/core/src/id.ts"
 import type { BlobStore } from "../packages/core/src/store/blobs.ts"
+import { copyDatabase as snapshot } from "../packages/core/src/store/copy.ts"
 import { SESSIONS_DIRECTORY, openSessionDirectory } from "../packages/core/src/store/directory.ts"
 import { openSqliteStore } from "../packages/core/src/store/sqlite.ts"
 import { type SessionSummary, type Store, StoreError } from "../packages/core/src/store/store.ts"
@@ -176,14 +176,6 @@ function fromSingleDatabase(path: string): Source {
   }
 }
 
-/** A consistent copy of a database, read through a read-only connection, so the live file is never locked or written. */
-function snapshot(source: string, target: string): string {
-  const reader = new Database(source, { readonly: true })
-  const bytes = reader.serialize()
-  reader.close()
-  writeFileSync(target, bytes)
-  return target
-}
 
 function fail(message: string): never {
   console.error(message)
