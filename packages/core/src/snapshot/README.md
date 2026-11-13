@@ -51,7 +51,7 @@ stands alone.
 
 The private index is git's stat cache: a second snapshot of an unchanged tree only `lstat`s each file. On this machine
 (aarch64 Linux, ext4) a generated tree of 20,000 small files took about 2.2 s for the first snapshot, 60 ms for an
-unchanged second, and 90 ms after ten edits (`test/snapshot/perf.test.ts` prints the numbers).
+unchanged second, and 90 ms after ten edits (`test/snapshot/perf.e2e.test.ts` prints the numbers).
 
 ## Concurrency
 
@@ -76,7 +76,7 @@ concurrent snapshots in one process plus four processes taking three each.
 - Diffs run with `--no-ext-diff --no-textconv`; no credentials are passed and `protocol.allow=never`.
 - Nested repositories are excluded by pathspec, so git never reads their config or refs.
 
-`test/snapshot/security.test.ts` plants all of these (fsmonitor, hooksPath and hooks, filter clean/smudge/process,
+`test/snapshot/security.e2e.test.ts` plants all of these (fsmonitor, hooksPath and hooks, filter clean/smudge/process,
 textconv, diff and merge drivers, credential helper, pager, editor, sshCommand, a hostile nested repository, a hostile
 global config and environment), checks with plain git in an identical workspace that the traps fire, and then checks
 that take, diff, restore and prune fire none of them and that the user's `.git` is unchanged to the mtime.
@@ -121,7 +121,7 @@ of the session could still need as `protect` (`docs/architecture.md`, "Snapshot 
 Several processes use one workspace's directory at once (two sessions in the same working directory). A `take`
 writes objects and a ref of its own unique name; a prune touches only refs of the sessions it is asked about,
 tries again when another process holds the lock on the packed refs for a moment, and takes another process's
-running `git gc` as the collection it wanted. `test/engine/process.test.ts` runs four processes taking and pruning
+running `git gc` as the collection it wanted. `test/engine/process.e2e.test.ts` runs four processes taking and pruning
 in one workspace.
 
 ## What the step loop needs to record per step

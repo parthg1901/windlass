@@ -6,7 +6,7 @@
  *
  * The tools are scripted and the sandbox is a stand-in that only says
  * whether it is available: what is tested here is the loop's decisions and
- * its log. Real sandboxed processes are in `test/sandbox/workflows.test.ts`.
+ * its log. Real sandboxed processes are in `test/sandbox/workflows.e2e.test.ts`.
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, readdirSync, realpathSync } from "node:fs"

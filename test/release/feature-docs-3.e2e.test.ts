@@ -333,7 +333,7 @@ describe("quoted program messages", () => {
   test("the pages have a Not yet section, name this file as their check, and use the brand's names", () => {
     for (const page of PAGES) {
       expect(text[page], page).toContain("\n## Not yet\n")
-      expect(text[page], page).toContain("`test/release/feature-docs-3.test.ts`")
+      expect(text[page], page).toContain("`test/release/feature-docs-3.e2e.test.ts`")
     }
     for (const [, name] of all.matchAll(/(?:~\/\.config|\$XDG_CONFIG_HOME)\/([a-z0-9][a-z0-9_-]*)\//g)) expect(name).toBe(DIR)
     for (const [, name] of all.matchAll(/(?<![\w/~])\.([a-z][a-z0-9_-]*)\/(?:config\.json|commands\/)/g)) if (!["agents", "claude"].includes(name!)) expect(name).toBe(DIR)

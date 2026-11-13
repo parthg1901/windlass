@@ -2,7 +2,7 @@
  * The program's process: its calls reach the host, its errors name their
  * line, its limits hold, and under the sandbox it can change nothing by
  * itself. The engine side (calls as calls of the step) is in
- * `test/engine/codemode.test.ts`.
+ * `test/engine/codemode.e2e.test.ts`.
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, rmSync } from "node:fs"

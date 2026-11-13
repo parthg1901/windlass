@@ -5,7 +5,7 @@ each model call and each tool call. It is for seeing where a turn's time and tok
 use for traces. It is **off** unless you turn it on, it sends to the one address you name and nowhere else, and by
 default it sends no text of yours: no prompt, no answer, no file path, no command. Everything on this page was run
 against the program with a scripted model and a collector on the same machine;
-`test/release/feature-docs-3.test.ts` checks the keys and messages against the code, and runs the examples.
+`test/release/feature-docs-3.e2e.test.ts` checks the keys and messages against the code, and runs the examples.
 
 ## The smallest working example
 

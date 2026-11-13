@@ -1,6 +1,6 @@
 /**
  * A harness process as far as wake-ups are concerned: a scheduler on the shared store, delivering into a shared
- * SQLite "inbox" that admits each key once, as the engine's inbox does. Used by `processes.test.ts`.
+ * SQLite "inbox" that admits each key once, as the engine's inbox does. Used by `processes.e2e.test.ts`.
  *
  *   bun worker.ts <wake dir> <inbox db> <mode> [<go file>]
  *

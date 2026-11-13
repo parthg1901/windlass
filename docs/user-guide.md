@@ -1,7 +1,7 @@
 # User guide
 
 How to use `windlass` day to day. `windlass --help` is the reference for every option; this page explains what they are for.
-Every command and message on this page was run against the program, and `test/release/docs.test.ts` checks the
+Every command and message on this page was run against the program, and `test/release/docs.e2e.test.ts` checks the
 options, configuration keys, exit codes and environment variables here against the code.
 
 ## Installing

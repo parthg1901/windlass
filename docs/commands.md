@@ -3,7 +3,7 @@
 A slash command of your own is a prompt you keep as a file: type `/release-notes 1.4` and the file's text, with
 `1.4` put in, is sent as your message. It saves typing the same instructions again, and a repository can carry the
 ones its team uses. A command file is text and nothing more: typing its name runs no command and reads no file.
-Everything on this page was run against the program with a scripted model; `test/release/feature-docs-3.test.ts`
+Everything on this page was run against the program with a scripted model; `test/release/feature-docs-3.e2e.test.ts`
 checks the paths, keys and messages against the code, and runs the examples.
 
 ## The smallest working example

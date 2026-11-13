@@ -3,7 +3,7 @@
 A fork is a new session that starts with another session's conversation so far, to try a different way without
 changing the original. The original is not touched; the fork is a session of its own that you continue like any
 other. Everything on this page was run against the program with a scripted model;
-`test/release/feature-docs.test.ts` checks the options and messages against the code.
+`test/release/feature-docs.e2e.test.ts` checks the options and messages against the code.
 
 ## The smallest working example
 

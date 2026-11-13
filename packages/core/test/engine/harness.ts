@@ -6,7 +6,7 @@
  * A "crash" is simulated in-process by closing the store under the engine:
  * from that moment nothing it does can reach the log, which is all a dead
  * process amounts to. A new store and a new engine are then opened on the
- * same file. (`crash.test.ts` does the same with a real process and SIGKILL.)
+ * same file. (`crash.e2e.test.ts` does the same with a real process and SIGKILL.)
  */
 import { expect } from "bun:test"
 import { existsSync, mkdtempSync, rmSync } from "node:fs"

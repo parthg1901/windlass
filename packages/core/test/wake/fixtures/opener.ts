@@ -1,6 +1,6 @@
 /**
  * A harness process starting up: waits for the go file, opens the wake store and records one wake-up in it.
- * Used by `processes.test.ts` to start several on a store that does not exist yet.
+ * Used by `processes.e2e.test.ts` to start several on a store that does not exist yet.
  *
  *   bun opener.ts <wake dir> <go file>
  */
