@@ -116,7 +116,7 @@ export const whileTextStreams: Scenario = {
 export const whileToolArgumentsStream: Scenario = {
   title: "Cancel while a tool call's arguments are streaming",
   description:
-    "The model has finished one tool call and is streaming the arguments of a second when the user cancels. Tools run only after the response finishes, so the first call is recorded but has not started: it settles as `not_started`. The second call never finished streaming, so it is never recorded at all; its partial arguments are dropped.",
+    "The model has finished one tool call and is streaming the arguments of a second when the user cancels. A call starts the moment its arguments finish streaming, so the first read already ran and keeps its result. The second call never finished streaming, so it is never recorded and never runs; its partial arguments are dropped.",
   provider: "streams text, one complete tool call (call_1), then argument deltas for call_2; aborted before call_2 ends",
   phases: [
     {
@@ -126,8 +126,9 @@ export const whileToolArgumentsStream: Scenario = {
         stepStarted("a1"),
         say("a1", "I'll read both files."),
         called("a1", "call_1", "read", '{"path":"a.ts"}'),
+        toolStarted("a1", "call_1", "read"),
       ],
-      expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", status: "running", calls: ["call_1 read pending"] }] },
+      expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", status: "running", calls: ["call_1 read running"] }] },
       rejects: [
         {
           event: stepInterrupted("a1", "user"),
@@ -137,10 +138,14 @@ export const whileToolArgumentsStream: Scenario = {
       ],
     },
     {
+      label: "the first call has its result while the second is still streaming",
+      events: [settled("a1", "call_1", "success", "export const a = 1")],
+      expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", status: "running", calls: ["call_1 read success"] }] },
+    },
+    {
       label: "the user cancels",
       events: [
         interruptRequested("user"),
-        settled("a1", "call_1", "not_started", NOT_STARTED),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
         executionInterrupted("user"),
@@ -149,7 +154,7 @@ export const whileToolArgumentsStream: Scenario = {
         ...released,
         ui: [
           { id: "u1" },
-          { id: "a1", status: "failed", text: "I'll read both files.", calls: ["call_1 read not_started"] },
+          { id: "a1", status: "failed", text: "I'll read both files.", calls: ["call_1 read success"] },
           { id: "s1" },
         ],
         history: ["u1", "a1", "s1"],
@@ -195,7 +200,7 @@ export const whileOneToolRuns: Scenario = {
 export const whileParallelToolsRunOneDone: Scenario = {
   title: "Cancel while two parallel tools run and one has finished",
   description:
-    "Two calls run at once. The read already settled with its result; the shell command is still running when the user cancels. The finished call keeps its result, the running one settles once with the output it observed, and only then does the step close.",
+    "Two calls run at once. The read started as soon as its arguments ended and settled with its result before the shell call had finished streaming; the shell command is still running when the user cancels. The finished call keeps its result, the running one settles once with the output it observed, and only then does the step close.",
   provider: "step 1 finishes with a read and a shell call; the read finishes, the shell is still running at the abort",
   phases: [
     {
@@ -204,10 +209,10 @@ export const whileParallelToolsRunOneDone: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "read", '{"path":"a.ts"}'),
-        called("a1", "call_2", "shell", '{"command":"bun test"}'),
         toolStarted("a1", "call_1", "read"),
-        toolStarted("a1", "call_2", "shell"),
         settled("a1", "call_1", "success", "export const a = 1"),
+        called("a1", "call_2", "shell", '{"command":"bun test"}'),
+        toolStarted("a1", "call_2", "shell"),
       ],
       expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 read success", "call_2 shell running"] }] },
       rejects: [

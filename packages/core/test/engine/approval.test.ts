@@ -107,9 +107,10 @@ describe("mode auto with a sandbox", () => {
         expect(session.answer(target(question), { choice: "once" })).toBe(true)
         await h.settled()
         expect(of(h, "approval.denied").map((item) => [String(item.data.callId), item.data.reason, item.data.stop])).toEqual([["call_2", "policy", false]])
+        // The writes name different files, so the refusal does not wait behind the question.
         expect(settled(h)).toEqual([
-          ["call_1", "success", "written"],
           ["call_2", "error", "Not run: write may not write /home/user/.ssh/authorized_keys: it is a credential store or the harness's own data."],
+          ["call_1", "success", "written"],
         ])
         // The denial and the result the model sees are one append.
         const denied = of(h, "approval.denied")[0]!
@@ -654,7 +655,8 @@ test("a command that is still running when the user interrupts is stopped as bef
     h.tools.on("shell", async (_, context: ToolContext) => (await untilAbort(context.signal), failed("[Interrupted by the user.]")))
     const session = h.create()
     session.send("Go.")
-    await h.seen((item) => item.type === "tool.started")
+    // The write is recorded and waits behind the command written before it.
+    await h.seen((item) => item.type === "tool.called" && item.data.callId === "call_2")
     session.interrupt()
     await h.settled()
     expect(settled(h)).toEqual([

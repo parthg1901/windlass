@@ -12,7 +12,7 @@ import { isAbsolute, join, relative, sep } from "node:path"
 import { type CallFacts } from "../approval/decide.ts"
 import { type Escalation, escalationFacts, escalationRequest, sandboxHint } from "../approval/escalation.ts"
 import { type Grant, PROJECT_GRANT_TTL_MS, grant } from "../approval/grants.ts"
-import { type PathContext, type PathFact, isWithin, pathFact } from "../approval/paths.ts"
+import { type PathContext, type PathFact, isWithin, lexicalPath, pathFact, realPath } from "../approval/paths.ts"
 import { type ApprovalPolicy, type ApprovalSection, type ResolvedApproval, resolveApprovalConfig } from "../approval/policy.ts"
 import { type CallRun, type SandboxRunRecord } from "../approval/record.ts"
 import { redact, redactPieces } from "../approval/redact.ts"
@@ -21,6 +21,7 @@ import type { Json } from "../json.ts"
 import { type CommandSandbox, createCommandSandbox } from "../sandbox/command.ts"
 import { defaultHiddenPaths, isCredentialName } from "../sandbox/policy.ts"
 import type { AnyTool, RedactedText, TempDirectory } from "../tool/tool.ts"
+import type { PathKey } from "../schedule/schedule.ts"
 import { tempPath } from "../tools/common.ts"
 import { array, object, safeDecode, string } from "../validate.ts"
 
@@ -155,6 +156,17 @@ export function classify(given: string, context: FactContext): PathFact {
   if (real === null || fact.place === "workspace" || fact.place === "protected") return { ...fact, given }
   const own = [...(context.temp === undefined ? [] : [context.temp.dir]), ...context.approvals.trustedRoots].map(realWorkspace)
   return own.some((root) => isWithin(root, real)) ? { given, real, place: "workspace", relative: null } : { ...fact, given }
+}
+
+/**
+ * One path a call names, for the step's schedule: the file the tool opens
+ * (under the temp directory's alias, the file a command means by it) and
+ * the same with every link followed, resolved as `classify` resolves it.
+ * Works with the approval layer off too: it needs no policy.
+ */
+export function pathKey(given: string, context: { readonly cwd: string; readonly temp: TempDirectory | undefined; readonly home: string }): PathKey {
+  const lexical = lexicalPath(context.cwd, tempPath(context.temp, given, context.cwd), context.home)
+  return { lexical, real: realPath(lexical, readlink) }
 }
 
 /** What `decide` is told about one call, or the reason its arguments cannot be decided on. */

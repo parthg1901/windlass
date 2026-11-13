@@ -19,6 +19,9 @@
  * - A side effect follows its durable record, never the other way round:
  *   `tool.called` is appended when the call finishes streaming, `tool.started`
  *   inside the runtime's `onStart`, synchronously, right before the tool runs.
+ * - A call starts as soon as its arguments finish streaming, unless an
+ *   earlier call of the response conflicts with it (`schedule/`); a response
+ *   that does not finish starts nothing more (`beginTools`).
  * - An interrupt is appended (`execution.interrupt_requested`) before
  *   anything is aborted. From then on the loop only winds down.
  * - Every await is followed by a check of the abort signal before anything
@@ -61,7 +64,8 @@ import type { McpRegistry } from "../mcp/registry.ts"
 import type { SkillSet } from "../skills/discover.ts"
 import type { ApprovalPolicy, ApprovalSection, ResolvedApproval } from "../approval/policy.ts"
 import type { CallMatch, Divergence } from "../replay/match.ts"
-import { type Replay, type ReplayWorkspace, createReplay } from "../replay/replay.ts"
+import { type Replay, type ReplayWorkspace, type StepPlan, createReplay } from "../replay/replay.ts"
+import { CallSchedule, type Footprint, type PathKey, footprintOf } from "../schedule/schedule.ts"
 import { type Tape, tapeFromEvents } from "../replay/tape.ts"
 import { type CallRun, type ChoiceId, TaintHistory, inheritableTaint } from "../approval/record.ts"
 import { redact, unfinishedSecret } from "../approval/redact.ts"
@@ -138,7 +142,7 @@ import { type GateInput, decideGate } from "../verify/gate.ts"
 import { renderReport } from "../verify/report.ts"
 import { type CheckResult, type RunCheckOptions, runChecks } from "../verify/run.ts"
 import { selectChecks } from "../verify/select.ts"
-import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
+import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, pathKey, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents, heldToParent } from "./agents.ts"
 import { SessionTrace, type TelemetrySetup, type TelemetryState, TelemetryHub } from "./telemetry.ts"
 import { type CommandExpansion, type CommandPlaces, type CommandsSetup, type SentCommand, commandPlaces, commandUseOf, expandNamed, findCommands } from "./commands.ts"
@@ -265,6 +269,8 @@ export type ProbePoint =
   | "step.started"
   /** One piece of model output (`text.ended`, `reasoning.ended`, `tool.called`) is durable. */
   | "model.output"
+  /** A step's model call ended (finished, failed or stopped) and its ledger row is closed; its tools may still run. */
+  | "model.finished"
   /** `approval.requested` is durable; nobody has answered. */
   | "approval.requested"
   /** `tool.started` is durable; the tool is about to run. */
@@ -1843,6 +1849,24 @@ const isSteer = (item: { readonly delivery: "steer" | "queue" }) => item.deliver
 const isEnding = (item: StoredEvent): item is StoredEvent<"execution.succeeded"> | StoredEvent<"execution.failed"> | StoredEvent<"execution.interrupted"> =>
   item.type === "execution.succeeded" || item.type === "execution.failed" || item.type === "execution.interrupted"
 
+/** The tools of one step attempt (`beginTools`). */
+interface StepTools {
+  /** The calls start as they arrive, while the response streams; `false` in a replay, whose calls are handed over at its end. */
+  readonly early: boolean
+  /** Whether the workspace was recorded before the step's first call that can change it. */
+  readonly tracked: boolean
+  /** Takes the next call of the response. Resolves once it started, has its result, or waits for something. */
+  readonly add: (call: ToolCallPart) => Promise<void>
+  /** Takes the calls of a replay's response, which finished. */
+  readonly addAll: (calls: readonly ToolCallPart[]) => Promise<void>
+  /** The response is over: `finished` when it finished, so that its calls may all run; otherwise nothing more starts. */
+  readonly end: (finished: boolean) => void
+  /** For a call that waits for the response to be over (a question): whether it finished. */
+  readonly streamed: (callId: CallId) => Promise<boolean>
+  /** Resolves when every call that started has its result, or after an interrupt, when the tools stopped or their grace period is over. Throws what the loop failed with. */
+  readonly settle: () => Promise<void>
+}
+
 /** What the approval layer decided for one call of the step in progress, kept until its result is recorded. */
 interface Decided {
   /** What `tool.started` records, for a call that runs. */
@@ -1965,6 +1989,8 @@ class LiveSession implements EngineSession {
   private readonly decided = new Map<string, Decided>()
   /** Set when a call that nobody could approve ends the run: the denial's text. */
   private stopping: string | null = null
+  /** The tools of the step attempt in progress. */
+  private stepTools: StepTools | null = null
   /** How to stop each call of the step in progress by itself, by call: fires its signal and starts its grace period. */
   private readonly callStops = new Map<string, () => void>()
   /** The history taint is derived from, built from the log on first use and kept up with every append. A cache of a pure function of the log. */
@@ -3214,73 +3240,99 @@ class LiveSession implements EngineSession {
     this.probe("step.started")
 
     let refreshed = false
-    for (;;) {
-      // A retry resends the same request unchanged.
-      const call = await this.callModel(run, { messageId, attempt, request, blocks, purpose: "step" })
-      if (call.end.type === "aborted") {
-        this.finishInterrupt(run, call.partialText, call.usage)
-        return "done"
-      }
-      if (call.end.type === "finish") return this.finishStep(run, messageId, toolChoice, call.end.reason, call)
-
-      const error = call.end.error
-      const message = this.assistant(messageId)
-      // The partial text the user saw is kept, as on a cancel; partial reasoning and arguments are dropped.
-      const flush = call.partialText === "" ? [] : [event("text.ended", { messageId, text: call.partialText, providerData: null })]
-      const hasOutput = message.parts.length > 0 || flush.length > 0
-      // A call that was recorded never started: tools run only after the response finishes.
-      const closing = [...flush, ...settleUnsettled(message, STOPPED)]
-      const failed = event("step.failed", { messageId, error: { kind: "provider", error }, usage: call.usage })
-      const giveUp = (reason: string) => event("execution.failed", { executionId: run.executionId, message: reason })
-
-      if (error.kind === "content_policy") {
-        const refused = event("step.refused", {
-          messageId,
-          message: error.message,
-          excludeFromSeq: refusedTurnStart(this.projection(), message),
-          usage: call.usage,
-        })
-        this.write([...closing, refused, giveUp(FAILURE_TEXT.refused)])
-        return "done"
-      }
-      if (error.kind === "auth" && !hasOutput && !refreshed && this.core.refreshAuth !== undefined) {
-        refreshed = true
-        const usable = await this.core.refreshAuth().catch(() => false)
-        if (signal.aborted) {
-          this.finishInterrupt(run, "", call.usage)
+    try {
+      for (;;) {
+        // The calls of the response start as their arguments finish streaming (in a replay, once it finished).
+        const tools = this.beginTools(run, messageId, toolChoice)
+        this.stepTools = tools
+        // A retry resends the same request unchanged.
+        const call = await this.callModel(run, { messageId, attempt, request, blocks, purpose: "step", ...(tools.early ? { onCall: tools.add } : {}) })
+        if (call.end.type === "finish") return await this.finishStep(run, messageId, toolChoice, call.end.reason, call, tools)
+        // The response did not finish: nothing more starts, and the calls that started run to their result first.
+        tools.end(false)
+        await tools.settle()
+        const stopped = this.stopping
+        this.stopping = null
+        if (call.end.type === "aborted" || signal.aborted) {
+          this.finishInterrupt(run, call.partialText, call.usage)
           return "done"
         }
-        if (usable) continue
-      }
-      if (error.retryable && attempt < limits.attemptBudget) {
-        const delayMs = retryDelayMs(limits, attempt, error, this.core.random)
-        const retry = event("retry.scheduled", { messageId, attempt: attempt + 1, delayMs, error })
-        // Before durable output the retry is transparent. After it the message fails, and the retry runs under a new
-        // message that the model is asked to continue from (retry rule 2).
-        this.write(hasOutput ? [...closing, failed, retry, note(ids.message(), HARNESS_ORIGIN.continuation, NOTE_TEXT.continuation)] : [retry])
-        this.probe("retry.scheduled")
-        await clock.sleep(delayMs, signal)
-        if (signal.aborted) {
-          this.finishInterrupt(run, "", call.usage)
+        if (tools.tracked) {
+          await this.snapshot("step_end", messageId)
+          if (signal.aborted) {
+            this.finishInterrupt(run, call.partialText, call.usage)
+            return "done"
+          }
+        }
+
+        const error = call.end.error
+        const message = this.assistant(messageId)
+        // The partial text the user saw is kept, as on a cancel; partial reasoning and arguments are dropped.
+        const flush = call.partialText === "" ? [] : [event("text.ended", { messageId, text: call.partialText, providerData: null })]
+        // A recorded call is durable output, so a step whose calls started is never retried as if nothing happened.
+        const hasOutput = message.parts.length > 0 || flush.length > 0
+        // A call that had not started never will: the response it belongs to did not finish.
+        const closing = [...flush, ...this.orphanHookRecords(message), ...settleUnsettled(message, STOPPED)]
+        const failed = event("step.failed", { messageId, error: { kind: "provider", error }, usage: call.usage })
+        const giveUp = (reason: string) => event("execution.failed", { executionId: run.executionId, message: reason })
+
+        if (stopped !== null) {
+          // A call needed approval and nobody was there: the run ends here, whatever became of the response.
+          this.write([...closing, failed, event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.approvalStop(stopped), cause: "approval" })])
           return "done"
         }
-        if (hasOutput) return "continue"
-        attempt += 1
-        continue
+
+        if (error.kind === "content_policy") {
+          const refused = event("step.refused", {
+            messageId,
+            message: error.message,
+            excludeFromSeq: refusedTurnStart(this.projection(), message),
+            usage: call.usage,
+          })
+          this.write([...closing, refused, giveUp(FAILURE_TEXT.refused)])
+          return "done"
+        }
+        if (error.kind === "auth" && !hasOutput && !refreshed && this.core.refreshAuth !== undefined) {
+          refreshed = true
+          const usable = await this.core.refreshAuth().catch(() => false)
+          if (signal.aborted) {
+            this.finishInterrupt(run, "", call.usage)
+            return "done"
+          }
+          if (usable) continue
+        }
+        if (error.retryable && attempt < limits.attemptBudget) {
+          const delayMs = retryDelayMs(limits, attempt, error, this.core.random)
+          const retry = event("retry.scheduled", { messageId, attempt: attempt + 1, delayMs, error })
+          // Before durable output the retry is transparent. After it the message fails, and the retry runs under a new
+          // message that the model is asked to continue from (retry rule 2).
+          this.write(hasOutput ? [...closing, failed, retry, note(ids.message(), HARNESS_ORIGIN.continuation, NOTE_TEXT.continuation)] : [retry])
+          this.probe("retry.scheduled")
+          await clock.sleep(delayMs, signal)
+          if (signal.aborted) {
+            this.finishInterrupt(run, "", call.usage)
+            return "done"
+          }
+          if (hasOutput) return "continue"
+          attempt += 1
+          continue
+        }
+        if (error.kind === "context_overflow" && !hasOutput && this.afterOverflow(prepared, this.core.windows.get(start.session.settings.model) ?? null).kind === "now") {
+          // Closed here; the loop compacts at the boundary and rebuilds the request.
+          this.write([failed])
+          this.probe("step.closed")
+          return "continue"
+        }
+        const reason = error.retryable
+          ? FAILURE_TEXT.budget(attempt, error)
+          : error.kind === "context_overflow"
+            ? FAILURE_TEXT.overflow
+            : failureText(error)
+        this.write([...closing, failed, giveUp(reason)])
+        return "done"
       }
-      if (error.kind === "context_overflow" && !hasOutput && this.afterOverflow(prepared, this.core.windows.get(start.session.settings.model) ?? null).kind === "now") {
-        // Closed here; the loop compacts at the boundary and rebuilds the request.
-        this.write([failed])
-        this.probe("step.closed")
-        return "continue"
-      }
-      const reason = error.retryable
-        ? FAILURE_TEXT.budget(attempt, error)
-        : error.kind === "context_overflow"
-          ? FAILURE_TEXT.overflow
-          : failureText(error)
-      this.write([...closing, failed, giveUp(reason)])
-      return "done"
+    } finally {
+      this.stepTools = null
     }
   }
 
@@ -3291,10 +3343,11 @@ class LiveSession implements EngineSession {
     toolChoice: ModelRequest["toolChoice"],
     reason: FinishReason,
     call: ModelCall,
+    tools: StepTools,
   ): Promise<StepResult> {
     const director = this.director
     if (director !== null) director.asked = 0
-    const closed = await this.closeStep(run, messageId, toolChoice, reason, call)
+    const closed = await this.closeStep(run, messageId, toolChoice, reason, call, tools)
     if (director === null || closed !== "continue") return closed
     const message = this.assistant(messageId)
     if (message.status !== "completed") return closed
@@ -3316,19 +3369,54 @@ class LiveSession implements EngineSession {
     toolChoice: ModelRequest["toolChoice"],
     reason: FinishReason,
     call: ModelCall,
+    tools: StepTools,
   ): Promise<StepResult> {
     const ids = this.core.ids
-    const message = this.assistant(messageId)
-    const calls = message.parts.filter((part): part is ToolCallPart => part.type === "tool_call")
+    const calls = this.assistant(messageId).parts.filter((part): part is ToolCallPart => part.type === "tool_call")
     const usage = call.usage
+    // A call cut off by the output limit was never recorded and never runs (retry rule 6). A call that did end ran
+    // if it could start while the response streamed; one that had not started does not start now: the response it
+    // belongs to is incomplete.
+    const complete = reason !== "length"
+    const onTape = this.onTape()
+    tools.end(complete)
+    // A replay's calls are handed over only now: they are matched against the recording together.
+    if (complete && !tools.early) await tools.addAll(calls)
+    await tools.settle()
+    const stopped = this.stopping
+    this.stopping = null
+    if (run.interrupt.signal.aborted) {
+      // The model call itself finished: what it cost is known, though its tools were cut short.
+      this.finishInterrupt(run, "", usage)
+      return "done"
+    }
+    const finish = complete ? "tool_calls" : "length"
+    if (stopped !== null) {
+      // A call needed approval, nobody was there, and the policy says the run ends there (`unattended: "stop"`).
+      // What had not started yet does not start; the step closes and the execution ends, in one append.
+      this.write([
+        ...settleUnsettled(this.assistant(messageId), STOPPED),
+        event("step.ended", { messageId, finish, usage }),
+        event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.approvalStop(stopped), cause: "approval" }),
+      ])
+      return "done"
+    }
+    // A step is bracketed by two snapshots exactly when one of its calls can change files: a step of reads changes
+    // nothing, and the snapshot before it is still the workspace. Also when the replay left its recording during
+    // these tools: its `step_start` was taken as it went live.
+    if (tools.tracked || (calls.length > 0 && onTape && !this.onTape() && this.core.openSnapshots !== null)) {
+      await this.snapshot("step_end", messageId)
+      if (run.interrupt.signal.aborted) {
+        this.finishInterrupt(run, "", usage)
+        return "done"
+      }
+    }
 
-    if (reason === "length") {
-      // A call cut off by the output limit was never recorded and never runs (retry rule 6). Calls that did end
-      // are not run either: the response they belong to is incomplete.
+    if (!complete) {
       // On the tape the recording's own notes are the model's notes.
       const told = (call.cutOff || calls.length > 0) && !this.onTape()
       this.write([
-        ...settleUnsettled(message, STOPPED),
+        ...settleUnsettled(this.assistant(messageId), STOPPED),
         event("step.ended", { messageId, finish: "length", usage }),
         ...(told ? [note(ids.message(), HARNESS_ORIGIN.outputLimit, NOTE_TEXT.outputLimit)] : []),
       ])
@@ -3336,44 +3424,8 @@ class LiveSession implements EngineSession {
       return "continue"
     }
 
+    const message = this.assistant(messageId)
     if (calls.length > 0) {
-      // A step is bracketed by two snapshots exactly when one of its calls can change files: a step of reads
-      // changes nothing, and the snapshot before it is still the workspace.
-      const onTape = this.onTape()
-      const tracked = this.core.openSnapshots !== null && this.mayChangeFiles(calls, toolChoice) && !onTape
-      if (tracked) {
-        await this.snapshot("step_start", messageId)
-        if (run.interrupt.signal.aborted) {
-          this.finishInterrupt(run, "", usage)
-          return "done"
-        }
-      }
-      await this.runTools(run, message, calls, toolChoice)
-      const stopped = this.stopping
-      this.stopping = null
-      if (run.interrupt.signal.aborted) {
-        // The model call itself finished: what it cost is known, though its tools were cut short.
-        this.finishInterrupt(run, "", usage)
-        return "done"
-      }
-      if (stopped !== null) {
-        // A call needed approval, nobody was there, and the policy says the run ends there (`unattended: "stop"`).
-        // What had not started yet does not start; the step closes and the execution ends, in one append.
-        this.write([
-          ...settleUnsettled(this.assistant(messageId), STOPPED),
-          event("step.ended", { messageId, finish: "tool_calls", usage }),
-          event("execution.failed", { executionId: run.executionId, message: FAILURE_TEXT.approvalStop(stopped), cause: "approval" }),
-        ])
-        return "done"
-      }
-      // Also when the replay left its recording during these tools: its `step_start` was taken as it went live.
-      if (tracked || (onTape && !this.onTape() && this.core.openSnapshots !== null)) {
-        await this.snapshot("step_end", messageId)
-        if (run.interrupt.signal.aborted) {
-          this.finishInterrupt(run, "", usage)
-          return "done"
-        }
-      }
       // A step that ran tools asked for tools, whatever the provider called its finish.
       this.write([event("step.ended", { messageId, finish: "tool_calls", usage })])
       this.probe("step.closed")
@@ -3429,6 +3481,11 @@ class LiveSession implements EngineSession {
        * provider takes no output limit in the request.
        */
       readonly maxOutputChars?: number
+      /**
+       * Takes each tool call the moment it is recorded; the stream is read on
+       * when the promise resolves. The step's tools (`beginTools`).
+       */
+      readonly onCall?: (call: ToolCallPart) => Promise<void>
     },
   ): Promise<ModelCall> {
     const { provider, ids } = this.core
@@ -3547,6 +3604,7 @@ class LiveSession implements EngineSession {
                 event("tool.called", { messageId, callId: item.callId as CallId, name: item.name, input: item.input, providerData: item.providerData }),
               ])
               this.probe("model.output")
+              if (input.onCall !== undefined) await input.onCall(this.callPart(messageId, item.callId as CallId))
             }
             break
           case "usage":
@@ -3581,86 +3639,100 @@ class LiveSession implements EngineSession {
       responseModel: response?.model ?? null,
     })
     this.trace?.request(finished)
+    if (step) this.probe("model.finished")
     return { end, usage, partialText, cutOff: streaming.size > 0, text: whole, overran }
   }
 
   /**
-   * Runs the step's calls and settles each exactly once, in the order they
-   * finish. Returns when every call is settled, or, after an interrupt, when
-   * the tools have stopped or their grace period is over; what is still
-   * unsettled then is settled by `finishInterrupt` from its recorded state.
+   * The tools of one step attempt. The model call hands over each call the
+   * moment its arguments finish streaming (`add`), and the call starts as
+   * soon as nothing is in its way, while the rest of the response is still
+   * streaming. A replay hands over the step's calls once the response is
+   * over (`addAll`), because they are matched against the recording
+   * together. Each call is settled exactly once, in the order the calls
+   * finish; the request shows the results in call order whatever that is.
    *
-   * The order (with the approval layer on; without it every call starts at once):
+   * The order:
    *
    * 1. Calls the loop itself refuses (tools forbidden, too many calls, the
-   *    identical-call guard) are settled first, in call order.
-   * 2. Calls of class `read` are decided at once, in call order, and those
-   *    that may run start at once and run side by side.
-   * 3. Every other call (a write, a command, a network or MCP tool) keeps its
-   *    place in one line: it is decided when the one before it in the line
-   *    has its result, and runs alone in the line. So a write is never
-   *    decided or started while a command runs (a command could swap a link
-   *    under the path that was checked), and side effects happen in the order
-   *    the model wrote them.
-   * 4. A call that must ask is suspended, and only it: reads go on, and the
-   *    line waits behind it, because what comes later in the line was written
-   *    to happen after it. Questions are asked one at a time, in the order
-   *    their calls reached them; a call is decided again when its turn to
-   *    ask comes, since an answer given meanwhile may cover it.
-   * 5. A decision is made from the state at the moment it is made: the taint
-   *    and the approvals as the log has them then.
-   * 6. An interrupt withdraws a pending question: the call settles as not
+   *    identical-call guard, the agent's restrictions) are settled as they
+   *    arrive.
+   * 2. Every other call is placed in the step's schedule (`schedule/`): it
+   *    waits for the earlier calls of the response it conflicts with, and
+   *    for nothing else. Reads, subagents and tools nobody knows wait for
+   *    nothing. A write waits for earlier writes on the same path or on a
+   *    path inside it (links followed), and for earlier commands. A command
+   *    or an MCP call waits for earlier writes and runs beside the others.
+   *    So a write is never decided or started while a command of the step
+   *    runs (a command could swap a link under the path that was checked),
+   *    and writes to one file happen in the order the model wrote them.
+   * 3. Before the first call that can change files starts, the workspace is
+   *    recorded (`step_start`).
+   * 4. A decision is made from the state at the moment it is made: the
+   *    taint and the approvals as the log has them then.
+   * 5. A call that must ask waits for the response to finish, then for its
+   *    turn: questions are asked one at a time, in the order their calls
+   *    reached them, and a call is decided again when its turn comes, since
+   *    an answer given meanwhile may cover it. Only the calls that conflict
+   *    with it wait behind it.
+   * 6. A response that does not finish (it fails, or is cut at the output
+   *    limit) starts nothing more: what started runs to its result, and the
+   *    rest is settled as not started by whoever closes the step.
+   * 7. An interrupt withdraws a pending question: the call settles as not
    *    started, like every call the interrupt reached before it began.
+   *
+   * `add` resolves once the call has started, has its result, or waits for
+   * something (an earlier call, the end of the response), and the model
+   * call reads on only then: the order of the log does not depend on how
+   * fast the provider streams.
    */
-  private async runTools(
-    run: Run,
-    message: AssistantMessage,
-    calls: readonly ToolCallPart[],
-    toolChoice: ModelRequest["toolChoice"],
-  ): Promise<void> {
+  private beginTools(run: Run, messageId: MessageId, toolChoice: ModelRequest["toolChoice"]): StepTools {
     const { runtime, limits, clock, effects } = this.core
     const approvals = this.core.approvals
     const signal = run.interrupt.signal
-    const before = this.projection()
-    const messageId = message.id
     const unsettled = new Set<CallId>()
     const abandoned = new Set<CallId>()
+    /** The calls whose tool started (`tool.started`). */
+    const begun = new Set<CallId>()
     const failure: { error?: unknown; failed: boolean } = { failed: false }
     // Each call has a signal of its own: it follows the execution's, and the user can fire it for that call alone.
-    const stops = new Map<CallId, CallStop>(calls.map((call) => [call.callId, createCallStop(signal)]))
+    const stops = new Map<CallId, CallStop>()
     const stopOf = (call: ToolCallPart) => stops.get(call.callId)!
     /** Ends the wait for a call whose tool did not come back within the grace period after the user stopped it. */
     const giveUp = new Map<CallId, () => void>()
     const graces: AbortController[] = []
+    /** Lets the model call read on: the call started, has its result, or waits. */
+    const admissions = new Map<CallId, () => void>()
+    const admit = (callId: CallId) => admissions.get(callId)?.()
+    const added: ToolCallPart[] = []
+    const dones: Promise<void>[] = []
+    const schedule = new CallSchedule()
+    /** `null` while the response streams; then whether it finished, so that its calls may all run. */
+    let complete: boolean | null = null
+    let ended: (value: boolean) => void = () => {}
+    const streamEnd = new Promise<boolean>((resolve) => (ended = resolve))
+    let tracked = false
+    // Set when the first call arrives: the step as it was then, and what the calls of the step are run with.
+    let before: Projection | null = null
+    let runsAs: AgentRecord | null = null
+    let place: { readonly temp?: TempDirectory } = {}
+    let extras: Partial<ToolCall["context"]> = {}
+    let plan: StepPlan | null = null
     const refuse = (call: ToolCallPart, output: string) =>
       this.write([
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output, truncation: null, attachments: [], display: null }),
       ])
-    this.decided.clear()
-    this.hookRecords.clear()
-    this.lspBefore.clear()
-    this.lspSaid.clear()
-    // The agent the session runs as, as of this step: a switch is made at a boundary, never between two calls.
-    const runsAs = before.session.agent ?? null
     /** A call the agent may not make: refused before anything about it is decided, and recorded as the agent's refusal. */
     const refuseAsAgent = (call: ToolCallPart, agent: AgentRecord, verdict: Extract<CallVerdict, { kind: "refuse" }>) =>
       this.write([
         event("approval.denied", { messageId, callId: call.callId, mode: approvals === null ? "full" : this.policy().policy.mode, paths: [], escalation: null, reason: "policy", needs: [], stop: false, agent: agent.name, refusal: verdict.refusal }),
         event("tool.settled", { messageId, callId: call.callId, outcome: "error", output: verdict.reason, truncation: null, attachments: [], display: null }),
       ])
-    const place = this.tempContext()
-    // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it too.
-    // A credential's value that has only begun to arrive is held back until the rest is there (a value with a line
-    // break in it arrives in parts), so a command's progress never shows the first half of one.
-    const extras =
-      approvals === null
-        ? {}
-        : {
-            ...place,
-            ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }),
-            redact: redactor(approvals.secrets),
-            unfinishedSecret: (text: string) => unfinishedSecret(text, approvals.secrets),
-          }
+    this.decided.clear()
+    this.hookRecords.clear()
+    this.lspBefore.clear()
+    this.lspSaid.clear()
+
     const request = (call: ToolCallPart): ToolCall => ({
       name: call.name,
       argumentsText: call.input,
@@ -3668,7 +3740,7 @@ class LiveSession implements EngineSession {
         sessionId: this.id,
         messageId,
         callId: call.callId,
-        cwd: before.session.cwd,
+        cwd: before!.session.cwd,
         signal: stopOf(call).signal,
         progress: (update) => {
           if (!abandoned.has(call.callId)) this.ephemeral({ type: "tool.progress", sessionId: this.id, messageId, callId: call.callId, text: update.text })
@@ -3678,11 +3750,7 @@ class LiveSession implements EngineSession {
         ...(this.core.spawn === null ? {} : { background: { command: (work: BackgroundCommand) => this.backgroundCommand(messageId, call.callId, work) } }),
       },
     })
-    // In a replay the calls of the step are matched against the recording together, once, and each is answered from there.
-    const director = this.director
-    const plan = director === null ? null : director.replay.beginStep(calls.map(request))
-    if (director !== null) director.asked = calls.length
-    const matchOf = (call: ToolCallPart): CallMatch | undefined => plan?.matches[calls.indexOf(call)]
+    const matchOf = (call: ToolCallPart): CallMatch | undefined => plan?.matches[added.indexOf(call)]
     const recorded = (call: ToolCallPart) => {
       const match = matchOf(call)
       return match?.kind === "matched" || match?.kind === "dropped"
@@ -3690,6 +3758,7 @@ class LiveSession implements EngineSession {
 
     // Hooks and language servers have a say only where the session's configuration names some: without them a call
     // is decided and run exactly as an engine without either would. (A replay runs as its recording did.)
+    const director = this.director
     const before$ = director === null && (this.hookConfig.beforeTool.length > 0 || this.lspHeld !== null)
     const after$ = director === null && (this.hookConfig.afterTool.length > 0 || this.lspHeld !== null)
 
@@ -3702,32 +3771,33 @@ class LiveSession implements EngineSession {
       unsettled.add(call.callId)
       const gaveUp = new Promise<void>((resolve) => giveUp.set(call.callId, resolve))
       const run$ = (hooks: Parameters<ToolRuntime["run"]>[1]) =>
-        plan === null ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(calls.indexOf(call), request(call), hooks)
-      const work = run$(
-          {
-            // With before hooks or language servers the decision has more to it; without them it is the approval layer's alone, as ever.
-            ...(before$
-              ? { authorize: (tool: AnyTool, input: Json) => this.decideCall(run, messageId, call, tool, input) }
-              : approvals === null
-                ? {}
-                : { authorize: (tool: AnyTool, input: Json) => this.authorize(run, messageId, call, tool, input) }),
-            // After the tool ran and before its result is capped and stored: the after hooks' notes, then the diagnostics of an edit.
-            ...(after$ ? { afterExecute: (tool: AnyTool, input: Json, result: ToolResult) => this.afterTool(run, messageId, call, tool, input, result) } : {}),
-            // Synchronous, right before the tool runs: the start is durable before any side effect.
-            onStart: () => {
-              if (effect === undefined) throw new Error(`tool ${call.name} started without an effect class`)
-              const ran = this.decided.get(key)?.run
-              this.write([event("tool.started", { messageId, callId: call.callId, effect, ...(ran === undefined ? {} : { run: ran }) })])
-              this.probe("tool.started")
-            },
-          },
-        )
+        plan === null ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(added.indexOf(call), request(call), hooks)
+      const work = run$({
+        // With before hooks or language servers the decision has more to it; without them it is the approval layer's alone, as ever.
+        ...(before$
+          ? { authorize: (tool: AnyTool, input: Json) => this.decideCall(run, messageId, call, tool, input) }
+          : approvals === null
+            ? {}
+            : { authorize: (tool: AnyTool, input: Json) => this.authorize(run, messageId, call, tool, input) }),
+        // After the tool ran and before its result is capped and stored: the after hooks' notes, then the diagnostics of an edit.
+        ...(after$ ? { afterExecute: (tool: AnyTool, input: Json, result: ToolResult) => this.afterTool(run, messageId, call, tool, input, result) } : {}),
+        // Synchronous, right before the tool runs: the start is durable before any side effect.
+        onStart: () => {
+          if (effect === undefined) throw new Error(`tool ${call.name} started without an effect class`)
+          const ran = this.decided.get(key)?.run
+          this.write([event("tool.started", { messageId, callId: call.callId, effect, ...(ran === undefined ? {} : { run: ran }) })])
+          begun.add(call.callId)
+          this.probe("tool.started")
+          admit(call.callId)
+        },
+      })
         .then(({ outcome: result, executed }) => {
           this.probe("tool.finished")
           // A tool that came back after its grace period was already settled from its effect class.
           if (abandoned.has(call.callId)) return
-          // The interrupt reached it while it waited for an answer: it never began, and the wind-down settles it.
-          // (In a replay a call may also be answered as never started: the recording's own, or the replay stopping.)
+          // The interrupt reached it while it waited for an answer, or the response it belongs to did not finish: it
+          // never began, and whoever closes the step settles it. (In a replay a call may also be answered as never
+          // started: the recording's own, or the replay stopping.)
           if (result.kind === "not_started" && (plan === null || signal.aborted)) return
           unsettled.delete(call.callId)
           const decided = this.decided.get(key)
@@ -3756,7 +3826,10 @@ class LiveSession implements EngineSession {
           if (!failure.failed) failure.error = error
           failure.failed = true
         })
-        .finally(() => stopOf(call).release())
+        .finally(() => {
+          stopOf(call).release()
+          admit(call.callId)
+        })
       // The step goes on when the call has its result: its tool's, or the one written for a tool that did not stop in time.
       return Promise.race([work, gaveUp])
     }
@@ -3796,54 +3869,139 @@ class LiveSession implements EngineSession {
         giveUp.get(call.callId)?.()
       })
     }
-    for (const call of calls) this.callStops.set(callKey(messageId, call.callId), () => cancel(call))
 
-    try {
-      /** The line of calls that can change something: each starts when the one before it has its result. */
-      let line: Promise<void> | null = null
-      const running = calls.flatMap((call, index): Promise<void>[] => {
-        // Once an interrupt is requested nothing new starts; the call is settled as not started below.
-        if (failure.failed || signal.aborted) return []
-        // A call the recording has is answered by the recording, also where the recording's loop refused it.
-        if (recorded(call)) return [launch(call)]
-        if (toolChoice === "none") return refuse(call, TOOL_TEXT.toolsDisabled) && []
-        if (index >= limits.maxToolCallsPerStep) return refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep)) && []
-        // A tool whose result changes by itself (`Tool.varies`) is asked again however often it answered the same.
-        if (!this.core.varying.has(call.name) && repeatsItself(before, { messageId, callId: call.callId, name: call.name, input: call.input })) return refuse(call, TOOL_TEXT.identicalCall) && []
-        const effect = effects.get(call.name)
-        // The agent's restrictions come before the approval layer, and only take away: a call they let through is
-        // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
-        if (runsAs !== null && effect !== undefined) {
-          const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
-          if (verdict.kind === "refuse") return refuseAsAgent(call, runsAs, verdict) && []
-        }
-        // A read changes nothing, and a tool nobody knows is refused before it could: both go at once. So does a
-        // call that hands its work to a subagent: several of them in one response are meant to run side by side.
-        if (approvals === null || effect === undefined || effect === "read" || this.core.delegating.has(call.name)) return [launch(call)]
-        // The first of the line starts here and now, so that with nothing to wait for the calls start in the order written.
-        const previous = line
-        const next: Promise<void> = previous === null ? launch(call) : previous.then(() => (failure.failed || signal.aborted || this.stopping !== null ? undefined : launch(call)))
-        line = next
-        return [next]
-      })
+    /** Nothing new starts once an interrupt is requested, the loop failed, the response did not finish, or a call nobody could approve ended the run. */
+    const closed = () => failure.failed || signal.aborted || complete === false || this.stopping !== null
 
-      const all = Promise.all(running)
-      await untilAborted(all, signal)
-      if (signal.aborted && unsettled.size > 0) {
-        // Cooperative: the tools saw the abort. Give them time to stop and report what they observed.
-        const timer = new AbortController()
-        await Promise.race([all, clock.sleep(limits.toolStopGraceMs, timer.signal)])
-        timer.abort()
-        for (const callId of unsettled) abandoned.add(callId)
-      }
-    } finally {
-      // Whatever happened, nothing of this step can be stopped by itself any more, and no grace period is left running.
-      this.callStops.clear()
-      for (const timer of graces) timer.abort()
-      for (const stop of stops.values()) stop.release()
+    /** Set when the first call arrives: the step as it was then, and what the calls of the step are run with. */
+    const prepare = () => {
+      if (before !== null) return
+      before = this.projection()
+      // The agent the session runs as, as of this step: a switch is made at a boundary, never between two calls.
+      runsAs = before.session.agent ?? null
+      place = this.tempContext()
+      // Output kept in full goes into the session's own temp directory, where its sandboxed commands can read it
+      // too. A credential's value that has only begun to arrive is held back until the rest is there (a value with
+      // a line break in it arrives in parts), so a command's progress never shows the first half of one.
+      extras =
+        approvals === null
+          ? {}
+          : {
+              ...place,
+              ...(place.temp === undefined ? {} : { spillDir: join(place.temp.dir, SPILL_IN_TEMP) }),
+              redact: redactor(approvals.secrets),
+              unfinishedSecret: (text: string) => unfinishedSecret(text, approvals.secrets),
+            }
     }
-    this.decided.clear()
-    if (failure.failed) throw failure.error
+
+    /** Takes one call of the response: refuses it, or places it in the schedule. Resolves when the call started, settled or waits. */
+    const take = async (call: ToolCallPart): Promise<void> => {
+      const index = added.length
+      added.push(call)
+      if (!stops.has(call.callId)) stops.set(call.callId, createCallStop(signal))
+      this.callStops.set(callKey(messageId, call.callId), () => cancel(call))
+      prepare()
+      if (closed()) return
+      // A call the recording has is answered by the recording, also where the recording's loop refused it.
+      if (recorded(call)) {
+        const admitted = new Promise<void>((resolve) => admissions.set(call.callId, resolve))
+        dones.push(launch(call))
+        return admitted
+      }
+      if (toolChoice === "none") return void refuse(call, TOOL_TEXT.toolsDisabled)
+      if (index >= limits.maxToolCallsPerStep) return void refuse(call, TOOL_TEXT.tooManyCalls(limits.maxToolCallsPerStep))
+      const effect = effects.get(call.name)
+      // The workspace is recorded once, before the first call that can change it starts; a step of reads takes none.
+      if (!tracked && effect !== undefined && hasSideEffect(effect) && this.core.openSnapshots !== null && !this.onTape()) {
+        tracked = true
+        await this.snapshot("step_start", messageId)
+        if (closed()) return
+      }
+      // A tool whose result changes by itself (`Tool.varies`) is asked again however often it answered the same.
+      // Only the first call of a response can repeat what came before it: the others were written before any call of
+      // the response had a result.
+      if (index === 0 && !this.core.varying.has(call.name) && repeatsItself(before!, { messageId, callId: call.callId, name: call.name, input: call.input })) return void refuse(call, TOOL_TEXT.identicalCall)
+      // The agent's restrictions come before the approval layer, and only take away: a call they let through is
+      // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
+      if (runsAs !== null && effect !== undefined) {
+        const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+        if (verdict.kind === "refuse") return void refuseAsAgent(call, runsAs, verdict)
+      }
+      const admitted = new Promise<void>((resolve) => admissions.set(call.callId, resolve))
+      const footprint = this.footprint(call, effect, before!.session.cwd, place.temp)
+      // A call that had to wait starts only if nothing closed the step meanwhile; what is left is settled as not started.
+      dones.push(schedule.add(footprint, (waited) => (waited && closed() ? Promise.resolve() : launch(call)), () => admit(call.callId)))
+      return admitted
+    }
+
+    const tools: StepTools = {
+      early: director === null,
+      get tracked() {
+        return tracked
+      },
+      add: take,
+      addAll: async (calls) => {
+        // In a replay the calls of the step are matched against the recording together, once, and each is answered from there.
+        if (director !== null && calls.length > 0) {
+          prepare()
+          for (const call of calls) stops.set(call.callId, createCallStop(signal))
+          plan = director.replay.beginStep(calls.map(request))
+          director.asked = calls.length
+        }
+        for (const call of calls) await take(call)
+      },
+      end: (finished) => {
+        if (complete !== null) return
+        complete = finished
+        // A call of a response that did not finish and that has not started never will: its own signal says so to
+        // whatever it waits for (a hook, a decision), and the runtime answers it as not started.
+        if (!finished) for (const call of added) if (!begun.has(call.callId)) stopOf(call).cancel()
+        ended(finished)
+      },
+      streamed: (callId) => {
+        if (complete !== null) return Promise.resolve(complete)
+        admit(callId)
+        return streamEnd
+      },
+      settle: async () => {
+        try {
+          const all = Promise.all(dones)
+          await untilAborted(all, signal)
+          if (signal.aborted && unsettled.size > 0) {
+            // Cooperative: the tools saw the abort. Give them time to stop and report what they observed.
+            const timer = new AbortController()
+            await Promise.race([all, clock.sleep(limits.toolStopGraceMs, timer.signal)])
+            timer.abort()
+            for (const callId of unsettled) abandoned.add(callId)
+          }
+        } finally {
+          // Whatever happened, nothing of this step can be stopped by itself any more, and no grace period is left running.
+          for (const call of added) this.callStops.delete(callKey(messageId, call.callId))
+          for (const timer of graces) timer.abort()
+          for (const stop of stops.values()) stop.release()
+          if (this.stepTools === tools) this.stepTools = null
+        }
+        this.decided.clear()
+        if (failure.failed) throw failure.error
+      },
+    }
+    return tools
+  }
+
+  /** What a call can disturb, for the step's schedule: its tool's class and origin, and the paths it names with links followed. */
+  private footprint(call: ToolCallPart, effect: ToolEffect | undefined, cwd: string, temp: TempDirectory | undefined): Footprint {
+    const touches = this.core.touches.get(call.name)
+    let paths: PathKey[] = []
+    if (effect === "write" && touches !== undefined) {
+      try {
+        const named = touches(JSON.parse(call.input))
+        paths = named.filter((path): path is string => typeof path === "string" && path !== "").map((path) => pathKey(path, { cwd, temp, home: this.core.approvals?.home ?? homedir() }))
+      } catch {
+        // Arguments that cannot be read name nothing: the call is placed as one that could touch anything.
+        paths = []
+      }
+    }
+    return footprintOf({ effect, origin: this.core.origins.get(call.name) ?? "builtin", delegates: this.core.delegating.has(call.name), paths })
   }
 
   // ---- spawned work: subagents and background commands ----
@@ -4650,6 +4808,10 @@ class LiveSession implements EngineSession {
 
     let { policy, decision } = decideNow()
     if (decision.kind === "ask") {
+      // A question waits for the response to be over: a call of a response that did not finish never starts.
+      const tools = this.stepTools
+      if (tools !== null && !(await tools.streamed(call.callId))) return WITHDRAWN
+      if (signal.aborted) return WITHDRAWN
       // One question at a time. While this call waited for its turn, an answer may have covered what it needs.
       const done = await this.questionTurn(signal)
       try {
@@ -5094,9 +5256,7 @@ class LiveSession implements EngineSession {
     if (step !== null) {
       if (partialText !== "") events.push(event("text.ended", { messageId: step.id, text: partialText, providerData: null }))
       // The hooks that had finished for a call the interrupt reached first are still on record, before the call is settled.
-      const unsettled = new Set(step.parts.flatMap((part) => (part.type === "tool_call" && part.state.status !== "settled" ? [callKey(step.id, part.callId as CallId)] : [])))
-      for (const [key, records] of this.hookRecords) if (unsettled.has(key)) events.push(...records.filter((record) => record.data.point !== "afterTool" || this.callRunning(step, record.data.callId)))
-      events.push(...settleUnsettled(step, STOPPED), event("step.failed", { messageId: step.id, error, usage }))
+      events.push(...this.orphanHookRecords(step), ...settleUnsettled(step, STOPPED), event("step.failed", { messageId: step.id, error, usage }))
       cutShort = true
     }
     this.hookRecords.clear()
@@ -5596,6 +5756,21 @@ class LiveSession implements EngineSession {
     }
   }
 
+  /** The records of the hooks that had finished for the calls of a step that are settled from their state, not from their tool's result. */
+  private orphanHookRecords(step: AssistantMessage): NewEvent<"hook.ran">[] {
+    const unsettled = new Set(step.parts.flatMap((part) => (part.type === "tool_call" && part.state.status !== "settled" ? [callKey(step.id, part.callId as CallId)] : [])))
+    const events: NewEvent<"hook.ran">[] = []
+    for (const [key, records] of this.hookRecords) if (unsettled.has(key)) events.push(...records.filter((record) => record.data.point !== "afterTool" || this.callRunning(step, record.data.callId)))
+    return events
+  }
+
+  /** The recorded call of a step, as the projection has it. */
+  private callPart(messageId: MessageId, callId: CallId): ToolCallPart {
+    const part = this.assistant(messageId).parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === callId)
+    if (part?.type !== "tool_call") throw new Error(`tool call ${callId} is not recorded in ${messageId}`)
+    return part
+  }
+
   /** Whether a call of the step has started and has no result yet: the state an after hook's record is written in. */
   private callRunning(step: AssistantMessage, callId: CallId | null): boolean {
     return step.parts.some((part) => part.type === "tool_call" && part.callId === callId && part.state.status === "running")
@@ -5847,15 +6022,6 @@ class LiveSession implements EngineSession {
     } finally {
       stopped.dispose()
     }
-  }
-
-  /** Whether one of the calls this step will run can change files, going by its tool's effect class. */
-  private mayChangeFiles(calls: readonly ToolCallPart[], toolChoice: ModelRequest["toolChoice"]): boolean {
-    if (toolChoice === "none") return false
-    return calls.slice(0, this.core.limits.maxToolCallsPerStep).some((call) => {
-      const effect = this.core.effects.get(call.name)
-      return effect !== undefined && hasSideEffect(effect)
-    })
   }
 
   /** The snapshots of the working directory, opened on first use. `null` when they are off or cannot be had, which is recorded once. */

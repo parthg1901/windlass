@@ -133,18 +133,17 @@ export const queueWaitsForIdle: Scenario = {
 export const steerSurvivesInterrupt: Scenario = {
   title: "A pending steer survives an interrupt",
   description:
-    "The user steers while a call is pending and then cancels the turn. The cancel closes the step and releases the claim, but the steer is not withdrawn: it stays in the inbox, visible as waiting, and is the first thing delivered when work starts again. Only `inbox.cancelled` removes it.",
-  provider: "step 1 finishes with one read call; the user steers, then cancels before the read starts",
+    "The user steers while the model is still responding and then cancels the turn. The cancel closes the step and releases the claim, but the steer is not withdrawn: it stays in the inbox, visible as waiting, and is the first thing delivered when work starts again. Only `inbox.cancelled` removes it.",
+  provider: "step 1 streams its first sentence and goes on streaming; the user steers, then cancels",
   phases: [
     {
       label: "a steer waits, then the user cancels",
       events: [
         ...opening(),
         stepStarted("a1"),
-        called("a1", "call_1", "read", '{"path":"a.ts"}'),
+        say("a1", "Let me read a.ts."),
         enqueue("u2", "Use b.ts instead.", "steer"),
         interruptRequested("user"),
-        settled("a1", "call_1", "not_started", NOT_STARTED),
         stepInterrupted("a1", "user"),
         interruptMarker("s1", "user"),
         executionInterrupted("user"),
@@ -167,7 +166,7 @@ export const steerSurvivesInterrupt: Scenario = {
       expect: {
         ui: [
           { id: "u1" },
-          { id: "a1", status: "failed", calls: ["call_1 read not_started"] },
+          { id: "a1", status: "failed", calls: [] },
           { id: "s1", kind: "synthetic" },
           { id: "u2", kind: "user" },
           { id: "a2" },

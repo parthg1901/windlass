@@ -69,13 +69,16 @@ describe("two empty answers in a row", () => {
   })
 
   test("a call that never began is no work: two empty answers after it fail the turn", async () => {
-    const h = new Harness()
+    // A write outside the workspace asks, and a question waits for the response to be over. The response is cut at
+    // the output limit, so the call never starts: it is settled as not started and the model is told.
+    const sandbox = { state: { available: true }, temp: (id: string) => ({ dir: `/sandbox-tmp/${id}`, alias: "/tmp" }), plan: () => { throw new Error("unused") }, policy: () => { throw new Error("unused") } }
+    const h = new Harness({ approval: { sandbox: sandbox as never, secrets: [], home: "/home/user" }, attended: true })
     try {
-      // The response is cut at the output limit, so its call is settled as not started and the model is told.
-      h.provider.enqueue([script.toolCall("call_1", "write", { path: "notes.md", content: "x\n" }), U, script.finish("length")], empty, empty)
-      h.create().send("Write notes.md.")
+      h.provider.enqueue([script.toolCall("call_1", "write", { path: "/etc/motd", content: "x\n" }), U, script.finish("length")], empty, empty)
+      h.create().send("Write /etc/motd.")
       await h.settled()
       expect(of(h, "tool.settled").map((item) => item.data.outcome)).toEqual(["not_started"])
+      expect(of(h, "approval.requested")).toEqual([])
       expect(h.log().at(-1)).toMatchObject({ type: "execution.failed", data: { message: "The model returned an empty response twice." } })
     } finally {
       await h.dispose()

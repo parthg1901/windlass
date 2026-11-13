@@ -205,6 +205,36 @@ const PLAYS: Record<string, Play> = {
     await h.settled()
   },
 
+  "Edits of different files run side by side; an edit of the same file and a command wait": async (h, say) => {
+    h.provider.enqueue(
+      [
+        call("call_1", "write", { path: "a.ts", content: "export const sum = 1" }),
+        call("call_2", "write", { path: "b.ts", content: "export const b = sum" }),
+        call("call_3", "write", { path: "a.ts", content: "export const sum = 2" }),
+        call("call_4", "shell", { command: "bun test" }),
+        U,
+      ],
+      answer("Renamed; the tests pass."),
+    )
+    h.tools
+      .on(
+        "write",
+        // The first edit of a.ts finishes after the edit of b.ts; the edit of b.ts once the whole response is in.
+        async () => {
+          await h.seen((item) => item.type === "tool.settled")
+          return "Wrote a.ts"
+        },
+        async () => {
+          await h.seen((item) => item.type === "tool.called" && item.data.callId === "call_4")
+          return "Wrote b.ts"
+        },
+        "Wrote a.ts",
+      )
+      .on("shell", "3 pass, 0 fail")
+    h.create().send(say[0]!)
+    await h.settled()
+  },
+
   "Several steps in one turn": async (h, say) => {
     h.provider.enqueue(
       [call("call_1", "read", { path: "a.test.ts" }), U],
@@ -254,11 +284,13 @@ const PLAYS: Record<string, Play> = {
       script.toolCall("call_2", "read", { path: "b.ts" }, { partial: true }),
       script.hang(),
     ])
+    h.tools.on("read", "export const a = 1")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.input.delta" && item.callId === "call_2")
     h.session.interrupt()
     await h.settled()
-    expect(h.tools.ran).toEqual([])
+    // The complete call ran while the response streamed; the one cut short never did.
+    expect(h.tools.ran).toEqual([{ name: "read", input: { path: "a.ts" } }])
   },
 
   "Cancel while one tool is running": async (h, say) => {
@@ -267,8 +299,11 @@ const PLAYS: Record<string, Play> = {
       await untilAbort(context.signal)
       return failed("Stopped by the user after 4 s. Output so far:\n12 pass\n")
     })
+    // The response finishes while the tool runs: the model call is over when the user cancels.
+    const responded = h.reached("model.finished")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.started")
+    await responded
     h.session.interrupt()
     await h.settled()
   },
@@ -279,8 +314,10 @@ const PLAYS: Record<string, Play> = {
       await untilAbort(context.signal)
       return failed("Stopped by the user after 2 s. Output so far:\n3 pass\n")
     })
+    const responded = h.reached("model.finished")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.settled")
+    await responded
     h.session.interrupt()
     await h.settled()
   },
@@ -291,8 +328,11 @@ const PLAYS: Record<string, Play> = {
       await untilAbort(context.signal)
       throw new Error("aborted")
     })
+    // The response finishes while the tool runs: the model call is over when the user cancels.
+    const responded = h.reached("model.finished")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.started")
+    await responded
     h.session.interrupt()
     await h.settled()
   },
@@ -303,8 +343,11 @@ const PLAYS: Record<string, Play> = {
       await untilAbort(context.signal)
       throw new Error("aborted")
     })
+    // The response finishes while the tool runs: the model call is over when the user cancels.
+    const responded = h.reached("model.finished")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.started")
+    await responded
     h.session.interrupt()
     await h.settled()
   },
@@ -337,11 +380,12 @@ const PLAYS: Record<string, Play> = {
       expect(callStopReasonOf(context.signal)).toBe("call")
       return failed(STOPPED_TESTS)
     })
+    // Not before it runs: a call that is recorded and has not started is not stopped this way.
+    let early = null as boolean | null
+    h.at("model.output", 1, () => (early = h.session.cancelCall({ callId: c("call_1") })))
     h.create().send(say[0]!)
-    // Not before it runs: a call that has not started is not stopped this way.
-    await h.seen((item) => item.type === "tool.called")
-    expect(h.session.cancelCall({ callId: c("call_1") })).toBe(false)
     await h.seen((item) => item.type === "tool.started")
+    expect(early).toBe(false)
     expect(h.session.cancelCall({ callId: c("call_2") })).toBe(false)
     expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
     // Once.
@@ -401,8 +445,10 @@ const PLAYS: Record<string, Play> = {
         reasons.push(callStopReasonOf(context.signal))
         return failed(INTERRUPTED_LINT)
       })
+    const responded = h.reached("model.finished")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.started" && item.data.callId === "call_2")
+    await responded
     expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
     h.session.interrupt()
     // Everything stops now: no single call is stopped any more.
@@ -425,6 +471,8 @@ const PLAYS: Record<string, Play> = {
     })
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "child.event" && item.event.type === "tool.started")
+    // The child's response is over: its read runs, and it has said what the response cost.
+    await h.responded(1)
     expect(h.session.cancelCall({ callId: c("call_1") })).toBe(true)
     await h.settled()
     // The child's own turn ended as interrupted by its user, and its conversation stays.
@@ -463,10 +511,10 @@ const PLAYS: Record<string, Play> = {
   },
 
   "A pending steer survives an interrupt": async (h, say) => {
-    h.provider.enqueue([call("call_1", "read", { path: "a.ts" }), script.hang()], [call("call_1", "read", { path: "b.ts" }), U], answer("b is 2."))
+    h.provider.enqueue([script.text("Let me read a.ts."), script.hang()], [call("call_1", "read", { path: "b.ts" }), U], answer("b is 2."))
     h.tools.on("read", "export const b = 2")
     h.create().send(say[0]!)
-    await h.seen((item) => item.type === "tool.called")
+    await h.seen((item) => item.type === "text.ended")
     h.session.send(say[1]!)
     h.session.interrupt()
     await h.settled()
@@ -662,9 +710,10 @@ const PLAYS: Record<string, Play> = {
   },
 
   "The process dies while a side-effecting tool is running": async (h, say) => {
-    h.provider.enqueue([call("call_1", "shell", { command: "bun run migrate" }), call("call_2", "read", { path: "schema.sql" }), U])
-    // Dead the moment the first call's start is durable: the command itself never runs, and the second call never starts.
-    h.dieAt("tool.started")
+    h.provider.enqueue([call("call_1", "shell", { command: "bun run migrate" }), call("call_2", "write", { path: "CHANGELOG.md", content: "Added an index." }), U])
+    // The command runs; the write waits for it. Dead the moment the write is recorded: it never starts.
+    h.tools.on("shell", forever)
+    h.dieAt("model.output", 2)
     h.create().send(say[0]!)
     await h.settled()
     h.provider.enqueue([call("call_1", "shell", { command: "bun run migrate:status" }), U], answer("The migration had already been applied."))
@@ -751,8 +800,10 @@ const PLAYS: Record<string, Play> = {
       await untilAbort(context.signal)
       return failed("Stopped because the harness was shutting down. Output so far:\n12 pass\n")
     })
+    const responded = h.reached("model.finished")
     h.create().send(say[0]!)
     await h.seen((item) => item.type === "tool.started")
+    await responded
     await h.engine.close()
     h.kill()
     // The next start: the user's message is admitted, then the suspended execution is resumed.
@@ -1944,7 +1995,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(116)
+    expect(scenarios).toHaveLength(117)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

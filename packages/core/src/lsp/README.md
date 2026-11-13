@@ -206,8 +206,8 @@ lsp.awaitingApproval(); lsp.approve(key); lsp.status(); await lsp.stop()
    For a tool that capped itself, the note follows the capped text and the result can be at most 2,000 characters
    over the cap on top of the hooks' allowance. Redaction applies to the whole text as now.
 4. **The bound.** `diagnose` returns within `waitMs` of being called (plus scheduling) and never throws. The engine
-   must not add waits of its own around it or retry it. With several write calls in a step, each waits on its own,
-   in the line of calls as now. `waitMs: 0` returns at once.
+   must not add waits of its own around it or retry it. With several write calls in a step, each waits on its own:
+   writes of different files side by side, writes of one file one after the other (`schedule/`). `waitMs: 0` returns at once.
 5. **Interrupt.** Pass the call's `ToolContext.signal`. An abort returns at once with no note (`interrupted`). The
    server still gets the new text, so the next edit compares correctly. The result is stored as it would have been.
 6. **Lifetime.** Create one registry per working directory and configuration, at engine start or lazily at a

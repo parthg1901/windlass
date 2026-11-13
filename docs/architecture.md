@@ -486,12 +486,14 @@ is a new version with a decoder for the old one.
   it keeps no conversation state in memory. Reading the state costs what the last appends changed, not the
   length of the log (see `getProjection` under "Store"), so the time of a step does not grow with the session. Events that are decided together are appended in one transaction.
 - `tool.called` is durable when the call finishes streaming and `tool.started` right before the tool runs, both
-  before any side effect. An interrupt is durable (`execution.interrupt_requested`) before anything is aborted.
+  before any side effect. A call starts as soon as its arguments are in, while the rest of the response is still
+  streaming, unless an earlier call of the response is in its way (see "The order of the calls of one step").
+  An interrupt is durable (`execution.interrupt_requested`) before anything is aborted.
 - *Stopping one call.* `session.cancelCall({ callId, messageId?, sessionId? })` stops one running call as the
   user and lets the turn go on (`sessionId` names a subagent whose call it is). `tool.cancel_requested` is
   durable first; then that call's signal fires with the reason `call`, and the tool has the grace period an
   interrupt gives every tool (`toolStopGraceMs`). The execution is not interrupted: the call settles like any
-  running call, the step continues with its other calls (the next call in the line starts), and the model reads
+  running call, the step continues with its other calls (a call that waited for it starts), and the model reads
   the result in its next request, where nothing else says that a call was stopped. What the result is, by what
   the tool could do about it:
   - a command (`exec`): the shell stops the process group and returns what was printed and a line that says the
@@ -508,7 +510,7 @@ is a new version with a decoder for the old one.
     as `error` with the bridge's text, which says the server may or may not have finished the work.
 
   It is refused (it returns `false` and writes nothing) for a call that has not started (a question about it is
-  declined instead, and a call waiting in the line cannot be stopped ahead of its turn), one that has its
+  declined instead, and a call waiting for an earlier one cannot be stopped ahead of its turn), one that has its
   result, one already asked to stop, while the turn is being interrupted (everything stops then), and in a
   replay. An interrupt after the request winds the call down by the interrupt's rules.
 - *The identical-call guard.* A call is refused, without running, when the two calls before it in the turn were
@@ -527,12 +529,36 @@ is a new version with a decoder for the old one.
   in the middle of the turn (a background command ended, a background subagent's result, a watch that fired)
   does not start the count again, and neither does a check report or a stop hook's message; a user's steer
   does, as the user's word that the work should go on.
-- *The order of the calls of one step.* Calls the loop itself refuses are settled first. Reads are decided at
-  once and run side by side. Every call that can change something (a write, a command, a network or MCP tool)
-  keeps its place in one line: it is decided when the one before it in the line has its result, and runs alone.
-  A call that must ask suspends itself and what is behind it in the line; reads go on. Questions are put one at a
-  time, and a call is decided again when its turn to ask comes. With the approval layer off (`approval: null`, in
-  tests of the loop's other rules) every call starts at once, as before.
+- *The order of the calls of one step* (`beginTools`, and the standalone `schedule/`). The model call hands each
+  call to the step's tools the moment its arguments finish streaming, and reads on only once the call has
+  started, has its result, or waits for something, so the order of the log does not depend on how fast the
+  provider streams. Calls the loop itself refuses are settled as they arrive. Every other call waits for the
+  earlier calls of the response it conflicts with, and for nothing else:
+  - reads, subagent calls (`Tool.delegates`), tools nobody knows and network tools of the harness's own wait for
+    nothing and hold nothing up;
+  - a write waits for an earlier write of the same path or of a path inside it (by the path the tool opens and
+    with every link followed, resolved as the approval layer resolves it; a path whose links cannot be followed
+    meets every path), and for every earlier command; a write that names no path meets every write;
+  - a command, and an MCP call (its server runs outside the sandbox, whatever the tool says it does), waits for
+    every earlier write, and runs beside other commands: the model asked for them in one response, before it saw
+    any of their results. So a write is never decided or started while a command of the step runs (a command
+    could swap a link under the path that was checked).
+  A call is decided when its turn comes, from the state then. A call that must ask waits for the response to
+  finish and then for its turn to ask; only the calls that conflict with it wait behind it. Questions are put one
+  at a time, in call order, and a call is decided again when its turn to ask comes. The rules are the same with
+  the approval layer off (`approval: null`), which then only decides nothing.
+
+  Results are written as they finish (a result is durable as soon as it exists, which is what recovery after a
+  crash needs), and the request shows them in call order whatever that order was, so the prefix does not depend
+  on timing. The workspace is recorded (`step_start`) right before the first call that can change files starts.
+
+  A response that does not finish starts nothing more. The calls that started run to their result (an interrupt
+  stops them as always) and the rest settle as `not_started`. A recorded call is durable output, so after a
+  failure the retry is never transparent: the message fails with its calls and their results, and the retry runs
+  under a new message that the model is asked to continue from (retry rule 2). A response cut at the output limit
+  (retry rule 6) keeps what its started calls did; a call that had not started does not start. A refusal
+  (`content_policy`) that comes after a call started closes the step once that call has its result: what it did
+  is in the log and in the snapshots, though the model no longer sees the turn.
 - *Asking.* `approval.requested` is durable before the question is put. A client answers with
   `session.answer(...)`; `session.setAttended(false)` (the default until a client says otherwise) makes a call
   that would ask a refusal instead, so nothing waits. An interrupt withdraws a pending question; a steered message
@@ -865,7 +891,7 @@ parent is switched is stopped where the switch is recorded, when it is not held 
 - *Running side by side.* `subagent` is side-effecting for the purpose of snapshots (a step that calls it is
   bracketed, so the parent's undo covers what the child changed) but needs no decision of its own, because every
   call the child makes goes through the approval layer of its own session (`Tool.delegates`). So several calls in
-  one response start at once instead of waiting in the line of calls that can change something.
+  one response start at once, and no call of the response waits for them.
 - *The result.* In the foreground the call waits for the child and settles with the child's final answer and a
   reference: `[subagent <session>: finished after N steps, M tool calls]`. A child that failed, was stopped or ended
   without an answer comes back as an error result that says so and quotes its last words; never as an empty answer.
@@ -1194,7 +1220,7 @@ next turn. Hooks of a point run one after another, the user's first, then the pr
   user is told of a hook that could not answer by a `diagnostic` of kind `hooks` that says what became of the call:
   that it is refused while the hook fails, or, under `onError: "allow"`, that it went on without the answer. A
   hook that does not object approves nothing: the approval layer decides next, unchanged. The order rules of a
-  step hold: a read's hooks run when the read is decided, a side-effecting call's when its turn in the line comes.
+  step hold: a call's hooks run when it is decided, which is when its turn in the step's schedule comes.
 - *After a tool ran.* In the runtime's `afterExecute`, before the cap: each after hook that applies is shown the
   result as the model will be shown it (redacted) and may add a note after the tool's own output. A hook that
   fails adds nothing. Then the language servers (below). A refused or denied call, and a tool that threw, have none.

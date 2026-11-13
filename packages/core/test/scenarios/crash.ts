@@ -134,19 +134,19 @@ export const crashWhileReadRuns: Scenario = {
 export const crashWhileSideEffectRuns: Scenario = {
   title: "The process dies while a side-effecting tool is running",
   description:
-    "A migration command had started and a second call was recorded but not yet started. Nobody knows whether the migration ran, so recovery settles it as `effect_unknown`; the pending call provably never ran and settles as `not_started`. In the resumed step the model checks the state before doing anything else.",
-  provider: "step 1 finishes with a shell call and a read call; the shell starts, the process is killed; after restart the model inspects, then answers",
+    "A migration command had started and a second call was recorded but not yet started: a write the model asked for after the command, which waits for the command's result. Nobody knows whether the migration ran, so recovery settles it as `effect_unknown`; the pending call provably never ran and settles as `not_started`. In the resumed step the model checks the state before doing anything else.",
+  provider: "step 1 streams a shell call, which starts, then a write call; the process is killed the moment the write is recorded; after restart the model inspects, then answers",
   phases: [
     {
       label: "the process dies while the migration runs",
       events: [
-        ...opening("Run the migration and show the schema."),
+        ...opening("Run the migration and note it in the changelog."),
         stepStarted("a1"),
         called("a1", "call_1", "shell", '{"command":"bun run migrate"}'),
-        called("a1", "call_2", "read", '{"path":"schema.sql"}'),
         toolStarted("a1", "call_1", "shell"),
+        called("a1", "call_2", "write", '{"path":"CHANGELOG.md","content":"Added an index."}'),
       ],
-      expect: { ...crashedClaim, ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 shell running", "call_2 read pending"] }] },
+      expect: { ...crashedClaim, ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 shell running", "call_2 write pending"] }] },
     },
     {
       label: "at next start-up",
@@ -160,7 +160,7 @@ export const crashWhileSideEffectRuns: Scenario = {
       expect: {
         ui: [
           { id: "u1" },
-          { id: "a1", status: "failed", error: "crashed", calls: ["call_1 shell effect_unknown", "call_2 read not_started"] },
+          { id: "a1", status: "failed", error: "crashed", calls: ["call_1 shell effect_unknown", "call_2 write not_started"] },
           { id: "s1" },
         ],
         history: ["u1", "a1", "s1"],

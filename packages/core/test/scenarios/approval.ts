@@ -49,7 +49,7 @@ const answer = (id: string, value: string) => [stepStarted(id), say(id, value), 
 export const autoWithSandbox: Scenario = {
   title: "Auto mode: an edit runs and a command runs in the sandbox",
   description:
-    "The default. An edit inside the workspace runs as it is and a command runs in the sandbox (no network, writes only in the workspace and the temp directory), and nobody is asked. `tool.started` records what each ran under: the mode, the path facts the decision was made from, and for the command that it was sandboxed and with what. The command is decided and started only once the edit before it has its result: what can change something runs one at a time, in the order the model wrote it.",
+    "The default. An edit inside the workspace runs as it is and a command runs in the sandbox (no network, writes only in the workspace and the temp directory), and nobody is asked. `tool.started` records what each ran under: the mode, the path facts the decision was made from, and for the command that it was sandboxed and with what. Each call is decided and started the moment its arguments are in, while the response streams; a command is decided and started only once every edit written before it has its result, because a command could change the file an edit was decided about.",
   provider: "asks for a write and a command in one response, then answers",
   approval: {},
   phases: [
@@ -59,9 +59,9 @@ export const autoWithSandbox: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "write", '{"path":"a.test.ts","content":"expect(add(1, 1)).toBe(2)"}'),
-        called("a1", "call_2", "shell", plain("bun test")),
         startedAs("a1", "call_1", "write", ranUnder("auto", ["a.test.ts"])),
         settled("a1", "call_1", "success", "written"),
+        called("a1", "call_2", "shell", plain("bun test")),
         startedAs("a1", "call_2", "shell", ranUnder("auto", [], SANDBOXED)),
         settled("a1", "call_2", "success", "1 pass"),
         stepEnded("a1", "tool_calls"),
@@ -240,7 +240,7 @@ export const unattendedDeny: Scenario = {
 export const unattendedStop: Scenario = {
   title: "Nobody present, and the run ends with the refusal",
   description:
-    "With the unattended behaviour `stop` a refusal for lack of an answer ends the run, for a run in which a refusal would hide a problem. The call is refused, what had not started does not start, the step closes and the execution ends with the cause `approval`, in one append.",
+    "With the unattended behaviour `stop` a refusal for lack of an answer ends the run, for a run in which a refusal would hide a problem. The call is refused as soon as its arguments are in, and from then on nothing starts: the write that arrives after it is recorded and never started, the step closes and the execution ends with the cause `approval`, in one append.",
   provider: "asks for the network on a command and for a write in one response",
   approval: { unattended: "stop" },
   phases: [
@@ -250,9 +250,9 @@ export const unattendedStop: Scenario = {
         ...opening("Summarise the release notes at example.com."),
         stepStarted("a1"),
         called("a1", "call_1", "shell", withNetwork(CURL)),
-        called("a1", "call_2", "write", '{"path":"notes.md","content":"notes"}'),
         approvalDenied("a1", "call_1", fetching(CURL), "unattended", true),
         settled("a1", "call_1", "error", refusal(fetching(CURL))),
+        called("a1", "call_2", "write", '{"path":"notes.md","content":"notes"}'),
         settled("a1", "call_2", "not_started", NOT_STARTED),
         stepEnded("a1", "tool_calls"),
         executionStopped(refusal(fetching(CURL))),

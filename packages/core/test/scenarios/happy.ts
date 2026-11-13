@@ -104,7 +104,7 @@ export const oneToolCall: Scenario = {
 export const parallelToolCalls: Scenario = {
   title: "Two parallel tool calls",
   description:
-    "The model asks for two reads in one response. Both calls are recorded as they finish streaming, both run at once, and they settle in the order they finish, which need not be the order they were called. The step ends only once both have settled.",
+    "The model asks for two reads in one response. Each call is recorded and started the moment its arguments finish streaming, before the next one is read, so both run at once while the response is still streaming. They settle in the order they finish, which need not be the order they were called; the request shows the results in call order whatever that order was. The step ends only once both have settled.",
   provider: "step 1 streams two tool calls and finishes with tool_calls; call_2 finishes before call_1; step 2 answers",
   phases: [
     {
@@ -113,8 +113,8 @@ export const parallelToolCalls: Scenario = {
         ...opening(),
         stepStarted("a1"),
         called("a1", "call_1", "read", '{"path":"a.ts"}'),
-        called("a1", "call_2", "read", '{"path":"b.ts"}'),
         toolStarted("a1", "call_1", "read"),
+        called("a1", "call_2", "read", '{"path":"b.ts"}'),
         toolStarted("a1", "call_2", "read"),
         settled("a1", "call_2", "success", "export const b = 2"),
         settled("a1", "call_1", "success", "export const a = 1"),
@@ -128,6 +128,54 @@ export const parallelToolCalls: Scenario = {
         ui: [
           { id: "u1" },
           { id: "a1", status: "completed", calls: ["call_1 read success", "call_2 read success"] },
+          { id: "a2", status: "completed" },
+        ],
+        history: ["u1", "a1", "a2"],
+        execution: null,
+      },
+    },
+  ],
+}
+
+export const scheduledByConflict: Scenario = {
+  title: "Edits of different files run side by side; an edit of the same file and a command wait",
+  description:
+    "The model asks for two edits, a second edit of the first file and a command in one response. Calls of one response wait only for the earlier calls they conflict with: edits of different files run side by side, an edit of a file waits for an earlier edit of the same file (or of a path inside it, links followed), and a command waits for every edit written before it, because it could change the file an edit was decided about. Each call starts as soon as nothing is in its way, here while the response is still streaming for the first two. The request shows the results in call order whatever order they arrived in.",
+  provider: "streams write a.ts, write b.ts, write a.ts again and a shell call; the edit of b.ts finishes first, then the first edit of a.ts; step 2 answers",
+  phases: [
+    {
+      label: "the edits of a.ts and b.ts run side by side; the second edit of a.ts and the command wait",
+      events: [
+        ...opening("Rename the helper in a.ts and b.ts and run the tests."),
+        stepStarted("a1"),
+        called("a1", "call_1", "write", '{"path":"a.ts","content":"export const sum = 1"}'),
+        toolStarted("a1", "call_1", "write"),
+        called("a1", "call_2", "write", '{"path":"b.ts","content":"export const b = sum"}'),
+        toolStarted("a1", "call_2", "write"),
+        called("a1", "call_3", "write", '{"path":"a.ts","content":"export const sum = 2"}'),
+        called("a1", "call_4", "shell", '{"command":"bun test"}'),
+      ],
+      expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", calls: ["call_1 write running", "call_2 write running", "call_3 write pending", "call_4 shell pending"] }] },
+    },
+    {
+      label: "each waiting call starts when what it waits for has its result",
+      events: [
+        settled("a1", "call_2", "success", "Wrote b.ts"),
+        settled("a1", "call_1", "success", "Wrote a.ts"),
+        toolStarted("a1", "call_3", "write"),
+        settled("a1", "call_3", "success", "Wrote a.ts"),
+        toolStarted("a1", "call_4", "shell"),
+        settled("a1", "call_4", "success", "3 pass, 0 fail"),
+        stepEnded("a1", "tool_calls"),
+        stepStarted("a2"),
+        say("a2", "Renamed; the tests pass."),
+        stepEnded("a2"),
+        executionSucceeded(),
+      ],
+      expect: {
+        ui: [
+          { id: "u1" },
+          { id: "a1", status: "completed", calls: ["call_1 write success", "call_2 write success", "call_3 write success", "call_4 shell success"] },
           { id: "a2", status: "completed" },
         ],
         history: ["u1", "a1", "a2"],
@@ -308,4 +356,4 @@ export const archiveAndUnarchive: Scenario = {
   ],
 }
 
-export const happyPaths = [plainAnswer, oneToolCall, parallelToolCalls, severalSteps, twoTurns, modelSwitch, instructionsInAVisitedDirectory, archiveAndUnarchive]
+export const happyPaths = [plainAnswer, oneToolCall, parallelToolCalls, scheduledByConflict, severalSteps, twoTurns, modelSwitch, instructionsInAVisitedDirectory, archiveAndUnarchive]

@@ -423,14 +423,27 @@ describe("limits", () => {
 })
 
 describe("model output the scenarios leave open", () => {
-  test("a response cut off by the output limit runs none of its calls, including the ones that ended", () =>
+  test("a response cut off by the output limit keeps what its calls that started did, and starts nothing more", () =>
     withHarness(async (h) => {
-      h.provider.enqueue([read("a.ts"), script.toolCall("call_2", "write", '{"path":"b.ts","content":"', { partial: true }), script.finish("length")], [script.text("ok")])
+      // The read starts as its arguments end; the write after the command waits for it, and the cut comes first.
+      h.provider.enqueue(
+        [read("a.ts"), script.toolCall("call_2", "shell", { command: "bun test" }), script.toolCall("call_3", "write", { path: "b.ts", content: "b" }), script.toolCall("call_4", "write", '{"path":"c.ts","content":"', { partial: true }), script.finish("length")],
+        [script.text("ok")],
+      )
+      h.tools.on("read", "export const a = 1").on("shell", async () => {
+        await h.responded(0)
+        return "1 pass"
+      })
       h.create().send("Go.")
       await h.settled()
-      expect(h.tools.ran).toEqual([])
-      expect(settledOutputs(h)).toEqual([["not_started", TOOL_TEXT.notStarted]])
-      expect(types(h).slice(5, 10)).toEqual(["step.started", "tool.called", "tool.settled", "step.ended", "synthetic.appended"])
+      expect(h.tools.ran.map((call) => call.name)).toEqual(["read", "shell"])
+      expect(settledOutputs(h)).toEqual([
+        ["success", "export const a = 1"],
+        ["success", "1 pass"],
+        ["not_started", TOOL_TEXT.notStarted],
+      ])
+      const ended = types(h).indexOf("step.ended")
+      expect(types(h).slice(ended - 2, ended + 2)).toEqual(["tool.settled", "tool.settled", "step.ended", "synthetic.appended"])
       h.verify()
     }))
 
@@ -465,24 +478,29 @@ describe("model output the scenarios leave open", () => {
       expect(types(h).at(-1)).toBe("execution.succeeded")
     }))
 
-  test("a provider failure after a recorded call settles the call as not started and asks the model to continue", () =>
+  test("a provider failure after a call started: the call finishes, the step fails, and the model is asked to continue", () =>
     withHarness(async (h) => {
-      h.provider.enqueue([script.text("Reading."), read("a.ts"), script.fail("transport", { message: "connection reset" })], [read("a.ts")], [script.text("ok")])
-      h.tools.on("read", "1")
+      h.provider.enqueue([script.text("Reading."), read("a.ts"), script.fail("transport", { message: "connection reset" })], [read("a.ts", "call_2")], [script.text("ok")])
+      h.tools.on("read", "1", "1")
       h.create().send("Go.")
       await h.settled()
-      expect(types(h).slice(5, 13)).toEqual([
+      // The recorded call is durable output, so the retry is never transparent: the message fails first.
+      expect(types(h).slice(5, 14)).toEqual([
         "step.started",
         "text.ended",
         "tool.called",
+        "tool.started",
         "tool.settled",
         "step.failed",
         "retry.scheduled",
         "synthetic.appended",
         "step.started",
       ])
-      expect(settledOutputs(h)[0]).toEqual(["not_started", TOOL_TEXT.notStarted])
-      expect(h.tools.ran).toHaveLength(1)
+      expect(settledOutputs(h)[0]).toEqual(["success", "1"])
+      expect(h.tools.ran).toHaveLength(2)
+      // The model continues from the failed message with its call and the call's result.
+      const input = JSON.stringify(h.provider.requests[1]!.input)
+      expect(input).toContain('"callId":"call_1"')
       h.verify()
     }))
 
@@ -614,9 +632,11 @@ describe("when the harness itself is wrong", () => {
     withHarness(async (h) => {
       // The provider repeats a call ID inside one response, which the log cannot hold.
       h.provider.enqueue([read("a.ts", "call_1"), read("b.ts", "call_1")], [script.text("Fine now.")])
+      h.tools.on("read", "export const a = 1")
       h.create().send("Go.")
       await h.settled()
-      expect(types(h).slice(-4)).toEqual(["tool.called", "tool.settled", "step.failed", "execution.failed"])
+      // The first call started as its arguments ended and has its result; the second could not be recorded.
+      expect(types(h).slice(-5)).toEqual(["tool.called", "tool.started", "tool.settled", "step.failed", "execution.failed"])
       expect(h.log().at(-2)).toMatchObject({ data: { error: { kind: "internal" } } })
       expect(h.diagnostics.map((diagnostic) => diagnostic.kind)).toEqual(["internal_error"])
       h.session.send("Again.")

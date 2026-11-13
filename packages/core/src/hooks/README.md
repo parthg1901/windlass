@@ -194,8 +194,8 @@ and per point a `HookPointContext`: the runner, `trust` (`mode`, the session's t
    validated input, `call.paths` is `tool.touches?.(input) ?? null`. On `refuse`, return
    `{ kind: "refuse", output: decision.output }`: the call settles from `pending` as `error` with that text. On
    `allow`, carry on to the approval decision unchanged: a hook's yes is never an approval. On `interrupted`, the
-   runtime returns `not_started` itself (the signal is aborted). Calls of one step keep their order rules: a read's
-   before hooks run when the read is decided, a side-effecting call's when its turn in the line comes.
+   runtime returns `not_started` itself (the signal is aborted). Calls of one step keep their order rules: a call's
+   before hooks run when it is decided, which is when its turn in the step's schedule comes (`schedule/`).
 2. **After** (`runAfterHooks(context, config.afterTool, call, result)`): after `execute` returned and **before**
    the runtime caps the output. The runtime has no place for this today; it needs one change in
    `tool/runtime.ts` (the tool track's file):

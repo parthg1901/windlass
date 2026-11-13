@@ -561,6 +561,24 @@ export class Harness {
     })
   }
 
+  /** Resolves once the provider's call `index` (zero-based, across sessions) has sent its terminal event: the loop read everything before it. */
+  async responded(index: number): Promise<void> {
+    const over = () => this.provider.calls[index]?.events.some((item) => item.type === "finish" || item.type === "error") === true
+    while (!over()) await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+
+  /** Resolves the next time the loop reaches `point`. */
+  reached(point: ProbePoint): Promise<void> {
+    return new Promise((resolve) => {
+      let done = false
+      this.probes.push((at) => {
+        if (at !== point || done) return
+        done = true
+        resolve()
+      })
+    })
+  }
+
   /**
    * Kills the process: the store is closed, so nothing the engine still does
    * reaches the log. Inside a probe, follow it with `throw new Killed()` (or
