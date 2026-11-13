@@ -65,7 +65,8 @@ test("session/list serves each page from the engine and keeps nothing between tw
   // A new listing has the late session at the front.
   expect((await list(harness)).sessions[0]!.sessionId).toBe(late.id)
   await expect(list(harness, "nonsense")).rejects.toMatchObject({ code: -32602 })
-})
+  // It makes 102 sessions, each a database written with fsync: on a macOS runner that alone has taken over 5 s.
+}, 30_000)
 
 test("an effort the model does not take is refused in one sentence that names the ones it accepts", async () => {
   const harness = await start({ engine: { listModels: async () => [{ id: "test-model", efforts: ["low", "medium", "high"] }, { id: "other-model", efforts: [] }] } })
