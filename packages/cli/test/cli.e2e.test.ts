@@ -1,5 +1,6 @@
 import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { brand } from "@windlass/core"
+import workspace from "../../../package.json" with { type: "json" }
 import { findScenario } from "../src/demo/scenarios.ts"
 import { FakeEngine } from "../src/fake-engine.ts"
 import { CLI, runCli } from "./helpers.ts"
@@ -53,7 +54,7 @@ describe("exit codes", () => {
 
 describe("commands", () => {
   test("--version and --help", async () => {
-    expect((await runCli(["--version"])).out).toBe(`${brand.name} 0.0.0+source (${process.platform}-${process.arch})\n`)
+    expect((await runCli(["--version"])).out).toBe(`${brand.name} ${workspace.version}+source (${process.platform}-${process.arch})\n`)
     const help = await runCli(["--help"])
     expect(help.code).toBe(0)
     expect(help.out).toContain(`${brand.binary} [options] <prompt...>`)

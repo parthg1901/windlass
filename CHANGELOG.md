@@ -6,6 +6,8 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-13
+
 The first release: a coding agent for the terminal that signs in with a ChatGPT plan.
 
 ### Added
@@ -24,4 +26,8 @@ The first release: a coding agent for the terminal that signs in with a ChatGPT 
   exported; long sessions are compacted, and the prompt cache's share of each request is shown as you work.
 - **Yours to shape.** Project instructions (`AGENTS.md`), agents, skills, slash commands, hooks, MCP servers,
   language-server diagnostics, subagents, background commands and wake-ups, opt-in memory and telemetry.
-- **Executables** for Linux and macOS, x64 and arm64, with SHA-256 checksums and an install script.
+- **Executables** for Linux and macOS, x64 and arm64, with SHA-256 checksums and an install script, and on npm:
+  `npm install -g windlass-agent` installs the one for your machine.
+
+[Unreleased]: https://github.com/parthg1901/windlass/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/parthg1901/windlass/releases/tag/v0.1.0
