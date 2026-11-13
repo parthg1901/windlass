@@ -1,0 +1,43 @@
+name: Set up
+description: Bun, the workspace's dependencies and, on Linux, a working sandbox (bubblewrap)
+
+inputs:
+  sandbox:
+    description: On Linux, install bubblewrap and let it create user namespaces, so the sandbox tests run instead of skipping
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: 1.4.0
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # Ubuntu 24.04 and later restrict unprivileged user namespaces through AppArmor
+    # (kernel.apparmor_restrict_unprivileged_userns=1), which stops bwrap unless a profile grants them to it.
+    # When the probe fails, this adds the profile docs/troubleshooting.md tells an administrator to add,
+    # rather than lifting the restriction for every program, so the runner is set up as a user's machine would be.
+    - name: Sandbox (bubblewrap)
+      if: runner.os == 'Linux' && inputs.sandbox == 'true'
+      shell: bash
+      run: |
+        if ! command -v bwrap >/dev/null; then
+          sudo apt-get install -y --no-install-recommends bubblewrap || { sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap; }
+        fi
+        bwrap --version
+        # The probe the program runs (scripts/install.sh --check runs the same).
+        probe() {
+          bwrap --die-with-parent --unshare-user-try --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try --unshare-net \
+            --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp -- true
+        }
+        if ! probe; then
+          echo "apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent): adding an AppArmor profile for $(command -v bwrap)"
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile bwrap %s flags=(unconfined) {\n  userns,\n}\n' "$(command -v bwrap)" | sudo tee /etc/apparmor.d/bwrap
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          probe
+        fi
+        sh scripts/install.sh --check
