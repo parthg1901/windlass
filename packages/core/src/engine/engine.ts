@@ -145,6 +145,8 @@ import { selectChecks } from "../verify/select.ts"
 import { type ApprovalSetup, type Approvals, type FactContext, addProjectGrants, aliased, callFacts, pathKey, projectApprovalHome, effectivePolicy, environmentSecrets, finishOutput, readProjectGrants, realWorkspace, redactor, resolveApprovals, runRecord } from "./approval.ts"
 import { type AgentListing, type AgentPlaces, type AgentsSetup, agentIndexAppended, agentPlaces, describeAgentProblem, findAgents, heldToParent } from "./agents.ts"
 import { SessionTrace, type TelemetrySetup, type TelemetryState, TelemetryHub } from "./telemetry.ts"
+import { type CodeModeSetup, engineCodeTool } from "./codemode.ts"
+import { PROGRAM_TOOLS, type ProgramCallResult, type ProgramSetup } from "../codemode/index.ts"
 import { type CommandExpansion, type CommandPlaces, type CommandsSetup, type SentCommand, commandPlaces, commandUseOf, expandNamed, findCommands } from "./commands.ts"
 import { type EngineEvent, EventChannel } from "./channel.ts"
 import { type Clock, systemClock } from "./clock.ts"
@@ -158,6 +160,7 @@ import {
   NOTE_TEXT,
   NOTICE_TEXT,
   TOOL_TEXT,
+  CODE_TEXT,
   failureText,
   modelCallTimedOut,
   retryDelayMs,
@@ -511,6 +514,14 @@ export interface EngineOptions {
    * server. `createHarness` switches it on.
    */
   readonly mcp?: McpSetup | null
+  /**
+   * Code mode (`engine/codemode.ts`): `run_code` in every new session's tool
+   * list, a program that calls the session's tools as functions, each call
+   * nested under the program's and decided, recorded and stopped like any.
+   * Without it (or `null`) the engine offers none of it. `createHarness`
+   * switches it on.
+   */
+  readonly codeMode?: CodeModeSetup | null
   /**
    * Wake-ups: `wake_create`, `wake_list` and `wake_cancel` in the tool list
    * of every new session a person starts while wake-ups are enabled, and,
@@ -1329,6 +1340,8 @@ interface Core {
   readonly spawning: { readonly subagent: AnyTool; readonly management: readonly AnyTool[] }
   /** The names of the tools whose calls need no decision and run side by side (`Tool.delegates`). */
   readonly delegating: ReadonlySet<string>
+  /** The names of the tools that run a program whose calls are its effects (`Tool.nests`). */
+  readonly nesting: ReadonlySet<string>
   /** The names of the tools whose result changes without a call of the model's (`Tool.varies`): the identical-call guard does not apply to them. */
   readonly varying: ReadonlySet<string>
   readonly exportSnapshot: (workspace: string, snapshot: string, into: string) => Promise<{ readonly files: number } | SnapshotUnavailable>
@@ -1336,6 +1349,8 @@ interface Core {
   readonly skills: { readonly tool: AnyTool; readonly configDir: string; readonly home: string | undefined } | null
   /** MCP: the bridge tools and the registries of the configured servers. `null` when the build offers none. */
   readonly mcp: { readonly tools: readonly AnyTool[]; readonly hub: McpHub } | null
+  /** Code mode: the `run_code` tool. `null` when the build offers none. */
+  readonly codeMode: { readonly tool: AnyTool } | null
   /** Hooks: what runs a hook's command. `null` when the build runs none. */
   readonly hooks: { readonly runner: HookRunner } | null
   /** Language servers: the registries of the working directories sessions work in. `null` when the build offers no diagnostics. */
@@ -1472,7 +1487,16 @@ export function createEngine(options: EngineOptions): Engine {
     projectionOf: (context) => core.sessions.get(context.sessionId)?.projection() ?? null,
     now: () => new Date(clock.now()),
   })
-  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset, ...memoryToolset])
+  const coder =
+    options.codeMode == null
+      ? null
+      : engineCodeTool({
+          setup: options.codeMode,
+          program: (context) => core.sessions.get(context.sessionId)?.programSetup(context) ?? null,
+          sandbox: () => core.approvals?.sandbox() ?? null,
+          temp: (context) => core.sessions.get(context.sessionId)?.programTemp() ?? null,
+        })
+  const features = mine([skill, bridge.search as unknown as AnyTool, bridge.call as unknown as AnyTool, ...wakeToolset, ...memoryToolset, ...(coder === null ? [] : [coder])])
   // The provider's models, as last listed: what settings are checked against without another request.
   let offered: readonly ModelOffer[] | null = null
   const listOffered = async (): Promise<readonly ModelOffer[] | null> => {
@@ -1538,6 +1562,7 @@ export function createEngine(options: EngineOptions): Engine {
       management: spawning.management.map((tool) => runnable.find((other) => other.name === tool.name)!),
     },
     delegating: new Set(runnable.filter((tool) => tool.delegates === true).map((tool) => tool.name)),
+    nesting: new Set(runnable.filter((tool) => tool.nests === true).map((tool) => tool.name)),
     varying: new Set(runnable.filter((tool) => tool.varies === true).map((tool) => tool.name)),
     exportSnapshot: options.exportSnapshot ?? ((workspace, snapshot, into) => exportSnapshot(workspace, snapshot, into, { dataDir: join(options.dataDir, "snapshots") })),
     skills: options.skills == null ? null : { tool: runnable.find((tool) => tool.name === skill.name)!, configDir: skillsDir, home: options.skills.home },
@@ -1548,6 +1573,7 @@ export function createEngine(options: EngineOptions): Engine {
             tools: [bridge.search, bridge.call].map((tool) => runnable.find((other) => other.name === tool.name)!),
             hub: new McpHub(options.mcp, (server, message) => core.report({ kind: "mcp", sessionId: null, message: `${server}: ${message}` })),
           },
+    codeMode: coder === null ? null : { tool: runnable.find((tool) => tool.name === coder.name)! },
     hooks: options.commandHooks == null ? null : { runner: runHook },
     lsp: options.lsp == null ? null : { hub: new LspHub(options.lsp) },
     grantsDir: options.approval?.grantsDir ?? join(options.dataDir, "approvals"),
@@ -1865,6 +1891,10 @@ interface StepTools {
   readonly streamed: (callId: CallId) => Promise<boolean>
   /** Resolves when every call that started has its result, or after an interrupt, when the tools stopped or their grace period is over. Throws what the loop failed with. */
   readonly settle: () => Promise<void>
+  /** The assistant message of the step. */
+  readonly messageId: MessageId
+  /** For a program's call (`run_code`) of this step: what its program is given, and who makes its calls. `null` for a call the step does not have. */
+  readonly program: (callId: CallId) => ProgramSetup | null
 }
 
 /** What the approval layer decided for one call of the step in progress, kept until its result is recorded. */
@@ -1927,6 +1957,16 @@ interface LiveSpawn {
 const STOPPED_BY = { interrupt: "this session was interrupted", shutdown: "the harness shut down", tool: "it was asked to stop", call: "the user stopped this call" } as const
 
 /** Why spawned work was stopped, as the sentence part its result carries. */
+/** Whether a shell call's arguments ask for the background, which a program's call may not. */
+function backgroundAsked(argumentsText: string): boolean {
+  try {
+    const input = JSON.parse(argumentsText) as unknown
+    return typeof input === "object" && input !== null && (input as Record<string, unknown>).background === true
+  } catch {
+    return false
+  }
+}
+
 function stoppedBy(live: Pick<LiveSpawn, "stopping" | "stoppedFor">): string | null {
   if (live.stopping === null) return null
   return live.stopping === "agent" ? SPAWN_TEXT.stoppedForAgent(live.stoppedFor ?? "") : STOPPED_BY[live.stopping]
@@ -3762,16 +3802,16 @@ class LiveSession implements EngineSession {
     const before$ = director === null && (this.hookConfig.beforeTool.length > 0 || this.lspHeld !== null)
     const after$ = director === null && (this.hookConfig.afterTool.length > 0 || this.lspHeld !== null)
 
-    /** One call, from its decision to its recorded result. */
-    const launch = (call: ToolCallPart): Promise<void> => {
-      const match = matchOf(call)
+    /** One call, from its decision to its recorded result. A program's call (`nested`) is the loop's own: never on a replay's recording, and settled here also when it does not start. */
+    const launch = (call: ToolCallPart, nested = false): Promise<void> => {
+      const match = nested ? undefined : matchOf(call)
       // A recorded call started with the class the recording has for it, whatever this build's tools are.
       const effect = effects.get(call.name) ?? (match?.kind === "matched" ? match.recorded.started?.effect : undefined)
       const key = callKey(messageId, call.callId)
       unsettled.add(call.callId)
       const gaveUp = new Promise<void>((resolve) => giveUp.set(call.callId, resolve))
       const run$ = (hooks: Parameters<ToolRuntime["run"]>[1]) =>
-        plan === null ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(added.indexOf(call), request(call), hooks)
+        plan === null || nested ? runtime.run(request(call), hooks).then((outcome) => ({ outcome, executed: true })) : plan.run(added.indexOf(call), request(call), hooks)
       const work = run$({
         // With before hooks or language servers the decision has more to it; without them it is the approval layer's alone, as ever.
         ...(before$
@@ -3798,7 +3838,7 @@ class LiveSession implements EngineSession {
           // The interrupt reached it while it waited for an answer, or the response it belongs to did not finish: it
           // never began, and whoever closes the step settles it. (In a replay a call may also be answered as never
           // started: the recording's own, or the replay stopping.)
-          if (result.kind === "not_started" && (plan === null || signal.aborted)) return
+          if (result.kind === "not_started" && (plan === null || signal.aborted) && !nested) return
           unsettled.delete(call.callId)
           const decided = this.decided.get(key)
           this.decided.delete(key)
@@ -3851,27 +3891,94 @@ class LiveSession implements EngineSession {
         const step = openStep(this.projection())
         const part = step?.id === messageId ? step.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === call.callId) : undefined
         if (part?.type !== "tool_call" || part.state.status !== "running") return
-        abandoned.add(call.callId)
-        unsettled.delete(call.callId)
+        // A program's call settles after the calls its program made: those that have no result yet are settled first.
+        const children = step!.parts.filter((candidate): candidate is ToolCallPart => candidate.type === "tool_call" && candidate.parent === call.callId && candidate.state.status !== "settled")
+        for (const child of [...children, part]) {
+          abandoned.add(child.callId)
+          unsettled.delete(child.callId)
+        }
         try {
           // The hooks that had finished for the call are on record before its result, as when an interrupt settles it.
-          this.write([...(this.hookRecords.get(key) ?? []), settledBy(messageId, part, CANCELLED)])
+          this.write([
+            ...children.flatMap((child) => [...(this.hookRecords.get(callKey(messageId, child.callId)) ?? []), settledBy(messageId, child, CANCELLED)]),
+            ...(this.hookRecords.get(key) ?? []),
+            settledBy(messageId, part, CANCELLED),
+          ])
           this.probe("tool.settled")
           this.noticeTaint()
         } catch (error) {
           if (!failure.failed) failure.error = error
           failure.failed = true
         }
-        this.decided.delete(key)
-        this.hookRecords.delete(key)
-        this.lspSaid.delete(key)
-        this.lspBefore.delete(key)
-        giveUp.get(call.callId)?.()
+        for (const done of [...children, part]) {
+          const doneKey = callKey(messageId, done.callId)
+          this.decided.delete(doneKey)
+          this.hookRecords.delete(doneKey)
+          this.lspSaid.delete(doneKey)
+          this.lspBefore.delete(doneKey)
+          giveUp.get(done.callId)?.()
+        }
       })
     }
 
     /** Nothing new starts once an interrupt is requested, the loop failed, the response did not finish, or a call nobody could approve ended the run. */
     const closed = () => failure.failed || signal.aborted || complete === false || this.stopping !== null
+
+    /** The calls programs made in this step, in the order they made them. */
+    const nestedCalls: ToolCallPart[] = []
+    /** What the program of call `outerId` is given: its functions, and the calls it makes as calls of this step. */
+    const program = (outerId: CallId): ProgramSetup | null => {
+      const outer = added.find((candidate) => candidate.callId === outerId)
+      if (outer === undefined || before === null) return null
+      const offered = new Set((before.baseline?.tools ?? []).map((tool) => tool.name))
+      const functions = PROGRAM_TOOLS.filter((name) => offered.has(name) && effects.has(name))
+      // The program's calls wait for each other by the rules the calls of a response follow, in the order it makes them.
+      const schedule = new CallSchedule()
+      let made = 0
+      const resultOf = (callId: CallId): ProgramCallResult => {
+        const part = openStep(this.projection())?.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === callId)
+        if (part?.type !== "tool_call" || part.state.status !== "settled") return { status: "effect_unknown", output: TOOL_TEXT.effectUnknown }
+        return { status: part.state.outcome, output: part.state.output }
+      }
+      const call = async (name: string, argumentsText: string): Promise<ProgramCallResult> => {
+        const outerStop = stopOf(outer)
+        if (closed() || outerStop.signal.aborted) return { status: "not_started", output: CODE_TEXT.stopped }
+        if (name === "shell" && backgroundAsked(argumentsText)) return { status: "not_started", output: CODE_TEXT.background }
+        made += 1
+        const part: ToolCallPart = { type: "tool_call", callId: `${outerId}.${made}` as CallId, name, input: argumentsText, providerData: null, state: { status: "pending" }, parent: outerId }
+        try {
+          // Durable before anything about it is decided, like a call of the model's.
+          this.write([event("tool.called", { messageId, callId: part.callId, name, input: argumentsText, providerData: null, parent: outerId })])
+        } catch {
+          // It cannot be recorded (the turn is winding down): it never runs.
+          return { status: "not_started", output: CODE_TEXT.stopped }
+        }
+        nestedCalls.push(part)
+        // It stops with the program: when the turn is interrupted, when the user stops the program's call, and by itself.
+        stops.set(part.callId, createCallStop(outerStop.signal))
+        this.callStops.set(callKey(messageId, part.callId), () => cancel(part))
+        const effect = effects.get(name)
+        if (runsAs !== null && effect !== undefined) {
+          const verdict = checkAgentCall(runsAs, { name, effect, origin: this.core.origins.get(name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+          if (verdict.kind === "refuse") {
+            refuseAsAgent(part, runsAs, verdict)
+            return resultOf(part.callId)
+          }
+        }
+        const footprint = this.footprint(part, effect, before!.session.cwd, place.temp)
+        await schedule.add(footprint, (waited) => {
+          if (!waited || !(closed() || outerStop.signal.aborted)) return launch(part, true)
+          // It waited, and the program was stopped meanwhile: it never starts.
+          this.write([event("tool.settled", { messageId, callId: part.callId, outcome: "not_started", output: CODE_TEXT.notStarted, truncation: null, attachments: [], display: null })])
+          return Promise.resolve()
+        })
+        return resultOf(part.callId)
+      }
+      return {
+        tools: functions,
+        host: { call: (name, argumentsText) => call(name, argumentsText).catch((error: unknown): ProgramCallResult => ({ status: "error", output: `The call could not be completed: ${describe(error)}` })) },
+      }
+    }
 
     /** Set when the first call arrives: the step as it was then, and what the calls of the step are run with. */
     const prepare = () => {
@@ -3924,7 +4031,8 @@ class LiveSession implements EngineSession {
       // The agent's restrictions come before the approval layer, and only take away: a call they let through is
       // decided exactly as without an agent. (A tool nobody knows is answered by the runtime, as always.)
       if (runsAs !== null && effect !== undefined) {
-        const verdict = checkAgentCall(runsAs, { name: call.name, effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
+        // A program does nothing by itself: an agent's limits on effects apply to each call it makes, and its list of tools to it.
+        const verdict = checkAgentCall(runsAs, { name: call.name, effect: this.core.nesting.has(call.name) ? "read" : effect, origin: this.core.origins.get(call.name) ?? "builtin" }, { exempt: [ACKNOWLEDGE_TOOL_NAME] })
         if (verdict.kind === "refuse") return void refuseAsAgent(call, runsAs, verdict)
       }
       const admitted = new Promise<void>((resolve) => admissions.set(call.callId, resolve))
@@ -3976,7 +4084,7 @@ class LiveSession implements EngineSession {
           }
         } finally {
           // Whatever happened, nothing of this step can be stopped by itself any more, and no grace period is left running.
-          for (const call of added) this.callStops.delete(callKey(messageId, call.callId))
+          for (const call of [...added, ...nestedCalls]) this.callStops.delete(callKey(messageId, call.callId))
           for (const timer of graces) timer.abort()
           for (const stop of stops.values()) stop.release()
           if (this.stepTools === tools) this.stepTools = null
@@ -3984,6 +4092,8 @@ class LiveSession implements EngineSession {
         this.decided.clear()
         if (failure.failed) throw failure.error
       },
+      messageId,
+      program,
     }
     return tools
   }
@@ -4001,7 +4111,21 @@ class LiveSession implements EngineSession {
         paths = []
       }
     }
-    return footprintOf({ effect, origin: this.core.origins.get(call.name) ?? "builtin", delegates: this.core.delegating.has(call.name), paths })
+    return footprintOf({ effect, origin: this.core.origins.get(call.name) ?? "builtin", delegates: this.core.delegating.has(call.name), nests: this.core.nesting.has(call.name), paths })
+  }
+
+  // ---- code mode ----
+
+  /** `run_code`: what the program of this call is given, from the step that runs it; `null` when no step of this session has the call. */
+  programSetup(context: ToolContext): ProgramSetup | null {
+    const tools = this.stepTools
+    if (tools === null || tools.messageId !== context.messageId) return null
+    return tools.program(context.callId)
+  }
+
+  /** The session's own temp directory, where a program's run directory is made; `null` without a sandbox. */
+  programTemp(): string | null {
+    return this.tempContext().temp?.dir ?? null
   }
 
   // ---- spawned work: subagents and background commands ----
@@ -4793,6 +4917,22 @@ class LiveSession implements EngineSession {
       this.decided.set(key, { run: runRecord(this.policy().policy, facts, null), before: [], stop: null })
       return { kind: "run" }
     }
+    if (tool.nests === true) {
+      // A program: what it does is its calls, each decided by itself when the program makes it. Its own process runs
+      // confined (nothing writable, no network) wherever a sandbox exists. Without one it can run as it is only where
+      // commands do, an untainted `full`; anywhere else it is refused, since nothing would keep it to its calls.
+      const policy = this.policy().policy
+      const available = approvals.sandbox().state.available && approvals.sandbox().confined !== undefined
+      const confined = policy.mode !== "full" || (policy.taint === "enforce" && this.taint(policy).tainted)
+      if (!available && confined) {
+        const denied = event("approval.denied", { messageId, callId: call.callId, mode: policy.mode, paths: [...facts.paths], escalation: facts.escalation, reason: "policy", needs: [], stop: false })
+        this.decided.set(key, { run: undefined, before: [denied], stop: null })
+        return { kind: "refuse", output: CODE_TEXT.noSandbox }
+      }
+      const sandbox = available ? { network: false, writableRoots: [] } : null
+      this.decided.set(key, { run: runRecord(policy, facts, sandbox), before: [], stop: null })
+      return { kind: "run", sandbox }
+    }
     const workspace = realWorkspace(context.cwd)
     const decideNow = (present = this.attended) => {
       const policy = this.policy().policy
@@ -5345,13 +5485,14 @@ class LiveSession implements EngineSession {
     const features = [
       ...kept(this.core.skills === null ? [] : [this.core.skills.tool], true),
       ...kept(this.core.mcp?.tools ?? [], true),
+      ...kept(this.core.codeMode === null ? [] : [this.core.codeMode.tool], true),
       ...kept(this.core.wake?.tools ?? [], depth === 0 && (this.wakeConfig()?.enabled ?? false)),
       // Memory is behind its flag: off unless the configuration read for this execution turns it on.
       ...kept(this.core.memory?.tools ?? [], depth === 0 && this.memoryConfig().enabled),
     ]
     // The history tools are in every list this build freezes: see `history.ts` for why they are there from the start.
     const own = new Set(
-      [this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? []), ...(this.core.wake?.tools ?? []), ...(this.core.memory?.tools ?? [])].map((tool) => tool.name),
+      [this.core.spawning.subagent, ...this.core.spawning.management, ...(this.core.skills === null ? [] : [this.core.skills.tool]), ...(this.core.mcp?.tools ?? []), ...(this.core.codeMode === null ? [] : [this.core.codeMode.tool]), ...(this.core.wake?.tools ?? []), ...(this.core.memory?.tools ?? [])].map((tool) => tool.name),
     )
     const tools = [...this.core.tools.filter((tool) => !own.has(tool.name)), ...this.core.history, ...spawning, ...features]
     return offered ? [...tools, this.core.acknowledge] : tools

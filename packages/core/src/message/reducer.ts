@@ -810,6 +810,15 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       return step(event.data.messageId, (message) => {
         if (message.parts.some((part) => part.type === "tool_call" && part.callId === event.data.callId))
           fail("duplicate_id", `tool call ${event.data.callId} already exists in message ${message.id}`)
+        const parent = event.data.parent
+        if (parent !== undefined) {
+          // A program's call: made while the program's own call runs, one level deep, and never by the model.
+          const owner = message.parts.find((candidate) => candidate.type === "tool_call" && candidate.callId === parent)
+          if (owner?.type !== "tool_call") return fail("not_found", `tool call ${parent} does not exist in message ${message.id}`)
+          if (owner.parent !== undefined) fail("invalid_transition", `tool call ${parent} was made by a program: a program's calls are not nested further`)
+          if (owner.state.status !== "running") fail("invalid_transition", `tool call ${parent} is ${owner.state.status}: a program makes its calls while it runs`)
+          if (event.data.providerData !== null) fail("invalid_transition", "a call a program made has no provider data: the model did not write it")
+        }
         const part: ToolCallPart = {
           type: "tool_call",
           callId: event.data.callId,
@@ -817,6 +826,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
           input: event.data.input,
           providerData: event.data.providerData,
           state: { status: "pending" },
+          ...(parent === undefined ? {} : { parent }),
         }
         return { ...message, parts: [...message.parts, part] }
       })
@@ -890,7 +900,11 @@ function apply(state: Projection, event: AppliedEvent): Projection {
       if (approval === undefined || approval.taint === null) return fail("invalid_transition", "the session is not tainted")
       return session({ approval: { ...approval, taint: null } })
     }
-    case "tool.settled":
+    case "tool.settled": {
+      // A program's call ends after every call it made: its result is what came of them.
+      const owner = state.messages.findLast((candidate) => candidate.id === event.data.messageId)
+      const nested = owner?.kind === "assistant" ? owner.parts.filter((part) => part.type === "tool_call" && part.parent === event.data.callId && part.state.status !== "settled").length : 0
+      if (nested > 0) fail("invalid_transition", `tool call ${event.data.callId} has ${nested} call(s) of its program that are not settled`)
       return call(event.data.messageId, event.data.callId, (part) => {
         if (!settleOutcomes(part.state).includes(event.data.outcome))
           fail(
@@ -909,6 +923,7 @@ function apply(state: Projection, event: AppliedEvent): Projection {
           },
         }
       })
+    }
     case "hook.ran": {
       claimed()
       const record = event.data

@@ -175,6 +175,8 @@ export const assistantPart = variant("type", {
     approval: optional(callApproval),
     /** Set when the user asked for this one call to stop while it ran (`tool.cancel_requested`): where in the log. Its result says what came of it. */
     cancel: optional(object({ seq: integer(1) })),
+    /** Set for a call a program made: the program's call (`run_code`) it is nested under. The model never sees it; it sees the program's result. */
+    parent: optional(callId),
   }),
 })
 export type AssistantPart = Infer<typeof assistantPart>

@@ -76,7 +76,8 @@ function imageResults(messages: readonly Message[]): ImageResult[] {
     message.kind !== "assistant" || message.status === "running" || message.status === "refused"
       ? []
       : message.parts.flatMap((part) =>
-          part.type === "tool_call" && part.state.status === "settled" && part.state.attachments.length > 0
+          // A call a program made is not sent, so it has no image the model was shown.
+          part.type === "tool_call" && part.parent === undefined && part.state.status === "settled" && part.state.attachments.length > 0
             ? [{ messageId: message.id, seq: message.seq, part, images: part.state.attachments.length }]
             : [],
         ),

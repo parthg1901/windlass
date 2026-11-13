@@ -52,6 +52,7 @@
  * | assistant text part                      | `assistant_text` |
  * | assistant reasoning part                 | `reasoning`, or nothing (rules below) |
  * | assistant tool call part                 | `tool_call`, argument text verbatim |
+ * | a call a program made (`parent` set)     | nothing: the model sees the program's own result |
  * | settled tool call, every outcome         | `tool_result` with the stored output and attachments, byte for byte |
  * | settled tool call the compaction in force retired the images of | `tool_result` with the stored output, byte for byte, followed by the note the compaction froze, and no attachments |
  * | excluded (reverted or refused) messages  | nothing (`selectModelHistory` leaves them out) |
@@ -295,7 +296,7 @@ function renderAssistant(message: AssistantMessage, model: string, retired?: Rea
   if (message.status === "running" || message.status === "refused") return []
   const sameModel = message.model === model
   const lastOutput = message.parts.findLastIndex(
-    (part) => part.type === "tool_call" || (part.type === "text" && !blank(part.text)),
+    (part) => (part.type === "tool_call" && part.parent === undefined) || (part.type === "text" && !blank(part.text)),
   )
   const output = message.parts.flatMap((part, index): InputItem[] => {
     switch (part.type) {
@@ -306,6 +307,8 @@ function renderAssistant(message: AssistantMessage, model: string, retired?: Rea
         if (message.status !== "completed" || !sameModel || part.providerData === null || index > lastOutput) return []
         return [{ type: "reasoning", text: part.text, providerData: part.providerData }]
       case "tool_call":
+        // A call a program made is the harness's: the model wrote the program, and reads its result.
+        if (part.parent !== undefined) return []
         return [
           {
             type: "tool_call",
@@ -318,7 +321,7 @@ function renderAssistant(message: AssistantMessage, model: string, retired?: Rea
     }
   })
   const results = message.parts.flatMap((part): InputItem[] => {
-    if (part.type !== "tool_call") return []
+    if (part.type !== "tool_call" || part.parent !== undefined) return []
     if (part.state.status !== "settled")
       throw new RequestBuildError(
         "unsettled_call",

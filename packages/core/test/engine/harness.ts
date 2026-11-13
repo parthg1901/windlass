@@ -23,6 +23,7 @@ import type { EngineLimits } from "../../src/engine/constants.ts"
 import type { HooksSetup } from "../../src/engine/hooks.ts"
 import type { LspSetup } from "../../src/engine/lsp.ts"
 import type { McpSetup } from "../../src/engine/mcp.ts"
+import type { CodeModeSetup } from "../../src/engine/codemode.ts"
 import type { MemorySetup } from "../../src/engine/memory.ts"
 import type { SkillsSetup } from "../../src/engine/skills.ts"
 import type { AgentsSetup } from "../../src/engine/agents.ts"
@@ -359,6 +360,8 @@ export interface HarnessOptions {
   readonly skills?: SkillsSetup
   /** MCP servers. Without it the engine offers none and starts none. */
   readonly mcp?: McpSetup
+  /** Code mode. Without it the engine offers no `run_code`. */
+  readonly codeMode?: CodeModeSetup
   /** Wake-ups. Without it the engine offers none; with `run` the engine fires them itself. */
   readonly wake?: WakeSetup
   /** Memory. Without it the engine offers none; with it a session gets it when its configuration turns the flag on. */
@@ -488,6 +491,7 @@ export class Harness {
       ...(this.options.spawn === undefined ? {} : { spawn: this.options.spawn }),
       ...(this.options.skills === undefined ? {} : { skills: this.options.skills }),
       ...(this.options.mcp === undefined ? {} : { mcp: this.options.mcp }),
+      ...(this.options.codeMode === undefined ? {} : { codeMode: this.options.codeMode }),
       ...(this.options.wake === undefined ? {} : { wake: this.options.wake }),
       ...(this.options.memory === undefined ? {} : { memory: this.options.memory }),
       ...(this.options.commands === undefined ? {} : { commands: this.options.commands }),

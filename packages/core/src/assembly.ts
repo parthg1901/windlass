@@ -193,6 +193,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       // exists then. A caller that passes `null` builds a harness without them.
       ...(options.engine?.skills === undefined ? { skills: {} } : {}),
       ...(options.engine?.mcp === undefined ? { mcp: {} } : {}),
+      // Code mode: `run_code` in every session's list from its first baseline. `null` builds a harness without it.
+      ...(options.engine?.codeMode === undefined ? { codeMode: {} } : {}),
       // Wake-ups: the tools everywhere; the scheduler and the webhook listener only in a process that asks for them
       // (`engine: { wake: { run: true } }`), which is what a long-lived server does and a one-prompt run does not.
       ...(options.engine?.wake === undefined ? { wake: {} } : {}),

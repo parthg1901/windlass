@@ -753,10 +753,18 @@ export const durableEvents = {
    * write fails, nothing runs (cancel rule 1). `input` is the argument text
    * exactly as the model produced it. Keyed by `(messageId, callId)` because
    * providers reuse call IDs across steps.
+   *
+   * `parent` is set for a call a program made (`run_code`, `codemode/`): the
+   * program's own call, of the same message, which is running. Such a call
+   * is the harness's, not the model's: it is decided, started, stopped and
+   * settled like any call, and taints like any, but it is not part of a
+   * request (the model sees the program's result), and its `input` is the
+   * arguments as the program gave them. The program's call settles after
+   * every call nested under it.
    */
   "tool.called": define(
     1,
-    object({ messageId, callId, name: nonEmptyString, input: string, providerData: nullable(json) }),
+    object({ messageId, callId, name: nonEmptyString, input: string, providerData: nullable(json), parent: optional(callId) }),
   ),
   /**
    * The tool began executing. From here a side effect may have happened, so a

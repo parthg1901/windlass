@@ -144,7 +144,8 @@ export function refusedTurnStart(projection: Projection, refused: AssistantMessa
 export function repeatsItself(projection: Projection, call: { readonly messageId: MessageId; readonly callId: string; readonly name: string; readonly input: string }): boolean {
   const calls = currentTurn(projection).flatMap((message) =>
     message.kind === "assistant"
-      ? message.parts.flatMap((part) => (part.type === "tool_call" ? [{ messageId: message.id, part }] : []))
+      ? // A program's calls are not the model's: the guard looks at the calls the model made, the program among them.
+        message.parts.flatMap((part) => (part.type === "tool_call" && part.parent === undefined ? [{ messageId: message.id, part }] : []))
       : [],
   )
   const self = calls.findIndex((entry) => entry.messageId === call.messageId && entry.part.callId === call.callId)
@@ -203,10 +204,9 @@ export const CRASHED: OrphanTexts = { read: TOOL_TEXT.crashRead, effectUnknown: 
  * changed nothing; a running call of any other class may have had its effect.
  */
 export function settleUnsettled(message: AssistantMessage, texts: OrphanTexts): NewEvent<"tool.settled">[] {
-  return message.parts.flatMap((part) => {
-    if (part.type !== "tool_call" || part.state.status === "settled") return []
-    return [settledBy(message.id, part, texts)]
-  })
+  // The calls a program made first: a program's call settles after every call it made.
+  const unsettled = message.parts.filter((part): part is ToolCallPart => part.type === "tool_call" && part.state.status !== "settled")
+  return [...unsettled.filter((part) => part.parent !== undefined), ...unsettled.filter((part) => part.parent === undefined)].map((part) => settledBy(message.id, part, texts))
 }
 
 export function settledBy(messageId: MessageId, part: ToolCallPart, texts: OrphanTexts): NewEvent<"tool.settled"> {

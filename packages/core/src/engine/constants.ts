@@ -110,6 +110,18 @@ export function retryDelayMs(limits: EngineLimits, failedAttempt: number, error:
 }
 
 /** The texts the loop freezes into `tool.settled.output` when it decides a call's outcome. */
+/** What the loop answers about a program (`run_code`) and the calls it makes. Frozen into the log where they are results. */
+export const CODE_TEXT = {
+  /** The program's call, where nothing could keep the program to its calls. */
+  noSandbox: "Not run: a program runs only in the sandbox, and commands cannot be sandboxed on this machine. Make the calls directly.",
+  /** A call of a program that is being stopped (the program's call was stopped, the turn interrupted): answered to the program, not recorded. */
+  stopped: "Not run: the program is being stopped.",
+  /** A call of a program that was recorded and waited for an earlier one, and the program was stopped meanwhile. */
+  notStarted: "Not run: the program was stopped before this call started.",
+  /** The shell's `background` from a program: work that would outlive it. */
+  background: "Not run: a program cannot start a command in the background. Start it with a direct shell call.",
+} as const
+
 export const TOOL_TEXT = {
   /** A recorded call that never began: the response was cut short, or it hit the output limit. */
   notStarted: "Not run: the response was stopped before this call started. It is safe to call it again.",
