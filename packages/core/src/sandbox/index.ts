@@ -21,7 +21,7 @@ export {
   isCredentialName,
 } from "./policy.ts"
 export { seatbeltProfile } from "./seatbelt.ts"
-export { type CommandInput, type CommandSandbox, type CommandSandboxOptions, type GitLayout, createCommandSandbox, gitLayout, workspacePolicy } from "./command.ts"
+export { type CommandInput, type CommandSandbox, type CommandSandboxOptions, type ConfinedInput, type GitLayout, confinedPolicy, createCommandSandbox, gitLayout, workspacePolicy } from "./command.ts"
 
 export type SandboxCommand =
   | { readonly argv: readonly string[]; readonly cwd: string }

@@ -65,6 +65,25 @@ export interface CommandSandbox {
   readonly plan: (input: CommandInput) => SandboxPlan | SandboxUnavailable
   /** The policy `plan` applies, for a test or a person to look at. */
   readonly policy: (input: Pick<CommandInput, "sessionId" | "cwd" | "run">) => SandboxPolicy
+  /**
+   * What to spawn for a process that may change nothing but `root`, its own
+   * directory: the command policy with the workspace read-only as well, no
+   * network, no extra directory, and only the environment variables named
+   * in `env` (the values are taken from `env` too). `root` is its temp
+   * directory (`/tmp` on Linux, `TMPDIR` on macOS). For a program whose every
+   * effect goes through the harness's tool calls (`codemode/`). Absent in a
+   * stand-in that cannot confine a process: nothing is then run confined.
+   */
+  readonly confined?: (input: ConfinedInput) => SandboxPlan | SandboxUnavailable
+}
+
+export interface ConfinedInput {
+  /** The directory the process runs in, outside the sandbox. Read-only like the rest, unless it is `root`. */
+  readonly cwd: string
+  readonly root: string
+  /** The command, given the path the process sees `root` at (`/tmp` under bubblewrap). */
+  readonly argv: (root: string) => readonly string[]
+  readonly env: Readonly<Record<string, string>>
 }
 
 export function createCommandSandbox(options: CommandSandboxOptions = {}): CommandSandbox {
@@ -97,7 +116,18 @@ export function createCommandSandbox(options: CommandSandboxOptions = {}): Comma
       // A download needs a cache it can write. The user's own stays read-only: what is in it runs outside the sandbox later.
       return { ...plan, env: { ...plan.env, BUN_INSTALL_CACHE_DIR: join(plan.env.TMPDIR ?? "/tmp", ".bun-install-cache") } }
     },
+    confined: (input) => {
+      // Under bubblewrap the root is mounted at /tmp; sandbox-exec leaves paths as they are.
+      const seen = detection.available && detection.backend === "bwrap" ? "/tmp" : input.root
+      return sandboxCommand(confinedPolicy({ ...input, home }), { argv: input.argv(seen), cwd: input.cwd === input.root ? seen : input.cwd }, { env: input.env, detection })
+    },
   }
+}
+
+/** The policy of `confined`: everything readable that a command may read, nothing writable but `root`, no network, only the named variables. */
+export function confinedPolicy(input: Pick<ConfinedInput, "cwd" | "root" | "env"> & { readonly home?: string }): SandboxPolicy {
+  const base = defaultPolicy({ workspace: input.cwd, tempRoot: input.root, network: { mode: "off" }, ...(input.home === undefined ? {} : { home: input.home }) })
+  return { ...base, writableRoots: [], env: { mode: "allow", names: Object.keys(input.env) } }
 }
 
 /** The policy of a command in `cwd`: the default one, with the session's temp directory, the access the decision granted, and the git hardening. */
