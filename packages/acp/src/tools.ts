@@ -67,6 +67,11 @@ export function toolTitle(name: string, args: Record<string, unknown> | null): s
       const command = str("command")
       return command === null ? "Run a command" : `\`${command.replaceAll("`", "'")}\``
     }
+    case "run_code": {
+      // The program's first line that says something; the program itself is in the call's raw input.
+      const first = str("code") === null ? null : (args!.code as string).split("\n").map((line) => line.trim()).find((line) => line !== "" && !line.startsWith("//"))
+      return withArg("Run a program", first === undefined || first === null ? null : oneLine(first))
+    }
     default: {
       const first = args === null ? undefined : Object.values(args).find((value) => typeof value === "string")
       return withArg(name, typeof first === "string" ? oneLine(first) : null)

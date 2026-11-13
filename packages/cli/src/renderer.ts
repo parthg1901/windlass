@@ -16,7 +16,7 @@ import { restoreCounts } from "./commands.ts"
 import { commandSent } from "./slash.ts"
 import type { DiffFile } from "@windlass/acp/extensions"
 import { type SteerInfo, type TurnEvent, type TurnInfo, TurnTracker, changedByRevert, startedByText } from "@windlass/acp/turns"
-import { callArgument, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
+import { callArgument, programLines, mcpArguments, checkLines, checksSummary, detailLines, errorSummary, fileList, successSummary, unresolvedReason } from "./tools.ts"
 import { type Segment, type Tone, displayWidth, flatten, formatBytes, formatDuration, hardWrap, paint, plural, renderLine, seg, truncate, wrap, wrapKeeping, wrapWhole } from "./text.ts"
 
 export interface Sink {
@@ -85,6 +85,8 @@ interface Call {
   after: number
   /** How a command ran (`tool.started`'s `run.sandbox`): in the sandbox with what extra access, `null` without it; absent when not recorded. */
   sandbox?: { readonly network: boolean; readonly writableRoots: readonly string[] } | null
+  /** Made by a program (`run_code`): its rows are indented under the program's. */
+  nested?: boolean
 }
 
 interface Turn {
@@ -133,6 +135,7 @@ const SYMBOL = {
   undo: "↶",
   redo: "↷",
   watch: "◉",
+  nested: "▹",
 } as const
 
 export class PrettyRenderer implements Sink {
@@ -1004,12 +1007,16 @@ export class PrettyRenderer implements Sink {
 
   private toolCalled(data: EventData<"tool.called">): void {
     const arg = flatten(callArgument(data.name, data.input))
-    const call: Call = { name: data.name, arg, input: data.input, startedAt: null, after: -1 }
+    const nested = data.parent !== undefined
+    const call: Call = { name: data.name, arg, input: data.input, startedAt: null, after: -1, ...(nested ? { nested } : {}) }
     this.calls.set(key(data.messageId, data.callId), call)
     // The task list is shown as the list itself when the call settles, not as a call.
     if (data.name === TASK_TOOL) return
     this.open.add(key(data.messageId, data.callId))
-    this.lineWithArg("info", [seg(`${SYMBOL.call} `, "cyan"), seg(data.name, "bold"), seg(arg === "" ? "" : " ")], arg, [])
+    // A program's calls are drawn under it, a step in.
+    this.lineWithArg("info", [seg(nested ? `  ${SYMBOL.nested} ` : `${SYMBOL.call} `, nested ? "dim" : "cyan"), seg(data.name, "bold"), seg(arg === "" ? "" : " ")], arg, [])
+    // A program: its lines, so that what its calls do can be read against it.
+    if (data.name === "run_code") for (const line of programLines(data.input)) this.line("info", [seg(`  │ ${truncate(line, this.width - 4)}`, "dim")])
     call.after = this.lines
   }
 
@@ -1079,8 +1086,9 @@ export class PrettyRenderer implements Sink {
     const described = stopped ? { symbol: SYMBOL.stop, tone: "yellow" as const, text: data.outcome === "effect_unknown" ? "stopped by you · it may have taken effect" : "stopped by you" } : describeOutcome(call.name, data)
     // On a narrow terminal the loop-decided outcomes drop their explanation before the call's argument is cut short.
     const room = this.width - displayWidth(`  ✓ ${call.name} · ${described.text}${suffix([duration])}`)
-    const outcome = !adjacent && room < 16 && described.short !== undefined ? { ...described, text: described.short } : described
-    const head: Segment[] = [seg("  "), seg(`${outcome.symbol} `, outcome.tone)]
+    // A call with no argument on its row (a program) has nothing to keep room for.
+    const outcome = !adjacent && call.arg !== "" && room < 16 && described.short !== undefined ? { ...described, text: described.short } : described
+    const head: Segment[] = [seg(call.nested === true ? "    " : "  "), seg(`${outcome.symbol} `, outcome.tone)]
     // What the language servers said about an edit: how many new diagnostics its note lists, and from which server.
     const diagnosed = diagnosticsSummary(data.diagnostics)
     // What a server answered is shortened before the name of its tool is.

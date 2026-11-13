@@ -29,6 +29,9 @@ export function callArgument(name: string, input: string): string {
     }
     case "shell":
       return str("command") ?? ""
+    // A program is shown as its lines, under the call's row.
+    case "run_code":
+      return ""
     // An MCP call is named by the server's tool, as the approval question and the catalogue name it.
     case "mcp_call": {
       const server = str("server")
@@ -58,6 +61,11 @@ export function successSummary(name: string, settled: Settled): string {
   const display = asObject(settled.display)
   const num = (key: string) => (display !== null && typeof display[key] === "number" ? (display[key] as number) : null)
   switch (name) {
+    case "run_code": {
+      const code = display !== null ? asObject(display.code ?? null) : null
+      const calls = code !== null && typeof code.calls === "number" ? code.calls : null
+      return calls === null ? firstLine(settled.output) : plural(calls, "tool call")
+    }
     case "read": {
       // An image is attached for the model to see: its type, size and dimensions, not a line count.
       const image = display !== null ? asObject(display.image ?? null) : null
@@ -137,6 +145,15 @@ export function errorSummary(name: string, settled: Settled): string {
  * text. Outcomes the loop decided (`not_started`, `effect_unknown`) have fixed
  * wording on the outcome line and no detail.
  */
+/** A program's lines, as its call's row shows them: at most `rows`, then how many more. */
+export function programLines(input: string, rows = 8): string[] {
+  const args = parseObject(input)
+  const code = args !== null && typeof args.code === "string" ? args.code : ""
+  const lines = code.replace(/\s+$/, "").split("\n")
+  if (code.trim() === "") return []
+  return lines.length <= rows ? lines : [...lines.slice(0, rows - 1), `… ${plural(lines.length - rows + 1, "more line")}`]
+}
+
 export function detailLines(name: string, settled: Settled): string[] {
   if (settled.outcome === "not_started" || settled.outcome === "effect_unknown") return []
   const lines = settled.output.split("\n").filter((line) => line.trim() !== "" && line !== "(no output)")
@@ -147,6 +164,8 @@ export function detailLines(name: string, settled: Settled): string[] {
     if (body.length <= keep + 1) return body
     return [`… ${plural(body.length - keep, "earlier line")}`, ...body.slice(-keep)]
   }
+  // What a program printed and returned is what it is for: its first lines.
+  if (name === "run_code") return lines.length <= 4 ? lines : [...lines.slice(0, 3), `… ${plural(lines.length - 3, "more line")}`]
   if (settled.outcome !== "error") return []
   // A subagent's reference line for the model (`[subagent ses_…: stopped after …]`) repeats the row about its end.
   return (name === "subagent" ? lines.filter((line) => !/^\[subagent \S+: [^\]]*\]$/.test(line.trim())) : lines).slice(0, 2)

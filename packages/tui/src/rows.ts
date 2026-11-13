@@ -144,13 +144,36 @@ function reasoningLines(row: ReasoningRow, columns: number): Span[][] {
 // ---------------------------------------------------------------- tools
 
 function toolLines(row: ToolRow, columns: number, context: LayoutContext): Span[][] {
+  // A program's calls are drawn under its row, a step in.
+  if (row.parent !== null) return callLines(row, columns - 2, context).map((line) => [span("  "), ...line])
+  return callLines(row, columns, context)
+}
+
+/** A program's lines under its row: at most `PROGRAM_ROWS` collapsed, all of them expanded. */
+const PROGRAM_ROWS = 6
+function programRows(row: ToolRow, columns: number): Span[][] {
+  if (row.name !== "run_code") return []
+  let code = ""
+  try {
+    const input = JSON.parse(row.input) as { code?: unknown }
+    code = typeof input.code === "string" ? input.code.replace(/\s+$/, "") : ""
+  } catch {
+    return []
+  }
+  if (code === "") return []
+  const lines = code.split("\n")
+  const shown = row.expand === 0 && lines.length > PROGRAM_ROWS ? [...lines.slice(0, PROGRAM_ROWS - 1), `… ${lines.length - PROGRAM_ROWS + 1} more lines`] : lines
+  return shown.map((line) => [span(`  │ ${truncate(line, columns - 4)}`, "dim")])
+}
+
+function callLines(row: ToolRow, columns: number, context: LayoutContext): Span[][] {
   // The model's task list is shown as the list, not as a call (expanded, it is the call like any other).
   if (row.name === TASK_TOOL && row.expand === 0) {
     const tasks = taskListLines(row, columns)
     if (tasks !== null) return tasks
   }
   const head = toolHead(row, columns, context)
-  const lines: Span[][] = [head]
+  const lines: Span[][] = [head, ...programRows(row, columns)]
   if (row.subagent !== null) return [head, ...subagentLines(row, row.subagent, columns, context)]
   if (row.expand === 0) {
     if (row.phase === "running" && row.progress !== null) {

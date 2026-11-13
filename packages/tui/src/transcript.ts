@@ -111,6 +111,8 @@ export interface ToolRow extends RowBase {
   hookFailures: boolean
   /** What the language servers said about an edit (`tool.settled.diagnostics`); `null` when none serves the file. */
   diagnostics: DiagnosticsRecord | null
+  /** For a call a program made (`run_code`): the program's call, which its row is drawn under. */
+  parent: string | null
 }
 
 /** A subagent as its parent's tool row shows it. */
@@ -1091,6 +1093,7 @@ export class Transcript {
       row.name = data.name
       row.input = data.input
       row.arg = oneLine(callArgument(data.name, data.input))
+      row.parent = data.parent ?? null
       if (row.phase === "writing") row.phase = "called"
     })
   }
@@ -1122,6 +1125,7 @@ export class Transcript {
         hooks: [],
         hookFailures: false,
         diagnostics: null,
+        parent: null,
       },
       replay,
     )

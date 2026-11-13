@@ -129,6 +129,8 @@ export const META = {
   hooks: `${META_NAMESPACE}/hooks`,
   /** On `session/prompt`: the most model calls the turn this prompt starts may make (a whole number of at least 1). */
   maxSteps: `${META_NAMESPACE}/maxSteps`,
+  /** On the `tool_call` of a call a program made (`run_code`): the `toolCallId` of the program's call it is nested under. */
+  parent: `${META_NAMESPACE}/parent`,
   /**
    * The namespace key itself: on `initialize`'s `agentCapabilities._meta`
    * (what this server has) and `clientCapabilities._meta` (`ClientMeta`), on

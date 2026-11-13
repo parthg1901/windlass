@@ -270,13 +270,16 @@ export class Translator {
       case "tool.called": {
         const tool = this.toolOf(item.data.messageId, item.data.callId, item.data.name)
         tool.args = parseInput(item.data.input)
+        // A call a program made names the program's call, and its title says it is the program's.
+        const parent = item.data.parent === undefined ? undefined : this.tools.get(toolKey(item.data.messageId, item.data.parent))
         const fields = {
           toolCallId: tool.id,
-          title: toolTitle(tool.name, tool.args),
+          title: parent === undefined ? toolTitle(tool.name, tool.args) : `${toolTitle(parent.name, null)} › ${toolTitle(tool.name, tool.args)}`,
           kind: toolKind(tool.name),
           status: "pending" as const,
           rawInput: rawInput(item.data.input),
           locations: toolLocations(tool.name, tool.args, this.options.cwd),
+          ...(parent === undefined ? {} : { _meta: { [META.parent]: parent.id } }),
         }
         update(tool.created ? { sessionUpdate: "tool_call_update", ...fields } : { sessionUpdate: "tool_call", ...fields })
         tool.created = true
