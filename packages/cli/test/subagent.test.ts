@@ -50,7 +50,8 @@ test("a subagent's question is asked at the prompt with its label, the answer re
     engine,
     stdinTTY: true,
     stdoutTTY: true,
-    columns: 100,
+    // Wide enough that the question's first line is one line also for a long temporary directory (/private/var/tmp/... on macOS).
+    columns: 140,
     env: { NO_COLOR: "1" },
     keys: (type) => {
       typer = type

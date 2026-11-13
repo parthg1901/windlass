@@ -300,7 +300,9 @@ describe("approvals and safety, against windlass acp", () => {
       [{ type: "text", text: "Wrote it." }],
       [{ type: "text", text: "Finished." }],
     ])
-    const term = await start(["--cwd", space.cwd], { env: space.env })
+    // Wide enough that the question's title, with the subagent's name beside it, is one line also for a long
+    // temporary directory (/private/var/tmp/... on macOS).
+    const term = await start(["--cwd", space.cwd], { env: space.env, width: 140 })
     await term.waitFor(READY, { timeoutMs: 20_000 })
     term.type("delegate it")
     term.keys("Enter")
