@@ -9,6 +9,7 @@ import { cleanup, onCleanup, tempDir, until } from "./helpers.ts"
 afterEach(cleanup)
 
 const WORKER = join(import.meta.dir, "fixtures", "worker.ts")
+const OPENER = join(import.meta.dir, "fixtures", "opener.ts")
 
 function layout() {
   const base = tempDir()
@@ -68,6 +69,23 @@ describe("competing processes", () => {
     const reopened = openWakeStore({ dir: paths.dir })
     onCleanup(() => reopened.close())
     expect(reopened.list({ includeEnded: true }).map((wake) => wake.state.kind)).toEqual(["completed", "completed", "completed", "completed", "completed"])
+  }, 60_000)
+})
+
+describe("a store that does not exist yet", () => {
+  test("several processes opening it at the same moment all open it", async () => {
+    // Each round is a new file: only the first switch to WAL can collide.
+    for (let round = 0; round < 6; round++) {
+      const paths = layout()
+      const openers = Array.from({ length: 6 }, () => Bun.spawn([process.execPath, OPENER, paths.dir, paths.go], { stdout: "pipe", stderr: "pipe" }))
+      await Bun.sleep(150)
+      writeFileSync(paths.go, "")
+      const results = await Promise.all(openers.map(async (child) => ({ code: await child.exited, err: await new Response(child.stderr).text() })))
+      expect(results).toEqual(openers.map(() => ({ code: 0, err: "" })))
+      const store = openWakeStore({ dir: paths.dir })
+      expect(store.list({ includeEnded: true })).toHaveLength(openers.length)
+      store.close()
+    }
   }, 60_000)
 })
 

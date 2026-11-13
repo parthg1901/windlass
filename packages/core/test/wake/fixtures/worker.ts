@@ -11,6 +11,7 @@
  */
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
+import { enableWal } from "../../../src/store/wal.ts"
 import { createCheckRunner } from "../../../src/wake/check.ts"
 import { createScheduler } from "../../../src/wake/scheduler.ts"
 import { openWakeStore } from "../../../src/wake/store.ts"
@@ -18,7 +19,7 @@ import { openWakeStore } from "../../../src/wake/store.ts"
 const [dir, inboxPath, mode, goFile] = process.argv.slice(2) as [string, string, string, string | undefined]
 const inbox = new Database(inboxPath, { create: true })
 inbox.run("PRAGMA busy_timeout = 10000")
-inbox.run("PRAGMA journal_mode = WAL")
+enableWal(inbox, 10_000)
 inbox.run("CREATE TABLE IF NOT EXISTS attempt (key TEXT NOT NULL, pid INTEGER NOT NULL)")
 inbox.run("CREATE TABLE IF NOT EXISTS admitted (key TEXT PRIMARY KEY, pid INTEGER NOT NULL)")
 

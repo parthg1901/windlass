@@ -25,6 +25,7 @@ import { Database } from "bun:sqlite"
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { StoreLockedError, acquireWriterLock } from "../store/sqlite-lock.ts"
+import { enableWal } from "../store/wal.ts"
 import { type Infer, safeDecode } from "../validate.ts"
 import { type WakeClock, systemClock } from "./clock.ts"
 import {
@@ -301,8 +302,10 @@ export function openWakeStore(options: WakeStoreOptions): WakeStore {
   const fresh = !existsSync(path)
   const db = new Database(path, { create: true })
   if (fresh) chmodSync(path, 0o600)
-  db.run(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 10_000}`)
-  db.run("PRAGMA journal_mode = WAL")
+  const busyTimeoutMs = options.busyTimeoutMs ?? 10_000
+  db.run(`PRAGMA busy_timeout = ${busyTimeoutMs}`)
+  // Several harness processes may open a new file at once.
+  enableWal(db, busyTimeoutMs)
   db.run("PRAGMA synchronous = NORMAL")
   db.transaction(() => {
     const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version
