@@ -59,7 +59,8 @@ describe("a program's calls", () => {
       [program("call_1", `const files = ["a.ts", "b.ts"]\nconst texts = await Promise.all(files.map((path) => read({ path })))\nconsole.log(texts.map((t) => t.length).join(","))\nawait write({ path: "c.ts", content: texts.join("") })\nreturn "done"`), U],
       answer("Joined them."),
     )
-    h.tools.on("read", "aaaa", "bb").on("write", "Wrote c.ts")
+    // The first read finishes once the second has its result: the program made both calls before waiting for either.
+    h.tools.on("read", async () => (await h.seen((item) => item.type === "tool.settled" && item.data.callId === "call_1.2"), "aaaa"), "bb").on("write", "Wrote c.ts")
     h.create().send("Join a and b into c.")
     await h.settled()
     const events = h.store.readEvents(h.session.id)
@@ -70,8 +71,8 @@ describe("a program's calls", () => {
       "started call_1.1",
       "called read call_1.2 <call_1",
       "started call_1.2",
-      "settled call_1.1 success",
       "settled call_1.2 success",
+      "settled call_1.1 success",
       "called write call_1.3 <call_1",
       "started call_1.3",
       "settled call_1.3 success",
