@@ -19,11 +19,16 @@ full-screen interface, and a server for editors (the Agent Client Protocol).
 
 ## Install
 
-To run it you need Linux or macOS, `git`, GNU `env` (coreutils) and, on Linux, `bwrap` (bubblewrap) for the sandbox.
+To run it you need Linux or macOS (x64 or arm64), `git`, GNU `env` (coreutils) and, on Linux, `bwrap` (bubblewrap)
+for the sandbox. **From npm**, which installs the executable for your machine (Node 18 or later only starts it):
 
-**Download an executable** from [Releases](https://github.com/parthg1901/windlass/releases): Linux or macOS, x64 or
-arm64. Check it against the release's `SHA256SUMS`, then install it with the release's `install.sh`. For Linux on
-x64 (elsewhere, change `linux-x64` to `linux-arm64`, `darwin-x64` or `darwin-arm64`):
+```sh
+npm install -g windlass-agent
+```
+
+**Or download an executable** from [Releases](https://github.com/parthg1901/windlass/releases), check it against
+`SHA256SUMS` and install it with `install.sh`. For Linux on x64 (elsewhere, `linux-arm64`, `darwin-x64` or
+`darwin-arm64`):
 
 ```sh
 curl -fL --remote-name-all https://github.com/parthg1901/windlass/releases/latest/download/{windlass-linux-x64,build-info.json,install.sh,SHA256SUMS}
@@ -31,17 +36,11 @@ shasum -a 256 -c --ignore-missing SHA256SUMS
 sh install.sh windlass-linux-x64
 ```
 
-**Or build it** with [Bun](https://bun.sh) 1.4. Clone this repository, then from its folder:
+**Or build it** with [Bun](https://bun.sh) 1.4: clone this repository, then from its folder run `bun install`,
+`bun scripts/build.ts` and `sh scripts/install.sh`.
 
-```sh
-bun install
-bun scripts/build.ts
-sh scripts/install.sh
-windlass --version
-```
-
-Either way the executable goes to `~/.local/bin/windlass`, with `wl` as a short alias. The install script tells you
-if anything is missing and what you lose without it; `sh scripts/install.sh --check` only checks. The
+Every way installs `windlass` with `wl` as a short alias; the last two put it in `~/.local/bin`, and the install
+script says what is missing and what you lose without it (`--check` only checks). The
 [user guide](docs/user-guide.md#installing) has the details, uninstalling, and running from source.
 
 Then sign in with your ChatGPT plan:

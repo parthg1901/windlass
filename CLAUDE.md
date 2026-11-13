@@ -9,8 +9,10 @@ Windlass is a coding agent for the terminal. A session is an append-only event l
   `packages/core/src/brand.ts`. Never type the name in code, tests or protocol identifiers.
 - **One provider.** ChatGPT-plan sign-in through OpenAI's Responses API. Do not add API-key paths or other providers.
 - **The repository is public.** Push only to `origin`, and never anything private: no session data, traces, tokens or
-  personal details. Do not publish packages or add other remotes. A release happens only by pushing a version tag
-  (`.github/workflows/release.yml`, `docs/releasing.md`), and only Parth pushes tags: never create or push one.
+  personal details. Do not add other remotes. A release happens only by pushing a version tag
+  (`.github/workflows/release.yml`, `docs/releasing.md`), and only Parth pushes tags: never create or push one. The
+  npm packages (`scripts/npm.ts`) are published only by that workflow on Parth's tag, or by Parth by hand: never run
+  `npm publish` or `scripts/npm.ts publish`, and never `npm login`.
 - **Commits:** one line, conventional style (`feat(engine): ...`), no AI attribution or co-author lines. Say what
   changed for someone reading the log later. No merge commits: rebase and fast-forward. In a checkout shared with
   others, never `git add -A`; commit with an explicit path list: `git commit -m "..." -- <paths>`.
