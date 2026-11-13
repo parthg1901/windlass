@@ -5,7 +5,7 @@ import { type ReplayPolicy, STOPPED_OUTPUT, createReplay } from "../../src/repla
 import type { Tape } from "../../src/replay/tape.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { noBlobStore } from "../../src/tool/tool.ts"
-import { beforeSideEffectReports, whileToolArgumentsStream } from "../scenarios/cancel.ts"
+import { beforeSideEffectReports, whileCallWaitsAndArgumentsStream } from "../scenarios/cancel.ts"
 import { severalSteps } from "../scenarios/happy.ts"
 import { identicalCallGuard } from "../scenarios/retry.ts"
 import { EFFECT_UNKNOWN, NOT_STARTED } from "../scenarios/script.ts"
@@ -43,9 +43,10 @@ describe("replaying executor", () => {
 
   test("recorded not_started, effect_unknown and refused outcomes come back as the runtime's outcome kinds", async () => {
     const { tools } = standIns()
-    const notRun = createReplay(tapeOf(whileToolArgumentsStream), { tools })
+    const notRun = createReplay(tapeOf(whileCallWaitsAndArgumentsStream), { tools })
     let starts = 0
-    expect(await notRun.executor.run(toolCall("read", '{"path":"a.ts"}'), { onStart: () => (starts += 1) })).toMatchObject({
+    await notRun.executor.run(toolCall("shell", '{"command":"bun run migrate"}'))
+    expect(await notRun.executor.run(toolCall("write", '{"path":"CHANGELOG.md","content":"Added an index."}'), { onStart: () => (starts += 1) })).toMatchObject({
       kind: "not_started",
       settlement: { outcome: "not_started", output: NOT_STARTED },
     })

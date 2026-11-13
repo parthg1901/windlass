@@ -14,17 +14,23 @@
  * - A tape step is one model call that reached a terminal event. A retry
  *   before any output runs under the same message and is one tape step (with
  *   the latest `attempt`).
- * - A step whose response was complete (it ended normally, or a tool of it
- *   started, which only happens after the response finished) is always kept,
- *   however the step was closed afterwards (interrupted, crashed): the model
- *   fully decided it.
+ * - A step whose response was complete is always kept, however the step was
+ *   closed afterwards (interrupted, crashed): the model fully decided it.
  * - A step whose response was cut short is kept only when the user cut it
  *   (`interrupted: user`). The user's decision is an input a replay reproduces.
+ *   A call starts as soon as its arguments are in, while the response still
+ *   streams, so a started call does not show that the response finished; the
+ *   usage does, which the provider reports only with a finished response. A
+ *   step the user interrupted is complete when it has usage, and cut when not.
  * - A step cut by a fault (provider error, crash, shutdown, harness error) is
  *   not something a replay can reproduce. It is moved to `skipped`, together
  *   with the harness message that only exists because of the fault (the
  *   continuation note, the restart marker). Its partial text is carried into
  *   the next step's `text`, so the recorded answer reads as the user saw it.
+ *   A step closed by a fault after one of its calls started is kept as
+ *   complete instead: the call may have had an effect and the model saw its
+ *   result. A crash records no usage, so whether such a response had finished
+ *   is not known.
  *
  * Inputs
  * Every message that entered history between steps (a delivered user or
@@ -72,7 +78,7 @@ export interface TapeStep {
   /** Text items in order, joined without a separator. Partial text of a skipped attempt right before is prefixed. */
   readonly text: string
   readonly calls: readonly TapeCall[]
-  /** `complete`: the model finished its response. `cut`: the user stopped it while it streamed. */
+  /** `complete`: the model finished its response (or, for a fault, a call of it started). `cut`: the user stopped it while it streamed. */
   readonly response: "complete" | "cut"
   readonly end: StepEnd
   readonly usage: Usage | null
@@ -181,7 +187,7 @@ export function tapeFromEvents(events: readonly LogEvent[]): Tape {
       if (call.settlement === null) throw new Error(`call ${call.messageId}/${call.callId} was never settled`)
       return { ...call, index, settlement: call.settlement }
     })
-    const complete = end.kind === "ended" || calls.some((call) => call.started !== null)
+    const complete = end.kind === "ended" || (end.kind === "interrupted" ? usage !== null : calls.some((call) => call.started !== null))
     if (!complete && end.kind === "fault") {
       const attempt = { messageId: step.messageId, seq: step.seq, error: end.error, text: step.texts.join(""), dropped: [] }
       skipped.push(attempt)

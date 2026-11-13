@@ -293,6 +293,26 @@ const PLAYS: Record<string, Play> = {
     expect(h.tools.ran).toEqual([{ name: "read", input: { path: "a.ts" } }])
   },
 
+  "Cancel while a call waits behind a command and the response streams": async (h, say) => {
+    h.provider.enqueue([
+      script.text("I'll run the migration, note it and show the schema."),
+      call("call_1", "shell", { command: "bun run migrate" }),
+      call("call_2", "write", { path: "CHANGELOG.md", content: "Added an index." }),
+      script.toolCall("call_3", "read", { path: "schema.sql" }, { partial: true }),
+      script.hang(),
+    ])
+    h.tools.on("shell", async (_input, context) => {
+      await untilAbort(context.signal)
+      return failed("Stopped by the user after 2 s. Output so far:\nmigrating\n")
+    })
+    h.create().send(say[0]!)
+    await h.seen((item) => item.type === "tool.input.delta" && item.callId === "call_3")
+    h.session.interrupt()
+    await h.settled()
+    // The command ran; the write waited for it and never did, nor did the call cut short.
+    expect(h.tools.ran.map((ran) => ran.name)).toEqual(["shell"])
+  },
+
   "Cancel while one tool is running": async (h, say) => {
     h.provider.enqueue([call("call_1", "shell", { command: "bun test" }), U])
     h.tools.on("shell", async (_input, context) => {
@@ -1995,7 +2015,7 @@ describe("the loop writes each scenario's events", () => {
 
   test("every scenario has a play and every play a scenario", () => {
     expect(Object.keys(PLAYS).sort()).toEqual(scenarios.map(({ scenario }) => scenario.title).sort())
-    expect(scenarios).toHaveLength(117)
+    expect(scenarios).toHaveLength(118)
     for (const title of Object.keys(DEVIATIONS)) expect(Object.keys(PLAYS)).toContain(title)
   })
 })

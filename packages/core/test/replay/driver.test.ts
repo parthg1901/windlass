@@ -5,7 +5,7 @@ import { normalise } from "../../src/replay/match.ts"
 import { renderReport, renderReportJson } from "../../src/replay/report.ts"
 import type { Tape } from "../../src/replay/tape.ts"
 import { FakeProvider, type ScriptItem, script } from "../../src/testing/fake-provider.ts"
-import { whileToolArgumentsStream } from "../scenarios/cancel.ts"
+import { whileCallWaitsAndArgumentsStream, whileToolArgumentsStream } from "../scenarios/cancel.ts"
 import { crashWhileSideEffectRuns } from "../scenarios/crash.ts"
 import { parallelToolCalls, severalSteps } from "../scenarios/happy.ts"
 import { refusedTurn } from "../scenarios/refusal.ts"
@@ -112,14 +112,28 @@ describe("replay driver", () => {
   })
 
   test("an interrupted step: the recorded call is answered not_started and further calls are dropped as the interrupt dropped them", async () => {
-    const tape = tapeOf(whileToolArgumentsStream)
+    const tape = tapeOf(whileCallWaitsAndArgumentsStream)
     const { report, conversation } = await replay(tape, {
+      0: [
+        script.text("I'll run the migration, note it and show the schema."),
+        script.toolCall("c1", "shell", { command: "bun run migrate" }),
+        script.toolCall("c2", "write", { path: "CHANGELOG.md", content: "Added an index." }),
+        script.toolCall("c3", "read", { path: "schema.sql" }),
+      ],
+    })
+    expect(report).toMatchObject({ status: "identical", matched: { calls: 2, dropped: 1, notStarted: 1 } })
+    const results = conversation.flatMap((entry) => (entry.kind === "output" && entry.item.type === "tool_result" ? [entry.item.output] : []))
+    expect(results).toEqual(["Stopped by the user after 2 s. Output so far:\nmigrating\n", NOT_STARTED, "Not run: the user interrupted before this call started."])
+    expect(conversation.at(-1)).toMatchObject({ kind: "input", input: { origin: "interrupt" } })
+  })
+
+  test("a step interrupted while it streamed, after a call of it had run: further calls are dropped, not an extra call", async () => {
+    const { report, conversation } = await replay(tapeOf(whileToolArgumentsStream), {
       0: [script.text("I'll read both files."), script.toolCall("c1", "read", { path: "a.ts" }), script.toolCall("c2", "read", { path: "b.ts" })],
     })
-    expect(report).toMatchObject({ status: "identical", matched: { calls: 1, dropped: 1, notStarted: 1 } })
+    expect(report).toMatchObject({ status: "identical", matched: { calls: 1, dropped: 1, notStarted: 0 } })
     const results = conversation.flatMap((entry) => (entry.kind === "output" && entry.item.type === "tool_result" ? [entry.item.output] : []))
-    expect(results).toEqual([NOT_STARTED, "Not run: the user interrupted before this call started."])
-    expect(conversation.at(-1)).toMatchObject({ kind: "input", input: { origin: "interrupt" } })
+    expect(results).toEqual(["export const a = 1", "Not run: the user interrupted before this call started."])
   })
 
   test("a crash replays the recorded effect_unknown result and the restart marker", async () => {

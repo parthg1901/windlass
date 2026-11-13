@@ -163,6 +163,47 @@ export const whileToolArgumentsStream: Scenario = {
   ],
 }
 
+export const whileCallWaitsAndArgumentsStream: Scenario = {
+  title: "Cancel while a call waits behind a command and the response streams",
+  description:
+    "The model asks for a command, then for a write, and is streaming the arguments of a third call when the user cancels. The command started the moment its arguments were in; the write waits for it, because a command could change the file the write was decided about. The cancel stops the command, which settles with what it printed; the write was recorded but never started, so it settles as `not_started`; the third call never finished streaming, so it is never recorded and never runs.",
+  provider: "streams text, a shell call (call_1), a write call (call_2), then argument deltas for call_3; the command is still running and the response still streaming when the abort fires",
+  phases: [
+    {
+      label: "the command runs, the write waits for it, and the model streams a third call",
+      events: [
+        ...opening("Run the migration, note it in the changelog and show the schema."),
+        stepStarted("a1"),
+        say("a1", "I'll run the migration, note it and show the schema."),
+        called("a1", "call_1", "shell", '{"command":"bun run migrate"}'),
+        toolStarted("a1", "call_1", "shell"),
+        called("a1", "call_2", "write", '{"path":"CHANGELOG.md","content":"Added an index."}'),
+      ],
+      expect: { open: "a1", ui: [{ id: "u1" }, { id: "a1", status: "running", calls: ["call_1 shell running", "call_2 write pending"] }] },
+    },
+    {
+      label: "the user cancels; the command returns its output so far and the write never starts",
+      events: [
+        interruptRequested("user"),
+        settled("a1", "call_1", "error", "Stopped by the user after 2 s. Output so far:\nmigrating\n"),
+        settled("a1", "call_2", "not_started", NOT_STARTED),
+        stepInterrupted("a1", "user"),
+        interruptMarker("s1", "user"),
+        executionInterrupted("user"),
+      ],
+      expect: {
+        ...released,
+        ui: [
+          { id: "u1" },
+          { id: "a1", status: "failed", text: "I'll run the migration, note it and show the schema.", calls: ["call_1 shell error", "call_2 write not_started"] },
+          { id: "s1" },
+        ],
+        history: ["u1", "a1", "s1"],
+      },
+    },
+  ],
+}
+
 export const whileOneToolRuns: Scenario = {
   title: "Cancel while one tool is running",
   description:
@@ -401,6 +442,7 @@ export const duringRetryDelay: Scenario = {
 export const cancelScenarios = [
   whileTextStreams,
   whileToolArgumentsStream,
+  whileCallWaitsAndArgumentsStream,
   whileOneToolRuns,
   whileParallelToolsRunOneDone,
   beforeSideEffectReports,

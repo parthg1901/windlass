@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { SessionId } from "../../src/id.ts"
 import { tapeFromEvents, tapeFromStore } from "../../src/replay/tape.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
-import { beforeSideEffectReports, whileToolArgumentsStream } from "../scenarios/cancel.ts"
+import { beforeSideEffectReports, whileCallWaitsAndArgumentsStream, whileToolArgumentsStream } from "../scenarios/cancel.ts"
 import { crashWhileSideEffectRuns } from "../scenarios/crash.ts"
 import { parallelToolCalls, severalSteps, twoTurns } from "../scenarios/happy.ts"
 import { refusedTurn } from "../scenarios/refusal.ts"
@@ -43,13 +43,23 @@ describe("tape extraction", () => {
   })
 
   test("a step the user interrupted while streaming is kept as cut, with its unstarted call and the marker after it", () => {
-    const tape = tapeOf(whileToolArgumentsStream)
+    const tape = tapeOf(whileCallWaitsAndArgumentsStream)
     expect(tape.steps).toHaveLength(1)
     const step = tape.steps[0]!
-    expect(step).toMatchObject({ response: "cut", end: { kind: "interrupted", reason: "user" }, text: "I'll read both files." })
-    expect(step.calls[0]).toMatchObject({ name: "read", started: null, settlement: { outcome: "not_started", output: NOT_STARTED } })
+    expect(step).toMatchObject({ response: "cut", end: { kind: "interrupted", reason: "user" }, text: "I'll run the migration, note it and show the schema." })
+    expect(step.calls.map((call) => [call.name, call.started, call.settlement.outcome])).toEqual([
+      ["shell", { effect: "exec" }, "error"],
+      ["write", null, "not_started"],
+    ])
+    expect(step.calls[1]!.settlement.output).toBe(NOT_STARTED)
     expect(tape.inputs.at(-1)).toMatchObject({ kind: "message", beforeStep: 1, messageId: "s1", from: "harness", origin: "interrupt" })
     expect(tape.skipped).toEqual([])
+  })
+
+  test("a call that started while the response streamed does not make an interrupted step complete", () => {
+    const step = tapeOf(whileToolArgumentsStream).steps[0]!
+    expect(step).toMatchObject({ response: "cut", end: { kind: "interrupted", reason: "user" }, usage: null })
+    expect(step.calls.map((call) => [call.name, call.started, call.settlement.output])).toEqual([["read", { effect: "read" }, "export const a = 1"]])
   })
 
   test("a started side-effecting call settled effect_unknown is on the tape as such", () => {
