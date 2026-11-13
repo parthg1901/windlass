@@ -72,13 +72,14 @@ const withoutComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, 
 const flagsOf = (usage: string) => [...usage.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((match) => match[1]!)
 
 function sourceFiles(): string[] {
+  // Sorted: the order readdir gives differs between file systems (it is not the name order on the CI runners' ext4).
   const walk = (dir: string): string[] =>
-    readdirSync(dir).flatMap((entry) => {
+    readdirSync(dir).sort().flatMap((entry) => {
       const path = join(dir, entry)
       if (entry === "node_modules") return []
       return statSync(path).isDirectory() ? walk(path) : path.endsWith(".ts") ? [path] : []
     })
-  return readdirSync(join(ROOT, "packages")).flatMap((pkg) => walk(join(ROOT, "packages", pkg, "src")))
+  return readdirSync(join(ROOT, "packages")).sort().flatMap((pkg) => walk(join(ROOT, "packages", pkg, "src")))
 }
 const SOURCE = sourceFiles().map((file) => readFileSync(file, "utf8")).join("\n")
 /** The source as its string literals read: escapes undone. */
