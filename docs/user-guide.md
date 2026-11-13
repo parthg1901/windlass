@@ -6,7 +6,10 @@ options, configuration keys, exit codes and environment variables here against t
 
 ## Installing
 
-To build you need [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed (`bun install`).
+Each [release](https://github.com/parthg1901/windlass/releases) has an executable for Linux and macOS, x64 and
+arm64, with `install.sh` and `SHA256SUMS`; the README's Install section has the commands to download, check and
+install one. To build instead you need [Bun](https://bun.sh) 1.4 and this repository with its dependencies installed
+(`bun install`).
 To run you need Linux or macOS, a ChatGPT plan, and these programs on `PATH`:
 
 - `bwrap` (bubblewrap) on Linux, for the sandbox. Without it no command runs sandboxed, and every command asks first.

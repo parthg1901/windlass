@@ -30,7 +30,8 @@ import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { BUILTIN_COMMANDS } from "../../packages/cli/src/slash.ts"
 import { forkUsage, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
-import { ROOT, hostTarget, parseBuildArgs } from "../../scripts/build.ts"
+import { ROOT, TARGETS, artifactName, hostTarget, parseBuildArgs } from "../../scripts/build.ts"
+import { CHECKSUMS, INSTALL_SCRIPT } from "../../scripts/release.ts"
 
 const PAGES = ["README.md", "docs/user-guide.md", "docs/troubleshooting.md"] as const
 const text = Object.fromEntries(PAGES.map((page) => [page, readFileSync(join(ROOT, page), "utf8")])) as Record<(typeof PAGES)[number], string>
@@ -60,6 +61,13 @@ const buildFlags = [...readFileSync(join(ROOT, "scripts/build.ts"), "utf8").matc
 /** The options of the main command and of the `fork` and `replay` subcommands. */
 const helpFlags = [helpText(), forkUsage(), replayUsage()].flatMap((usage) => [...usage.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((match) => match[1]!))
 const loginFlags = ["--no-browser"]
+/** The options of `curl` and `shasum` in the commands that download a release and check it. */
+const downloadFlags = ["--remote-name-all", "--ignore-missing"]
+/** The files a release has (scripts/release.ts collects them). */
+const executables = TARGETS.map(artifactName)
+const releaseFiles = [...executables, "build-info.json", INSTALL_SCRIPT, CHECKSUMS]
+/** The repository the README's Releases link names: downloads must come from there. */
+const releases = /\[Releases\]\(https:\/\/github\.com\/([^/\s]+\/[^/\s)]+)\/releases\)/.exec(text["README.md"])?.[1]
 
 describe("commands in the documentation", () => {
   test("there are commands to check", () => {
@@ -86,8 +94,28 @@ describe("commands in the documentation", () => {
         continue
       }
       if (command === "sh") {
-        expect(args[0], where).toBe("scripts/install.sh")
-        for (const arg of args.slice(1)) expect(installFlags, where).toContain(arg)
+        // The install script from a clone, or from a release's files beside the executable it installs.
+        expect(["scripts/install.sh", INSTALL_SCRIPT], where).toContain(args[0] ?? "")
+        for (const arg of args.slice(1)) expect(arg.startsWith("-") ? installFlags : args[0] === INSTALL_SCRIPT ? executables : [], where).toContain(arg)
+        continue
+      }
+      if (command === "curl") {
+        // A release's files, from this repository's latest release: an executable, its record (for the alias), the install script and the checksums.
+        const [url, ...more] = args.filter((arg) => !arg.startsWith("-"))
+        expect(more, where).toEqual([])
+        for (const arg of args.filter((item) => item.startsWith("-"))) expect(["-fL", ...downloadFlags], where).toContain(arg)
+        const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/releases\/latest\/download\/(?:\{([^}]+)\}|([^/{}]+))$/.exec(url ?? "")
+        expect(match, where).not.toBeNull()
+        expect(match![1], where).toBe(releases)
+        const files = (match![2] ?? match![3]!).split(",")
+        for (const file of files) expect(releaseFiles, where).toContain(file)
+        expect(files.filter((file) => executables.includes(file)), where).toHaveLength(1)
+        for (const file of ["build-info.json", INSTALL_SCRIPT, CHECKSUMS]) expect(files, where).toContain(file)
+        continue
+      }
+      if (command === "shasum") {
+        // Checks only the files downloaded; the same command on Linux and macOS.
+        expect(args.join(" "), where).toBe(`-a 256 -c --ignore-missing ${CHECKSUMS}`)
         continue
       }
       if (command === "rm") {
@@ -120,7 +148,7 @@ describe("commands in the documentation", () => {
   }, 60_000)
 
   test("every --option the pages name exists", () => {
-    const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags])
+    const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags, ...downloadFlags])
     // A slash command's own options (`/remember [--me] <text>`) are not the program's.
     for (const page of PAGES) for (const [, flag] of text[page].replace(/`\/[a-z][^`\n]*`/g, "").matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)) expect(known, `${page}: ${flag}`).toContain(flag!)
   })

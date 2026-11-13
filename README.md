@@ -19,8 +19,19 @@ full-screen interface, and a server for editors (the Agent Client Protocol).
 
 ## Install
 
-You need [Bun](https://bun.sh) 1.4 to build it. To run it you need `git`, GNU `env` (coreutils) and, on Linux,
-`bwrap` (bubblewrap) for the sandbox. Clone this repository, then from its folder:
+To run it you need Linux or macOS, `git`, GNU `env` (coreutils) and, on Linux, `bwrap` (bubblewrap) for the sandbox.
+
+**Download an executable** from [Releases](https://github.com/parthg1901/windlass/releases): Linux or macOS, x64 or
+arm64. Check it against the release's `SHA256SUMS`, then install it with the release's `install.sh`. For Linux on
+x64 (elsewhere, change `linux-x64` to `linux-arm64`, `darwin-x64` or `darwin-arm64`):
+
+```sh
+curl -fL --remote-name-all https://github.com/parthg1901/windlass/releases/latest/download/{windlass-linux-x64,build-info.json,install.sh,SHA256SUMS}
+shasum -a 256 -c --ignore-missing SHA256SUMS
+sh install.sh windlass-linux-x64
+```
+
+**Or build it** with [Bun](https://bun.sh) 1.4. Clone this repository, then from its folder:
 
 ```sh
 bun install
@@ -29,9 +40,8 @@ sh scripts/install.sh
 windlass --version
 ```
 
-This builds one executable for your machine and copies it to `~/.local/bin/windlass`, with `wl` as a short alias.
-The install script tells you if anything is missing and what you lose without it; `sh scripts/install.sh --check`
-only checks. The
+Either way the executable goes to `~/.local/bin/windlass`, with `wl` as a short alias. The install script tells you
+if anything is missing and what you lose without it; `sh scripts/install.sh --check` only checks. The
 [user guide](docs/user-guide.md#installing) has the details, uninstalling, and running from source.
 
 Then sign in with your ChatGPT plan:
@@ -86,7 +96,6 @@ It prints each tool call as it runs and ends with a line such as `✓ done · no
   there is no Windows version.
 - **A ChatGPT plan is required.** The only way to reach a model is "Sign in with ChatGPT": no API keys, no other
   providers, no local models.
-- **You build it yourself.** There is no package and no download.
 - **The sandbox needs `bwrap` on Linux.** Without it no command runs sandboxed, and every command asks first.
 - **Sessions stay on your machine.** They are files in your home directory; nothing is synchronised or shared.
 
@@ -107,4 +116,4 @@ It prints each tool call as it runs and ends with a line such as `✓ done · no
 
 ## Licence
 
-MIT; see `LICENSE`. `CONTRIBUTING.md` says how to work on it.
+MIT; see `LICENSE`. `CONTRIBUTING.md` says how to work on it, [releasing](docs/releasing.md) how a version ships.
