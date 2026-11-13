@@ -15,7 +15,7 @@ full-screen interface, and a server for editors (the Agent Client Protocol).
 - **Can be undone.** `/undo` takes the files and the conversation back to before your last message.
 - **Keeps every session.** Resume one later, fork it to try another way, or work in several at once.
 - **Is yours to shape.** Project instructions (`AGENTS.md`), agents, skills, slash commands, hooks, MCP servers,
-  language-server diagnostics, subagents and wake-ups, each with a page under [docs/](docs/).
+  language-server diagnostics, subagents, wake-ups and programs that call tools, each with a page under [docs/](docs/).
 
 ## Install
 
@@ -100,7 +100,7 @@ It prints each tool call as it runs and ends with a line such as `✓ done · no
   [hooks](docs/hooks.md), [MCP servers](docs/mcp.md), [diagnostics](docs/diagnostics.md),
   [subagents](docs/subagents.md), [the task list](docs/task-list.md), [forks](docs/forks.md),
   [wake-ups](docs/wake-ups.md), [memory](docs/memory.md), [telemetry](docs/telemetry.md),
-  [replay](docs/replay.md).
+  [replay](docs/replay.md), [code mode](docs/code-mode.md).
 - For editors and tools: [the protocol](docs/acp.md), [the session log's format](docs/event-log.md),
   [the architecture](docs/architecture.md).
 - `windlass --help`: every option and exit code.

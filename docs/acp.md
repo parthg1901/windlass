@@ -78,7 +78,9 @@ window). Retries are shown as `notice`s, and compactions as `compaction_update`s
 Tool outcomes ACP v1 has no status for are `failed` with a title suffix and a sentence: "(not started)" for a call the
 interrupt reached before it ran (safe to run again), "(outcome unknown)" for one that started a side effect and was
 stopped before reporting (check before repeating it). `_meta["windlass/outcome"]` on the final update always holds
-the harness outcome: `success`, `error`, `not_started` or `effect_unknown`.
+the harness outcome: `success`, `error`, `not_started` or `effect_unknown`. A call that a program made (`run_code`)
+has `_meta["windlass/parent"]` on its `tool_call`: the `toolCallId` of the program's call, which its title names too
+(`Run a program › Read a.ts`).
 
 IDs are stable: a user message has the harness message ID, agent text and reasoning are `<message>:t<n>` and
 `<message>:r<n>`, a tool call is `<message>/<call>`. A replay uses the same IDs as the live turn.

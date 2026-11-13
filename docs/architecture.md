@@ -68,6 +68,8 @@ packages/core/src
   skills/         skill files: discovery, the index text, the `skill` tool, the `skills` configuration section
   mcp/            MCP servers behind two bridge tools: both protocol eras, the two transports, the registry, the
                   catalogue text, the `mcp` configuration section
+  codemode/       `run_code`: a program that calls tools as functions, run in a confined `bun` process whose every
+                  call is sent back to the step loop; the spec, the runner and its limits, the prelude
   wake/           wake-ups: the record and its limits, cron, the shared store, the scheduler, the check runner, the
                   webhook listener, the tools, the `wake` configuration section
   memory/         notes across sessions: the files, expiry and budget, trust, delivery, the tools, usage and scores,
@@ -114,7 +116,7 @@ Three places are changed by one owner at a time, never in parallel branches. Oth
 | Execution | `execution.started`, `execution.interrupt_requested`, `execution.interrupted`, `execution.resumed`, `execution.succeeded` (with what the gate found, and `hooks.unsatisfied` with `hooks.objections`, their last words, when stop hooks still objected at their bound; `turn.ended` carries the same), `execution.failed` (`cause: "approval"` when a call nobody could approve ended the run, `cause: "replay"` when a replay ended where the model had not answered) |
 | Step | `step.started`, `step.ended`, `step.failed`, `step.refused`, `retry.scheduled` |
 | Model output | `text.ended`, `reasoning.ended` |
-| Tools | `tool.called`, `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.cancel_requested` (the user asked for this one running call to stop; the turn goes on), `tool.settled` (for an edit a language server was asked about also `diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts) |
+| Tools | `tool.called` (with `parent` for a call a program made: the program's call it is nested under), `tool.started` (with the effect class, and what the approval layer let the call run under: mode, path facts, sandbox and its extra access), `tool.cancel_requested` (the user asked for this one running call to stop; the turn goes on), `tool.settled` (for an edit a language server was asked about also `diagnostics`: whether a note was added, how many diagnostics it lists, and per server whose configuration it is from, how it came out and the counts) |
 | Hooks | `hook.ran` (one per hook that applied: the point, the call for a before or after hook, which hook and whose, how it ran, what it answered, the text that reached the model, what it printed for the user, and whether that text is a taint source) |
 | Approval | `approval.requested` (the question, its choices and what each remembers, what it is about, how the call runs if approved, the path facts and the escalation it was decided from), `approval.answered` (the choice, the note, the approvals it created), `approval.denied` (by the policy, or because nobody was present; whether it ends the run; `agent` when the policy that refused it is the restrictions of the agent the session runs as, then with `refusal`: which rule, the call's effect class, a sentence for the user), `taint.noticed` (the first source, the sentence the user was shown), `taint.cleared` |
 | Spawned work | `spawn.started` (a subagent's child session and the agent it runs as, or a background command with its log file; the call that started it; whether it runs in the background), `spawn.ended` (completed, failed, stopped or lost; the exit code; a subagent's usage, taint and worktree merge), `watch.started` (the user's watch on a running command's output: text or a regular expression a line must match, and how often it may fire), `watch.fired` (the line, the count, and the message that tells the model), `watch.ended` (a watch that could still fire ended: removed, with its command, or lost with it) |
@@ -377,6 +379,10 @@ is a new version with a decoder for the old one.
 - A tool that stands for many says which one a call means (`Tool.subject`: `mcp_call` names the server's tool, so an
   approval is asked about and remembered for `github/create_issue`, never for the bridge), and a tool whose call
   acts later says so for the question (`Tool.cautions`: `wake_create`).
+- A tool that runs a program whose every effect is a call of other tools says so (`Tool.nests`: `run_code`). Its
+  calls are calls of the step nested under it (`tool.called.parent`): decided, started, stopped, settled and taint
+  sources like any, never part of a request, and settled before it. Its own call needs no question (it runs
+  confined), and the schedule places it as a call that changes something and names nothing. See "Code mode".
 - A tool whose calls change less than its class says declares it (`Tool.changes: "records"`: `wake_cancel`,
   `memory_save`, `memory_retract` change only records the harness keeps for itself; as a function it answers for
   one call, which is how `wake_create` says that a timer or a webhook runs no command). The class stays `write`
@@ -1019,6 +1025,7 @@ message with its text stored. `EngineOptions.skills`, `mcp`, `wake`, `memory` an
 | --- | --- | --- | --- |
 | Skills | `skill` | every session, whether or not a skill exists | `skills`: the index |
 | MCP | `mcp_search`, `mcp_call` | every session, whether or not a server is configured | `mcp`: the catalogue |
+| Code mode | `run_code` | every session | none: what a program may call follows the frozen list |
 | Wake-ups | `wake_create`, `wake_list`, `wake_cancel` | a session a person started, while `wake.enabled` (default on) | none: firings arrive through the inbox |
 | Memory | `memory_save`, `memory_retract`, `memory_search` | a session a person started, while `memory.enabled` (default **off**) | `memory`: the notes |
 | Agents | none of its own: `subagent` has an optional `agent` argument in every session | every session | `agent-index`: the list of agents, for a session whose list has `subagent`; `agent`: a switch |
@@ -1027,12 +1034,39 @@ message with its text stored. `EngineOptions.skills`, `mcp`, `wake`, `memory` an
 lacks them from then on, also across a compaction and whatever the configuration says later. Skills and MCP are
 unconditional so that every session of a build has the same list and a skill or a server that appears later needs
 no change of it. A feature acts only for a session whose list has its tools: an index, a catalogue or notes are
-never given to a model that has no tool to act on them. The tool list of a session of the real harness has 20
+never given to a model that has no tool to act on them. The tool list of a session of the real harness has 21
 tools with verification on and memory off (the seven file and shell tools and `todo`, two history tools, three for
-spawned work, the acknowledgement tool, and the six of skills, MCP and wake-ups); memory adds three. It is about
-3,300 tokens of every request by the harness's estimate (`bun scripts/tool-block.ts` prints it per tool). The list
+spawned work, the acknowledgement tool, the six of skills, MCP and wake-ups, and `run_code`); memory adds three. It
+is about 3,700 tokens of every request by the harness's estimate (`bun scripts/tool-block.ts` prints it per tool). The list
 is meant to be final: `wake_create` is described in under 400 tokens, with each trigger's reference in the answer
 to a call that is not valid instead of in every request.
+
+**Code mode** (`engine/codemode.ts`; `codemode/README.md` has the module, `docs/code-mode.md` the user's view).
+`run_code` takes a JavaScript program and runs it in a child `bun` under `CommandSandbox.confined`: nothing
+writable but its own directory, no network, almost no environment. Its tool functions are stubs that send each call
+to the step loop over the process's standard streams, so every effect of the program is a call of the step:
+
+- *Recorded.* `tool.called` with `parent` (the program's call, which is running; ID `<parent>.<n>`), durable
+  before anything about the call is decided, then everything a call of the model's goes through: the agent's
+  restrictions, the approval layer, the hooks, the runtime, redaction, the one cap, `tool.settled`. The reducer
+  accepts a nested call only under a running call of the open step that is not nested itself, and settles the
+  program's call only once none of its calls is unsettled. The request builder leaves nested calls out: the model
+  sees the program's call and its result.
+- *Decided.* The program's own call is decided as `Tool.nests` says: confined where a sandbox exists, refused
+  where none does unless commands run unsandboxed (an untainted `full`), never asked about. Its calls are decided
+  one by one, with a question where a direct call would have one. An agent's limits on effect classes apply to
+  each call, not to the program.
+- *Scheduled.* The program's call waits for the response's earlier writes and commands and holds the later ones
+  off; its calls wait for each other in a `CallSchedule` of their own, in the order the program makes them.
+- *Stopped and recovered.* Each call's signal follows the program's call's, so an interrupt or a stop of the
+  program reaches its calls; where the loop settles calls itself (a stop not obeyed in time, the wind-down of an
+  interrupt, recovery) the nested ones are settled first, from the log. Nothing is run again.
+- *Which tools.* The file tools, `shell` without `background`, `mcp_search` and `mcp_call`, where the frozen list
+  has them (`PROGRAM_TOOLS`, with the reasons for the rest). The spec names them all, whatever the session has.
+- *Measured* (2026-11-13): on the scripted model, 20 reads, a count and three edits took 4 requests and about
+  36,600 input tokens directly and 2 requests and 9,800 as one program; live (`gpt-6-luna`, low), 3 requests and
+  15,700 tokens when the model wrote one program, against 5 and about 26,500 without the tool, where it used `grep`
+  and `sed`. Left to choose, the model used a command about as often as a program.
 
 **Skills** (`engine/skills.ts`). At every step boundary the skills of the session's working directory are
 discovered (a few `readdir` and `stat` calls and one read per skill file) and the index is appended when its

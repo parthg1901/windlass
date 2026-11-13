@@ -22,6 +22,8 @@ your configuration file (`~/.config/windlass/config.json`). The default is `auto
 | Run a command, on a machine without a sandbox | asks, runs unsandboxed | asks, runs unsandboxed | runs |
 | A command that asks for the network or for another directory | asks | asks | runs |
 | Call a tool of an MCP server (`mcp_call`; it runs outside the sandbox) | asks | asks | runs |
+| Run a program (`run_code`): the program itself; each call it makes is decided like the rows above | runs confined | runs confined | runs confined |
+| Run a program, on a machine without a sandbox | refused | refused | runs, until untrusted content is present |
 | Change only Windlass's own records: cancel a wake-up, save or retract a memory note | asks | runs | runs |
 | The project's checks (the verification gate) | sandboxed, no question | sandboxed, no question | unsandboxed |
 | The project's checks, on a machine without a sandbox | not run | not run | run |
@@ -37,6 +39,13 @@ without a question in `auto` and `full`, also in a one-shot run, and only `ask`,
 them (`? Allow memory_save: changing Windlass's own records?`). Creating a wake-up is not one of them: it is
 decided like the command it may run. Looking things up (`wake_list`, `memory_search`, `mcp_search`) is a read and
 runs in every mode.
+
+**Programs.** A program the agent writes (`run_code`, [code-mode.md](code-mode.md)) runs in a process of its own
+under the sandbox with less than a command gets: nothing writable but a directory of its own (the working directory
+is read-only to it), no network, almost no environment variables. Everything it does to files, commands or MCP
+servers is a tool call it asks the harness for, and each of those is decided, asked about, recorded and refused
+exactly as the same call made directly. So its own call asks nothing. Where there is no sandbox nothing would keep
+it to its calls, and it is refused except in an untainted `full`.
 
 ## When nobody is there to answer
 
@@ -135,6 +144,9 @@ counts a conversation as tainted once it holds content from a source it does not
   from someone else as untrusted);
 - the result of a call to an MCP tool, unless its server is marked `untrusted: false`. Searching the tools
   (`mcp_search`) is not one: it shows what the model was already given ([mcp.md](mcp.md), "Trust and taint");
+- any of these fetched by a program (`run_code`): its calls are sources exactly as direct calls are, whatever the
+  program prints. What the program reads by itself, without a call, is like the output of a sandboxed command
+  without network: not counted;
 - the body of a webhook request that fired a wake-up ([wake-ups.md](wake-ups.md));
 - the result of a subagent whose own conversation was tainted ([subagents.md](subagents.md));
 - later: the result of a web tool (there is none yet).
