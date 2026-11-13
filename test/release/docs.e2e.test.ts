@@ -67,6 +67,8 @@ const helpFlags = [helpText(), forkUsage(), replayUsage()].flatMap((usage) => [.
 const loginFlags = ["--no-browser"]
 /** The options of `curl` and `shasum` in the commands that download a release and check it. */
 const downloadFlags = ["--remote-name-all", "--ignore-missing"]
+/** npm's option that leaves out the executable's package, which the pages warn about. */
+const npmFlags = ["--omit"]
 /** The files a release has (scripts/release.ts collects them). */
 const executables = TARGETS.map(artifactName)
 const releaseFiles = [...executables, "build-info.json", INSTALL_SCRIPT, CHECKSUMS]
@@ -117,6 +119,11 @@ describe("commands in the documentation", () => {
         for (const file of ["build-info.json", INSTALL_SCRIPT, CHECKSUMS]) expect(files, where).toContain(file)
         continue
       }
+      if (command === "npm") {
+        // Installing the npm package, by the brand's name for it.
+        expect(args, where).toEqual(["install", "-g", brand.npmPackage])
+        continue
+      }
       if (command === "shasum") {
         // Checks only the files downloaded; the same command on Linux and macOS.
         expect(args.join(" "), where).toBe(`-a 256 -c --ignore-missing ${CHECKSUMS}`)
@@ -152,7 +159,7 @@ describe("commands in the documentation", () => {
   }, 60_000)
 
   test("every --option the pages name exists", () => {
-    const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags, ...downloadFlags])
+    const known = new Set([...helpFlags, ...buildFlags, ...installFlags, ...loginFlags, ...downloadFlags, ...npmFlags])
     // A slash command's own options (`/remember [--me] <text>`) are not the program's.
     for (const page of PAGES) for (const [, flag] of text[page].replace(/`\/[a-z][^`\n]*`/g, "").matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)) expect(known, `${page}: ${flag}`).toContain(flag!)
   })
@@ -353,7 +360,7 @@ describe("names from the brand", () => {
 
   test("the binary's name in commands, inline code and environment variables", () => {
     const ours = /^(login|tui|acp|-[a-z]|--[a-z])/
-    const others = new Set(["bun", "sh", "git", "curl", "sudo", "rm", "kill", "apt", "env", "bash", "test"])
+    const others = new Set(["bun", "sh", "git", "curl", "sudo", "rm", "kill", "apt", "env", "bash", "test", "npm"])
     for (const [, span] of all.matchAll(/`([^`\n]+)`/g)) {
       const [first, second] = span!.split(/\s+/)
       if (first === undefined || second === undefined || others.has(first) || !/^[a-z][a-z0-9-]*$/.test(first)) continue
