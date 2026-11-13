@@ -8,7 +8,8 @@ Windlass is a coding agent for the terminal. A session is an append-only event l
 - **The product's name lives in one file.** Read every name, binary name, alias and directory name from
   `packages/core/src/brand.ts`. Never type the name in code, tests or protocol identifiers.
 - **One provider.** ChatGPT-plan sign-in through OpenAI's Responses API. Do not add API-key paths or other providers.
-- **The repository is private.** Push only to `origin`. Do not publish packages, release binaries or add other remotes.
+- **The repository is public.** Push only to `origin`, and never anything private: no session data, traces, tokens or
+  personal details. Do not publish packages, release binaries or add other remotes.
 - **Commits:** one line, conventional style (`feat(engine): ...`), no AI attribution or co-author lines. Say what
   changed for someone reading the log later. No merge commits: rebase and fast-forward. In a checkout shared with
   others, never `git add -A`; commit with an explicit path list: `git commit -m "..." -- <paths>`.
