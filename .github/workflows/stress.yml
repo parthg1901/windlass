@@ -1,0 +1,82 @@
+name: Stress
+
+# The end-to-end tests, run again and again with every CPU kept busy, to find the tests that fail only sometimes
+# before they fail on main. Weekly, by hand, and on a pull request when the `stress` label is added to it.
+# Each job reports which tests failed and in how many of the runs (scripts/flake-report.ts), in its summary.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Runs of each shard
+        type: number
+        default: 10
+      load:
+        description: Keep every CPU busy while the tests run
+        type: boolean
+        default: true
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'stress'
+    name: Stress ${{ matrix.shard }}/3 (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+        shard: [1, 2, 3]
+    env:
+      ITERATIONS: ${{ inputs.iterations || 10 }}
+      LOAD: ${{ inputs.load == false && 'false' || 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/setup
+      - name: tmux
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: command -v tmux >/dev/null || brew install tmux
+      - name: Run the shard ${{ env.ITERATIONS }} times
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/reports"
+          # One busy loop per CPU, at the tests' own priority, for the whole run.
+          if [ "$LOAD" = "true" ]; then
+            for _ in $(seq "$(getconf _NPROCESSORS_ONLN)"); do (exec yes >/dev/null) & done
+          fi
+          for run in $(seq "$ITERATIONS"); do
+            echo "::group::run $run of $ITERATIONS"
+            started=$SECONDS
+            # A failing run is what this looks for: carry on, the report counts it.
+            bun run test:e2e --shard=${{ matrix.shard }}/3 --timings=test/e2e-timings.json \
+              --reporter=junit --reporter-outfile="$RUNNER_TEMP/reports/run-$(printf %02d "$run").xml" || echo "run $run failed"
+            echo "run $run took $((SECONDS - started)) s"
+            echo "::endgroup::"
+          done
+          pkill -x yes || true
+      - name: Report
+        if: always()
+        env:
+          REPORT_TITLE: End-to-end shard ${{ matrix.shard }}/3 on ${{ matrix.runner }}, ${{ env.ITERATIONS }} runs, CPU load ${{ env.LOAD }}
+        run: bun scripts/flake-report.ts "$RUNNER_TEMP/reports" --runs "$ITERATIONS"
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stress-${{ matrix.runner }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: warn
+          retention-days: 14

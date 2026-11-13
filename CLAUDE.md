@@ -28,6 +28,9 @@ Windlass is a coding agent for the terminal. A session is an append-only event l
 - **Zero runtime dependencies in `packages/core`.** `packages/acp` uses the ACP SDK; `packages/tui` uses OpenTUI.
 - **No third-party CLIs, global installs or sudo** in scripts or tests.
 - **Fixtures are synthetic and hand-written.** Never commit real session data, traces, or credentials.
+- **Tests wait for events, not time, and say what they start.** Use `waitFor` from `@windlass/core/testing`, never a
+  fixed sleep; a test file that starts any process is named `*.e2e.test.ts` and sets `setDefaultTimeout(E2E_TIMEOUT_MS)`.
+  `test/release/test-waits.test.ts` and `test/unit-preload.ts` enforce this (CONTRIBUTING.md, "Tests and fixtures").
 
 ## Layout
 
@@ -53,6 +56,7 @@ bun packages/cli/src/main.ts --demo list            # scripted sessions, no mode
 bun packages/cli/src/main.ts tui --demo 1           # the full-screen interface on a scripted session
 bun scripts/login.ts status                         # sign-in state (never prints tokens)
 bun test <path>                                     # run the tests for what you changed, not the whole suite
+bun run test:unit                                   # the tests that start no process (CI runs this and test:e2e)
 bun run typecheck
 bun scripts/scenario-doc.ts --write                 # regenerate docs/step-loop-scenarios.md
 bun evals/run-agent.ts <task...> --model gpt-6-luna --effort low --out <dir outside the repo>

@@ -42,6 +42,24 @@ dependency of the workspace root that `bun install` brings in.
 ## Tests and fixtures
 
 - Run the tests for what you changed; the whole suite takes several minutes.
+- **Two kinds of test.** A test file that starts a process (git, a shell command, the sandbox's probe, an MCP or
+  language server, tmux, the program itself), directly or through the code it tests, is an end-to-end test and is
+  named `*.e2e.test.ts`. Everything else is a unit test. `bun run test:unit` runs the unit tests under a preload
+  that fails any file that starts a process; `bun run test:e2e` runs the rest. CI runs both on every push, each on
+  Linux x64, Linux arm64 and macOS.
+- **Time limits.** Unit tests keep bun's 5 s per test, so a hang shows at once. Every end-to-end file sets
+  `setDefaultTimeout(E2E_TIMEOUT_MS)` (30 s, from `@windlass/core/testing`): a process start takes most of a
+  second on a shared runner, several times what it takes on a quiet machine.
+- **Wait for events, not for time.** A test waits for the state it is about to depend on (a line printed, an event
+  stored, a file written, a process gone) with `waitFor` from `@windlass/core/testing`, never with a fixed sleep.
+  Where a test measures time because a bound is the point, the bound sits well clear of what it tells apart and a
+  comment says why. `test/release/test-waits.test.ts` counts every timed wait in the test files and fails on one
+  that is not in its list of reasons.
+- **Flakes.** CI does not retry. The weekly stress workflow (`.github/workflows/stress.yml`, also run by hand or by
+  adding the `stress` label to a pull request) runs the end-to-end tests ten times with every CPU busy, on Linux
+  and macOS, and lists which tests failed in how many runs.
+- **Shards.** The end-to-end shards are balanced by `test/e2e-timings.json`. After adding slow tests, refresh it:
+  `bun run test:e2e --timings=test/e2e-timings.json --update-timings`.
 - Fixtures are synthetic and hand-written. Never commit real session data, traces or credentials.
 - Before calling user-visible work done, run it as a user would: `.claude/skills/harness-testing/SKILL.md`
   (headless) and `.claude/skills/tui-tmux-testing/SKILL.md` (the full-screen interface through tmux).
