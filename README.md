@@ -4,6 +4,8 @@ A coding agent for the terminal: you describe a change, and it reads your code, 
 your project until the change is done. It is one program, `windlass` (`wl` for short), with a line interface, a
 full-screen interface, and a server for editors (the Agent Client Protocol).
 
+![A session in the full-screen interface: the agent reads, runs the tests, edits and checks, with token and cache figures on the right](docs/images/session.png)
+
 ## What it does
 
 - **Works in your project.** It reads, searches, edits and runs commands, then runs the checks you configured
@@ -63,6 +65,8 @@ the right shows the session, the tokens used and how much of each request came f
 - `/diff` shows what the last turn changed, `/review` lets you comment on its lines, `/undo` and `/redo` take it
   back or put it back.
 - `/help` lists every key and command. Ctrl-C stops the agent; pressed twice it leaves.
+
+![Reviewing a turn's changes, with a comment on one line for the agent](docs/images/review.png)
 
 `windlass` on its own gives the same in a plain line interface, and `windlass -c` resumes the most recent session
 in the folder. For a single task that runs to the end without you:
