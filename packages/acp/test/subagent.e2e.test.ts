@@ -7,14 +7,17 @@
  * `<prefix>/event` to a client that takes the events, as `<prefix>/child`
  * to any other. Real tools, a scripted model shared by parent and child.
  */
-import { afterAll, afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { APPROVAL_META, EXT, META } from "../src/extensions.ts"
-import { type Harness, startHarness } from "./helpers.ts"
+import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NS = META.capabilities
 /** Outside every workspace, and not under /tmp (a path beside a /tmp workspace is the session's own temp directory). */
@@ -122,12 +125,12 @@ test("a cancel while a subagent's question waits withdraws it: the subagent's ca
   await h.initialize()
   const sessionId = await h.newSession()
   const turn = prompt(h, sessionId, "Get the note written.")
-  const deadline = Date.now() + 5000
-  while (h.permissions.length === 0 && Date.now() < deadline) await Bun.sleep(5)
+  const started = h
+  await until(() => started.permissions.length > 0, 10_000, "the subagent's question")
   expect(h.permissions).toHaveLength(1)
   await h.connection.agent.notify(methods.agent.session.cancel, { sessionId })
   // As a client does: the pending request is answered `cancelled` after the cancel.
-  while (!h.backend.engine.readEvents(sessionId as never).some((item) => item.type === "execution.interrupt_requested")) await Bun.sleep(5)
+  await until(() => started.backend.engine.readEvents(sessionId as never).some((item) => item.type === "execution.interrupt_requested"), 10_000, "the interrupt request")
   release!()
   expect((await turn).stopReason).toBe("cancelled")
   const child = childOf(h, sessionId)

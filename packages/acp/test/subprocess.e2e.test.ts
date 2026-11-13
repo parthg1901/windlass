@@ -2,13 +2,17 @@
  * The real binary: `windlass acp` started as a subprocess with a scripted model,
  * spoken to over its real stdin and stdout by the SDK's client.
  */
-import { expect, test } from "bun:test"
+import { expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type SessionNotification, client, methods, ndJsonStream } from "@agentclientprotocol/sdk"
 import { brand } from "@windlass/core"
 import { SCRIPT_ENV } from "../src/scripted.ts"
+import { E2E_TIMEOUT_MS } from "@windlass/core/testing"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const MAIN = join(import.meta.dir, "..", "..", "cli", "src", "main.ts")
 
@@ -65,4 +69,4 @@ test(`${brand.binary} acp speaks ACP over real stdio and exits when the client c
     child.kill()
     rmSync(root, { recursive: true, force: true })
   }
-}, 20_000)
+}, E2E_TIMEOUT_MS)

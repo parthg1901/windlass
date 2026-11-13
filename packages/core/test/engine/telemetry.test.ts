@@ -16,6 +16,7 @@ import { mapSession } from "../../src/telemetry/map.ts"
 import { type Span, attr } from "../../src/telemetry/span.ts"
 import { mapSessionTree } from "../../src/telemetry/tree.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import { measured } from "../scenarios/script.ts"
 import { Harness, type HarnessOptions, converse, removeHarnessDirectories } from "./harness.ts"
 
@@ -133,8 +134,9 @@ describe("the spans of a turn", () => {
     h.session.send("Read a.ts.")
     await h.settled()
     midTurn = sink.batches.length
-    await Bun.sleep(30)
     expect(midTurn).toBeGreaterThanOrEqual(1)
+    // The last spans go out at the next flush.
+    await waitFor(() => sink.spans().length >= 4, { what: "the turn's four spans", describe: () => JSON.stringify(sink.spans().map((span) => span.name)) })
     expect(sink.spans()).toHaveLength(4)
     expect(new Set(sink.spans().map((span) => span.spanId)).size).toBe(4)
     await h.dispose()

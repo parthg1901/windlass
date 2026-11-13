@@ -11,7 +11,7 @@ import { panelLines, panelWidth } from "../src/panel.ts"
 import { Theme } from "../src/theme.ts"
 import type { CallUsage } from "../src/transcript.ts"
 import type { DemoBackend } from "../src/demo-backend.ts"
-import { type Mounted, ScriptBackend, mount, playAll } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, playAll, pressEscapeAlone } from "./helpers.ts"
 
 const SIZES = [
   [60, 20],
@@ -140,8 +140,7 @@ describe("a command a demo cannot run", () => {
   const run = async (command: string) => {
     await mounted!.setup.mockInput.typeText(command)
     await mounted!.settle()
-    mounted!.setup.mockInput.pressEscape()
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    await pressEscapeAlone(mounted!.setup.mockInput)
     mounted!.setup.mockInput.pressEnter()
     await mounted!.settle()
   }

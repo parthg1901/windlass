@@ -21,6 +21,7 @@ import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import { Harness, converse, removeHarnessDirectories } from "./harness.ts"
 
 afterAll(removeHarnessDirectories)
@@ -38,12 +39,7 @@ const sandbox: CommandSandbox = {
 }
 const approval: ApprovalSetup = { sandbox, secrets: [], home: "/Users/user" }
 const CHILD = "ses_2" as SessionId
-const until = async (check: () => boolean) => {
-  for (let waited = 0; !check(); waited += 2) {
-    if (waited > 10_000) throw new Error("timed out waiting")
-    await Bun.sleep(2)
-  }
-}
+const until = (check: () => boolean) => waitFor(check, { intervalMs: 2 }).then(() => {})
 
 test("a tainted child's words shown by background_output taint the parent when they arrive", async () => {
   const h = new Harness({ spawn: {}, approval })

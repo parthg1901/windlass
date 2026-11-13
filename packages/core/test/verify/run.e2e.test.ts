@@ -1,11 +1,15 @@
 /** Real commands through the shell tool: pass, fail with long output, timeout, missing command, interrupt. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { createInterrupt } from "../../src/interrupt.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { OUTPUT_LIMITS, countLines } from "../../src/tool/cap.ts"
 import { renderOutput, renderReport, runCheck, runChecks } from "../../src/verify/index.ts"
 import { check, expectGone, isRunning, project, removeTempDirs } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 
@@ -121,7 +125,7 @@ describe("runCheck", () => {
       [check("watch", "echo pid=$$; sleep 30 & echo child=$!; sleep 0.3; touch started; wait"), check("after", "touch ran-after")],
       p.options({ signal: token.signal, progress: (name, text) => seen.push(`${name}:${text}`) }),
     )
-    while (!existsSync(join(p.dir, "started"))) await Bun.sleep(10)
+    await waitFor(() => existsSync(join(p.dir, "started")), { what: "the check to start" })
     token.interrupt("user")
     const [watch, after] = await running
     expect(watch).toMatchObject({ status: "interrupted", interruptedBy: "user" })

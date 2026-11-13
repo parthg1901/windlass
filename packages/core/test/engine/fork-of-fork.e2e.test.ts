@@ -9,7 +9,7 @@
  * the fork's. When the file that holds the point is gone, the refusal is a
  * sentence that names it.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, renameSync } from "node:fs"
 import { basename, join } from "node:path"
 import { EngineError } from "../../src/engine/engine.ts"
@@ -17,6 +17,10 @@ import type { SessionId } from "../../src/id.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
 import { SETTINGS, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)

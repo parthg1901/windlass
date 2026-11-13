@@ -7,13 +7,16 @@
  * compaction on request are not advertised: the engine has no operation for
  * them. Every message the agent writes is checked against the SDK's schemas.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { type DiffResult, EXT, META, TITLE_LENGTH, deriveTitle } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NS = META.capabilities
 const harnesses: Harness[] = []

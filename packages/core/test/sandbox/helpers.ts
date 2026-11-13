@@ -2,6 +2,7 @@ import { accessSync, constants, mkdtempSync, readdirSync, readFileSync, rmSync }
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import { type SandboxPlan, type SandboxPolicy, type SandboxUnavailable, detectSandbox, sandboxCommand } from "../../src/sandbox/index.ts"
 
 const created: string[] = []
@@ -81,10 +82,12 @@ export function isRunning(pid: number) {
   return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z"
 }
 
+/** Whether `condition` came to hold within `ms`. */
 export async function waitUntil(condition: () => boolean, ms: number) {
-  const deadline = performance.now() + ms
-  while (!condition() && performance.now() < deadline) await Bun.sleep(20)
-  return condition()
+  return waitFor(condition, { timeoutMs: ms, intervalMs: 20 }).then(
+    () => true,
+    () => false,
+  )
 }
 
 function readOrNull(path: string) {

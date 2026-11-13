@@ -5,7 +5,7 @@
  * in; a parent that another engine holds; and the request-prefix property
  * across the fork.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { EngineError } from "../../src/engine/engine.ts"
@@ -15,6 +15,10 @@ import { comparePrefix, hashRequest } from "../../src/request/prefix.ts"
 import { openSessionDirectory } from "../../src/store/directory.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { SETTINGS, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)

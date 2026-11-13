@@ -5,7 +5,7 @@
  * the webhook listener's port belongs to whichever bound it first, and none
  * of them is disturbed by the others.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
@@ -14,7 +14,11 @@ import { createHarness } from "../../src/assembly.ts"
 import { resolveConfig } from "../../src/config/schema.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { signWebhook } from "../../src/wake/webhook.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const SERVER = join(import.meta.dir, "fixtures", "wake-server.ts")
 const made: string[] = []
@@ -42,11 +46,7 @@ const freePort = () =>
   })
 
 async function until(what: string, condition: () => boolean | Promise<boolean>, ms = 20_000): Promise<void> {
-  const deadline = Date.now() + ms
-  while (!(await condition())) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    await Bun.sleep(50)
-  }
+  await waitFor(condition, { timeoutMs: ms, intervalMs: 50, what })
 }
 
 describe("several servers that fire wake-ups", () => {

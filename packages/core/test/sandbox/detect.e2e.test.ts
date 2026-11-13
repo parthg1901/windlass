@@ -1,8 +1,12 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { copyFileSync, chmodSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { detectSandbox } from "../../src/sandbox/index.ts"
 import { removeTempDirs, skipReason, tempDir } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 

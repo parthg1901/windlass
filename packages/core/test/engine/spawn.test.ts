@@ -14,6 +14,7 @@ import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import type { CommandSandbox } from "../../src/sandbox/command.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import type { BackgroundCommand, ToolContext } from "../../src/tool/tool.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
 import { Harness, type HarnessOptions, converse, firstPrompt, removeHarnessDirectories, untilAbort } from "./harness.ts"
@@ -39,12 +40,7 @@ async function withHarness(run: (h: Harness) => Promise<void>, options: HarnessO
   }
 }
 
-const until = async (check: () => boolean) => {
-  for (let waited = 0; !check(); waited += 2) {
-    if (waited > 10_000) throw new Error("timed out waiting")
-    await Bun.sleep(2)
-  }
-}
+const until = (check: () => boolean) => waitFor(check, { intervalMs: 2 }).then(() => {})
 
 describe("a subagent", () => {
   test("is a session of its own with a fresh conversation; calls in one response run side by side and return the answers with a reference", () =>

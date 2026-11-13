@@ -52,6 +52,7 @@ import type { ChangeStatus, FileChange } from "../../src/snapshot/diff.ts"
 import type { SkippedFile, SnapshotId, SnapshotUnavailable } from "../../src/snapshot/index.ts"
 import { type SqliteStore, openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import type { AnyTool, ToolContext, ToolEffect, ToolResult } from "../../src/tool/tool.ts"
 import type { VerificationEvidence } from "../../src/verify/evidence.ts"
 import type { CheckResult, CheckStatus, RunCheckOptions } from "../../src/verify/run.ts"
@@ -568,7 +569,7 @@ export class Harness {
   /** Resolves once the provider's call `index` (zero-based, across sessions) has sent its terminal event: the loop read everything before it. */
   async responded(index: number): Promise<void> {
     const over = () => this.provider.calls[index]?.events.some((item) => item.type === "finish" || item.type === "error") === true
-    while (!over()) await new Promise((resolve) => setTimeout(resolve, 1))
+    await waitFor(() => !(!over()), { intervalMs: 1 })
   }
 
   /** Resolves the next time the loop reaches `point`. */

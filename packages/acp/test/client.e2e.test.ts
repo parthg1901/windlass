@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { brand } from "@windlass/core"
-import { FakeProvider, type ScriptedResponse, script } from "@windlass/core/testing"
+import { FakeProvider, type ScriptedResponse, script, within } from "@windlass/core/testing"
 import { type ApprovalAsk, ClientError, type ClientSession, HarnessClient, HarnessConnection, type SessionItem } from "../src/client.ts"
 import { EXT } from "../src/extensions.ts"
 import { SCRIPT_ENV } from "../src/scripted.ts"
@@ -63,7 +63,7 @@ async function collect(session: ClientSession, done: (item: SessionItem) => bool
   const iterator = session.items[Symbol.asyncIterator]()
   const deadline = Date.now() + ms
   for (;;) {
-    const next = await Promise.race([iterator.next(), Bun.sleep(Math.max(1, deadline - Date.now())).then(() => null)])
+    const next = await within(iterator.next(), Math.max(1, deadline - Date.now()), "the next item").catch(() => null)
     if (next === null) throw new Error(`timed out; got ${items.map(kind).join(", ")}`)
     if (next.done) return items
     items.push(next.value)
@@ -142,7 +142,8 @@ describe("in memory", () => {
           aborted = true
           resolve({ choice: "once" })
         })
-        setTimeout(() => session.cancel(), 50)
+        // Cancelled while the question is pending: the listener is in place, so the abort reaches it.
+        queueMicrotask(() => void session.cancel())
       })
     await session.send("write outside")
     const items = await collect(session, turnEnded)

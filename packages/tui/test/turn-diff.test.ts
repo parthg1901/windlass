@@ -5,7 +5,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { event } from "@windlass/core"
 import type { DiffResult } from "../src/backend.ts"
-import { type Mounted, ScriptBackend, mount } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, pressEscapeAlone } from "./helpers.ts"
 import { c, flat, m } from "./builders.ts"
 
 let mounted: Mounted | null = null
@@ -29,8 +29,7 @@ const file = (path: string, line: string): DiffResult & { available: true } => (
 
 async function command(text: string): Promise<void> {
   await keys().typeText(text)
-  keys().pressEscape()
-  await Bun.sleep(80)
+  await pressEscapeAlone(keys())
   keys().pressEnter()
   await mounted!.settle()
 }
@@ -71,8 +70,7 @@ test("/diff with nothing selected shows the latest turn's own files; with the ea
   let frame = await mounted!.frame()
   expect(frame).toContain("Changes of turn 2: 1 file · +1 -0")
   expect(frame).toContain("tests.md")
-  keys().pressEscape()
-  await Bun.sleep(80)
+  await pressEscapeAlone(keys())
   await mounted!.settle()
 
   // Alt-Up twice: the latest ending row, then the one of the turn the queued message followed.

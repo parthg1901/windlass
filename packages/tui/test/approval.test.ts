@@ -13,7 +13,7 @@ import type { DiffResult } from "@windlass/acp/extensions"
 import type { StoredEvent } from "@windlass/core"
 import { families } from "@windlass/core/testing/scenarios"
 import { ARMING_MS, QUIET_MS } from "../src/approval.ts"
-import { type Mounted, ScriptBackend, mount, stamp } from "./helpers.ts"
+import { type Mounted, ScriptBackend, mount, stamp, pressEscapeAlone } from "./helpers.ts"
 
 let mounted: Mounted | null = null
 afterEach(async () => {
@@ -162,8 +162,7 @@ describe("the approval dock", () => {
   test("Esc goes back to the message without answering; a letter that is not the dock's goes to the input", async () => {
     const { answer } = await asked()
     arm()
-    keys().pressEscape()
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys())
     await mounted!.settle()
     expect(await mounted!.frame()).toContain("Tab answers the question")
     keys().pressTab()
@@ -387,8 +386,7 @@ describe("commands", () => {
     const last = await mounted.frame()
     expect(last.split("\n")[1]).toContain("notes.md")
     expect(last).toContain("cut: the change to this file is larger than the per-file limit")
-    keys().pressEscape()
-    await Bun.sleep(80)
+    await pressEscapeAlone(keys())
     await mounted.settle()
     expect(mounted.app.pager.open).toBe(false)
     expect(asked).toEqual([{}])

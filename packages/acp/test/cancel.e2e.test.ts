@@ -1,10 +1,13 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { type SessionId, brand, openSessionDirectory } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 let h: Harness | null = null
 afterEach(async () => {
@@ -28,8 +31,8 @@ function alive(_started: number): boolean {
 }
 
 async function pidIn(path: string): Promise<number> {
-  await until(() => Bun.file(path).size > 0, 5000, "the command to write its pid")
-  await until(() => alive(0), 5000, "the command to be running")
+  await until(() => Bun.file(path).size > 0, 10_000, "the command to write its pid")
+  await until(() => alive(0), 10_000, "the command to be running")
   return Number((await Bun.file(path).text()).trim())
 }
 

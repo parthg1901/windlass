@@ -6,16 +6,20 @@
  *
  * Skipped, visibly, where bubblewrap cannot run.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../src/brand.ts"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { createCommandSandbox, gitLayout, workspacePolicy } from "../../src/sandbox/command.ts"
 import { type SandboxRun, noBlobStore } from "../../src/tool/tool.ts"
 import { shellTool } from "../../src/tools/shell.ts"
 import { removeTempDirs, skipReason, tempDir } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterAll(removeTempDirs)
 
@@ -137,8 +141,7 @@ describe.skipIf(skipReason !== null)("developer workflows inside the sandbox, wi
     const interrupt = createInterrupt()
     const running = sh(workspace, "sleep 31.5173 & sleep 31.5173", NOTHING, interrupt.signal)
     const isRunning = () => Bun.spawnSync(["pgrep", "-f", "^sleep 31\\.5173$"]).exitCode === 0
-    for (let tries = 0; tries < 100 && !isRunning(); tries += 1) await Bun.sleep(50)
-    expect(isRunning()).toBe(true)
+    await waitFor(isRunning, { intervalMs: 50, what: "the command to start" })
     interrupt.interrupt("user")
     const stopped = await running
     expect(stopped.output).toContain("Interrupted by the user")

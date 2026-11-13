@@ -6,13 +6,16 @@
  * answers with the report. Every message the agent writes is checked against
  * the SDK's schemas.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script, waitFor } from "@windlass/core/testing"
 import { EXT, type ForkResult, META, type ReplayResult } from "../src/extensions.ts"
 import { type Harness, startHarness } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NS = META.capabilities
 const harnesses: Harness[] = []
@@ -141,16 +144,14 @@ describe("replay", () => {
     expect(diverged.text).toContain("arguments differ")
 
     const running = ext<ReplayResult>(h, EXT.replay, { sessionId: source })
-    let replayId: string | null = null
-    const deadline = Date.now() + 5000
-    while (replayId === null && Date.now() < deadline) {
-      await Bun.sleep(10)
-      const note = h.ext.findLast((item) => item.method === EXT.replayStarted)
-      if (note !== undefined && note.params.sessionId !== diverged.sessionId) replayId = note.params.sessionId as string
-    }
-    expect(replayId).not.toBeNull()
-    await Bun.sleep(50)
-    await h.connection.agent.notify(methods.agent.session.cancel, { sessionId: replayId! })
+    const replayId = await waitFor(
+      () => {
+        const note = h.ext.findLast((item) => item.method === EXT.replayStarted)
+        return note !== undefined && note.params.sessionId !== diverged.sessionId ? (note.params.sessionId as string) : null
+      },
+      { what: "the second replay to start" },
+    )
+    await h.connection.agent.notify(methods.agent.session.cancel, { sessionId: replayId })
     expect((await running).report.status).toBe("incomplete")
 
     const bad = await ext(h, EXT.replay, { sessionId: source, policy: "everything" }).catch((error: unknown) => error as { code: number })

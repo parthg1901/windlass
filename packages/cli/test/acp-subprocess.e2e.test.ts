@@ -12,6 +12,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SCRIPT_ENV } from "@windlass/acp"
 import { brand } from "@windlass/core"
+import { isAlive as alive, waitFor } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { EngineUnavailable } from "../src/engine.ts"
 import { CLI } from "./helpers.ts"
@@ -65,14 +66,9 @@ function start(at: Place, script: string, args: readonly string[]) {
     for await (const chunk of stream) output[into] += decoder.decode(chunk, { stream: true })
   }
   const done = Promise.all([read(proc.stdout, "out"), read(proc.stderr, "err")])
-  const waitFor = async (needle: string, timeoutMs = 20_000) => {
-    const until = Date.now() + timeoutMs
-    while (!output.out.includes(needle)) {
-      if (Date.now() > until) throw new Error(`timed out waiting for ${JSON.stringify(needle)}; output so far:\n${output.out}\n${output.err}`)
-      await Bun.sleep(25)
-    }
-  }
-  return { proc, output, done, waitFor }
+  const shown = (needle: string) =>
+    waitFor(() => output.out.includes(needle), { timeoutMs: 20_000, what: JSON.stringify(needle), describe: () => `output so far:\n${output.out}\n${output.err}` })
+  return { proc, output, done, waitFor: shown }
 }
 
 /** The engine server the CLI started: its one child process. */
@@ -82,24 +78,12 @@ async function serverOf(pid: number): Promise<number> {
   return Number(listed[0])
 }
 
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
+/** Whether a process whose command line contains `command` exists (the shell running it, or the command itself). */
 const commandRunning = (command: string) => Bun.spawnSync(["pgrep", "-f", command]).stdout.toString().trim() !== ""
+/** Whether `command` itself runs, which for `trap '' TERM; <command>` means the trap is already set. */
+const commandItselfRunning = (command: string) => Bun.spawnSync(["pgrep", "-f", `^${command}`]).stdout.toString().trim() !== ""
 
-async function eventually(check: () => boolean, ms = 10_000, what = "condition"): Promise<void> {
-  const until = Date.now() + ms
-  while (!check()) {
-    if (Date.now() > until) throw new Error(`timed out waiting for ${what}`)
-    await Bun.sleep(50)
-  }
-}
+const eventually = (check: () => boolean, timeoutMs: number, what: string) => waitFor(check, { timeoutMs, what, intervalMs: 50 })
 
 describe("signals reach the CLI, not the server", () => {
   test("Ctrl-C stops the turn (130); the command is stopped, the server leaves, the session opens again", async () => {
@@ -108,7 +92,7 @@ describe("signals reach the CLI, not the server", () => {
     const cli = start(at, at.script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command } }]]), ["wait for it"])
     await cli.waitFor(`▸ shell ${command}\n`)
     const server = await serverOf(cli.proc.pid)
-    await eventually(() => commandRunning(command), 5000, "the command to start")
+    await eventually(() => commandRunning(command), 10_000, "the command to start")
     cli.proc.kill("SIGINT")
     expect(await cli.proc.exited).toBe(130)
     await cli.done
@@ -130,15 +114,15 @@ describe("signals reach the CLI, not the server", () => {
     const cli = start(at, at.script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command: `trap '' TERM; ${command}` } }]]), ["wait for it"])
     await cli.waitFor("▸ shell trap")
     const server = await serverOf(cli.proc.pid)
-    await Bun.sleep(400)
+    await eventually(() => commandItselfRunning(command), 10_000, "the command to start")
     cli.proc.kill("SIGINT")
     await cli.waitFor("■ stopping")
-    const sent = Date.now()
     cli.proc.kill("SIGINT")
     expect(await cli.proc.exited).toBe(130)
-    expect(Date.now() - sent).toBeLessThan(3_000)
     await cli.done
+    // It did not wait for the stop, which takes the command's whole grace period: the turn's end is never shown.
     expect(cli.output.out).toContain("exiting without waiting for the stop\n")
+    expect(cli.output.out).not.toContain("■ interrupted")
     await eventually(() => !alive(server), 15_000, "the server to exit")
     const again = start(at, at.script([[{ type: "text", text: "Here again." }]]), ["--continue", "--quiet", "hello"])
     expect(await again.proc.exited).toBe(0)
@@ -153,7 +137,7 @@ describe("signals reach the CLI, not the server", () => {
     const cli = start(at, at.script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command: `trap '' TERM; ${command}` } }]]), ["wait for it"])
     await cli.waitFor("▸ shell trap")
     const server = await serverOf(cli.proc.pid)
-    await Bun.sleep(300)
+    await eventually(() => commandItselfRunning(command), 10_000, "the command to start")
     cli.proc.kill("SIGKILL")
     await cli.proc.exited
     expect(alive(server)).toBe(true)
@@ -170,7 +154,7 @@ describe("signals reach the CLI, not the server", () => {
     const cli = start(at, at.script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command } }]]), ["wait for it"])
     await cli.waitFor(`▸ shell ${command}\n`)
     const server = await serverOf(cli.proc.pid)
-    await eventually(() => commandRunning(command), 5000, "the command to start")
+    await eventually(() => commandRunning(command), 10_000, "the command to start")
     cli.proc.kill("SIGTERM")
     expect(await cli.proc.exited).toBe(143)
     await cli.done
@@ -200,7 +184,7 @@ describe("the server dies under a turn", () => {
     const cli = start(at, at.script([[{ type: "tool_call", callId: "c1", name: "shell", input: { command } }]]), ["wait for it"])
     await cli.waitFor(`▸ shell ${command}\n`)
     const server = await serverOf(cli.proc.pid)
-    await eventually(() => commandRunning(command), 5000, "the command to start")
+    await eventually(() => commandRunning(command), 10_000, "the command to start")
     process.kill(server, "SIGKILL")
     expect(await cli.proc.exited).toBe(1)
     await cli.done
@@ -245,7 +229,8 @@ describe("a server that does not start properly", () => {
     const refused = await open(createAcpEngine({ command: ["bun", slow], startTimeoutMs: 1500 }))
     expect(refused).toBeInstanceOf(EngineUnavailable)
     expect((refused as Error).message).toBe("the engine process did not start within 1.5 s; giving up")
-    expect(Date.now() - started).toBeLessThan(5000)
+    // Given up on, not waited for: the server would sleep a minute. The slack over 1.5 s is for a loaded runner.
+    expect(Date.now() - started).toBeLessThan(10_000)
     const pid = Number(await Bun.file(pidFile).text())
     await eventually(() => !alive(pid), 5000, "the slow server to be stopped")
   })

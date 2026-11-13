@@ -7,18 +7,21 @@
  * directly from the engine. Together with `paths.test.ts`, which plays live
  * turns through both paths, this covers every event type the CLI renders.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type ClientConnection, type Stream, client, methods } from "@agentclientprotocol/sdk"
 import { EXT, META, type Served, serve, silentLogger } from "@windlass/acp"
 import { type Harness, type NewEvent, type SessionId, type StoredEvent, createHarness } from "@windlass/core"
-import { FakeProvider } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, FakeProvider } from "@windlass/core/testing"
 import { families } from "@windlass/core/testing/scenarios"
 import type { EngineEvent } from "../src/engine.ts"
 import { JsonSink } from "../src/renderer.ts"
 import { render } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const scenarios = Object.values(families).flat()
 let root = ""

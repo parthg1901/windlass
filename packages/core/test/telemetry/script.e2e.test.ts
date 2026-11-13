@@ -3,12 +3,16 @@
  * model (`WINDLASS_ACP_SCRIPT`) in a throwaway data directory: to a file, to a
  * fake collector, and read-only (the session's file is not changed).
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { brand } from "../../src/brand.ts"
 import type { ExportTraceServiceRequest, OtlpSpan } from "../../src/telemetry/otlp.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const REPO = resolve(import.meta.dir, "../../../..")
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-otel-script-")))

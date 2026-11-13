@@ -3,7 +3,7 @@
  * prints, the noise floor next to every result, and the grading of a replay
  * that left its recording under `execute`.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +14,10 @@ import { exportSnapshot } from "../packages/core/src/snapshot/index.ts"
 import { snapshotOfCopy } from "../scripts/replay.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../packages/core/src/testing/fake-provider.ts"
 import { describeChange, fisherExact, formatSuite, readRuns, runReplaySuite, verdict } from "./replay-suite.ts"
+import { E2E_TIMEOUT_MS } from "../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wl-replay-suite-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))

@@ -6,6 +6,7 @@ import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
 import { type McpConfigSection, type McpServerConfig, resolveMcpConfig } from "../../src/mcp/config.ts"
 import { type McpRegistry, type McpRegistryOptions, createMcpRegistry } from "../../src/mcp/registry.ts"
+import { waitFor as waitForCondition } from "../../src/testing/wait.ts"
 import type { BlobRef } from "../../src/content.ts"
 import type { ToolContext } from "../../src/tool/tool.ts"
 
@@ -59,11 +60,7 @@ export async function cleanup() {
 }
 
 export async function waitFor(predicate: () => boolean, timeoutMs = 10_000, what = "condition"): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    await Bun.sleep(20)
-  }
+  await waitForCondition(predicate, { timeoutMs, intervalMs: 20, what })
 }
 
 export function readLog(path: string): string[] {

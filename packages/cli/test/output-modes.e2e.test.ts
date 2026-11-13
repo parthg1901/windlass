@@ -1,9 +1,13 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { validateEvent } from "@windlass/core"
 import { brand } from "@windlass/core"
 import { scriptTurns } from "../src/fake-engine.ts"
 import { findScenario } from "../src/demo/scenarios.ts"
 import { CLI, runCli } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "@windlass/core/testing"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const EPHEMERAL = ["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]
 

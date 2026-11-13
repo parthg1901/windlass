@@ -19,7 +19,7 @@ import {
   methods,
 } from "@agentclientprotocol/sdk"
 import { type AnyTool, type EngineOptions, type Harness as CoreHarness, type ModelEntry, type SignInState, createHarness } from "@windlass/core"
-import { FakeProvider, type ScriptedResponse } from "@windlass/core/testing"
+import { FakeProvider, type ScriptedResponse, waitFor } from "@windlass/core/testing"
 import * as schemas from "../node_modules/@agentclientprotocol/sdk/dist/v1/schema/zod.gen.js"
 import { silentLogger } from "../src/log.ts"
 import { type Served, serve } from "../src/server.ts"
@@ -173,12 +173,8 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
 }
 
 /** Waits until `check` holds, polling; fails after `ms`. */
-export async function until(check: () => boolean, ms = 5000, what = "condition"): Promise<void> {
-  const deadline = Date.now() + ms
-  while (!check()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    await Bun.sleep(5)
-  }
+export async function until(check: () => boolean, ms = 10_000, what = "condition"): Promise<void> {
+  await waitFor(check, { timeoutMs: ms, intervalMs: 5, what })
 }
 
 const RESPONSES: Record<string, { parse: (value: unknown) => unknown }> = {

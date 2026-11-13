@@ -1,5 +1,5 @@
 /** The default check runner on real commands: pass, fail, hang, large output, the sandbox, and a check through the scheduler. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
@@ -7,6 +7,10 @@ import { detectSandbox } from "../../src/sandbox/detect.ts"
 import { type CheckRequest, createCheckRunner } from "../../src/wake/check.ts"
 import { createScheduler } from "../../src/wake/scheduler.ts"
 import { MINUTE, SECOND, cleanup, inbox, manualClock, stopLater, store, tempDir } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 

@@ -1,5 +1,5 @@
 /** Helpers for the hooks tests: hooks from a configuration, a scripted runner, temporary directories. */
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { HookProcessResult } from "../../src/hooks/answer.ts"
@@ -14,7 +14,7 @@ const dirs: string[] = []
 export function tempDir(prefix = "wl-hooks-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   dirs.push(dir)
-  return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()
+  return realpathSync(dir)
 }
 
 export function cleanup() {

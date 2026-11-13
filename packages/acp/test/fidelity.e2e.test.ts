@@ -7,14 +7,17 @@
  * client can tell apart. Every message the agent writes is checked against
  * the SDK's schemas.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import type { AnyTool, StoredEvent } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NS = META.capabilities
 const harnesses: Harness[] = []
@@ -143,7 +146,7 @@ describe("how a turn ended", () => {
     const sessionId = await first.newSession()
     await prompt(first, sessionId, "first")
     const second = prompt(first, sessionId, "second")
-    await until(() => first.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 5000, "the command")
+    await until(() => first.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 10_000, "the command")
     await first.connection.agent.notify(methods.agent.session.cancel, { sessionId })
     expect((await second).stopReason).toBe("cancelled")
     await first.disconnect()
@@ -240,7 +243,7 @@ describe("sessions", () => {
     const harness = await start({ responses: [[script.toolCall("call_1", "shell", { command: "sleep 2" })], [script.text("Done.")]] })
     const sessionId = await harness.newSession()
     const running = prompt(harness, sessionId, "wait")
-    await until(() => harness.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 5000, "the command")
+    await until(() => harness.of(sessionId, "tool_call_update").some((update) => (update as { status?: string }).status === "in_progress"), 10_000, "the command")
     const { messageId } = await ext<{ messageId: string }>(harness, EXT.queue, { sessionId, prompt: [{ type: "text", text: "then this" }] })
     expect((await ext<{ inbox: { messageId: string }[] }>(harness, EXT.session, { sessionId })).inbox.map((item) => item.messageId)).toEqual([messageId])
     expect(await ext(harness, EXT.withdraw, { sessionId, messageId })).toEqual({ withdrawn: true })
@@ -306,7 +309,7 @@ describe("sessions", () => {
     const harness = await start({ responses: [[script.toolCall("call_1", "shell", { command: "sleep 20" })]], clientCapabilities: { _meta: { [NS]: { events: true } } } })
     const sessionId = await harness.newSession()
     const running = prompt(harness, sessionId, "wait")
-    await until(() => events(harness, sessionId).some((note) => note.event.type === "tool.started"), 5000, "the command")
+    await until(() => events(harness, sessionId).some((note) => note.event.type === "tool.started"), 10_000, "the command")
     await harness.connection.agent.request(methods.agent.session.close, { sessionId, _meta: { [NS]: { shutdown: true } } })
     const received = events(harness, sessionId).map((note) => note.event.type)
     expect(received.slice(received.indexOf("execution.interrupt_requested")).at(-1)).toBe("execution.interrupted")

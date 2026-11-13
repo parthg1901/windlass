@@ -1,6 +1,6 @@
 /** Delivery: the block at session start, its determinism, and the update path during a session. */
 import { afterEach, describe, expect, test } from "bun:test"
-import { readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { type DeliveryPlan, MEMORY_KEY, heldFingerprint, planMemoryDelivery, renderNote } from "../../src/memory/deliver.ts"
 import { DELIVERY_LIMITS } from "../../src/memory/hygiene.ts"
@@ -132,7 +132,7 @@ describe("updates during a session", () => {
   test("a note deleted by hand is withdrawn", () => {
     const { store, time, paths } = seeded()
     const start = boundary(store, "ses_1", null, time.now())!
-    Bun.spawnSync(["rm", join(paths.project!, "m_0003.md")])
+    rmSync(join(paths.project!, "m_0003.md"))
     expect(boundary(store, "ses_1", start.fingerprint, time.now())!.text).toContain("- withdrawn [m_0003] (deleted from memory): disregard it.")
   })
 

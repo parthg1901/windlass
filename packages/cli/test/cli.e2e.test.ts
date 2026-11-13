@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { brand } from "@windlass/core"
 import { findScenario } from "../src/demo/scenarios.ts"
 import { FakeEngine } from "../src/fake-engine.ts"
 import { CLI, runCli } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "@windlass/core/testing"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const demo = (name: string, ...more: string[]) => ["--demo", name, "--demo-speed", "0", ...more]
 

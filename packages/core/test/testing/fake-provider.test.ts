@@ -5,6 +5,7 @@ import { RETRYABLE, type ProviderErrorKind, makeProviderError } from "../../src/
 import type { Provider, StreamEvent } from "../../src/provider/provider.ts"
 import type { InputItem, ModelRequest } from "../../src/request/request.ts"
 import { FakeProvider, collectStream, script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 
 const request: ModelRequest = {
   params: { model: "gpt-test", reasoningEffort: null, textVerbosity: null, parallelToolCalls: true, cacheKey: "ses_1" },
@@ -259,7 +260,7 @@ describe("FakeProvider", () => {
       const reading = (async () => {
         for await (const streamEvent of provider.stream(request, token.signal)) events.push(streamEvent)
       })()
-      await Bun.sleep(20)
+      await waitFor(() => provider.calls[0]?.hanging, { what: "the stream to reach its hang" })
       expect(provider.calls[0]!.outcome).toBe("running")
       token.interrupt("user")
       await reading

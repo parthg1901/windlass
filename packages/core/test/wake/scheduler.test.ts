@@ -4,7 +4,7 @@ import { WAKE_LIMITS } from "../../src/wake/record.ts"
 import { createScheduler } from "../../src/wake/scheduler.ts"
 import type { NewWake } from "../../src/wake/record.ts"
 import type { WakeStore } from "../../src/wake/store.ts"
-import { HOUR, MINUTE, SECOND, T0, cleanup, events, exited, inbox, manualClock, scriptedRunner, stopLater, store } from "./helpers.ts"
+import { HOUR, MINUTE, SECOND, T0, cleanup, events, exited, inbox, manualClock, scriptedRunner, stopLater, store, until } from "./helpers.ts"
 
 afterEach(cleanup)
 
@@ -371,17 +371,19 @@ describe("the loop", () => {
   test("it sleeps until the next due time, wakes for it, and sleeps the longest idle time when nothing is due", async () => {
     const { clock, wakes, box, scheduler } = setup()
     scheduler.start()
-    await Bun.sleep(10)
+    await until(() => clock.sleeping() === 1, 10_000, "the loop to sleep")
     // Nothing exists: one sleep of a minute, no busy loop.
     expect(clock.sleeps).toEqual([60_000])
     create(wakes, { trigger: { kind: "after", delayMs: 30 * SECOND } })
     scheduler.poke()
-    await Bun.sleep(10)
+    await until(() => clock.sleeps.length === 2 && clock.sleeping() === 1, 10_000, "the loop to sleep until the wake-up is due")
     expect(clock.sleeps.at(-1)).toBe(30 * SECOND)
     clock.advance(30 * SECOND)
-    await Bun.sleep(20)
+    await until(() => box.admitted.length === 1 && clock.sleeping() === 1, 10_000, "the wake-up to be delivered")
     expect(box.admitted).toHaveLength(1)
     const before = clock.sleeps.length
+    // A quiet period: nothing may ask for another sleep while the clock stands still. A slow runner can only make
+    // this wait catch less, never fail a correct loop.
     await Bun.sleep(50)
     // Idle again: no further sleeps were asked for while time did not move.
     expect(clock.sleeps.length).toBe(before)

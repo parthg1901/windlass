@@ -10,7 +10,7 @@ import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { FakeProvider, script, waitFor as waitUntil } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { runCli } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
@@ -39,12 +39,8 @@ test("a subagent's question is asked at the prompt with its label, the answer re
   const vt = new VirtualTerminal(100)
   let seen = ""
   let typer: ((data: string) => void) | null = null
-  const waitFor = async (needle: string | RegExp, ms = 15_000) => {
-    const deadline = Date.now() + ms
-    while (!(typeof needle === "string" ? seen.includes(needle) : needle.test(seen))) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${String(needle)}; screen:\n${vt.text}`)
-      await Bun.sleep(10)
-    }
+  const waitFor = async (needle: string | RegExp, ms = 15_000): Promise<void> => {
+    await waitUntil(() => (typeof needle === "string" ? seen.includes(needle) : needle.test(seen)), { timeoutMs: ms, intervalMs: 10, what: String(needle), describe: () => `screen:\n${vt.text}` })
   }
   const running = runCli(["-i", "--cwd", workspace, "Get the note written."], {
     engine,

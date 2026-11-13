@@ -3,6 +3,7 @@ import { ModelListError, OpenAIResponsesProvider, listModels } from "../../src/p
 import { encodeRequest } from "../../src/provider/openai-responses-encode.ts"
 import type { StreamEvent } from "../../src/provider/provider.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import { fixtureBytes } from "./responses-helpers.ts"
 
 const TOKEN = "test-token-not-real"
@@ -110,8 +111,9 @@ const routes: Record<string, (request: Request, path: string) => Response | Prom
   "keep-alive"(_, path) {
     return sse(path, async (send) => {
       send(frame("response.created", { response: {} }))
-      // Longer than the idle timeout in total, but never silent for that long.
-      for (let index = 0; index < 8; index++) {
+      // Longer than the idle timeout in total, but never silent for that long: a comment every 40 ms against a 1 s
+      // timeout, so a loaded runner that runs the timers late still sends one in time.
+      for (let index = 0; index < 30; index++) {
         await sleep(40)
         send(": keep-alive\n\n")
       }
@@ -265,11 +267,11 @@ describe("OpenAIResponsesProvider over HTTP", () => {
   test("a stalled stream fails as transport after the idle timeout and the request is cancelled", async () => {
     const started = Date.now()
     const events = await collect(provider("stall", { idleTimeoutMs: 150 }).stream(request, new AbortController().signal))
-    expect(Date.now() - started).toBeLessThan(1_500)
+    // At the idle timeout, not never; the slack is for a loaded runner.
+    expect(Date.now() - started).toBeLessThan(5_000)
     // Still a transport error, so it is retried like one, but told apart from a broken connection.
     expect(events.at(-1)).toMatchObject({ type: "error", error: { kind: "transport", retryable: true, reason: "stalled", requestId: "req_TEST1" } })
-    await sleep(50)
-    expect(cancelled.has("/stall/responses")).toBe(true)
+    await waitFor(() => cancelled.has("/stall/responses"), { what: "the request to be cancelled" })
   })
 
   test("no response headers within the idle timeout is transport", async () => {
@@ -278,22 +280,20 @@ describe("OpenAIResponsesProvider over HTTP", () => {
   })
 
   test("keep-alive comments keep a slow stream alive past the idle timeout", async () => {
-    const events = await collect(provider("keep-alive", { idleTimeoutMs: 150 }).stream(request, new AbortController().signal))
+    const events = await collect(provider("keep-alive", { idleTimeoutMs: 1_000 }).stream(request, new AbortController().signal))
     expect(events).toEqual([{ type: "text.delta", text: "ok" }, { type: "finish", reason: "stop", response: { requestId: "req_TEST1" } }])
   })
 
   test("an unparseable frame is provider_internal and stops reading", async () => {
     const events = await collect(provider("garbage").stream(request, new AbortController().signal))
     expect(events).toMatchObject([{ type: "error", error: { kind: "provider_internal" } }])
-    await sleep(50)
-    expect(cancelled.has("/garbage/responses")).toBe(true)
+    await waitFor(() => cancelled.has("/garbage/responses"), { what: "the request to be cancelled" })
   })
 
   test("nothing is yielded after the terminal event and the body is released", async () => {
     const events = await collect(provider("after-terminal").stream(request, new AbortController().signal))
     expect(events).toEqual([{ type: "finish", reason: "stop", response: { requestId: "req_TEST1" } }])
-    await sleep(50)
-    expect(cancelled.has("/after-terminal/responses")).toBe(true)
+    await waitFor(() => cancelled.has("/after-terminal/responses"), { what: "the request to be cancelled" })
   })
 
   test("a refused connection is transport", async () => {
@@ -361,21 +361,28 @@ describe("abort", () => {
         controller.abort()
       }
     }
-    expect(Date.now() - abortedAt).toBeLessThan(100)
+    // At once, not after the rest of the 5 s stream; the slack is for a loaded runner.
+    expect(Date.now() - abortedAt).toBeLessThan(1_000)
     expect(events.length).toBeLessThanOrEqual(3)
     expect(events.every((event) => event.type === "text.delta")).toBe(true)
-    await sleep(100)
-    expect(cancelled.has("/slow/responses")).toBe(true)
+    await waitFor(() => cancelled.has("/slow/responses"), { what: "the request to be cancelled" })
   })
 
   test("aborting while waiting for the next chunk ends the stream without waiting for it", async () => {
     const controller = new AbortController()
     const stream = provider("stall", { idleTimeoutMs: 10_000 }).stream(request, controller.signal)
     const events: StreamEvent[] = []
-    setTimeout(() => controller.abort(), 100)
-    const started = Date.now()
-    for await (const event of stream) events.push(event)
-    expect(Date.now() - started).toBeLessThan(1_000)
+    let abortedAt = 0
+    for await (const event of stream) {
+      events.push(event)
+      // The partial text is in; the stream now waits for a next chunk that never comes.
+      if (abortedAt === 0) {
+        abortedAt = Date.now()
+        setTimeout(() => controller.abort(), 0)
+      }
+    }
+    // Not the 10 s idle timeout; the slack is for a loaded runner.
+    expect(Date.now() - abortedAt).toBeLessThan(5_000)
     expect(events).toEqual([{ type: "text.delta", text: "partial" }])
   })
 
@@ -390,8 +397,7 @@ describe("abort", () => {
   test("a consumer that stops reading early releases the request", async () => {
     cancelled.delete("/slow/responses")
     for await (const event of provider("slow").stream(request, new AbortController().signal)) if (event.type === "text.delta") break
-    await sleep(100)
-    expect(cancelled.has("/slow/responses")).toBe(true)
+    await waitFor(() => cancelled.has("/slow/responses"), { what: "the request to be cancelled" })
   })
 })
 

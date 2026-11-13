@@ -5,7 +5,7 @@
  * sessions besides prompting: close one and keep the rest, list, read a
  * stored log, withdraw, archive; and what several sessions share.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -22,10 +22,14 @@ import type { ModelRequest } from "../../src/request/request.ts"
 import { openSnapshots } from "../../src/snapshot/index.ts"
 import { SessionInUseError, openSessionDirectory } from "../../src/store/directory.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import type { AnyTool } from "../../src/tool/tool.ts"
 import { createStandardTools } from "../../src/tools/index.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const scratch: string[] = []
 const open: Harness[] = []
@@ -81,10 +85,7 @@ function watch(session: EngineSession) {
   const events: EngineEvent[] = []
   session.subscribe((item) => events.push(item))
   const seen = async (predicate: (item: EngineEvent) => boolean) => {
-    for (let waited = 0; !events.some(predicate); waited += 5) {
-      if (waited > 15_000) throw new Error("timed out waiting for an event")
-      await Bun.sleep(5)
-    }
+    await waitFor(() => events.some(predicate), { timeoutMs: 15_000, intervalMs: 5, what: "an event", describe: () => events.map((item) => item.type).join(", ") })
   }
   return { events, seen }
 }
@@ -294,13 +295,13 @@ describe("what the engine says about a step", () => {
   test("a step interrupted in the model call keeps the usage the provider had reported", async () => {
     const { data, workspace } = place()
     const usage = { inputTokens: 900, cachedInputTokens: 512, outputTokens: 12, reasoningTokens: 4 }
-    const { harness } = start(data, [[script.text("Half an answer", { partial: true }), script.usage(usage), script.hang()], [script.text("Nothing reported", { partial: true }), script.hang()]])
+    const { harness, provider } = start(data, [[script.text("Half an answer", { partial: true }), script.usage(usage), script.hang()], [script.text("Nothing reported", { partial: true }), script.hang()]])
     const session = harness.engine.createSession({ cwd: workspace("a"), settings: SETTINGS })
     const { events, seen } = watch(session)
     session.send("Go.")
     await seen((item) => item.type === "text.delta" && events.filter((other) => other.type === "text.delta").map((other) => (other as { text: string }).text).join("") === "Half an answer")
-    // The usage event follows the text; give it the turn of the event loop it needs.
-    await Bun.sleep(20)
+    // The usage event follows the text: the stream has reached its hang once the loop has taken it.
+    await waitFor(() => provider.calls[0]?.hanging, { what: "the usage to be read" })
     session.interrupt()
     await session.settled()
     const failed = durable(events).find((item): item is StoredEvent<"step.failed"> => item.type === "step.failed")!

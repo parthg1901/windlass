@@ -3,11 +3,15 @@
  * sandbox and the real tools. The program's process runs confined, its calls
  * are decided and run like direct ones, and it can change nothing itself.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { SETTINGS, USAGE, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)

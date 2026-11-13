@@ -1,5 +1,5 @@
 // The recall evaluation with the scripted fake model. No live requests.
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -20,6 +20,10 @@ import { gradeAnswer, hasNeedle, namesToken, normalize, parseJudgeReply } from "
 import { HistoryIndex } from "./history.ts"
 import { type ModelFn, type ModelReply, capped } from "./model.ts"
 import { STANDARD_TOOLS, buildContext, compact, render } from "./strategies.ts"
+import { E2E_TIMEOUT_MS } from "../../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const session = generateSession({ seed: 7, tokens: 40_000, facts: 12 })
 const textOf = (messages: typeof session.messages) => JSON.stringify(render(messages))

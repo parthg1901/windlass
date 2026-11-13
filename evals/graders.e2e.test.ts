@@ -1,5 +1,5 @@
 // Every grader must reject the untouched workspace and accept the reference solution.
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +9,10 @@ import { activeEntries } from "../packages/core/src/memory/hygiene.ts"
 import { memoryPaths, openMemoryStore } from "../packages/core/src/memory/store.ts"
 import { arrangeMemorySide, memoryTaskSource, notesOf } from "./memory-tasks/source.ts"
 import { TASKS_DIR, applySolution, grade, listTasks, loadTask, prepareWorkspace } from "./run-check.ts"
+import { E2E_TIMEOUT_MS } from "../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const ids = await listTasks()
 const dirs: string[] = []

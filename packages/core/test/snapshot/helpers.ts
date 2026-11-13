@@ -1,7 +1,7 @@
 /** Real temporary directories, a real `git` playing the user, and fingerprints of what must not change. */
 import { expect } from "bun:test"
 import { createHash } from "node:crypto"
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs"
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type SnapshotOptions, type Snapshots, openSnapshots } from "../../src/snapshot/index.ts"
@@ -14,7 +14,7 @@ export const userHome = join(tmpdir(), `wl-snap-home-${process.pid}`)
 export function tempDir(label = "snap"): string {
   const dir = mkdtempSync(join(tmpdir(), `wl-${label}-`))
   created.push(dir)
-  return Bun.spawnSync(["pwd", "-P"], { cwd: dir }).stdout.toString().trim()
+  return realpathSync(dir)
 }
 
 export function removeTempDirs() {

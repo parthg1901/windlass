@@ -3,7 +3,7 @@
  * a catalogue whose bytes do not depend on connection order, and what the
  * model sees for a search and a call, through the real tool runtime.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { fingerprint } from "../../src/instructions/source.ts"
 import { MCP_CALL_TOOL, MCP_SEARCH_TOOL, mcpBridgeTools, mcpResultSource } from "../../src/mcp/bridge.ts"
 import { type CatalogueServer, CATALOGUE_LIMITS, catalogueUpdate, oneLine, renderCatalogue, searchCatalogue } from "../../src/mcp/catalogue.ts"
@@ -11,6 +11,10 @@ import type { McpRegistry } from "../../src/mcp/registry.ts"
 import { createToolRuntime } from "../../src/tool/runtime.ts"
 import { specOf } from "../../src/tool/tool.ts"
 import { cleanup, configOf, fixtureServer, registry, tempDir, toolContext, waitFor } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 

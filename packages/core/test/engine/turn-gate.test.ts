@@ -11,6 +11,7 @@ import type { StoredEvent, VerificationOutcome } from "../../src/event/durable.t
 import type { Json } from "../../src/json.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import { script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import type { ToolContext } from "../../src/tool/tool.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, type HarnessOptions, converse, removeHarnessDirectories } from "./harness.ts"
@@ -344,7 +345,7 @@ describe("a compaction the user asks for", () => {
         const view = selectModelHistory(h.session.projection()).messages.map((message) => message.id)
         const before = h.log().length
         void h.session.compact()
-        while (h.provider.calls.length < 3) await new Promise((resolve) => setTimeout(resolve, 1))
+        await waitFor(() => !(h.provider.calls.length < 3), { intervalMs: 1 })
 
         // The next start, in the mode that takes a claim up again: there is none to take up.
         h.provider.enqueue([script.text(SUMMARY)])

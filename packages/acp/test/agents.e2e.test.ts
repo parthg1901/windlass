@@ -2,16 +2,19 @@
  * Agents over the wire: the listing, a session started as one, the switch as
  * a config option, and a call an agent's restrictions refuse.
  */
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { brand } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import type { AgentsResult } from "../src/extensions.ts"
 import { EXT, META } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const REVIEWER = "---\nname: reviewer\ndescription: Reviews a change without editing anything.\neffects: read\n---\nYou review. You do not change files.\n"
 const DOCS = "---\nname: docs\ndescription: Writes documentation only.\ntools: read, write\n---\nEdit only files under docs/.\n"
@@ -102,7 +105,7 @@ test("the agent option switches: the record is durable first, then config_option
   const { sessionId } = await newAs(harness)
   const set = (value: string) => harness.connection.agent.request(methods.agent.session.setConfigOption, { sessionId, configId: "agent", value })
   expect(agentOption((await set("docs")).configOptions)?.currentValue).toBe("docs")
-  await until(() => harness.of(sessionId, "config_option_update").length === 1, 5000, "the option update after the switch")
+  await until(() => harness.of(sessionId, "config_option_update").length === 1, 10_000, "the option update after the switch")
   const update = harness.of(sessionId, "config_option_update")[0] as { configOptions: { id: string }[] }
   expect(agentOption(update.configOptions)?.currentValue).toBe("docs")
   expect(events(harness, "agent.switched").map((item) => [item.data.from, (item.data.to as { name: string } | null)?.name ?? null])).toEqual([[null, "docs"]])
@@ -114,7 +117,7 @@ test("the agent option switches: the record is durable first, then config_option
   expect(updateAt).toBeGreaterThan(recordAt)
 
   expect(agentOption((await set("none")).configOptions)?.currentValue).toBe("none")
-  await until(() => events(harness, "agent.switched").length === 2, 5000, "the switch to no agent")
+  await until(() => events(harness, "agent.switched").length === 2, 10_000, "the switch to no agent")
   // An unknown agent is refused in a sentence; the session keeps what it runs as.
   await expect(set("nobody")).rejects.toMatchObject({ code: -32602 })
   expect(await request<{ agent: string | null }>(harness, EXT.session, { sessionId })).toMatchObject({ agent: null })

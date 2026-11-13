@@ -4,17 +4,20 @@
  * real CLI, which starts the real `acp` server, with a scripted model.
  */
 import { brand } from "@windlass/core"
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SCRIPT_ENV } from "@windlass/acp"
 import type { CallId, MessageId, Question } from "@windlass/core"
 import { helpText, parseArgs } from "../src/args.ts"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, FakeProvider, script } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { EXIT_APPROVAL_REQUIRED } from "../src/engine.ts"
 import { approverAt } from "../src/main.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts")
 const scratch: string[] = []

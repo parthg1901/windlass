@@ -22,7 +22,7 @@
  *   modes table against the approval policy, the replay command's options,
  *   exit codes and printed lines against its source.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { createHmac } from "node:crypto"
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -46,6 +46,10 @@ import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { forkUsage, parseSubcommand, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
 import { BUILTIN_COMMANDS } from "../../packages/cli/src/slash.ts"
+import { E2E_TIMEOUT_MS } from "../../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const ROOT = join(import.meta.dir, "..", "..")
 const PAGES = ["docs/mcp.md", "docs/skills.md", "docs/wake-ups.md", "docs/subagents.md", "docs/forks.md", "docs/memory.md"] as const

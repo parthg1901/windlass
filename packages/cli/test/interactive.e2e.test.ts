@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:f
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { brand } from "@windlass/core"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { FakeProvider, script, waitFor as waitUntil } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
 import { resumeLine } from "../src/main.ts"
 import { runCli } from "./helpers.ts"
@@ -28,12 +28,8 @@ async function session(provider: FakeProvider, args: readonly string[], drive: (
   const vt = new VirtualTerminal(100)
   let seen = ""
   let typer: ((data: string) => void) | null = null
-  const waitFor = async (needle: string | RegExp) => {
-    const deadline = Date.now() + 10_000
-    while (!(typeof needle === "string" ? seen.includes(needle) : needle.test(seen))) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${String(needle)}; screen:\n${vt.text}`)
-      await Bun.sleep(5)
-    }
+  const waitFor = async (needle: string | RegExp): Promise<void> => {
+    await waitUntil(() => (typeof needle === "string" ? seen.includes(needle) : needle.test(seen)), { timeoutMs: 10_000, intervalMs: 5, what: String(needle), describe: () => `screen:\n${vt.text}` })
   }
   const running = runCli(["--cwd", workspace, ...args], {
     engine,

@@ -1,11 +1,15 @@
 /** The memory A/B comparison on results directories in the format `run-agent.ts` writes. */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadResults } from "./baseline.ts"
 import { RULES } from "./gate.ts"
 import { compareMemory, exitCode, formatComparison } from "./memory-compare.ts"
+import { E2E_TIMEOUT_MS } from "../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const dirs: string[] = []
 afterAll(() => {

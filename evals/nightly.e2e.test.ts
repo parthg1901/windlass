@@ -2,14 +2,18 @@
 // exported and classified for real), the gate, the recall tracker with the oracle reader, and the summary. Then the
 // exit codes for a pass, a gate failure, a recall drop and both, the lock, and what a run that is killed leaves.
 // Nothing here calls a model.
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { E2E_TIMEOUT_MS, waitFor } from "../packages/core/src/testing/wait.ts"
 import { buildBaseline, loadResults } from "./baseline.ts"
 import { EXIT, LOCK_FILE, type NightlySummary, STAGING_PREFIX, acquireLock, countRequests, parseNightlyArgs } from "./nightly.ts"
 import type { HistoryRow } from "./recall/track.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const REPO = resolve(import.meta.dir, "..")
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "wl-nightly-")))
@@ -174,11 +178,11 @@ describe("a run that is killed", () => {
       stdio: "ignore",
     })
     try {
-      for (let waited = 0; !(existsSync(root) && readdirSync(root).some((name) => name.startsWith(STAGING_PREFIX) && existsSync(join(root, name, "tasks", "runs", "answer-question-1.jsonl")))); waited += 50) {
-        if (waited > 60_000) throw new Error("the run never started its tasks")
-        await Bun.sleep(50)
-      }
-      await Bun.sleep(300)
+      await waitFor(() => existsSync(root) && readdirSync(root).some((name) => name.startsWith(STAGING_PREFIX) && existsSync(join(root, name, "tasks", "runs", "answer-question-1.jsonl"))), {
+        timeoutMs: 60_000,
+        intervalMs: 50,
+        what: "the run to start its tasks",
+      })
     } finally {
       // The whole process group: the nightly, the runner's agent and anything it started.
       process.kill(-child.pid!, "SIGKILL")

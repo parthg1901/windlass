@@ -11,6 +11,7 @@ import type { EngineEvent } from "../src/engine.ts"
 import { FakeEngine, type FakeSession } from "../src/fake-engine.ts"
 import { runCli } from "./helpers.ts"
 import { VirtualTerminal } from "./vt.ts"
+import { waitFor as waitUntil } from "@windlass/core/testing"
 
 const durable = (item: EngineEvent): item is StoredEvent => "seq" in item
 const strip = (item: StoredEvent): NewEvent => ({ type: item.type, v: item.v, data: item.data }) as NewEvent
@@ -129,16 +130,12 @@ describe("the fake engine takes input during a turn", () => {
 
 describe("the interactive CLI", () => {
   /** Runs an interactive demo; `script` types into it, waiting for output first. */
-  async function interactive(name: string, script: (type: (keys: string) => void, waitFor: (needle: string) => Promise<void>) => Promise<void>) {
+  async function interactive(name: string, script: (type: (keys: string) => void, waitFor: (needle: string | RegExp) => Promise<void>) => Promise<void>) {
     let typer: ((data: string) => void) | null = null
     let seen = ""
     const vt = new VirtualTerminal(80)
-    const waitFor = async (needle: string) => {
-      const until = Date.now() + 10_000
-      while (!seen.includes(needle)) {
-        if (Date.now() > until) throw new Error(`timed out waiting for ${JSON.stringify(needle)}:\n${vt.text}\n${JSON.stringify(seen.slice(-400))}`)
-        await Bun.sleep(5)
-      }
+    const waitFor = async (needle: string | RegExp): Promise<void> => {
+      await waitUntil(() => (typeof needle === "string" ? seen.includes(needle) : needle.test(seen)), { timeoutMs: 10_000, intervalMs: 5, what: String(needle), describe: () => `\n${vt.text}\n${JSON.stringify(seen.slice(-400))}` })
     }
     const running = runCli(["--demo", name, "--demo-speed", "8", "-i"], {
       stdinTTY: true,
@@ -185,8 +182,8 @@ describe("the interactive CLI", () => {
   test("Up recalls the previous entry whole, and /exit leaves", async () => {
     const result = await interactive("a-plain-answer", async (type, waitFor) => {
       type("What does\x1b\rthis repo do?\r")
-      await waitFor("✓ done")
-      await Bun.sleep(20)
+      // The prompt is back after the turn's outcome, so the key goes to it.
+      await waitFor(/✓ done[\s\S]*›/)
       type("\x1b[A")
       await waitFor("  this repo do?")
       type("\x03/exit\r")

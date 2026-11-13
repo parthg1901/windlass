@@ -3,7 +3,7 @@
  * created or sent, and a session says how its calls are decided before its
  * first turn has read the configuration files.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,6 +13,10 @@ import { EngineError } from "../../src/engine/engine.ts"
 import { SUBAGENT_NOTE, taskMessage } from "../../src/engine/spawn.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
 import { Harness, removeHarnessDirectories } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

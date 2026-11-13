@@ -5,7 +5,7 @@
  * held by a live process and by a dead one, and snapshots of one workspace
  * taken and pruned by several processes at once.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,7 +14,11 @@ import type { SessionId } from "../../src/id.ts"
 import { openSnapshots } from "../../src/snapshot/index.ts"
 import { openSessionDirectory } from "../../src/store/directory.ts"
 import { FakeProvider } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const FIXTURE = join(import.meta.dir, "fixtures", "harness-child.ts")
 const scratch: string[] = []
@@ -54,12 +58,16 @@ function spawn(...args: string[]) {
   const errors = new Response(child.stderr).text()
   /** Resolves with the session ID once the child has said `started <id>`. */
   const started = async () => {
-    for (;;) {
-      const line = lines.find((entry) => entry.startsWith("started "))
-      if (line !== undefined) return line.slice("started ".length) as SessionId
-      if (child.exitCode !== null) throw new Error(`the child exited before it started: ${await errors}`)
-      await Bun.sleep(5)
-    }
+    const line = await waitFor(
+      () => {
+        if (child.exitCode !== null) throw new Error("the child exited before it started")
+        return lines.find((entry) => entry.startsWith("started "))
+      },
+      { timeoutMs: 20_000, intervalMs: 5, what: "the child to start" },
+    ).catch(async (error: Error) => {
+      throw new Error(`${error.message}: ${await errors}`)
+    })
+    return line.slice("started ".length) as SessionId
   }
   /** Resolves with the JSON the child printed last, once it has exited cleanly. */
   const result = async <T>() => {

@@ -3,7 +3,7 @@
  * single-writer rule.
  */
 import { Database, SQLiteError } from "bun:sqlite"
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,6 +13,10 @@ import { StoreError } from "../../src/store/store.ts"
 import { expectStoreConsistent } from "./consistency.ts"
 import { recoverClaimedSessions } from "./recovery.ts"
 import { baselineSet, created, enqueue } from "./scripted.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const FIXTURE = join(import.meta.dir, "fixtures", "writer.ts")
 

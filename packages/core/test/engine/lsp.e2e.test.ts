@@ -7,7 +7,7 @@
  * most the bound, a project's server waits for the user's approval, and
  * closing the engine stops every server.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -23,6 +23,10 @@ import { fixture, readPid, waitFor } from "../lsp/helpers.ts"
 import { measured } from "../scenarios/script.ts"
 import { isRunning } from "../tools/helpers.ts"
 import { Harness, type HarnessOptions, type ToolBehaviour, failed, removeHarnessDirectories } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

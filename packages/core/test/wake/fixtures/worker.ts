@@ -7,11 +7,13 @@
  * Modes: `run` delivers normally; `die-after-admit` is killed (SIGKILL) right after its first admission, before
  * the store hears it was delivered; `die-before-admit` is killed on its first delivery attempt. It waits for the
  * go file (a barrier, so that several start at once), runs until every wake-up has ended with nothing left to
- * deliver, prints a JSON summary and exits.
+ * deliver, prints a JSON summary and exits. Once its store is open it writes `<go file>.ready-<pid>`, so the test
+ * knows when every worker waits at the barrier.
  */
 import { Database } from "bun:sqlite"
-import { existsSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
 import { enableWal } from "../../../src/store/wal.ts"
+import { waitFor } from "../../../src/testing/wait.ts"
 import { createCheckRunner } from "../../../src/wake/check.ts"
 import { createScheduler } from "../../../src/wake/scheduler.ts"
 import { openWakeStore } from "../../../src/wake/store.ts"
@@ -42,13 +44,15 @@ const scheduler = createScheduler({
   },
 })
 
-if (goFile !== undefined) while (!existsSync(goFile)) await Bun.sleep(5)
+if (goFile !== undefined) {
+  writeFileSync(`${goFile}.ready-${process.pid}`, "")
+  await waitFor(() => existsSync(goFile), { timeoutMs: 60_000, intervalMs: 5, what: "the go file" })
+}
 scheduler.start()
 
-const deadline = performance.now() + 30_000
 const finished = () =>
   store.list({ includeEnded: true }).every((wake) => wake.state.kind !== "pending" && store.firings(wake.id).every((firing) => firing.deliveredAt !== null))
-while (!finished() && performance.now() < deadline) await Bun.sleep(25)
+await waitFor(finished, { timeoutMs: 30_000, intervalMs: 25 }).catch(() => {})
 const done = finished()
 await scheduler.stop()
 store.close()

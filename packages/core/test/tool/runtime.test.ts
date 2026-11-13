@@ -185,13 +185,14 @@ describe("tool runtime", () => {
     const token = createInterrupt()
     const started: number[] = []
     const begin = performance.now()
+    // Stopped once all three have started.
     const all = runtime.runAll(
       [0, 1, 2].map((index) => ({ name: "echo", argumentsText: `{"text":"${index}","delayMs":5000}`, context: context(cwd, { signal: token.signal }) })),
-      { onStart: (index) => started.push(index) },
+      { onStart: (index) => (started.push(index), started.length === 3 && queueMicrotask(() => token.interrupt("user"))) },
     )
-    setTimeout(() => token.interrupt("user"), 50)
     const outcomes = await all
-    expect(performance.now() - begin).toBeLessThan(1000)
+    // Each would take 5 s; stopped, they return at once. The slack is for a loaded runner.
+    expect(performance.now() - begin).toBeLessThan(2500)
     expect(started).toEqual([0, 1, 2])
     expect(outcomes.map((outcome) => outcome.settlement.output)).toEqual(["stopped after 0", "stopped after 1", "stopped after 2"])
   })

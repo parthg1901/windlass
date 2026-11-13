@@ -19,7 +19,7 @@
  *   names, environment variable prefixes) is the brand's: a rename makes this
  *   fail until the pages say the new name.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -32,6 +32,10 @@ import { forkUsage, replayUsage } from "../../packages/cli/src/subcommands.ts"
 import { COMMANDS } from "../../packages/tui/src/commands.ts"
 import { ROOT, TARGETS, artifactName, hostTarget, parseBuildArgs } from "../../scripts/build.ts"
 import { CHECKSUMS, INSTALL_SCRIPT } from "../../scripts/release.ts"
+import { E2E_TIMEOUT_MS } from "../../packages/core/src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const PAGES = ["README.md", "docs/user-guide.md", "docs/troubleshooting.md"] as const
 const text = Object.fromEntries(PAGES.map((page) => [page, readFileSync(join(ROOT, page), "utf8")])) as Record<(typeof PAGES)[number], string>

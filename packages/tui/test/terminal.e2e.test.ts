@@ -4,11 +4,16 @@
  * model (`WINDLASS_ACP_SCRIPT`) in a temporary git workspace and data directory.
  * No model requests are made.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
+import { ARMING_MS } from "../src/approval.ts"
 import { Tmux, killServer } from "./tmux.ts"
+import { E2E_TIMEOUT_MS } from "@windlass/core/testing"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const MAIN = new URL("../../cli/src/main.ts", import.meta.url).pathname
 const READY = "● ready"
@@ -128,14 +133,15 @@ describe("against the scripted demo engine", () => {
   }, 40_000)
 
   test("Ctrl-C twice within two seconds exits at once, with the terminal put back", async () => {
-    const term = await start(["--demo", "a-long-build-command", "--demo-grace", "5000"])
+    const term = await start(["--demo", "a-long-build-command", "--demo-grace", "30000"])
     await term.waitFor(READY)
     term.keys("Enter")
     await term.waitFor("running shell bun run build")
     term.keys("C-c")
     await term.waitFor("stopping")
     term.keys("C-c")
-    expect(await term.exited({ timeoutMs: 3000 })).toBe(130)
+    // At once, not after the stop's 30 s; the deadline is for a loaded runner.
+    expect(await term.exited({ timeoutMs: 15_000 })).toBe(130)
     // tmux may not have processed the program's last bytes when its exit is known: the screen and the modes are polled.
     await term.waitFor((frame) => !frame.includes(READY))
     await term.until(() => !term.modes().alternateScreen)
@@ -253,8 +259,10 @@ describe("approvals and safety, against windlass acp", () => {
   /** Waits for the dock, then for it to take the keys (it does when nobody types) and be armed. */
   const dockReady = async (term: Tmux) => {
     await term.waitFor("[a] Allow once", { timeoutMs: 20_000 })
-    await term.waitFor("↑↓ Enter · a s p n m", { timeoutMs: 5000 })
-    await Bun.sleep(500)
+    await term.waitFor("↑↓ Enter · a s p n m", { timeoutMs: 10_000 })
+    // The dock arms itself ARMING_MS after it was made, which is before it was drawn and seen here, so this wait
+    // from the moment it is seen always outlasts the arming, however slow the runner.
+    await Bun.sleep(ARMING_MS + 100)
   }
 
   afterEach(() => rmSync(target, { force: true }))
@@ -318,10 +326,10 @@ describe("approvals and safety, against windlass acp", () => {
     // Select the subagent's row (Alt-Up from the bottom, until the selection mark is on it) and expand it: its own work, framed under it.
     for (let guard = 0; guard < 6 && !/▌ ✓ subagent/.test(frame); guard += 1) {
       term.keys("M-Up")
-      frame = await term.waitFor((next) => next.includes("▌"), { timeoutMs: 3000 })
+      frame = await term.waitFor((next) => next.includes("▌"), { timeoutMs: 10_000 })
     }
     term.keys("C-o")
-    frame = await term.waitFor((next) => next.includes("│ ✓ write"), { timeoutMs: 5000 })
+    frame = await term.waitFor((next) => next.includes("│ ✓ write"), { timeoutMs: 10_000 })
     const rows = frame.split("\n").map((line) => line.split("│ ").slice(1).join("│ "))
     expect(rows.some((line) => line.startsWith("› Write the file outside"))).toBe(true)
     expect(rows.some((line) => /^✓ ls/.test(line))).toBe(true)

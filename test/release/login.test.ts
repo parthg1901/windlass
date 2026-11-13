@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { rmSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../packages/core/src/brand.ts"
+import { waitFor } from "../../packages/core/src/testing/wait.ts"
 import { CHATGPT_AUTH, credentialsPath, loadCredentials, loadPending, pendingPath } from "../../packages/core/src/auth/chatgpt.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { type LoginDeps, type LoginIo, runLogin } from "../../packages/cli/src/login.ts"
@@ -107,7 +108,7 @@ describe("signing in", () => {
     const result = await login(["start"], { config: fake.config }, {
       paste: (type, out) => {
         void (async () => {
-          while (addressIn(out()) === "") await Bun.sleep(5)
+          await waitFor(() => addressIn(out()) !== "", { intervalMs: 5, what: "the sign-in address" })
           pasted = await fake.authorize(addressIn(out()))
           // A terminal's bracketed paste, then Enter.
           type(`\x1b[200~${pasted}\x1b[201~`)

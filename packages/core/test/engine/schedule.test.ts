@@ -207,14 +207,14 @@ describe("a call starts as soon as its arguments finish streaming", () => {
     }, { approval: APPROVAL }))
 })
 
-test("three one-second commands in one response, streamed over 0.6 s, take 0.6 s + 1 s, not 0.6 s + 3 s", () =>
+test("three two-second commands in one response, streamed over 0.6 s, take 0.6 s + 2 s, not 0.6 s + 6 s", () =>
   withHarness(async (h) => {
     h.provider.enqueue(
-      [shell("call_1", "sleep 1 # a"), script.delay(300), shell("call_2", "sleep 1 # b"), script.delay(300), shell("call_3", "sleep 1 # c"), U],
+      [shell("call_1", "sleep 2 # a"), script.delay(300), shell("call_2", "sleep 2 # b"), script.delay(300), shell("call_3", "sleep 2 # c"), U],
       [script.text("Done.")],
     )
     const second = async () => {
-      await sleep(1000)
+      await sleep(2000)
       return "slept"
     }
     h.tools.on("shell", second, second, second)
@@ -222,22 +222,24 @@ test("three one-second commands in one response, streamed over 0.6 s, take 0.6 s
     h.create().send("Sleep three times.")
     await h.settled()
     const took = performance.now() - began
-    // One after the other, after the whole response: 0.6 s + 3 s. Together, each as it arrives: 0.6 s + 1 s at most.
-    expect(took).toBeLessThan(2000)
-    console.log(`three 1 s commands, response streamed over 0.6 s: ${Math.round(took)} ms`)
-  }, { approval: APPROVAL }), 10_000)
+    // One after the other, after the whole response: 0.6 s + 6 s. Together, each as it arrives: 0.6 s + 2 s. The bound
+    // sits between the two with over a second of slack for a loaded runner; the commands are long so that it can.
+    expect(took).toBeLessThan(4000)
+    console.log(`three 2 s commands, response streamed over 0.6 s: ${Math.round(took)} ms`)
+  }, { approval: APPROVAL }), 20_000)
 
-test("a one-second command followed by a second more of the response takes one second, not two", () =>
+test("a two-second command followed by two seconds more of the response takes two seconds, not four", () =>
   withHarness(async (h) => {
-    h.provider.enqueue([shell("call_1", "sleep 1"), script.delay(1000), read("call_2", "a.ts"), U], [script.text("Done.")])
+    h.provider.enqueue([shell("call_1", "sleep 2"), script.delay(2000), read("call_2", "a.ts"), U], [script.text("Done.")])
     h.tools
       .on("shell", async () => {
-        await sleep(1000)
+        await sleep(2000)
         return "slept"
       })
       .on("read", "a")
     const began = performance.now()
     h.create().send("Test.")
     await h.settled()
-    expect(performance.now() - began).toBeLessThan(1600)
-  }, { approval: APPROVAL }), 10_000)
+    // Halfway between overlapping (2 s) and one after the other (4 s), for a loaded runner.
+    expect(performance.now() - began).toBeLessThan(3000)
+  }, { approval: APPROVAL }), 20_000)

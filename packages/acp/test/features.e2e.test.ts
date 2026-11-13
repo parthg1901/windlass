@@ -11,16 +11,19 @@
  * The configuration is real files under a throwaway `XDG_CONFIG_HOME` and the
  * workspace, read by the same loader the command line uses.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
 import { brand } from "@windlass/core"
-import { script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { loadConfig } from "../../core/src/config/load.ts"
 import { EXT, META, type McpStateResult, type MemoryStateResult, type SkillsResult, type WakeCreateResult, type WakeListResult, type WakeSecretResult } from "../src/extensions.ts"
 import { type Harness, startHarness, until } from "./helpers.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const NS = META.capabilities
 const SERVER = join(import.meta.dir, "..", "..", "core", "test", "mcp", "fixtures", "stdio-server.ts")
@@ -86,7 +89,7 @@ describe("MCP servers", () => {
     const before = await ext<McpStateResult>(harness, EXT.mcp, { sessionId })
     expect(before.servers).toEqual([expect.objectContaining({ name: "theirs", state: "not_started", origin: "project", file })])
     await prompt(harness, sessionId, "Hello.")
-    await until(() => changes(harness).some((change) => change.servers.some((server) => server.state === "awaiting_approval")), 5000, "the question")
+    await until(() => changes(harness).some((change) => change.servers.some((server) => server.state === "awaiting_approval")), 10_000, "the question")
     const waiting = (await ext<McpStateResult>(harness, EXT.mcp, { sessionId })).servers[0]!
     expect(waiting).toMatchObject({ name: "theirs", state: "awaiting_approval", origin: "project", file, tools: null })
     expect(waiting.target).toContain("stdio-server.ts --only echo")

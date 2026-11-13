@@ -7,7 +7,7 @@
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { brand, event, text } from "@windlass/core"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { FakeProvider, script, waitFor as waitUntil } from "@windlass/core/testing"
 import { m, opening } from "@windlass/core/testing/scenarios"
 import { WATCH_USAGE, watchEntry, watchLines } from "../src/features.ts"
 import { render, stored } from "./helpers.ts"
@@ -102,7 +102,7 @@ describe("as a user types it", () => {
       await waitFor("It is up now.")
       await waitFor(/It is up now\.[\s\S]*✓ done/)
       // The turn the watch started ended under the prompt: a blank line above the prompt, as after a turn the user typed.
-      for (let tries = 0; tries < 100 && !(rows().findLast((row) => row.trim() !== "") ?? "").startsWith("›"); tries += 1) await Bun.sleep(10)
+      await waitUntil(() => (rows().findLast((row) => row.trim() !== "") ?? "").startsWith("›"), { what: "the prompt under the turn", describe: () => rows().join("\n") })
       const shown = rows()
       const prompt = shown.findLastIndex((row) => row.startsWith("›"))
       expect(shown[prompt - 1]).toBe("")

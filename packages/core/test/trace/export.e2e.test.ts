@@ -4,7 +4,7 @@
  * checked against SPEC.md, against the ledger, and (when the sibling
  * checkout is present) against prefixlens itself.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -19,6 +19,10 @@ import {NOT_HARNESS, report, prefixlens } from "./prefixlens.ts"
 import { baselineSet, created, deliver, enqueue, executionInterrupted, executionStarted, interruptRequested, reverted, stepFailed, stepStarted, synthetic } from "../store/scripted.ts"
 import { COMPACTION_PROMPT, Loop, SCRIPTS, type StepBuilder, openTestStore, record } from "./sessions.ts"
 import { validateTrace } from "./spec.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 
 let store: SqliteStore

@@ -20,7 +20,7 @@ const MODERN = "2026-07-28"
 
 export interface HttpFixture {
   readonly url: string
-  /** Events: `call echo`, `cancelled 5`, `header-mismatch ...`, `session ended`. */
+  /** Events: `call echo` (a call arrived), `listening` (a change stream is open), `cancelled 5`, `header-mismatch ...`, `session ended`. */
   readonly events: string[]
   stop(): Promise<void>
 }
@@ -93,6 +93,7 @@ export function startHttpFixture(options: { readonly era: "modern" | "legacy"; r
         if (session === null || headers["mcp-session-id"] !== session) return new Response("no session", { status: 400 })
         return sse(request, (push, _close, signal) => {
           listeners.add(push)
+          events.push("listening")
           signal.addEventListener("abort", () => listeners.delete(push), { once: true })
         })
       }
@@ -171,6 +172,7 @@ export function startHttpFixture(options: { readonly era: "modern" | "legacy"; r
               push({ ...data, params: { ...((data.params ?? {}) as Obj), _meta: { "io.modelcontextprotocol/subscriptionId": id as JsonValue } } })
             tagged({ jsonrpc: "2.0", method: "notifications/subscriptions/acknowledged", params: { notifications: { toolsListChanged: true } } })
             listeners.add(tagged)
+            events.push("listening")
             signal.addEventListener("abort", () => listeners.delete(tagged), { once: true })
           })
         case "tools/call": {
@@ -189,6 +191,7 @@ export function startHttpFixture(options: { readonly era: "modern" | "legacy"; r
                 throw new Error("the HTTP fixture cannot crash")
               },
             })
+          events.push(`call ${toolName}`)
           if (toolName === "hang" || toolName === "slow")
             return sse(request, (push, close, signal) => {
               signal.addEventListener("abort", () => events.push(`cancelled ${String(id)}`), { once: true })

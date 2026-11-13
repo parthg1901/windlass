@@ -19,6 +19,7 @@ import type { StoredEvent } from "../../src/event/durable.ts"
 import { selectModelHistory } from "../../src/message/history.ts"
 import type { ModelRequest } from "../../src/request/request.ts"
 import { type ScriptItem, script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import { NOT_A_SUMMARY, SUMMARY, measured } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, type HarnessOptions, removeHarnessDirectories } from "./harness.ts"
 
@@ -254,7 +255,7 @@ describe("a summary that does not end", () => {
         h.create().send("Read big.ts.")
         await h.seen((item) => item.type === "compaction.started")
         // Everything it wrote has arrived; then nothing more comes.
-        while (h.provider.calls.length < 2 || h.provider.calls[1]!.events.length < Math.ceil(written.length / 200)) await new Promise((resolve) => setTimeout(resolve, 1))
+        await waitFor(() => !(h.provider.calls.length < 2 || h.provider.calls[1]!.events.length < Math.ceil(written.length / 200)), { intervalMs: 1 })
         h.clock.advance(60_000)
         await h.settled()
         expect(ofType(h, "compaction.ended")[0]!.data).toMatchObject({ source: "model", detail: COMPACTION_TEXT.repeated })
@@ -423,7 +424,7 @@ describe("a crash around a compaction", () => {
       })
       h.create().send("Read big.ts.")
       await h.seen((item) => item.type === "compaction.repair_requested")
-      while (h.provider.calls.length < 3) await new Promise((resolve) => setTimeout(resolve, 1))
+      await waitFor(() => !(h.provider.calls.length < 3), { intervalMs: 1 })
       h.provider.enqueue(summary(), small("Read it."))
       h.restart()
       await h.settled()

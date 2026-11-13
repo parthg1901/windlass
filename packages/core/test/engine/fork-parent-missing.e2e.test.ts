@@ -20,7 +20,7 @@
  * loaded: …"); anything else that fails as an execution starts is the
  * harness's own failure, in its own words.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { resolveConfig } from "../../src/config/schema.ts"
@@ -30,6 +30,10 @@ import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import { StoreError } from "../../src/store/store.ts"
 import { SETTINGS, call, closeHarnesses, place, removePlaces, say, start } from "./assembly-helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(closeHarnesses)
 afterAll(removePlaces)

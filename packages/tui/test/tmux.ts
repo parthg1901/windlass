@@ -17,6 +17,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { waitFor } from "@windlass/core/testing"
 
 export interface StartOptions {
   readonly width: number
@@ -115,37 +116,32 @@ export class Tmux {
     const timeoutMs = options.timeoutMs ?? 10_000
     const intervalMs = options.intervalMs ?? 50
     const matches = typeof expected === "function" ? expected : (frame: string) => (typeof expected === "string" ? frame.includes(expected) : expected.test(frame))
-    const deadline = Date.now() + timeoutMs
     let frame = ""
-    for (;;) {
-      frame = this.capture()
-      if (matches(frame)) return frame
-      if (Date.now() > deadline) throw new Error(`waited ${timeoutMs} ms for ${String(expected)}; the pane shows:\n${frame}`)
-      await Bun.sleep(intervalMs)
-    }
+    const found = await waitFor(
+      () => {
+        frame = this.capture()
+        return matches(frame) ? { frame } : null
+      },
+      { timeoutMs, intervalMs, what: String(expected), describe: () => `the pane shows:\n${frame}` },
+    )
+    return found.frame
   }
 
   /** Waits for the program to exit; returns its exit status (128 + n when a signal ended it). */
   async exited(options: WaitOptions = {}): Promise<number> {
-    const deadline = Date.now() + (options.timeoutMs ?? 10_000)
-    for (;;) {
-      const file = Bun.file(this.statusFile)
-      if (await file.exists()) {
-        const text = (await file.text()).trim()
-        if (text !== "") return Number(text)
-      }
-      if (Date.now() > deadline) throw new Error(`the program did not exit; the pane shows:\n${this.capture()}`)
-      await Bun.sleep(options.intervalMs ?? 50)
-    }
+    const text = await waitFor(
+      async () => {
+        const file = Bun.file(this.statusFile)
+        return (await file.exists()) ? (await file.text()).trim() : ""
+      },
+      { timeoutMs: options.timeoutMs ?? 10_000, intervalMs: options.intervalMs ?? 50, what: "the program to exit", describe: () => `the pane shows:\n${this.capture()}` },
+    )
+    return Number(text)
   }
 
   /** Polls `check` until it holds (bounded), for state that is not on the screen, such as the terminal's modes. */
   async until(check: () => boolean, options: WaitOptions = {}): Promise<void> {
-    const deadline = Date.now() + (options.timeoutMs ?? 5000)
-    while (!check()) {
-      if (Date.now() > deadline) throw new Error(`the condition did not hold within ${options.timeoutMs ?? 5000} ms; the pane shows:\n${this.capture()}`)
-      await Bun.sleep(options.intervalMs ?? 50)
-    }
+    await waitFor(check, { timeoutMs: options.timeoutMs ?? 10_000, intervalMs: options.intervalMs ?? 50, what: "the condition", describe: () => `the pane shows:\n${this.capture()}` })
   }
 
   /** The terminal modes the program left set: a TUI that exits cleanly leaves none of the first two on. */

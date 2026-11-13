@@ -5,6 +5,7 @@ import { join } from "node:path"
 import type { CheckConfig } from "../../src/config/schema.ts"
 import { createInterrupt } from "../../src/interrupt.ts"
 import type { RunCheckOptions } from "../../src/verify/run.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 
 export { isRunning } from "../tools/helpers.ts"
 
@@ -32,8 +33,8 @@ export function check(name: string, command: string, extra: Partial<CheckConfig>
   return { name, command, timeoutSeconds: 30, when: null, ...extra }
 }
 
-export async function expectGone(pids: number[], isRunning: (pid: number) => boolean, ms = 1000) {
-  const deadline = performance.now() + ms
-  while (pids.some(isRunning) && performance.now() < deadline) await Bun.sleep(20)
+/** The pids still running once all are gone or `ms` has passed: the kill sequence has already run when this is called. */
+export async function expectGone(pids: number[], isRunning: (pid: number) => boolean, ms = 10_000) {
+  await waitFor(() => !pids.some(isRunning), { timeoutMs: ms, intervalMs: 20 }).catch(() => {})
   return pids.filter(isRunning)
 }

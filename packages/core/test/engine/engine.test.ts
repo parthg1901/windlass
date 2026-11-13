@@ -10,6 +10,7 @@ import { EngineError, createEngine } from "../../src/engine/engine.ts"
 import type { MessageId, RequestId, SessionId } from "../../src/id.ts"
 import { openSqliteStore } from "../../src/store/sqlite.ts"
 import { FakeProvider, script } from "../../src/testing/fake-provider.ts"
+import { waitFor } from "../../src/testing/wait.ts"
 import { SUMMARY } from "../scenarios/script.ts"
 import { Harness, forever, removeHarnessDirectories, untilAbort } from "./harness.ts"
 
@@ -554,7 +555,7 @@ describe("model output the scenarios leave open", () => {
       await h.settled()
       h.session.send("Second.")
       await h.seen((item) => item.type === "compaction.started")
-      await new Promise((resolve) => setTimeout(resolve, 5))
+      await waitFor(() => h.provider.calls[2]?.hanging, { what: "the summary to be streaming" })
       h.session.interrupt()
       await h.settled()
       expect(types(h).slice(-4)).toEqual(["execution.interrupt_requested", "compaction.failed", "synthetic.appended", "execution.interrupted"])

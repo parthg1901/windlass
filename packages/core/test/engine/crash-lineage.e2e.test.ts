@@ -5,7 +5,7 @@
  * process then opens the same data directory and checks what is there and
  * what recovery makes of it.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,7 +13,11 @@ import { type Harness, createHarness } from "../../src/assembly.ts"
 import type { StoredEvent } from "../../src/event/durable.ts"
 import type { SessionId } from "../../src/id.ts"
 import { FakeProvider, type ScriptedResponse, script } from "../../src/testing/fake-provider.ts"
+import { E2E_TIMEOUT_MS, waitFor } from "../../src/testing/wait.ts"
 import { expectRebuildEqualsLive } from "../store/consistency.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const FIXTURE = join(import.meta.dir, "fixtures", "lineage-child.ts")
 const directories: string[] = []
@@ -67,12 +71,7 @@ function reopen(data: string, responses: readonly ScriptedResponse[] = []) {
   return { harness, provider }
 }
 
-const until = async (check: () => boolean) => {
-  for (let waited = 0; !check(); waited += 10) {
-    if (waited > 15_000) throw new Error("timed out waiting")
-    await Bun.sleep(10)
-  }
-}
+const until = (check: () => boolean) => waitFor(check, { timeoutMs: 15_000 }).then(() => {})
 
 describe("a process that dies", () => {
   test("during a fork: no half-made session is listed, the parent is as it was, and the fork can be made again", async () => {

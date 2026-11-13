@@ -8,7 +8,7 @@
  * configuration names no hook sends exactly the requests of an engine
  * without hooks.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -24,6 +24,10 @@ import { script } from "../../src/testing/fake-provider.ts"
 import { exited, scriptedRunner } from "../hooks/helpers.ts"
 import { measured } from "../scenarios/script.ts"
 import { FakeWorkspace, Harness, type HarnessOptions, removeHarnessDirectories, untilAbort } from "./harness.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const made: string[] = []
 afterAll(() => {

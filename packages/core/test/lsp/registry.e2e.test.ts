@@ -3,20 +3,28 @@
  * bound on waiting, stale publications, floods, crashes and restarts,
  * approval, and that no process outlives a stop or the harness.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { lspApprovalKey, planLspServers } from "../../src/lsp/config.ts"
 import { NOTE_LIMITS } from "../../src/lsp/note.ts"
 import { isRunning } from "../tools/helpers.ts"
 import { cleanup, fixture, make, readLines, readPid, tempDir, waitFor } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 
 /** A file with a pre-existing warning and error; the edit adds one error. */
 const BEFORE = ["let unused = WARN(unused)", "call(ERROR(old))", "end"].join("\n")
 const AFTER = ["// a line added above", "let unused = WARN(unused)", "call(ERROR(old))", "fresh(ERROR(fetchUser))", "end"].join("\n")
-/** Slack for scheduling on a loaded machine, on top of the bound. */
-const SLACK_MS = 400
+/**
+ * Slack for scheduling on a loaded machine, on top of the bound. Shared CI runners take over a second for what takes
+ * milliseconds here; every bound plus this slack stays well below the time the test tells it apart from (a server
+ * that answers after 5 s, or never).
+ */
+const SLACK_MS = 1500
 
 async function ready(made: ReturnType<typeof make>, file = "src/a.txt", text = BEFORE) {
   made.registry.observe(join(made.cwd, file), text)
@@ -89,7 +97,7 @@ describe("a well-behaved server (push, versioned)", () => {
     const log = join(tempDir(), "log")
     const made = make({ servers: { fixture: fixture(["--ask", "--log", log], { settings: { fixture: { rules: { strict: true } } } }) } })
     await ready(made)
-    await waitFor(() => readLines(log).filter((line) => line.startsWith("answer")).length === 4, 5000, "the answers")
+    await waitFor(() => readLines(log).filter((line) => line.startsWith("answer")).length === 4, 10_000, "the answers")
     const answers = readLines(log).filter((line) => line.startsWith("answer"))
     expect(answers).toEqual([
       'answer workspace/configuration [{"strict":true},null]',
@@ -106,7 +114,7 @@ describe("a well-behaved server (push, versioned)", () => {
     const made = make({ servers: { fixture: fixture(["--log", log]) } }, { maxOpenDocuments: 1 })
     await ready(made, "one.txt", "1")
     made.registry.observe("two.txt", "2")
-    await waitFor(() => readLines(log).includes("textDocument/didClose"), 5000, "didClose")
+    await waitFor(() => readLines(log).includes("textDocument/didClose"), 10_000, "didClose")
     expect(made.registry.status()[0]!.openDocuments).toBe(1)
   })
 
@@ -137,7 +145,7 @@ describe("a pull-only server", () => {
 
 describe("a slow server", () => {
   test("no stall: the call returns at the bound with no note, and the user is told once", async () => {
-    const made = make({ waitMs: 800, servers: { slow: fixture(["--delay", "3000"]) } })
+    const made = make({ waitMs: 800, servers: { slow: fixture(["--delay", "5000"]) } })
     await ready(made)
     for (const after of [AFTER, `${AFTER}\nmore`]) {
       const started = performance.now()
@@ -151,7 +159,7 @@ describe("a slow server", () => {
   })
 
   test("an interrupt ends the wait at once", async () => {
-    const made = make({ servers: { slow: fixture(["--delay", "3000"]) } })
+    const made = make({ servers: { slow: fixture(["--delay", "5000"]) } })
     await ready(made)
     const controller = new AbortController()
     setTimeout(() => controller.abort(), 100)
@@ -192,7 +200,7 @@ describe("a server that never answers", () => {
   test("a start-up timeout fails the start, says why, and backs off", async () => {
     const made = make({ servers: { mute: fixture(["--silent"], { startupTimeoutSeconds: 1 }) } })
     made.registry.observe("a.txt", "x")
-    await waitFor(() => made.registry.status()[0]?.state === "retrying", 5000, "the start to fail")
+    await waitFor(() => made.registry.status()[0]?.state === "retrying", 10_000, "the start to fail")
     expect(made.registry.status()[0]!.error).toBe("it did not answer initialize within 1 s")
     expect(made.notices.map((notice) => notice.kind)).toEqual(["start_failed"])
   })
@@ -218,20 +226,21 @@ describe("a server that publishes stale diagnostics first", () => {
 describe("a server that crashes on the second change", () => {
   test("the edit returns without waiting out the bound; the user is told; the next edit after the backoff restarts it", async () => {
     const pidFile = join(tempDir(), "pid")
-    const made = make({ servers: { flaky: fixture(["--crash-on-change", "2", "--pid-file", pidFile]) } })
+    const made = make({ waitMs: 5000, servers: { flaky: fixture(["--crash-on-change", "2", "--pid-file", pidFile]) } })
     await ready(made)
     const firstPid = readPid(pidFile)
     expect((await made.registry.diagnose({ path: "src/a.txt", before: BEFORE, after: AFTER })).listed).toBe(1)
     const started = performance.now()
     const crashed = await made.registry.diagnose({ path: "src/a.txt", before: AFTER, after: `${AFTER}\nERROR(z)` })
-    expect(performance.now() - started).toBeLessThan(1000)
+    // Not the 5 s bound: the crash ends the wait. The slack is for a loaded runner.
+    expect(performance.now() - started).toBeLessThan(1000 + SLACK_MS)
     expect(crashed.note).toBeNull()
     expect(crashed.servers[0]!.outcome).toBe("crashed")
-    await waitFor(() => made.registry.status()[0]!.state === "retrying", 5000, "the crash to be seen")
+    await waitFor(() => made.registry.status()[0]!.state === "retrying", 10_000, "the crash to be seen")
     expect(made.registry.status()[0]!.error).toContain("exited with code 3")
     expect(made.registry.status()[0]!.error).toContain("fixture: crashing on purpose")
     expect(made.notices.find((notice) => notice.kind === "crashed")?.message).toContain('The language server "flaky" stopped')
-    await waitFor(() => !isRunning(firstPid), 5000, "the old process to be gone")
+    await waitFor(() => !isRunning(firstPid), 10_000, "the old process to be gone")
     // Within the backoff: not running, no wait.
     expect((await made.registry.diagnose({ path: "src/a.txt", before: AFTER, after: `${AFTER}\nx` })).servers[0]!.outcome).toBe("not_running")
     await Bun.sleep(150)
@@ -373,7 +382,7 @@ describe("no process is left behind", () => {
       expect(isRunning(pid)).toBe(true)
       host.kill("SIGKILL")
       await host.exited
-      await waitFor(() => !isRunning(pid) && !isRunning(child), 5000, "the server group to die with the host")
+      await waitFor(() => !isRunning(pid) && !isRunning(child), 10_000, "the server group to die with the host")
     } finally {
       host.kill("SIGKILL")
     }

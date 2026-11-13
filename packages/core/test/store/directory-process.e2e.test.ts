@@ -5,7 +5,7 @@
  * writing; blobs stored by several processes at once.
  */
 import { Database } from "bun:sqlite"
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,6 +13,10 @@ import type { SessionId } from "../../src/id.ts"
 import { INDEX_FILE, SessionInUseError, openSessionDirectory } from "../../src/store/directory.ts"
 import { expectRebuildEqualsLive } from "./consistency.ts"
 import { Driver, baselineSet, created, exchange, forked } from "./scripted.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const FIXTURE = join(import.meta.dir, "fixtures", "directory-child.ts")
 const directories: string[] = []

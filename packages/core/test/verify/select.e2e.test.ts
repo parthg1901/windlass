@@ -1,5 +1,5 @@
 /** Check selection, the fingerprint, evidence and the acknowledgement tool. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { noBlobStore } from "../../src/tool/tool.ts"
 import { chmodSync, rmSync, utimesSync } from "node:fs"
 import { join } from "node:path"
@@ -18,6 +18,10 @@ import {
 import { createInterrupt } from "../../src/interrupt.ts"
 import type { CallId, MessageId, SessionId } from "../../src/id.ts"
 import { check, project, removeTempDirs } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(removeTempDirs)
 

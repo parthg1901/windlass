@@ -1,5 +1,5 @@
 /** Real hook commands through the real runner: the answer format, timeouts, garbage, the event on stdin, the sandbox. */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { existsSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseAnswer } from "../../src/hooks/answer.ts"
@@ -11,6 +11,10 @@ import { createInterrupt } from "../../src/interrupt.ts"
 import { createCommandSandbox } from "../../src/sandbox/command.ts"
 import { detectSandbox } from "../../src/sandbox/detect.ts"
 import { cleanup, hooks, pointContext, tempDir, trust } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 
@@ -73,14 +77,14 @@ describe("the answer format, on real processes", () => {
     expect(result).toMatchObject({ kind: "timed_out", timeoutSeconds: 1 })
     expect(performance.now() - started).toBeLessThan(10_000)
     expect(parseAnswer(result, 100)).toMatchObject({ kind: "failed", failure: "timed_out" })
-  }, 15_000)
+  }, E2E_TIMEOUT_MS)
 
   test("an interrupt stops it", async () => {
     const interrupt = createInterrupt()
     setTimeout(() => interrupt.interrupt("user"), 300)
     const { result } = await run("sleep 30", { signal: interrupt.signal })
     expect(result).toEqual({ kind: "interrupted" })
-  }, 15_000)
+  }, E2E_TIMEOUT_MS)
 
   test("secrets are redacted from what it printed", async () => {
     const secret = "s3cr3t-value-0123456789"

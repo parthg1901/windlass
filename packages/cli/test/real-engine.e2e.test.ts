@@ -3,18 +3,21 @@
  * temporary data directory: a turn, `/undo` and `/redo` through the input
  * editor, and what `--model` is checked against. No network, no sign-in.
  */
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test, setDefaultTimeout } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EngineError, type StoredEvent } from "@windlass/core"
-import { FakeProvider, script } from "@windlass/core/testing"
+import { E2E_TIMEOUT_MS, FakeProvider, script, waitFor } from "@windlass/core/testing"
 import { revertable } from "../src/commands.ts"
 import { type EngineEvent, EngineUnavailable, type Session } from "../src/engine.ts"
 import { createRealEngine } from "../src/real-engine.ts"
 import { PrettyRenderer } from "../src/renderer.ts"
 import { Screen } from "../src/terminal.ts"
 import { VirtualTerminal } from "./vt.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 const scratch: string[] = []
 afterAll(() => {
@@ -77,9 +80,9 @@ describe("the real engine", () => {
       const settle = async (asks = false) => {
         let over = false
         void screen.commandsSettled().then(() => (over = true))
-        const deadline = Date.now() + 30_000
-        while (!(asks ? asking() : over) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
-        await new Promise((resolve) => setTimeout(resolve, 20))
+        await waitFor(() => (asks ? asking() : over), { timeoutMs: 30_000, intervalMs: 20, what: asks ? "the question" : "the command to settle", describe: () => vt.text })
+        // What the settled command wrote reaches the screen on the next turn of the event loop.
+        await new Promise((resolve) => setImmediate(resolve))
       }
       const submitted: string[] = []
       const type = (data: string) => screen.input(data, (action) => submitted.push(action.kind))

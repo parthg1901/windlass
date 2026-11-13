@@ -1,10 +1,14 @@
 /** Several real processes on one store: exactly one delivery when they compete, and a holder killed mid-fire. */
 import { Database } from "bun:sqlite"
-import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test, setDefaultTimeout } from "bun:test"
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { openWakeStore } from "../../src/wake/store.ts"
 import { cleanup, onCleanup, tempDir, until } from "./helpers.ts"
+import { E2E_TIMEOUT_MS } from "../../src/testing/wait.ts"
+
+// End-to-end: real processes start here, so each test has a limit sized for a slow runner.
+setDefaultTimeout(E2E_TIMEOUT_MS)
 
 afterEach(cleanup)
 
@@ -14,6 +18,12 @@ const OPENER = join(import.meta.dir, "fixtures", "opener.ts")
 function layout() {
   const base = tempDir()
   return { dir: join(base, "wake"), inboxPath: join(base, "inbox.db"), go: join(base, "go"), base }
+}
+
+/** Waits until `count` processes wait at the go file's barrier, then lets them all go at once. */
+async function go(paths: ReturnType<typeof layout>, count: number) {
+  await until(() => readdirSync(paths.base).filter((name) => name.startsWith("go.ready-")).length === count, 30_000, `${count} processes at the barrier`)
+  writeFileSync(paths.go, "")
 }
 
 function worker(paths: ReturnType<typeof layout>, mode: string) {
@@ -58,9 +68,8 @@ describe("competing processes", () => {
     })
     store.close()
     const workers = [worker(paths, "run"), worker(paths, "run"), worker(paths, "run")]
-    // Let them all open the store, then start together.
-    await Bun.sleep(300)
-    writeFileSync(paths.go, "")
+    // They all open the store, then start together.
+    await go(paths, 3)
     const summaries = await Promise.all(workers.map((one) => one.summary()))
     for (const summary of summaries) expect(summary).toMatchObject({ code: 0, err: "" })
     const rows = inboxRows(paths.inboxPath)
@@ -78,8 +87,7 @@ describe("a store that does not exist yet", () => {
     for (let round = 0; round < 6; round++) {
       const paths = layout()
       const openers = Array.from({ length: 6 }, () => Bun.spawn([process.execPath, OPENER, paths.dir, paths.go], { stdout: "pipe", stderr: "pipe" }))
-      await Bun.sleep(150)
-      writeFileSync(paths.go, "")
+      await go(paths, openers.length)
       const results = await Promise.all(openers.map(async (child) => ({ code: await child.exited, err: await new Response(child.stderr).text() })))
       expect(results).toEqual(openers.map(() => ({ code: 0, err: "" })))
       const store = openWakeStore({ dir: paths.dir })
