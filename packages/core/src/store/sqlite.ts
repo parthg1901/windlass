@@ -55,7 +55,7 @@ import {
   message,
   sessionState,
 } from "../message/message.ts"
-import { reduce } from "../message/reducer.ts"
+import { ReduceError, reduce } from "../message/reducer.ts"
 import { providerErrorKind } from "../provider/error.ts"
 import { usage } from "../provider/usage.ts"
 import { canonicalJson } from "../request/canonical.ts"
@@ -278,6 +278,12 @@ export const openSqliteStore = (options: SqliteStoreOptions): SqliteStore => {
         state = reduce(state, next)
         return next
       })
+      // A turn that ended for a queued item and that item's delivery are one decision: committed apart, a process
+      // that died between them would leave a log whose only legal next event is the delivery, which recovery does
+      // not make.
+      const handover = state!.session.open?.kind === "handover" ? state!.session.open : null
+      if (handover !== null)
+        throw new ReduceError("invalid_transition", `the turn ended for queued item ${handover.messageId}: its delivery is in the same append`, stored.at(-1)!)
       write(previous, state!, stored)
       return { stored, state: state! }
     },

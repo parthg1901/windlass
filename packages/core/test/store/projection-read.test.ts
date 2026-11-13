@@ -24,9 +24,18 @@ import { SESSION, families } from "../scenarios/index.ts"
 const directory = mkdtempSync(join(tmpdir(), "wl-projection-read-"))
 afterAll(() => rmSync(directory, { recursive: true, force: true }))
 
+/** A log as the step loop appends it: one event at a time, except that a turn ends in one append with the delivery after it. */
+function appendsOf(events: readonly NewEvent[]): NewEvent[][] {
+  const appends: NewEvent[][] = []
+  for (const [position, item] of events.entries())
+    if (events[position - 1]?.type === "turn.ended") appends.at(-1)!.push(item)
+    else appends.push([item])
+  return appends
+}
+
 const scenarios = Object.values(families)
   .flat()
-  .map((scenario) => ({ title: scenario.title, events: scenario.phases.flatMap((phase) => phase.events) }))
+  .map((scenario) => ({ title: scenario.title, events: scenario.phases.flatMap((phase) => phase.events) as NewEvent[] }))
   // A fork's log begins with its parent's events, which belong to another session's rows.
   .filter(({ events }) => events[0]?.type === "session.created" && events.filter((item) => item.type === "session.created").length === 1)
 
@@ -55,9 +64,10 @@ describe("getProjection reads the rows that changed and returns what every row s
                 reader.close()
               }
             }
-            for (const [position, item] of scenario.events.entries()) {
-              store.append(SESSION, [item as NewEvent])
-              if ((position + 1) % every !== 0 && position !== scenario.events.length - 1) continue
+            const appends = appendsOf(scenario.events)
+            for (const [position, items] of appends.entries()) {
+              store.append(SESSION, items)
+              if ((position + 1) % every !== 0 && position !== appends.length - 1) continue
               const read = store.getProjection(SESSION)
               expect(read).toStrictEqual(fresh())
               expect(read).toStrictEqual(reduceAll(store.readEvents(SESSION)))
@@ -83,8 +93,8 @@ describe("getProjection reads the rows that changed and returns what every row s
     const store = openSqliteStore({ path, now: () => 1_800_000_000_000 })
     const reader = openSqliteStore({ path, readOnly: true })
     try {
-      for (const item of scenario.events) {
-        store.append(SESSION, [item as NewEvent])
+      for (const items of appendsOf(scenario.events)) {
+        store.append(SESSION, items)
         expect(reader.getProjection(SESSION)).toStrictEqual(store.getProjection(SESSION))
       }
       expect(reader.getProjection(SESSION)).toStrictEqual(reduceAll(store.readEvents(SESSION)))
@@ -99,7 +109,7 @@ describe("getProjection reads the rows that changed and returns what every row s
     const path = join(directory, "fork.db")
     const store = openSqliteStore({ path, now: () => 1_800_000_000_000 })
     try {
-      for (const item of parentEvents.events) store.append(SESSION, [item as NewEvent])
+      for (const items of appendsOf(parentEvents.events)) store.append(SESSION, items)
       const through = store.getProjection(SESSION)!.lastSeq
       const fork = "ses_fork" as typeof SESSION
       const settings = store.getProjection(SESSION)!.session.settings
