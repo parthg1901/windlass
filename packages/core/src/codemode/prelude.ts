@@ -78,9 +78,19 @@ const call = (name, input) => {
     send({ type: "call", id, name, input: text })
   })
 }
+// read's text has every line numbered, for the model. A program is given the file's own lines: the numbers are
+// taken off (the call's recorded result keeps them), and the note that says there is more stays at the end.
+const NOTE = /\n\n(\[Showing lines \d+-\d+ of \d+\. Call read with offset \d+ to continue\.\])$/
+const unnumbered = (output) => {
+  const note = NOTE.exec(output)
+  const body = note === null ? output : output.slice(0, note.index)
+  const lines = body.split("\n")
+  if (!lines.every((line) => /^ *\d+\t/.test(line))) return output
+  return lines.map((line) => line.replace(/^ *\d+\t/, "")).join("\n") + (note === null ? "" : "\n\n" + note[1])
+}
 const tools = {}
 for (const name of names) {
-  const fn = (input) => call(name, input)
+  const fn = name === "read" ? (input) => call(name, input).then(unnumbered) : (input) => call(name, input)
   Object.defineProperty(fn, "name", { value: name })
   tools[name] = fn
   globalThis[name] = fn

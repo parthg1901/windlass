@@ -138,3 +138,12 @@ describe.if(sandbox.state.available)("under the sandbox", () => {
     expect(existsSync(target)).toBe(false)
   })
 })
+
+describe("read in a program", () => {
+  test("resolves with the file's own lines: the numbers the tool adds are taken off, its note about more lines stays", async () => {
+    const numbered = "  9\tconst a = 1\n 10\t\n 11\t  // TODO: x\n\n[Showing lines 9-11 of 40. Call read with offset 12 to continue.]"
+    const { host } = recording(() => ({ status: "success", output: numbered }))
+    const outcome = await run(`return await read({ path: "a" })`, host)
+    expect(outcome.end).toEqual({ kind: "returned", value: "const a = 1\n\n  // TODO: x\n\n[Showing lines 9-11 of 40. Call read with offset 12 to continue.]" })
+  })
+})

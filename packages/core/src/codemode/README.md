@@ -16,7 +16,13 @@ console.log(counts.filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0,
 | --- | --- |
 | `tool.ts` | the tool: its constant spec, `PROGRAM_TOOLS` (what a program may call, and why not the rest), the text the model is shown for each way a program ends |
 | `runner.ts` | `runProgram`: the program's process, the protocol, the limits; `ProgramHost` is who makes the calls |
-| `prelude.ts` | what runs in the program's process before the program: the functions as stubs, `console` as messages, the program loaded as a module so an error names its line |
+| `prelude.ts` | what runs in the program's process before the program: the functions as stubs, `console` as messages, `read` without its line numbers, the program loaded as a module so an error names its line |
+
+A function resolves with the tool's text as the model would see it, with one exception: `read` resolves with
+the file's own lines. The tool numbers every line for the model, and the first live runs of a program wrote that
+text back into three files, numbers and all (the model stripped `^\d+\t`, and the numbers are padded with spaces).
+The recorded call keeps the tool's real output; only what the program is given has the numbers taken off. The note
+that says the file has more lines stays at the end.
 
 No dependency: the program runs in a child `bun` (the harness's own; a compiled harness runs as Bun with
 `BUN_BE_BUN=1`), one JSON message per line over its standard input and output.

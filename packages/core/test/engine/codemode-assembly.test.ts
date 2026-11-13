@@ -29,7 +29,7 @@ describe.if(available)("a program in the real harness", () => {
     const [own, text] = result?.type === "tool.settled" ? (JSON.parse(result.data.output) as string[]) : []
     // The workspace is read-only to it, or (a workspace under the machine's /tmp, which bubblewrap replaces with the run's own) not there at all.
     expect(["EROFS", "ENOENT"]).toContain(own!)
-    expect(text).toBe("1\tone")
+    expect(text).toBe("one")
     const started = events.find((item) => item.type === "tool.started" && item.data.callId === "call_1")
     expect(started?.type === "tool.started" ? started.data.run?.sandbox : undefined).toEqual({ network: false, writableRoots: [] })
     expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("two\n")
