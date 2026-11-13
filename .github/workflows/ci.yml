@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
   workflow_call:
     inputs:
       artifacts:
@@ -67,9 +68,30 @@ jobs:
           sandbox: "false"
       - run: bun run typecheck
 
-  test:
-    # The suite takes about ten minutes in one process, so it is split by file into three shards per runner.
-    name: Test ${{ matrix.shard }}/3 (${{ matrix.runner }})
+  unit:
+    # Tests that start no process: in-process, quick, and run under a preload that fails any file that does start one
+    # (test/unit-preload.ts). They keep bun's 5 s limit per test, so that a hang shows at once.
+    name: Unit tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/setup
+        with:
+          sandbox: "false"
+      # No sign-in exists on the runner and none is given: nothing here may reach the model.
+      - run: bun run test:unit
+
+  e2e:
+    # Tests that start real processes (*.e2e.test.ts): git, shells, servers, tmux, the program itself. Each file sets a
+    # time limit sized for a slow runner. Split by file into three shards per runner, balanced by the durations in
+    # test/e2e-timings.json. No retries: a test that fails here is fixed, and the weekly stress run
+    # (.github/workflows/stress.yml) looks for the ones that fail only sometimes.
+    name: End-to-end ${{ matrix.shard }}/3 (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     strategy:
@@ -88,7 +110,7 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: command -v tmux >/dev/null || brew install tmux
       # No sign-in exists on the runner and none is given: nothing here may reach the model.
-      - run: bun test --shard=${{ matrix.shard }}/3
+      - run: bun run test:e2e --shard=${{ matrix.shard }}/3 --timings=test/e2e-timings.json
 
   build:
     # Each executable is built on its own platform, so the full-screen interface's native library is in it,
