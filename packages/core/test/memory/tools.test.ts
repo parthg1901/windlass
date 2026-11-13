@@ -75,7 +75,7 @@ describe("memory_save", () => {
     const refusals: [object, string][] = [
       [{ text: "Prefers tabs.", kind: "preference", scope: "user" }, "A preference must come from the user. Put the user's own words"],
       [{ text: "Prefers tabs.", kind: "preference", scope: "user", userWords: "I love tabs" }, "are not in any of the user's messages in this session"],
-      [{ text: "The deploy key is sk-proj-abcdefghijklmnop1234.", kind: "fact", scope: "project" }, "looks like an API key (sk-...)"],
+      [{ text: "The deploy key is sk-proj-synthetic0123456789.", kind: "fact", scope: "project" }, "looks like an API key (sk-...)"],
       [{ text: "Staging password: hunter22", kind: "fact", scope: "project" }, "looks like a password"],
       [{ text: "I am working on the parser refactor, step 3 next.", kind: "fact", scope: "project" }, "reads as the state of the current task"],
       [{ text: "The current task is to fix the login page.", kind: "fact", scope: "project" }, "reads as the state of the current task"],
@@ -110,7 +110,7 @@ describe("memory_save", () => {
 
   test("the content screen in isolation", () => {
     expect(findSecret("-----BEGIN OPENSSH PRIVATE KEY-----")).toBe("a private key")
-    expect(findSecret("token ghp_abcdefghijklmnopqrstuvwxyz0123")).toBe("a GitHub token")
+    expect(findSecret("token ghp_SyntheticTokenForTests0123456789")).toBe("a GitHub token")
     expect(findSecret("postgres://admin:s3cret@db:5432/app")).toBe("credentials in a URL")
     expect(findSecret("random Ab3kL9mQ2xP7vR4tY8wZ1nC5jH6gF0dS here")).toContain("long random-looking")
     expect(findSecret("commit 3f9a2c1b8e7d6c5b4a39281706f5e4d3c2b1a090 and src/components/navigation/sidebar.tsx")).toBeNull()

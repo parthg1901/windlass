@@ -19,7 +19,7 @@ const dir = mkdtempSync(join(tmpdir(), "wl-redacted-"))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const TOKEN = "tok_live_9f8e7d6c5b4a3210"
-const KEY = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+const KEY = "sk-ant-api03-synthetic-test-key-0123456789"
 const secrets = [TOKEN]
 const context: ToolContext = {
   sessionId: "ses_1" as SessionId,
