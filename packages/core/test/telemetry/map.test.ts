@@ -263,7 +263,7 @@ describe("a retry", () => {
   test("a retry after the failed step had output: the retry runs under a new message, and every ledger row is still one span", () =>
     session(
       async (h) => {
-        h.tools.on("read", "1")
+        h.tools.on("read", "1", "1")
         h.provider.enqueue([script.text("Reading."), script.toolCall("call_1", "read", { path: "a.ts" }), script.fail("transport", { message: "connection reset" })], [script.toolCall("call_1", "read", { path: "a.ts" }), U], [script.text("ok"), U])
         h.create().send("Go.")
         await h.settled()
@@ -278,8 +278,8 @@ describe("a retry", () => {
           [1, "ok", null, false],
         ])
         expect(calls[0]!.attributes[attr("provider.transport_reason")]).toBe("connection")
-        // The call cut short by the failure never started.
-        expect(named(result.spans, "execute_tool")[0]!.attributes[attr("tool.outcome")]).toBe("not_started")
+        // The call of the failed attempt started as its arguments ended, before the failure, and ran to its result; the retry's call is a span of its own.
+        expect(named(result.spans, "execute_tool").map((span) => span.attributes[attr("tool.outcome")])).toEqual(["success", "success"])
       },
     ))
 })
