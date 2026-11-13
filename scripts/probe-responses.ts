@@ -599,6 +599,31 @@ const probes: Record<string, () => Promise<void>> = {
   },
 }
 
+// A response whose output was a function call and then a message: is that history accepted when replayed in
+// output order (call, text, call output), and in call-output-first order (call, call output, text)? The history
+// is synthetic and replayed with derived-looking ids, as the request builder sends a part without provider data.
+probes.order = async () => {
+  const call = { type: "function_call", id: "fc_probeorder0000000000", call_id: "call_order_1", name: "get_weather", arguments: '{"city":"Paris"}' }
+  const said = {
+    type: "message",
+    id: "msg_probeorder0000000000",
+    role: "assistant",
+    status: "completed",
+    phase: "commentary",
+    content: [{ type: "output_text", text: "I asked for the current weather in Paris.", annotations: [] }],
+  }
+  const output = callOutput(call)
+  const shapes: Array<[string, Item[]]> = [
+    ["replayed order: function_call, message, function_call_output", [call, said, output]],
+    ["output first: function_call, function_call_output, message", [call, output, said]],
+  ]
+  for (const [label, items] of shapes) {
+    const r = await send(`order-${items[1]!.type}`, base({ tools: [weatherTool()], input: [user(WEATHER_PROMPT), ...items] }))
+    const answer = text(r)
+    verdict("order", `${label}: ${outcome(r)}; answer uses the output: ${/14/.test(answer) ? "yes" : "no"}; calls again: ${calls(r).length}; text: ${JSON.stringify(answer.slice(0, 120))}`)
+  }
+}
+
 const plainText = memo(() => send("text-plain", base({ input: [user("Say exactly: Hello, world!")] })))
 
 async function captureFiles() {
@@ -628,7 +653,7 @@ function fillerPrefix(nonce: string) {
 
 // ---------------------------------------------------------------- main
 
-const ORDER = ["text", "tools", "replay", "reasoning", "instructions", "rejected", "toolnone", "parallel", "abort", "cache", "cache2", "extras", "usage", "headers", "framing"]
+const ORDER = ["text", "tools", "replay", "reasoning", "instructions", "rejected", "toolnone", "parallel", "abort", "cache", "cache2", "extras", "usage", "headers", "framing", "order"]
 
 const names = process.argv.slice(2)
 if (!names.length || names[0] === "list") {

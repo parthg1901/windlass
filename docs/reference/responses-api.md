@@ -467,6 +467,12 @@ are both accepted; `true` produced two sequential calls in one response. `allowe
 - The docs' own stateless example appends `response.output` items wholesale with
   `history.push(...toResponseInputItems(response.output))` (JS) or `history += response.output` (Python)
   [docs:G-STATE].
+- A `function_call` does not need its `function_call_output` right after it. When a response's output was a
+  `function_call` and then an assistant `message`, both orders are accepted: replayed as produced (`function_call`,
+  `message`, `function_call_output`) and with the output moved up (`function_call`, `function_call_output`,
+  `message`). Both completed with HTTP 200, made no second call, and answered from the output with the same text.
+  Probe `order` in `scripts/probe-responses.ts`: synthetic history with derived-looking ids, `gpt-6-luna` at `low`,
+  2 requests, on 2026-11-13 [live]. The request builder sends the first order.
 
 ### 3.2 User message
 

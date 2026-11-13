@@ -675,22 +675,31 @@ export function converse(provider: FakeProvider, scripts: Record<string, readonl
  * What is wrong with the calls and results of a request's input: a result
  * without its call, a call asked twice before it was answered, a call that
  * was never answered. Call IDs repeat across steps, so the pairing is by position.
+ *
+ * A response's own output (text, reasoning, more calls) may come between a
+ * call and its result: the request builder replays a response's items in the
+ * order they were produced and then its results, as the provider documents,
+ * and the provider accepts text after a call before the call's output
+ * (docs/reference/responses-api.md, section 3.1, [live] 2026-11-13). Every
+ * result must still arrive before the next message or the next response.
  */
 export function danglingCalls(input: readonly { type: string; callId?: string }[]): string[] {
   const open = new Set<string>()
   const problems: string[] = []
   input.forEach((item, index) => {
-    if (item.type === "tool_call") {
-      if (open.has(item.callId!)) problems.push(`item ${index}: call ${item.callId} is asked again before it has a result`)
-      open.add(item.callId!)
-      return
-    }
     if (item.type === "tool_result") {
       if (!open.delete(item.callId!)) problems.push(`item ${index}: result ${item.callId} has no call before it`)
       return
     }
-    for (const callId of open) problems.push(`item ${index}: call ${callId} has no result before the next message`)
-    open.clear()
+    const nextResponse = item.type !== "message" && input[index - 1]?.type === "tool_result"
+    if (item.type === "message" || nextResponse) {
+      for (const callId of open) problems.push(`item ${index}: call ${callId} has no result before the next ${nextResponse ? "response" : "message"}`)
+      open.clear()
+    }
+    if (item.type === "tool_call") {
+      if (open.has(item.callId!)) problems.push(`item ${index}: call ${item.callId} is asked again before it has a result`)
+      open.add(item.callId!)
+    }
   })
   for (const callId of open) problems.push(`call ${callId} has no result`)
   return problems

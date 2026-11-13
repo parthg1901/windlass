@@ -328,6 +328,18 @@ describe("assistant messages", () => {
     expect(s.input().at(-1)).toEqual(result("call_1", "screenshot taken", [IMAGE]))
   })
 
+  test("text after a call stays where the model put it, and the call's result follows the whole response", () => {
+    // The provider accepts this order (docs/reference/responses-api.md, section 3.1, [live] 2026-11-13).
+    const s = prompted()
+    s.step({ parts: [{ call: "call_1", output: "const a = 1" }, { text: "Reading a.ts." }] })
+    const before = s.input()
+    expect(before.slice(1)).toEqual([called("call_1"), said("Reading a.ts."), result("call_1", "const a = 1")])
+    expect(providerProblems(s.request())).toEqual([])
+    s.user("thanks")
+    expect(s.input().slice(0, before.length)).toEqual([...before])
+    expect(providerProblems(s.request())).toEqual([])
+  })
+
   test("a call id reused in a later step stays next to its own result", () => {
     const s = prompted()
     s.step({ parts: [{ call: "call_1", output: "first" }] })
