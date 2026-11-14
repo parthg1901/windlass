@@ -128,12 +128,14 @@ follow `evals/dogfood/README.md`.
 - **A low cached share or a `cache-drop` anomaly** is not a harness bug until the trace says so:
 
   ```sh
-  bun scripts/export-trace.ts <session-id> -o "$W/t.jsonl" && bunx prefixlens report "$W/t.jsonl" --all
+  bun scripts/export-trace.ts <session-id> -o "$W/t.jsonl" && bunx prefixlens check "$W/t.jsonl"
   ```
 
-  Every record must be `full-request`; a `usage-only` record means the request rebuilt from the log is not the one
-  that was sent, which is a harness bug. A miss reported as provider-side with the prefix intact is the provider's
-  (common on quick follow-ups, sometimes mid-turn). Any other cause is a harness bug.
+  Exit 0 means no call lost cached tokens for a reason the harness controls; exit 1 prints each call that did, with
+  its cause, the changed block and a fix, and that is a harness bug. `bunx prefixlens report "$W/t.jsonl" --all`
+  shows every call. Every record must be `full-request`; a `usage-only` record means the request rebuilt from the
+  log is not the one that was sent, which is a harness bug too. A provider-side miss with the prefix intact is the
+  provider's (common on quick follow-ups, sometimes mid-turn) and passes.
 - **A failed eval task**: read the task's prompt against the grader's reason before blaming the agent or the grader.
   A cost or pass-rate change needs a control run of the baseline commit in the same sitting, because the model's cost
   varies more between sittings than between runs.

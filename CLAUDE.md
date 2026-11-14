@@ -63,7 +63,7 @@ bun run typecheck
 bun scripts/scenario-doc.ts --write                 # regenerate docs/step-loop-scenarios.md
 bun evals/run-agent.ts <task...> --model gpt-6-luna --effort low --out <dir outside the repo>
 bun evals/gate.ts <dir> --hard-only
-bun scripts/export-trace.ts <session-id> -o <file>  # then: bunx prefixlens report <file> --all
+bun scripts/export-trace.ts <session-id> -o <file>  # then: bunx prefixlens check <file> (pass or fail), or report <file> --all
 ```
 
 Live model requests spend a ChatGPT plan allowance: keep prompts small, use `gpt-6-luna` at low effort, and count
