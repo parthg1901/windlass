@@ -54,11 +54,12 @@ the run, and the grader runs after the last turn that was sent. All turns go int
 
 After each run the runner exports the session from the CLI's data directory (`$XDG_DATA_HOME/windlass/`, or
 `~/.local/share/windlass/`, where each session is its own database file, `sessions/<id>.db`; or `--db`) with
-`scripts/export-trace.ts` and runs `prefixlens report --json` on the trace
+`scripts/export-trace.ts` and runs `prefixlens check --json` on the trace
 (`classify.ts`; prefixlens is a dev dependency of the workspace root, and its command-line entry is run). Each call that
 lost cached tokens is sorted into provider-side (prefix intact, the provider missed: common on quick follow-ups),
 expired, intentional (a break the harness declared, within what the declaration allows) or avoidable (anything
-else, with prefixlens's cause: a harness bug). A record exported usage-only means the request rebuilt from the log is
+else, with prefixlens's cause: a harness bug). A call that changed its prefix undeclared while nothing was cached to
+lose is avoidable too. A record exported usage-only means the request rebuilt from the log is
 not what was sent, also a harness bug. Without prefixlens, a session ID or the data directory the step is skipped and
 says why.
 

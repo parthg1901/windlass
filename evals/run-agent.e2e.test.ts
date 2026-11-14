@@ -374,6 +374,20 @@ describe("cache classification", () => {
     expect(drop.detail).toEndWith("unexplained, tools_reordered")
   }, 60_000)
 
+  test("a prefix changed while nothing was cached to lose is an avoidable miss too", async () => {
+    // A prompt too short for the provider to cache: the tool order changes, and no cached token is lost on this call.
+    const short = system("Short.")
+    const file = await trace("undeclared", [
+      { blocks: [tool("read"), tool("shell"), short, message(1)], read: 0 },
+      { blocks: [tool("shell"), tool("read"), short, message(1), message(2)], read: 0 },
+    ])
+    await Bun.write(file, (await Bun.file(file).text()).replace(/"input_tokens":\d+/g, '"input_tokens":400'))
+    const result = await classifyTrace(file)
+    expect(result).toMatchObject({ status: "classified", avoidable: 1, providerSide: 0 })
+    expect(result.misses.map((miss) => [miss.messageId, miss.class, miss.verdict, miss.cause])).toEqual([["msg_2", "undeclared-change", "avoidable", "tools_reordered"]])
+    expect(result.avoidableCauses[0]).toStartWith("turn 2: tools_reordered")
+  }, 60_000)
+
   test("a usage-only record is a fidelity failure, with the exporter's reason", async () => {
     const file = await trace("usage-only", [
       { blocks: [...prefix, message(1)], read: 0 },
