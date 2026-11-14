@@ -1,13 +1,15 @@
 /**
  * Explains a run's prompt-cache misses. After a run, its session is exported from the harness's data directory (one
- * database file per session, so runs in parallel never wait for each other) as a prefixlens trace (`scripts/export-trace.ts`) and `prefixlens report --json` classifies each call that lost
- * cached tokens:
+ * database file per session, so runs in parallel never wait for each other) as a prefixlens trace (`scripts/export-trace.ts`) and `prefixlens check --json`, prefixlens's own gate,
+ * gives every call a class. The ones that count here:
  *
  * - provider-side: the prefix was intact and the provider missed anyway (seen often on quick follow-ups);
  * - expired: the prefix was intact but the cache entry outlived its TTL;
  * - intentional: the harness declared the break (a compaction, a revert, a settings change) and the change is
  *   within what the declaration allows;
- * - avoidable: anything else, with prefixlens's cause (`tools_changed`, `message_edited`, ...). A harness bug.
+ * - avoidable: the harness changed its own prefix, with prefixlens's cause (`tools_changed`, `message_edited`,
+ *   ...). A harness bug. That is a call that lost cached tokens to the change, one that changed its prefix
+ *   undeclared while nothing was cached to lose, and a loss prefixlens cannot explain.
  *
  * A usage-only record in the export means the request rebuilt from the log did not match the hashes the ledger
  * stored for what was sent: also a harness bug, and prefixlens cannot explain that call's miss.
@@ -45,7 +47,8 @@ export interface ClassifiedMiss {
   readonly turn: number
   /** The step's message, from the trace's harness extension, to match a `cache-drop` in the event stream. */
   readonly messageId: string | null
-  readonly status: string
+  /** prefixlens's class of the call: `avoidable`, `undeclared-change`, `unexplained`, `intentional`, `expiry` or `provider-side`. */
+  readonly class: string
   readonly verdict: MissVerdict
   /** prefixlens's cause, e.g. `provider_side`, `tools_changed`. */
   readonly cause: string
@@ -70,20 +73,28 @@ export interface CacheClassification {
   readonly avoidable: number
   /** The named cause of each avoidable miss, `turn N: <cause>: <summary>`. */
   readonly avoidableCauses: readonly string[]
-  /** Every call that lost cached tokens, with its verdict. */
+  /** Every call that lost cached tokens or changed its prefix undeclared, with its verdict. */
   readonly misses: readonly ClassifiedMiss[]
 }
 
-/** The fields of `prefixlens report --json` read here. Everything else in it is ignored. */
-interface ReportJson {
-  readonly turns: readonly {
+/** The fields of `prefixlens check --json` read here. Everything else in it is ignored. */
+interface CheckJson {
+  readonly calls: readonly {
     readonly turn: number
-    readonly id?: string
-    readonly status: string
-    readonly fidelity?: string
-    readonly cause?: { readonly cause: string; readonly summary: string }
-    readonly declared_break?: { readonly intentional: boolean }
+    readonly class: string
+    readonly summary: string
+    readonly cause?: string
   }[]
+}
+
+/** What each class of `prefixlens check` is here. A class not named (`ok`, `cold-start`, `warm-start`) is no miss. */
+const VERDICTS: Readonly<Record<string, MissVerdict>> = {
+  avoidable: "avoidable",
+  "undeclared-change": "avoidable",
+  unexplained: "avoidable",
+  intentional: "intentional",
+  expiry: "expired",
+  "provider-side": "provider-side",
 }
 
 const EMPTY = { records: 0, fullRequest: 0, usageOnly: 0, unfaithful: [], fullFidelity: false, providerSide: 0, expired: 0, intentional: 0, avoidable: 0, avoidableCauses: [], misses: [] }
@@ -102,16 +113,17 @@ export async function classifySession(sessionId: string | null, options: { reado
   return classifyTrace(options.traceFile)
 }
 
-/** Runs `prefixlens report --json` on a trace file and sorts its misses. Never throws. */
+/** Runs `prefixlens check --json` on a trace file and counts its classes. Never throws. */
 export async function classifyTrace(traceFile: string): Promise<CacheClassification> {
   const cli = prefixlensCli()
   const records = (await Bun.file(traceFile).text())
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as TraceRecord)
-  const reported = await spawn(["bun", cli, "report", traceFile, "--json", "--no-color"])
-  if (reported.code !== 0) return skipped(`prefixlens report failed (${reported.code}): ${errorLine(reported.stderr)}`, "error")
-  const report = JSON.parse(reported.stdout) as ReportJson
+  // Exit 0: no failing call. 1: at least one, and they are in the JSON all the same. Anything else: no verdict.
+  const checked = await spawn(["bun", cli, "check", traceFile, "--json"])
+  if (checked.code !== 0 && checked.code !== 1) return skipped(`prefixlens check failed (${checked.code}): ${errorLine(checked.stderr)}`, "error")
+  const check = JSON.parse(checked.stdout) as CheckJson
 
   const messageOf = (turn: number) => records[turn - 1]?.[HARNESS_KEY]?.message_id ?? null
   const unfaithful = records.flatMap((record, index) => {
@@ -120,13 +132,11 @@ export async function classifyTrace(traceFile: string): Promise<CacheClassificat
     // The exporter is given the engine's compaction prompt, so this only appears if that prompt changed under it.
     return [{ turn: index + 1, messageId: record[HARNESS_KEY]?.message_id ?? null, reason }]
   })
-  const misses = report.turns
-    .filter((turn) => turn.status === "miss" || turn.status === "partial")
-    .map((turn): ClassifiedMiss => {
-      const cause = turn.cause?.cause ?? "unknown"
-      const verdict: MissVerdict = turn.declared_break?.intentional ? "intentional" : cause === "provider_side" ? "provider-side" : cause === "cache_expired" ? "expired" : "avoidable"
-      return { turn: turn.turn, messageId: messageOf(turn.turn), status: turn.status, verdict, cause, summary: turn.cause?.summary ?? "" }
-    })
+  const misses = check.calls.flatMap((call): ClassifiedMiss[] => {
+    const verdict = VERDICTS[call.class]
+    if (verdict === undefined) return []
+    return [{ turn: call.turn, messageId: messageOf(call.turn), class: call.class, verdict, cause: call.cause ?? "unknown", summary: call.summary }]
+  })
   const count = (verdict: MissVerdict) => misses.filter((miss) => miss.verdict === verdict).length
   const fullRequest = records.filter((record) => record.fidelity === "full-request").length
   return {
