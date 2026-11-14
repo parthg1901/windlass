@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { type NewEvent, brand, event } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, type NewEvent, brand, event } from "@windlass/core"
 import { executionSucceeded, m, opening, say, stepStarted } from "@windlass/core/testing/scenarios"
 import { BackendError } from "../src/backend.ts"
 import { type Mounted, ScriptBackend, mount, pressEscapeAlone } from "./helpers.ts"
@@ -325,6 +325,32 @@ describe("robustness", () => {
     expect(frame).toContain("Then type /reconnect here: it picks the sign-in up. /quit leaves.")
     expect(mounted.app.problem).toBe(`not signed in; run \`${brand.binary} login\` to sign in with ChatGPT, then try again`)
     // Signed in meanwhile: /reconnect opens the session, and leaving is a success again.
+    backend.failOpen = null
+    await keys(mounted).typeText("/reconnect")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    frame = await mounted.frame()
+    expect(frame).toContain("● ready")
+    expect(mounted.app.problem).toBeNull()
+  })
+
+  test("starting with a handed-in access token that cannot be used says to hand in a new one, not to sign in here", async () => {
+    const backend = new ScriptBackend()
+    const reason = `the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token)`
+    backend.failOpen = new BackendError(reason, "auth_required")
+    mounted = await mount({ width: 200, height: 20, backend })
+    let frame = await mounted.frame()
+    expect(frame).toContain(`✗ the sign-in cannot be used: ${reason}`)
+    expect(frame).toContain(`The sign-in is held elsewhere. Hand in a new token: the output of ${brand.binary} login token, run where the sign-in is saved.`)
+    expect(frame).toContain("Then type /reconnect here: it reads the token again. /quit leaves.")
+    expect(frame).not.toContain("To sign in, run")
+    expect(mounted.app.problem).toBe(`${reason}; hand in a new token (the output of \`${brand.binary} login token\`, run where the sign-in is saved), then try again`)
+    // A message typed meanwhile is not sent, and says the same way forward.
+    await keys(mounted).typeText("hello")
+    keys(mounted).pressEnter()
+    await mounted.settle()
+    expect(await mounted.frame()).toContain("not sent: the access token handed in cannot be used; hand in a new one, then /reconnect")
+    // A new token is in the file: /reconnect opens the session.
     backend.failOpen = null
     await keys(mounted).typeText("/reconnect")
     keys(mounted).pressEnter()

@@ -15,13 +15,13 @@
  * within two seconds exits at once, Ctrl-C at the prompt clears it, Ctrl-D on
  * an empty prompt leaves.
  */
-import { brand } from "@windlass/core"
+import { aboutHandedIn, brand } from "@windlass/core"
 import { BoxRenderable, type CliRenderer, type KeyEvent, TextRenderable, TextareaRenderable } from "@opentui/core"
 import type { RevertPlan, RevertResult } from "@windlass/core"
 import { type ApprovalAnswer, type ApprovalAsk, type ApprovalInfo, type Backend, BackendError, type BackendSession, type Delivery, type DiffResult, type ModelChoice, type OpenSettings, type OpenTarget, type Question } from "./backend.ts"
 import { DockState, QUIET_MS, commandOverflows, dockLines } from "./approval.ts"
 import { CLIENT_COMMANDS, COMMANDS, PALETTE_ROWS, type CommandSpec, complete, fileCommands, findFileCommand, paletteLines, parseCommand } from "./commands.ts"
-import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, unusableCommandLines } from "./cli.ts"
+import { COMMAND_SCOPE, agentProblemLines, commandProblemLines, compactText, requestsText, signInSentence, unusableCommandLines } from "./cli.ts"
 import { COPY_NOTE, wakeAddEntry, wakeAddUsageLines, wakeCreatedLines, wakeNotFiringText, watchEntry, watchLines, changeLabel, fileList, formatDuration, hooksLines, lspLines, mcpApprovedText, mcpFailureText, mcpLines, mcpNotWaitingText, memoryAction, memoryLines, nearest, rememberArgs, skillsLines, wakeLines, webhookSecretLines, type Line } from "./cli.ts"
 import { CHANGED_DURING_COMMAND, hookAsk, hookAskId, inRows, lspAskId, lspServerAsk, mcpAskId, mcpServerAsk, noteOf } from "./features.ts"
 import type { CommandsResult, HookInfo, HooksStateResult, LspServerInfo, LspStateResult, McpServerInfo, McpStateResult, WakeCreateParams } from "@windlass/acp/extensions"
@@ -158,6 +158,8 @@ export class App {
    * then exits with 1 and says it, as the line CLI does.
    */
   problem: string | null = null
+  /** While not signed in: the access token is handed in, so the way forward is a new token, not a sign-in here. */
+  private handedIn = false
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -281,10 +283,14 @@ export class App {
       this.conversation.empty = ""
       if (reason === "auth_required") {
         // The way forward, step by step: the sign-in is made outside, and the engine reads it again on /reconnect.
-        this.problem = `${message}; run \`${brand.binary} login\` to sign in with ChatGPT, then try again`
+        // A handed-in access token is held elsewhere: signing in here would change nothing.
+        this.handedIn = aboutHandedIn(message)
+        this.problem = signInSentence(message)
         this.transcript.note([span(message === "not signed in" ? "not signed in" : `the sign-in cannot be used: ${message}`, "error", { bold: true })], "error", "✗", [
-          [span("To sign in, run ", "dim"), span(`${brand.binary} login`, "accent"), span(" in another terminal (it opens a browser, or prints an address to open).", "dim")],
-          [span("Then type ", "dim"), span("/reconnect", "accent"), span(" here: it picks the sign-in up. ", "dim"), span("/quit", "accent"), span(" leaves.", "dim")],
+          this.handedIn
+            ? [span("The sign-in is held elsewhere. Hand in a new token: the output of ", "dim"), span(`${brand.binary} login token`, "accent"), span(", run where the sign-in is saved.", "dim")]
+            : [span("To sign in, run ", "dim"), span(`${brand.binary} login`, "accent"), span(" in another terminal (it opens a browser, or prints an address to open).", "dim")],
+          [span("Then type ", "dim"), span("/reconnect", "accent"), span(this.handedIn ? " here: it reads the token again. " : " here: it picks the sign-in up. ", "dim"), span("/quit", "accent"), span(" leaves.", "dim")],
         ])
       } else {
         this.problem = `could not open the session: ${message}`
@@ -584,7 +590,9 @@ export class App {
           this.connection === "starting"
             ? "not sent: the engine is still starting; try again in a moment"
             : this.connection === "not signed in"
-              ? `not sent: not signed in; run ${brand.binary} login in another terminal, then /reconnect`
+              ? this.handedIn
+                ? "not sent: the access token handed in cannot be used; hand in a new one, then /reconnect"
+                : `not sent: not signed in; run ${brand.binary} login in another terminal, then /reconnect`
               : "not sent: no session is open; /reconnect first, or /quit",
         tone: "warn",
       }

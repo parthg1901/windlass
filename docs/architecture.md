@@ -55,7 +55,8 @@ packages/core/src
   config/         the user and project configuration files: checks, verification mode
   verify/         which checks apply, running them, the report the model is shown, the gate decision, the evidence
   testing/        fake-provider.ts (scripted provider for tests), wait.ts (waitFor: wait for a state, not a time)
-  auth/           ChatGPT sign-in (owned by the model layer)
+  auth/           ChatGPT sign-in (owned by the model layer); handed-in.ts: the access token another process
+                  that holds the sign-in hands in through a file, used instead of a saved sign-in
   sandbox/        the OS sandbox for commands: policy.ts (what a command may write, read and reach), bwrap.ts
                   and seatbelt.ts (Linux and macOS), detect.ts, command.ts (the policy of a command in a
                   session's workspace: its temp directory, the git hardening)

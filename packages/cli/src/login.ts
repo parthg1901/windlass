@@ -16,13 +16,24 @@
  *   (echo off at a terminal, otherwise one line of stdin).
  * - `login status`: who is signed in, the scopes, and when the access token
  *   is due for its refresh. Never a token.
+ * - `login token`: prints a usable access token of the saved sign-in,
+ *   refreshed first when it is due, and nothing else on standard output
+ *   (`--json`: with its expiry). The one place a token is printed on
+ *   purpose: it is for another process of this program, which cannot share
+ *   this data directory, to run on this sign-in (`ACCESS_TOKEN_FILE_ENV`).
  * - `login logout`: forgets the saved sign-in on this machine.
  *
- * Exit codes: 0 done, 1 failed (or `status`: signed out), 2 usage, 130 the
- * paste was abandoned with Ctrl-C.
+ * A process whose access token is handed in (`ACCESS_TOKEN_FILE_ENV` is set)
+ * does not use the saved sign-in: `status` describes the file instead,
+ * `token` refuses (it holds nothing to hand on), and the others act on the
+ * saved sign-in and say so.
+ *
+ * Exit codes: 0 done, 1 failed (or `status`: signed out; `token`: nothing to
+ * hand on), 2 usage, 130 the paste was abandoned with Ctrl-C.
  */
 import { brand } from "@windlass/core"
 import {
+  ACCESS_TOKEN_FILE_ENV,
   type AuthConfig,
   AuthError,
   CHATGPT_AUTH,
@@ -33,8 +44,11 @@ import {
   credentialsPath,
   finishLogin,
   forgetCredentials,
+  handedInTokenFile,
   loadCredentials,
   loadPending,
+  readHandedIn,
+  savedAccessToken,
 } from "@windlass/core/auth/chatgpt"
 
 /** What `runLogin` needs of the process. The CLI's `Io` is one. */
@@ -60,7 +74,7 @@ export interface LoginDeps {
   readonly now?: () => number
 }
 
-const USAGE = `usage: ${brand.binary} login [start [--no-browser] | finish | status | logout]`
+const USAGE = `usage: ${brand.binary} login [start [--no-browser] | finish | status | logout]\n       ${brand.binary} login token [--json]`
 
 /** `login --help`: each form with what it does. */
 export const LOGIN_HELP = (() => {
@@ -69,6 +83,8 @@ export const LOGIN_HELP = (() => {
     [`  --no-browser`, ["print the address, open no browser"]],
     [`${brand.binary} login finish`, ["finish a sign-in started elsewhere from the", "pasted address"]],
     [`${brand.binary} login status`, ["who is signed in and until when (never the", "tokens); exit code 1 when nobody is"]],
+    [`${brand.binary} login token`, ["print an access token of the saved sign-in,", "refreshed when it is due, for another", `${brand.name} that cannot share this data`, "directory: it reads the token from the file", `${ACCESS_TOKEN_FILE_ENV} names. The`, "output is a secret; exit code 1 when there", "is no sign-in to hand on"]],
+    [`  --json`, ["with its expiry, on one line:", '{"accessToken":"...","expiresAt":<ms>}']],
     [`${brand.binary} login logout`, ["forget the saved sign-in on this machine"]],
   ]
   const width = Math.max(...forms.map(([form]) => form.length)) + 3
@@ -84,18 +100,28 @@ export async function runLogin(argv: readonly string[], io: LoginIo, deps: Login
   const config = deps.config ?? CHATGPT_AUTH
   const [command = "start", ...rest] = argv
   const flags = new Set(rest)
-  const known = command === "start" ? ["--no-browser"] : []
+  const known = command === "start" ? ["--no-browser"] : command === "token" ? ["--json"] : []
   const unknown = rest.find((arg) => !known.includes(arg))
   if (unknown !== undefined) return usage(io, unknown.startsWith("-") ? `unknown option ${unknown}` : `login ${command} takes no arguments (the address is pasted when asked, never given on the command line)`)
+  // The file this process's access token is handed in through, when it is: it then does not run on the saved sign-in.
+  const handedIn = handedInTokenFile(io.env)
+  const savedOnly = () => {
+    if (handedIn !== null) io.stderr.write(`${brand.binary}: login ${command} acts on the saved sign-in; this process uses the access token handed in through ${ACCESS_TOKEN_FILE_ENV} instead\n`)
+  }
   try {
     switch (command) {
       case "start":
+        savedOnly()
         return await start(io, config, deps, flags.has("--no-browser"))
       case "finish":
+        savedOnly()
         return await finish(io, config)
       case "status":
-        return await status(io, config, deps.now ?? Date.now)
+        return handedIn === null ? await status(io, config, deps.now ?? Date.now) : await handedInStatus(io, handedIn, deps.now ?? Date.now)
+      case "token":
+        return await token(io, config, handedIn !== null, flags.has("--json"))
       case "logout": {
+        savedOnly()
         const had = await forgetCredentials(config)
         io.stdout.write(had ? `signed out: the saved sign-in was removed from ${credentialsPath(config)}\n` : "not signed in; nothing to remove\n")
         return 0
@@ -175,6 +201,43 @@ async function status(io: LoginIo, config: AuthConfig, now: () => number): Promi
     `saved in ${credentialsPath(config)}`,
   ]
   io.stdout.write(`${lines.join("\n")}\n`)
+  return 0
+}
+
+/** `status` of a process whose access token is handed in: the file, its expiry when it states one, and whether it can be used. Never the token. */
+async function handedInStatus(io: LoginIo, file: string, now: () => number): Promise<number> {
+  const handed = await readHandedIn(file, now())
+  const minutes = handed.expiresAt === null ? null : Math.round((handed.expiresAt - now()) / 60000)
+  const lines = [
+    handed.usable
+      ? `signed in with the access token handed in through ${ACCESS_TOKEN_FILE_ENV} (the saved sign-in is not used)`
+      : `not signed in: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} cannot be used (the saved sign-in is not used)`,
+    `access token file: ${file}`,
+    ...(minutes !== null ? [`access token: ${handed.usable ? `valid for ${minutes} more minutes` : `expired ${-minutes} minutes ago`}; whoever handed it in replaces the file`] : handed.usable ? ["access token: the file states no expiry"] : []),
+    ...(handed.usable ? [] : [`${handed.message} (${handed.code})`]),
+  ]
+  io.stdout.write(`${lines.join("\n")}\n`)
+  return handed.usable ? 0 : 1
+}
+
+/**
+ * Prints a usable access token of the saved sign-in (refreshed first when it is due, under the refresh lock, as a
+ * model call would) and nothing else on standard output. A process that runs on a handed-in token holds no sign-in.
+ */
+async function token(io: LoginIo, config: AuthConfig, handedIn: boolean, json: boolean): Promise<number> {
+  if (handedIn) {
+    io.stderr.write(`${brand.binary}: no token to hand on: this process uses the access token handed in through ${ACCESS_TOKEN_FILE_ENV} and holds no sign-in; run \`${brand.binary} login token\` where the sign-in is saved\n`)
+    return 1
+  }
+  const saved = await savedAccessToken(config).catch((error: unknown) => {
+    if (error instanceof AuthError && error.code === "signed_out") return null
+    throw error
+  })
+  if (saved === null) {
+    io.stderr.write(`${brand.binary}: not signed in, so there is no token to hand on; run \`${brand.binary} login\`\n`)
+    return 1
+  }
+  io.stdout.write(`${json ? JSON.stringify({ accessToken: saved.accessToken, expiresAt: saved.expiresAt }) : saved.accessToken}\n`)
   return 0
 }
 

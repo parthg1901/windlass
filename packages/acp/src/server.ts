@@ -78,6 +78,7 @@ import {
   renderReplayReport,
   restrictionTag,
 } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, HAND_IN_ADVICE, aboutHandedIn, handedInTokenFile } from "../../core/src/auth/handed-in.ts"
 import { type FileChange, type SnapshotId, type Snapshots, openSnapshots } from "../../core/src/snapshot/index.ts"
 import { DEFAULT_NORMALISERS } from "../../core/src/engine/replay.ts"
 import { describeWatch } from "../../core/src/engine/spawn.ts"
@@ -129,6 +130,12 @@ import { type Output, Translator, type TurnEnd } from "./translate.ts"
 
 /** The instruction a signed-out user gets. */
 export const SIGN_IN_HINT = `run \`${brand.binary} login\` and finish the ChatGPT sign-in, then try again`
+
+/**
+ * A sign-in problem with the way forward. A message about a handed-in access token says its own: the sign-in is
+ * held elsewhere, and signing in here would change nothing.
+ */
+const withSignInHint = (message: string) => (aboutHandedIn(message) ? message : `${message} To sign in, ${SIGN_IN_HINT}.`)
 
 /** The one auth method: the ChatGPT-plan sign-in, which the user completes outside the client. */
 export const AUTH_METHOD_ID = "chatgpt"
@@ -363,7 +370,10 @@ class ConnectionState {
         {
           id: AUTH_METHOD_ID,
           name: "Sign in with ChatGPT",
-          description: `Uses the ChatGPT plan sign-in saved on this machine. To sign in, ${SIGN_IN_HINT}.`,
+          description:
+            handedInTokenFile() === null
+              ? `Uses the ChatGPT plan sign-in saved on this machine. To sign in, ${SIGN_IN_HINT}.`
+              : `Uses the access token of a ChatGPT plan sign-in held elsewhere, handed in through ${ACCESS_TOKEN_FILE_ENV}. ${HAND_IN_ADVICE}`,
         },
       ],
     }
@@ -1256,7 +1266,7 @@ class ConnectionState {
   private async requireSignIn(): Promise<void> {
     const state = await this.harness.signIn()
     if (!state.signedIn)
-      throw RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: state.message }) }, `${state.message} To sign in, ${SIGN_IN_HINT}.`)
+      throw RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: state.message }) }, withSignInHint(state.message))
   }
 
   /**
@@ -1674,7 +1684,7 @@ class SessionView {
 /** A failed turn, as the error `session/prompt` answers with. Signed out is the protocol's auth-required error. */
 function failure(end: Extract<TurnEnd, { kind: "failed" }>): RequestError {
   if (end.providerError?.kind === "auth")
-    return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message }) }, `${end.message} To sign in, ${SIGN_IN_HINT}.`)
+    return RequestError.authRequired({ methodId: AUTH_METHOD_ID, ...errorData({ reason: "auth_required", message: end.message }) }, withSignInHint(end.message))
   if (end.approvalRequired === true) return new RequestError(-32603, end.message, errorData({ reason: "approval_required", message: end.message }))
   const data: Record<string, unknown> = { [META.capabilities]: { reason: "execution_failed" } }
   if (end.providerError !== null) data[META.capabilities] = { reason: "execution_failed", providerError: end.providerError.kind }

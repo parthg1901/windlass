@@ -12,6 +12,9 @@ import { chmod, mkdir, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { brand } from "../brand.ts"
+import { handedInTokenFile, readHandedIn } from "./handed-in.ts"
+
+export { ACCESS_TOKEN_FILE_ENV, HAND_IN_ADVICE, type HandedIn, type HandedInProblem, aboutHandedIn, handedInRejected, handedInTokenFile, readHandedIn } from "./handed-in.ts"
 
 const ISSUER = "https://auth.openai.com"
 const AUTHORIZE_URL = `${ISSUER}/api/accounts/authorize`
@@ -75,6 +78,8 @@ export interface AuthConfig {
   readonly jwksUrl: string
   /** The directory `auth.json`, `auth-pending.json` and `host-id` are kept in. */
   readonly dataDir: () => string
+  /** Where `ACCESS_TOKEN_FILE_ENV` is looked up. Defaults to the process's environment. */
+  readonly env?: Readonly<Record<string, string | undefined>>
 }
 
 export const CHATGPT_AUTH: AuthConfig = { issuer: ISSUER, authorizeUrl: AUTHORIZE_URL, tokenUrl: TOKEN_URL, jwksUrl: JWKS_URL, dataDir }
@@ -185,15 +190,28 @@ let refreshing: Promise<Credentials> | undefined
 
 const fresh = (credentials: Credentials) => credentials.expiresAt - Date.now() > REFRESH_MARGIN_MS
 
-/** Returns a usable access token, refreshing and saving the rotated tokens when needed. */
+/**
+ * Returns a usable access token. With `ACCESS_TOKEN_FILE_ENV` set it is the one handed in: its file is read on
+ * every call (whoever handed it in replaces it while this process runs), and the saved sign-in is never read,
+ * refreshed or written. Otherwise it is the saved sign-in's.
+ */
 export async function accessToken(config: AuthConfig = CHATGPT_AUTH): Promise<string> {
+  const file = handedInTokenFile(config.env)
+  if (file === null) return (await savedAccessToken(config)).accessToken
+  const handed = await readHandedIn(file)
+  if (!handed.usable) throw new AuthError(handed.code, handed.message)
+  return handed.accessToken
+}
+
+/** A usable access token of the saved sign-in and when it expires, refreshing and saving the rotated tokens when needed. */
+export async function savedAccessToken(config: AuthConfig = CHATGPT_AUTH): Promise<{ readonly accessToken: string; readonly expiresAt: number }> {
   const credentials = await loadCredentials(config)
   if (!credentials) throw new AuthError("signed_out", "Not signed in. Run the sign-in first.")
-  if (fresh(credentials)) return credentials.accessToken
+  if (fresh(credentials)) return credentials
   refreshing ??= refreshOnce(config).finally(() => {
     refreshing = undefined
   })
-  return (await refreshing).accessToken
+  return refreshing
 }
 
 const REFRESH_LOCK_WAIT_MS = 30_000

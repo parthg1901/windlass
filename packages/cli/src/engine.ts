@@ -35,7 +35,7 @@
 import type { AgentsResult, CancelCallResult, ClientCommand, CommandsResult, CompactResult, TaskItem } from "@windlass/acp/extensions"
 import type { DiffResult, ForkResult, HooksStateResult, LspStateResult, McpStateResult, MemoryChangeParams, MemoryChangeResult, MemoryStateResult, ReplayParams, ReplayResult, SkillsResult, WakeCreateParams, WakeCreateResult, WakeListResult, WakeSecretResult, WatchSetResult, WatchesResult } from "@windlass/acp/extensions"
 import type { TurnEvent } from "@windlass/acp/turns"
-import { brand } from "@windlass/core"
+import { aboutHandedIn, brand } from "@windlass/core"
 import type { CallId, ChoiceId, EphemeralEvent, HandEditPolicy, MessageId, Question, RevertOptions, RevertPlan, RevertResult, SessionId, StoredEvent } from "@windlass/core"
 import { nearest } from "./text.ts"
 
@@ -73,6 +73,8 @@ export type Approver = (request: ApprovalRequest) => Promise<{ readonly choice: 
 
 /** What the CLI suggests when the saved sign-in is missing or rejected. */
 export const SIGN_IN_ADVICE = `run \`${brand.binary} login\` to sign in with ChatGPT, then try again`
+/** What it suggests when the access token is handed in (`ACCESS_TOKEN_FILE_ENV`): the sign-in is held elsewhere, so signing in here would change nothing. */
+export const HAND_IN_SENTENCE = `hand in a new token (the output of \`${brand.binary} login token\`, run where the sign-in is saved), then try again`
 
 /**
  * A sign-in problem as one sentence with the way forward: `not signed in; run
@@ -81,14 +83,14 @@ export const SIGN_IN_ADVICE = `run \`${brand.binary} login\` to sign in with Cha
  * done, for a command that is not a session (`--models`).
  */
 export function signInSentence(message: string, what: string | null = null): string {
-  return `${signInReason(message)}${what === null ? "" : `, so ${what}`}; ${SIGN_IN_ADVICE}`
+  return `${signInReason(message)}${what === null ? "" : `, so ${what}`}; ${aboutHandedIn(message) ? HAND_IN_SENTENCE : SIGN_IN_ADVICE}`
 }
 
 /** The engine's sign-in problem without its advice: `not signed in`, `token request failed (400 invalid_grant): ...`. */
 export function signInReason(message: string): string {
   const reason = message
     .replace(/^no usable access token:\s*/i, "")
-    .replace(/\s*(Run the sign-in first|To sign in, .*)\.?\s*$/i, "")
+    .replace(/\s*(Run the sign-in first|To sign in, .*|Hand in a new token.*)\.?\s*$/i, "")
     .replace(/[.\s]+$/, "")
   return reason === "" ? "not signed in" : reason.charAt(0).toLowerCase() + reason.slice(1)
 }

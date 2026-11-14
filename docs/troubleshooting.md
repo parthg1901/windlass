@@ -46,6 +46,46 @@ windlass: sign-in failed: The callback does not belong to the sign-in that is in
 
 That address belongs to an older `windlass login`. Start again and paste the address from the newest one.
 
+## A handed-in access token cannot be used
+
+A process started with `WINDLASS_ACCESS_TOKEN_FILE` runs on an access token handed in by the `windlass` that holds
+the sign-in (the user guide, "One sign-in for several machines"). When the file gives no usable token, a run fails
+at the start, and so does `windlass --models`:
+
+```
+windlass: the file WINDLASS_ACCESS_TOKEN_FILE names does not exist (<file>); hand in a new token (the output of `windlass login token`, run where the sign-in is saved), then try again
+```
+
+Exit code 1. Signing in on this machine would change nothing: the sign-in is held elsewhere. The reason is one of
+these, and `windlass login status` (exit code 1) shows it with its code:
+
+| The message says | Code | What happened |
+|---|---|---|
+| `the file WINDLASS_ACCESS_TOKEN_FILE names does not exist (<file>)` | `handed_in_missing` | no token was handed in yet, or the variable names another place |
+| `... cannot be read: <error> (<file>)` | `handed_in_unreadable` | the file's permissions, or it is a directory |
+| `... is empty (<file>)` | `handed_in_empty` | the file was emptied, or is being written in place: replace it by a rename instead |
+| `... holds neither an access token nor what \`windlass login token --json\` prints (<file>)` | `handed_in_malformed` | not one token without spaces, and not `{"accessToken": "...", "expiresAt": <ms>}` |
+| `the access token handed in through WINDLASS_ACCESS_TOKEN_FILE expired at <time> (<file>)` | `handed_in_expired` | nothing replaced the file before the `expiresAt` in it |
+
+In every case hand in a new token: run `windlass login token --json` where the sign-in is saved and put its output
+in the file. Nothing needs a restart; the file is read at every model call, and in the full-screen interface
+`/reconnect` reads it again.
+
+When the provider rejects the token (it was revoked, or a bare token expired), the file is read once more, and if
+the token in it is rejected too the turn fails:
+
+```
+Signed out: the access token handed in through WINDLASS_ACCESS_TOKEN_FILE was rejected or cannot be used. Hand in a new token to continue.
+```
+
+*Reproduced in the test suite, against a provider answered in the test's own process.* The session is kept: hand in
+a new token and send the message again. `windlass login token` itself fails with exit code 1 in two cases:
+
+```
+windlass: not signed in, so there is no token to hand on; run `windlass login`
+windlass: no token to hand on: this process uses the access token handed in through WINDLASS_ACCESS_TOKEN_FILE and holds no sign-in; run `windlass login token` where the sign-in is saved
+```
+
 ## A session in use by another process
 
 ```

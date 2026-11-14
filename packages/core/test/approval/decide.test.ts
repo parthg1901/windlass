@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { brand } from "../../src/brand.ts"
 import {
   type ApprovalMode,
@@ -9,7 +10,9 @@ import {
   PROJECT_GRANT_TTL_MS,
   decide,
   escalationFacts,
+  pathFact,
 } from "../../src/approval/index.ts"
+import { defaultHiddenPaths } from "../../src/sandbox/policy.ts"
 import { HOME, NOW, TAINTED, WS, call, code, fact, input, sessionGrant } from "./fixtures.ts"
 
 const CASES: Record<string, CallFacts> = {
@@ -216,6 +219,26 @@ describe("paths", () => {
         stop: false,
       })
     }
+  })
+
+  test("the file an access token is handed in through is a credential store: a read asks once, an edit is denied, a command is not given it", () => {
+    // In the workspace, where any other file is read and edited freely, and reached through a link as well.
+    const file = `${WS}/run/token`
+    const context = { cwd: WS, workspace: WS, home: HOME, hiddenPaths: defaultHiddenPaths({ home: HOME, env: { [ACCESS_TOKEN_FILE_ENV]: file }, platform: "linux", uid: 1000 }), readlink: (path: string) => (path === `${WS}/link` ? "run/token" : null) }
+    for (const given of ["run/token", file, "link"]) {
+      const path = pathFact(given, context)
+      expect(path).toMatchObject({ real: file, place: "hidden" })
+      for (const mode of ["ask", "auto"] as const) {
+        const policy = { mode, unattended: "deny", taint: "enforce" } as const
+        const read = ask(decide(input({ policy, call: call({ tool: "read", effect: "read", paths: [path] }) })))
+        expect(read.question.choices.map((choice) => choice.id)).toEqual(["once", "deny"])
+        expect(read.question.details[0]).toBe(`${file} is in a credential store; what it reads is sent to the model provider.`)
+        expect(decide(input({ policy, call: call({ tool: "edit", effect: "write", paths: [path] }) }))).toEqual({ kind: "deny", message: `Not run: edit may not write ${file}: it is a credential store or the harness's own data.`, stop: false })
+      }
+    }
+    expect(decide(input({ call: call({ tool: "shell", effect: "exec", command: "cat run/token", escalation: escalationFacts({ network: false, write: ["run/token"] }, context) }) }))).toMatchObject({ kind: "deny", message: expect.stringContaining("stay hidden") })
+    // Without the variable it is a file of the workspace like any other.
+    expect(pathFact(file, { ...context, hiddenPaths: defaultHiddenPaths({ home: HOME, env: {}, platform: "linux", uid: 1000 }) }).place).toBe("workspace")
   })
 
   test("a tool that changes only the harness's own records is asked about as that, in ask mode only, and can be remembered by name", () => {

@@ -6,6 +6,7 @@ import { afterAll, afterEach, describe, expect, test, setDefaultTimeout } from "
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
+import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { brand } from "../../src/brand.ts"
 import { type SandboxPolicy, defaultPolicy, sandboxCommand } from "../../src/sandbox/index.ts"
 import { descendants, isRunning, plan, removeTempDirs, run, skipReason, spawnPlan, tempDir, waitUntil } from "./helpers.ts"
@@ -92,6 +93,25 @@ describe.skipIf(skipReason !== null)(title, () => {
       expect(result.stdout).toBe("exit-ok\n")
       expect(result.stdout + result.stderr).not.toContain("WORKSPACE-SECRET")
       expect(readFileSync(join(f.workspace, ".env"), "utf8")).toBe("API_KEY=WORKSPACE-SECRET\n")
+    })
+
+    test("the file an access token is handed in through cannot be read or replaced, outside the workspace or inside it", async () => {
+      const f = fixture()
+      for (const [where, file] of [
+        ["outside the workspace", join(f.outside, "token")],
+        ["inside the workspace", join(f.workspace, "token")],
+      ] as const) {
+        writeFileSync(file, "HANDED-IN-ACCESS-TOKEN\n")
+        writeFileSync(`${file}.txt`, "beside it\n")
+        const policy = defaultPolicy({ workspace: f.workspace, home: f.home, env: { [ACCESS_TOKEN_FILE_ENV]: file } })
+        const result = await run(plan(policy, `cat ${file}; echo overwrite > ${file}; mv ${file}.txt ${file}; cat ${file}.txt; echo exit-ok`, f.workspace))
+        expect(result.stdout, where).toBe("beside it\nexit-ok\n")
+        expect(result.stderr, where).toContain("Permission denied")
+        expect(result.stdout + result.stderr, where).not.toContain("HANDED-IN-ACCESS-TOKEN")
+        expect(readFileSync(file, "utf8"), where).toBe("HANDED-IN-ACCESS-TOKEN\n")
+        // Without the variable the same file is an ordinary one.
+        expect((await run(plan(f.policy, `cat ${file}`, f.workspace))).stdout, where).toBe("HANDED-IN-ACCESS-TOKEN\n")
+      }
     })
 
     test("ordinary files outside the workspace stay readable", async () => {

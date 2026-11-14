@@ -5,10 +5,12 @@
  * to compact.
  */
 import { describe, expect, test } from "bun:test"
-import { brand, event } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, brand, event } from "@windlass/core"
+import { HAND_IN_ADVICE, handedInRejected } from "@windlass/core/auth/chatgpt"
 import { compactText, firstSentence } from "../src/agents.ts"
 import { helpText } from "../src/args.ts"
 import { restoreCounts } from "../src/commands.ts"
+import { signInReason, signInSentence } from "../src/engine.ts"
 import { localTime, localTimes, wakeLines, wakeMessageSummary } from "../src/features.ts"
 import { render, stored } from "./helpers.ts"
 
@@ -76,5 +78,27 @@ describe("/compact with nothing to compact", () => {
     // A failure keeps all of its reason; a compaction that was made is drawn from its events.
     expect(compactText({ kind: "failed", message: "The compaction was interrupted; the conversation is unchanged." })).toEqual({ text: "The compaction was interrupted; the conversation is unchanged.", tone: "warn" })
     expect(compactText({ kind: "compacted", tokensBefore: 9000, tokensAfter: 3000, source: "model", detail: null })).toBeNull()
+  })
+})
+
+describe("a sign-in that cannot be used", () => {
+  const signIn = `run \`${brand.binary} login\` to sign in with ChatGPT, then try again`
+  const handIn = `hand in a new token (the output of \`${brand.binary} login token\`, run where the sign-in is saved), then try again`
+
+  test("saved on this machine: the reason, then how to sign in", () => {
+    expect(signInSentence("Not signed in. Run the sign-in first.")).toBe(`not signed in; ${signIn}`)
+    expect(signInSentence("no usable access token: Not signed in. Run the sign-in first.", "the models cannot be listed")).toBe(`not signed in, so the models cannot be listed; ${signIn}`)
+    expect(signInSentence(FAILURE_TEXT.signedOut)).toEndWith(`; ${signIn}`)
+  })
+
+  test("handed in from outside: the reason with the variable, then to hand in a new token, and never to sign in here", () => {
+    const missing = `The file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token). ${HAND_IN_ADVICE}`
+    expect(signInReason(missing)).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token)`)
+    expect(signInSentence(missing)).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token); ${handIn}`)
+    expect(signInSentence(`no usable access token: ${missing}`, "the models cannot be listed")).toBe(`the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token), so the models cannot be listed; ${handIn}`)
+    // A token the provider turned down: when the models are listed, and in the middle of a turn.
+    expect(signInSentence(handedInRejected("HTTP 401: Unauthorized"), "the models cannot be listed")).toBe(`the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected (HTTP 401: Unauthorized), so the models cannot be listed; ${handIn}`)
+    expect(signInSentence(FAILURE_TEXT.handedInRejected)).toBe(`signed out: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} was rejected or cannot be used; ${handIn}`)
+    for (const message of [missing, handedInRejected("HTTP 401: Unauthorized"), FAILURE_TEXT.handedInRejected]) expect(signInSentence(message)).not.toContain(signIn)
   })
 })

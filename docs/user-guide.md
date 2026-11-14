@@ -50,6 +50,57 @@ anywhere, approve, and the browser ends on a page at `127.0.0.1` that fails to l
 paste it at the prompt (it is not shown, and it never goes on the command line). `windlass login status` says who is
 signed in; it never prints a token.
 
+### One sign-in for several machines
+
+A ChatGPT sign-in cannot be copied to a second machine: every refresh replaces the refresh token, so the first copy
+of `auth.json` to refresh signs the other copies out. Processes that share a data directory share the sign-in
+safely already. Where they cannot share one (each `windlass` in a sandbox or a container of its own, on other
+machines), one `windlass` keeps the sign-in and does all the refreshing, and hands the others its access token,
+which is good for about an hour. There is still one way to reach a model: the token is the access token of your
+ChatGPT-plan sign-in, held by another `windlass`. It is not an API key, and no API key is accepted anywhere.
+
+Where the sign-in is saved:
+
+```sh
+windlass login token --json
+```
+
+This prints `{"accessToken":"...","expiresAt":<milliseconds since the epoch>}` on one line and nothing else on
+standard output; without `--json` it prints the bare token. The sign-in is refreshed first when it is due (from five
+minutes before the token expires, under the same lock and exactly as a model call there would), so a token it
+prints is good for at least five minutes, and asking again before a refresh is due prints the same token. With no
+sign-in it prints a message on standard error and exits with code 1. **The output is a secret**: whoever has it can
+use your plan until it expires. No other command prints a token; keep this one's output out of logs, and never put
+it on a command line.
+
+Where the token is used, name the file it is in:
+
+```sh
+WINDLASS_ACCESS_TOKEN_FILE=$HOME/.local/share/windlass/access-token windlass login status
+```
+
+With `WINDLASS_ACCESS_TOKEN_FILE` set and not empty, every `windlass` process (`windlass acp` and
+`windlass tui` too) reads its access token from that file each time it needs one, and for that never reads,
+refreshes or writes `auth.json`. The file holds what `login token --json` printed, or the bare token; whitespace
+around either is ignored. With the JSON form `windlass` knows when the token expires: `login status` shows the time left, and an
+expired token is refused before anything is sent.
+
+Keeping the token fresh is the job of whoever hands it in: run `login token --json` again where the sign-in is
+saved, some minutes before `expiresAt`, and replace the file. `windlass` uses the new token from its next model
+call, without a restart, and when the provider rejects a token it reads the file once more before the turn fails.
+Write the new token to a file beside the old one and rename it into place, so that a half-written file is never
+read, and keep the file where sandboxed commands see nothing at all, such as the data directory in the example
+([safety.md](safety.md) says why).
+
+In such a process `login status` says that the sign-in is handed in, shows the file and the time left when the file
+states an expiry, never the token, and exits with code 1 when the file gives no usable token: missing, unreadable,
+empty, malformed or expired ([troubleshooting.md](troubleshooting.md) has the messages). `login`, `login finish` and
+`login logout` still act on the sign-in saved on that machine, and say in one line that the process uses a
+handed-in token instead; `login token` refuses, since such a process holds no sign-in to hand on.
+
+The file is treated as the sign-in it stands for: a sandboxed command cannot read it, a tool that reads it asks
+first, and every token read from it is redacted from tool output.
+
 ## Sessions
 
 Every conversation is a session, kept on disk until you delete it. A session belongs to the directory it was
@@ -419,7 +470,7 @@ the new prefix. `windlass --demo list` has scripted compactions under "Compactio
 | 141 | output closed (a pipe reader left) |
 | 143 | terminated (SIGTERM) |
 
-`windlass login` uses 0, 1 (failed; for `status`: not signed in), 2 and 130. `windlass tui` exits with 0 when you leave it, 1
+`windlass login` uses 0, 1 (failed; for `status`: not signed in; for `token`: no sign-in to hand on), 2 and 130. `windlass tui` exits with 0 when you leave it, 1
 when you leave without a session open (not signed in, the session in use elsewhere, the engine gone; the reason is
 printed after the screen is back), and 129, 130 or 143 when a signal ends it.
 
@@ -439,6 +490,9 @@ Everything the program keeps is in `~/.local/share/windlass` (`$XDG_DATA_HOME/wi
 | `blobs/`, `spill/` | images, and tool output too long to show the model |
 | `wake/` | the wake-ups of every session (`wake.db`), with the secrets of webhook wake-ups ([wake-ups.md](wake-ups.md)) |
 | `memory/` | the memory notes, one Markdown file each, once memory is turned on ([memory.md](memory.md)) |
+
+A process whose access token is handed in (`WINDLASS_ACCESS_TOKEN_FILE`, under "Signing in") uses neither
+`auth.json` nor `auth.lock`; the rest is as above.
 
 Beside it, not inside it, is the work directory `~/.local/share/windlass-work` (`$XDG_DATA_HOME/windlass-work`),
 where the program makes the directories that sessions work in when it makes them itself. It is outside the data
@@ -481,12 +535,14 @@ work was not merged keeps its `windlass/subagent-<id>` branch.
 | `WINDLASS_TUI_DEBUG` | `1`: the full-screen interface shows events it does not know, dimmed |
 | `WINDLASS_ACP_LOG` | the server's log level on standard error: `debug`, `info` (default), `warn`, `error` |
 | `WINDLASS_ENGINE_START_TIMEOUT_MS` | how long the server child may take to start (default 20000) |
+| `WINDLASS_ACCESS_TOKEN_FILE` | a file with an access token handed in by the `windlass` that holds the ChatGPT sign-in (`windlass login token` there): this process runs on it and does not use a saved sign-in ("One sign-in for several machines" above) |
 | `WINDLASS_WAKE` | `off`: this process's server fires no wake-ups (an interactive `windlass`, `windlass tui` and `windlass acp` fire them; a one-prompt run never does) |
 | `DISPLAY`, `WAYLAND_DISPLAY`, `SSH_CONNECTION`, `SSH_TTY` | `windlass login` opens a browser only with a display and not over SSH |
 | `OPENTUI_LIB_PATH`, `OPENTUI_LIBC` | read by the full-screen interface's library: another native library, or `musl` |
 
 Variables whose names look like credentials (`*TOKEN*`, `*KEY*`, `AWS_*`, ...) are not passed to sandboxed
-commands, and their values are redacted from tool output.
+commands, and their values are redacted from tool output. `WINDLASS_ACCESS_TOKEN_FILE` is one of them: commands are
+not told where the file is, and its path is redacted like the tokens in it.
 
 For tests only, never for real use:
 

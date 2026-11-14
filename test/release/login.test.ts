@@ -4,11 +4,11 @@
  * The machine's real sign-in is never read or written.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { rmSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { brand } from "../../packages/core/src/brand.ts"
 import { waitFor } from "../../packages/core/src/testing/wait.ts"
-import { CHATGPT_AUTH, credentialsPath, loadCredentials, loadPending, pendingPath } from "../../packages/core/src/auth/chatgpt.ts"
+import { ACCESS_TOKEN_FILE_ENV, CHATGPT_AUTH, HAND_IN_ADVICE, credentialsPath, loadCredentials, loadPending, pendingPath } from "../../packages/core/src/auth/chatgpt.ts"
 import { helpText, parseArgs } from "../../packages/cli/src/args.ts"
 import { type LoginDeps, type LoginIo, runLogin } from "../../packages/cli/src/login.ts"
 import { ACCOUNT, type FakeAuth, startFakeAuth } from "./fake-auth.ts"
@@ -25,12 +25,12 @@ interface Run {
   readonly err: string
 }
 
-/** Runs `windlass login ...` in-process. `paste` types into a terminal with echo off; `stdin` is a pipe's contents. */
-async function login(argv: readonly string[], deps: LoginDeps, input: { paste?: (type: (data: string) => void, out: () => string) => void; stdin?: string } = {}): Promise<Run> {
+/** Runs `windlass login ...` in-process. `paste` types into a terminal with echo off; `stdin` is a pipe's contents; `env` is the process's environment. */
+async function login(argv: readonly string[], deps: LoginDeps, input: { paste?: (type: (data: string) => void, out: () => string) => void; stdin?: string; env?: Record<string, string> } = {}): Promise<Run> {
   let out = ""
   let err = ""
   const io: LoginIo = {
-    env: {},
+    env: input.env ?? {},
     stdout: { write: (text) => void (out += text) },
     stderr: { write: (text) => void (err += text) },
     stdin: {
@@ -54,8 +54,11 @@ const addressIn = (out: string) => /^ {2}(http\S+)$/m.exec(out)?.[1] ?? ""
 
 describe("parsing", () => {
   test("login and its subcommands reach runLogin; the help lists them", () => {
-    for (const argv of [["login"], ["login", "start"], ["login", "finish"], ["login", "status"], ["login", "logout"]]) expect(parseArgs(argv)).toEqual({ kind: "login", argv: argv.slice(1) })
-    for (const command of ["login [start]", "login finish", "login status", "login logout"]) expect(helpText()).toContain(`${brand.binary} ${command}`)
+    for (const argv of [["login"], ["login", "start"], ["login", "finish"], ["login", "status"], ["login", "token"], ["login", "token", "--json"], ["login", "logout"]]) expect(parseArgs(argv)).toEqual({ kind: "login", argv: argv.slice(1) })
+    for (const command of ["login [start]", "login finish", "login status", "login token [--json]", "login logout"]) expect(helpText()).toContain(`${brand.binary} ${command}`)
+    // The one command that prints a token says what it is for and that its output is a secret.
+    const token = helpText().slice(helpText().indexOf(`${brand.binary} login token`), helpText().indexOf(`${brand.binary} login logout`))
+    expect(token.replace(/\s+/g, " ")).toContain(`print an access token of the saved sign-in (a secret) for another ${brand.name} that cannot share this data directory: it reads the token from the file ${ACCESS_TOKEN_FILE_ENV} names`)
   })
 
   test("the address is never taken from the command line", async () => {
@@ -65,6 +68,10 @@ describe("parsing", () => {
     expect(result.err).toContain("never given on the command line")
     expect((await login(["sideways"], { config: auth.config })).code).toBe(2)
     expect((await login(["start", "--bogus"], { config: auth.config })).err).toContain("unknown option --bogus")
+    // `--json` is `token`'s alone, and `token` takes nothing else.
+    expect((await login(["status", "--json"], { config: auth.config })).err).toContain("unknown option --json")
+    expect((await login(["token", "--bogus"], { config: auth.config })).code).toBe(2)
+    expect((await login(["token", "somewhere"], { config: auth.config })).code).toBe(2)
   })
 
   test("production talks to OpenAI and keeps its files in the data directory", () => {
@@ -189,5 +196,150 @@ describe("failures", () => {
     const result = await login(["start"], { config: auth.config }, { paste: (type) => setTimeout(() => type("\x03"), 10) })
     expect(result.code).toBe(130)
     expect(result.err).toContain(`run \`${brand.binary} login finish\` to paste the address later`)
+  })
+})
+
+/** Signs in against the fake server; the saved sign-in is then fresh for an hour. */
+async function signIn(fake: FakeAuth) {
+  const started = await login(["start"], { config: fake.config })
+  await login(["finish"], { config: fake.config }, { stdin: await fake.authorize(addressIn(started.out)) })
+  return (await loadCredentials(fake.config))!
+}
+
+/** Makes the saved access token due for its refresh, as it is a few minutes before it expires. */
+function makeDue(fake: FakeAuth) {
+  const path = credentialsPath(fake.config)
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), expiresAt: Date.now() + 60_000 }))
+}
+
+describe("handing a token on", () => {
+  test("login token prints the saved sign-in's access token and nothing else; --json adds its expiry, on one line", async () => {
+    auth = await startFakeAuth()
+    const saved = await signIn(auth)
+    expect(await login(["token"], { config: auth.config })).toEqual({ code: 0, out: `${saved.accessToken}\n`, err: "" })
+    const json = await login(["token", "--json"], { config: auth.config })
+    expect(json).toEqual({ code: 0, out: `${JSON.stringify({ accessToken: saved.accessToken, expiresAt: saved.expiresAt })}\n`, err: "" })
+    expect(Object.keys(JSON.parse(json.out))).toEqual(["accessToken", "expiresAt"])
+    // Nothing but the access token leaves: not the refresh token, not the ID token.
+    for (const secret of [saved.refreshToken, saved.idToken]) expect(json.out).not.toContain(secret)
+    // Fresh, so it was handed on as it is: the sign-in was the only token request.
+    expect(auth.requests()).toEqual({ token: 1, refreshes: 0 })
+  })
+
+  test("a token that is due is refreshed first, once, under the lock, and saved: what is handed on is what a model call here would use", async () => {
+    auth = await startFakeAuth()
+    const old = await signIn(auth)
+    makeDue(auth)
+    const json = await login(["token", "--json"], { config: auth.config })
+    expect([json.code, json.err]).toEqual([0, ""])
+    const handed = JSON.parse(json.out) as { accessToken: string; expiresAt: number }
+    const saved = (await loadCredentials(auth.config))!
+    expect(handed).toEqual({ accessToken: saved.accessToken, expiresAt: saved.expiresAt })
+    expect(handed.accessToken).not.toBe(old.accessToken)
+    expect(saved.refreshToken).not.toBe(old.refreshToken)
+    expect(handed.expiresAt).toBeGreaterThan(Date.now() + 3_000_000)
+    expect(existsSync(join(auth.dir, "auth.lock"))).toBe(true)
+    // Asked again, the same token: the refresh happened once.
+    expect((await login(["token"], { config: auth.config })).out).toBe(`${handed.accessToken}\n`)
+    expect(auth.requests().refreshes).toBe(1)
+  })
+
+  test("refused with exit code 1 when not signed in, and when this process itself runs on a handed-in token", async () => {
+    auth = await startFakeAuth()
+    for (const argv of [["token"], ["token", "--json"]])
+      expect(await login(argv, { config: auth.config })).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in, so there is no token to hand on; run \`${brand.binary} login\`\n` })
+    // Signed in, and due for a refresh: with a handed-in token this process holds nothing to hand on, and touches nothing.
+    await signIn(auth)
+    makeDue(auth)
+    const before = readFileSync(credentialsPath(auth.config), "utf8")
+    const file = join(auth.dir, "handed-in-token")
+    writeFileSync(file, "handed-token-0001\n")
+    for (const argv of [["token"], ["token", "--json"]])
+      expect(await login(argv, { config: auth.config }, { env: { [ACCESS_TOKEN_FILE_ENV]: file } })).toEqual({
+        code: 1,
+        out: "",
+        err: `${brand.binary}: no token to hand on: this process uses the access token handed in through ${ACCESS_TOKEN_FILE_ENV} and holds no sign-in; run \`${brand.binary} login token\` where the sign-in is saved\n`,
+      })
+    expect(auth.requests().refreshes).toBe(0)
+    expect(readFileSync(credentialsPath(auth.config), "utf8")).toBe(before)
+  })
+
+  test("a refresh that is refused fails with the reason, and prints no token", async () => {
+    auth = await startFakeAuth()
+    const saved = await signIn(auth)
+    const path = credentialsPath(auth.config)
+    writeFileSync(path, JSON.stringify({ ...saved, refreshToken: "refresh-revoked", expiresAt: Date.now() + 60_000 }))
+    const result = await login(["token"], { config: auth.config })
+    expect([result.code, result.out]).toEqual([1, ""])
+    expect(result.err).toBe(`${brand.binary}: sign-in failed: Token request failed (400 invalid_grant): the refresh token was already used or is not known (invalid_grant)\n`)
+  })
+})
+
+describe("a sign-in handed in from outside", () => {
+  const NOW = Date.UTC(2026, 10, 12, 9, 0, 0)
+  const first = (usable: boolean) =>
+    usable
+      ? `signed in with the access token handed in through ${ACCESS_TOKEN_FILE_ENV} (the saved sign-in is not used)`
+      : `not signed in: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} cannot be used (the saved sign-in is not used)`
+
+  test("status says it is handed in through the variable, the file, the expiry when the file states one, and never the token", async () => {
+    auth = await startFakeAuth()
+    const file = join(auth.dir, "handed-in-token")
+    const status = () => login(["status"], { config: auth!.config, now: () => NOW }, { env: { [ACCESS_TOKEN_FILE_ENV]: file } })
+    writeFileSync(file, "handed-token-0001\n")
+    expect(await status()).toEqual({ code: 0, out: `${first(true)}\naccess token file: ${file}\naccess token: the file states no expiry\n`, err: "" })
+    writeFileSync(file, JSON.stringify({ accessToken: "handed-token-0002", expiresAt: NOW + 42 * 60_000 }))
+    expect(await status()).toEqual({ code: 0, out: `${first(true)}\naccess token file: ${file}\naccess token: valid for 42 more minutes; whoever handed it in replaces the file\n`, err: "" })
+  })
+
+  test("status exits 1 with the reason and its code when the file gives no usable token", async () => {
+    auth = await startFakeAuth()
+    const file = join(auth.dir, "handed-in-token")
+    const status = () => login(["status"], { config: auth!.config, now: () => NOW }, { env: { [ACCESS_TOKEN_FILE_ENV]: file } })
+    const unusable = (...lines: string[]) => ({ code: 1, out: `${[first(false), `access token file: ${file}`, ...lines].join("\n")}\n`, err: "" })
+    expect(await status()).toEqual(unusable(`The file ${ACCESS_TOKEN_FILE_ENV} names does not exist (${file}). ${HAND_IN_ADVICE} (handed_in_missing)`))
+    writeFileSync(file, "\n")
+    expect(await status()).toEqual(unusable(`The file ${ACCESS_TOKEN_FILE_ENV} names is empty (${file}). ${HAND_IN_ADVICE} (handed_in_empty)`))
+    writeFileSync(file, '{"accessToken": "handed-token-0003"}')
+    const malformed = await status()
+    expect(malformed).toEqual(unusable(`The file ${ACCESS_TOKEN_FILE_ENV} names holds neither an access token nor what \`${brand.binary} login token --json\` prints (${file}). ${HAND_IN_ADVICE} (handed_in_malformed)`))
+    writeFileSync(file, JSON.stringify({ accessToken: "handed-token-0003", expiresAt: NOW - 12 * 60_000 }))
+    const expired = await status()
+    expect(expired).toEqual(
+      unusable("access token: expired 12 minutes ago; whoever handed it in replaces the file", `The access token handed in through ${ACCESS_TOKEN_FILE_ENV} expired at 2026-11-12T08:48:00.000Z (${file}). ${HAND_IN_ADVICE} (handed_in_expired)`),
+    )
+    for (const result of [malformed, expired]) expect(result.out).not.toContain("handed-token-0003")
+    rmSync(file)
+    mkdirSync(file)
+    expect(await status()).toEqual(unusable(`The file ${ACCESS_TOKEN_FILE_ENV} names cannot be read: EISDIR (${file}). ${HAND_IN_ADVICE} (handed_in_unreadable)`))
+  })
+
+  test("status describes the handed-in token even when a sign-in is saved here, and reads nothing of it", async () => {
+    auth = await startFakeAuth()
+    await signIn(auth)
+    const file = join(auth.dir, "handed-in-token")
+    writeFileSync(file, "handed-token-0001")
+    const status = await login(["status"], { config: auth.config }, { env: { [ACCESS_TOKEN_FILE_ENV]: file } })
+    expect(status.code).toBe(0)
+    expect(status.out).not.toContain(ACCOUNT.email)
+    expect(status.out).not.toContain("handed-token-0001")
+    for (const secret of auth.secrets) expect(status.out).not.toContain(secret)
+    // An empty variable is no variable: the saved sign-in is what status describes.
+    expect((await login(["status"], { config: auth.config }, { env: { [ACCESS_TOKEN_FILE_ENV]: "" } })).out).toStartWith(`signed in as ${ACCOUNT.email}\n`)
+  })
+
+  test("start, finish and logout still act on the saved sign-in, and say in one line that this process uses a handed-in token", async () => {
+    auth = await startFakeAuth()
+    const env = { [ACCESS_TOKEN_FILE_ENV]: join(auth.dir, "handed-in-token") }
+    const note = (command: string) => `${brand.binary}: login ${command} acts on the saved sign-in; this process uses the access token handed in through ${ACCESS_TOKEN_FILE_ENV} instead\n`
+    const started = await login(["start"], { config: auth.config }, { env })
+    expect([started.code, started.err]).toEqual([0, note("start")])
+    const finished = await login(["finish"], { config: auth.config }, { env, stdin: await auth.authorize(addressIn(started.out)) })
+    expect(finished).toEqual({ code: 0, out: `signed in as ${ACCOUNT.email}\n`, err: note("finish") })
+    expect((await loadCredentials(auth.config))?.account).toEqual(ACCOUNT)
+    expect(await login(["logout"], { config: auth.config }, { env })).toEqual({ code: 0, out: `signed out: the saved sign-in was removed from ${credentialsPath(auth.config)}\n`, err: note("logout") })
+    expect(await loadCredentials(auth.config)).toBeUndefined()
+    // Without the variable nothing is added.
+    expect((await login(["logout"], { config: auth.config })).err).toBe("")
   })
 })

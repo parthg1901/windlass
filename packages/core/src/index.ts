@@ -1,4 +1,5 @@
 export { brand } from "./brand.ts"
+export { ACCESS_TOKEN_FILE_ENV, aboutHandedIn } from "./auth/handed-in.ts"
 export * from "./json.ts"
 export * as v from "./validate.ts"
 export { DecodeError, safeDecode, type DecodeResult, type Infer, type Validator } from "./validate.ts"

@@ -5,6 +5,7 @@
  */
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
+import { handedInTokenFile } from "../auth/handed-in.ts"
 import { brand } from "../brand.ts"
 
 /**
@@ -74,7 +75,7 @@ export function defaultPolicy(options: DefaultPolicyOptions): SandboxPolicy {
   }
 }
 
-/** Credential stores, the harness's own data and config, and sockets that would let a command act outside the sandbox. */
+/** Credential stores, the harness's own data and config, the file a sign-in is handed in through, and sockets that would let a command act outside the sandbox. */
 export function defaultHiddenPaths(options: Omit<DefaultPolicyOptions, "workspace" | "tempRoot" | "network"> = {}): string[] {
   const home = options.home ?? homedir()
   const env = options.env ?? process.env
@@ -113,9 +114,12 @@ export function defaultHiddenPaths(options: Omit<DefaultPolicyOptions, "workspac
     ".config/google-chrome",
     ".config/chromium",
   ].map((path) => join(home, path))
+  // An access token handed in from outside is the sign-in, wherever its file is.
+  const handedIn = handedInTokenFile(env)
   const harness = [
     join(env.XDG_DATA_HOME || join(home, ".local", "share"), brand.directory),
     join(env.XDG_CONFIG_HOME || join(home, ".config"), brand.directory),
+    ...(handedIn === null ? [] : [handedIn]),
   ]
   if (platform === "darwin")
     return [

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { resolve } from "node:path"
+import { ACCESS_TOKEN_FILE_ENV } from "../../src/auth/handed-in.ts"
 import { brand } from "../../src/brand.ts"
 import { defaultHiddenPaths, defaultPolicy, filterEnv, isCredentialName, sandboxCommand } from "../../src/sandbox/index.ts"
 
@@ -31,6 +33,21 @@ describe("defaultPolicy", () => {
     const mac = defaultHiddenPaths({ home: "/Users/u", env: {}, platform: "darwin" })
     expect(mac).toEqual(expect.arrayContaining(["/Users/u/.ssh", "/Users/u/Library/Keychains", `/Users/u/Library/Application Support/${brand.directory}`]))
     expect(mac.some((path) => path.startsWith("/run/user"))).toBe(false)
+  })
+
+  test("hides the file an access token is handed in through, wherever it is, on both platforms", () => {
+    for (const platform of ["linux", "darwin"] as const) {
+      const hidden = (env: Record<string, string>) => defaultHiddenPaths({ home: "/h", env, platform, uid: 1000 })
+      expect(hidden({ [ACCESS_TOKEN_FILE_ENV]: "/srv/handed-in/token" })).toContain("/srv/handed-in/token")
+      // A relative path is the process's, as the file is opened.
+      expect(hidden({ [ACCESS_TOKEN_FILE_ENV]: "handed-in/token" })).toContain(resolve("handed-in/token"))
+      // Unset or empty: nothing more than without it.
+      expect(hidden({ [ACCESS_TOKEN_FILE_ENV]: "" })).toEqual(hidden({}))
+      expect(defaultPolicy({ workspace: "/work", home: "/h", env: { [ACCESS_TOKEN_FILE_ENV]: "/work/.token" }, platform }).hiddenPaths).toContain("/work/.token")
+    }
+    // A sandboxed command is not told where the file is either: the variable is stripped like any credential's.
+    expect(isCredentialName(ACCESS_TOKEN_FILE_ENV)).toBe(true)
+    expect(filterEnv({ [ACCESS_TOKEN_FILE_ENV]: "/srv/handed-in/token", HOME: "/h" }, { mode: "deny" })).toEqual({ HOME: "/h" })
   })
 })
 

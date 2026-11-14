@@ -63,7 +63,8 @@ command:
 - can write only inside the working directory and a temp directory that belongs to the session (`/tmp` on Linux,
   `$TMPDIR` on macOS). It stays between commands, and the file tools see the same files there;
 - cannot read credential stores: SSH and GPG keys, cloud and AI-tool credentials, `~/.netrc`, `~/.npmrc`, browser
-  profiles, the harness's own data and configuration;
+  profiles, the harness's own data and configuration, and the file an access token is handed in through
+  (`WINDLASS_ACCESS_TOKEN_FILE`), wherever that file is;
 - has no network at all: no TCP, no UDP, no DNS, and on Linux not even a server on the same machine;
 - gets no environment variable whose name looks like a credential (`*TOKEN*`, `*KEY*`, `AWS_*`, ...);
 - cannot reach the user's session bus or a container daemon's socket, either of which would run things outside;
@@ -98,6 +99,30 @@ to run yourself.
   hole. Treat it as unverified until it has been run there.
 - On a machine where the sandbox cannot run (bubblewrap missing, or unprivileged user namespaces switched off) the
   harness says so once, with what would fix it. `auto` does not quietly become `full` there: every command asks.
+
+## A handed-in access token
+
+A process started with `WINDLASS_ACCESS_TOKEN_FILE` runs on an access token that another `windlass` handed in
+([user-guide.md](user-guide.md), "One sign-in for several machines"). That file is the sign-in for as long as the
+token lasts, and it is protected like the saved one, wherever it is, the working directory included:
+
+- a sandboxed command cannot read it or write it, and is not given the variable, so it is not told where the file is;
+- to the file tools it is a credential store: reading it asks, once only, and editing it is refused;
+- the sandbox cannot be widened to it;
+- every token this process has read from the file is redacted from tool output (`[REDACTED:env]`), also after the
+  file was replaced, and so is the file's path.
+
+What this does not cover:
+
+- **A command that is already running when the file is replaced by a rename** (Linux). The file is hidden by
+  covering it, and renaming a new file over it uncovers that path for commands already running; commands started
+  afterwards have it covered again. Keep the file in a directory that is hidden as a whole, where a rename changes
+  nothing a command can see: Windlass's data directory (`~/.local/share/windlass`) or its configuration directory.
+- A command that runs outside the sandbox: in `full`, on a machine without a sandbox, or one you allowed to. It
+  reads the file with your rights, as it reads any file of yours.
+- A file that does not exist yet when a command starts (Linux): there is nothing to cover.
+- A token written to the file that this process has not read yet (it reads the file at each model call): that one is
+  redacted only if it has a format the redaction knows, such as a JWT.
 
 ## How the agent gets more access
 
@@ -174,8 +199,9 @@ untrusted content is present.
 Before a tool's output is stored or shown to the model, known secret formats are replaced by placeholders such as
 `[REDACTED:github-token]`: private key blocks, AWS, GitHub, GitLab, Slack, Stripe, Google, npm, Hugging Face,
 Anthropic and OpenAI keys, JWTs, `Bearer` and `Basic` credentials, passwords in URLs, and the values of your
-credential-looking environment variables (`[REDACTED:env]`). What is stored is the redacted text, so a session that
-is replayed or resumed shows the same.
+credential-looking environment variables (`[REDACTED:env]`), with them every access token read from the file
+`WINDLASS_ACCESS_TOKEN_FILE` names. What is stored is the redacted text, so a session that is replayed or resumed
+shows the same.
 
 Editing still works: when the agent read a file with a secret in it and then edits or rewrites that file, a
 placeholder in its edit is matched against the real file and written back as the secret it stands for. The agent

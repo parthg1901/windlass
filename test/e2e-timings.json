@@ -49,6 +49,7 @@
     "packages/cli/test/subagent.e2e.test.ts": 385,
     "packages/cli/test/tasks.e2e.test.ts": 321,
     "packages/cli/test/watch.e2e.test.ts": 1714,
+    "packages/core/test/auth/handed-in-harness.e2e.test.ts": 1237,
     "packages/core/test/auth/refresh.e2e.test.ts": 1853,
     "packages/core/test/codemode/runner.e2e.test.ts": 6957,
     "packages/core/test/engine/check-output-redaction.e2e.test.ts": 194,
