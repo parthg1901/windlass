@@ -6,7 +6,7 @@
       "name": "light-harness",
       "devDependencies": {
         "@types/bun": "latest",
-        "prefixlens": "0.5.1",
+        "prefixlens": "0.6.0",
         "typescript": "^5.6.0",
       },
     },
@@ -94,7 +94,7 @@
 
     "marked": ["marked@17.0.1", "", { "bin": { "marked": "bin/marked.js" } }, "sha512-boeBdiS0ghpWcSwoNm/jJBwdpFaMnZWRzjA6SkUMYb40SVaN1x7mmfGKp0jvexGcx+7y2La5zRZsYFZI6Qpypg=="],
 
-    "prefixlens": ["prefixlens@0.5.1", "", { "bin": { "prefixlens": "dist/cli.js" } }, "sha512-7BVK5gZNvu6vTOTZ7DmTsMa6CSub4V21JlZH8nCLxBS2GhY4ZUp6825HhjA3axrE2Nasl+8W8djEh0mxTaxsVg=="],
+    "prefixlens": ["prefixlens@0.6.0", "", { "bin": { "prefixlens": "dist/cli.js" } }, "sha512-q1qfDuA13YJWm7AT3mPo8NA0rgKFclYDTapxzvBrvdMt6qHLFjNhhOLRY75IJThkSWNmb7DJw1hXGokXiaxr+A=="],
 
     "string-width": ["string-width@7.2.0", "", { "dependencies": { "emoji-regex": "^10.3.0", "get-east-asian-width": "^1.0.0", "strip-ansi": "^7.1.0" } }, "sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ=="],
 
