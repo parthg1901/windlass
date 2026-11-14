@@ -67,7 +67,10 @@ describe("the changelog and the tag", () => {
   test("the repository's own changelog reads: an Unreleased section, and one for the version when it is not 0.0.0", () => {
     const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8")
     expect(changelogSection(changelog, "Unreleased")).toBeDefined()
-    if (workspace.version !== "0.0.0") expect(checkRelease(`v${workspace.version}`, workspace.version, changelog).problems).toEqual([])
+    // Between two releases the next one's entries wait under Unreleased (docs/releasing.md moves them when it is
+    // released): they stop a tag, which `check` says then, and are no fault of the changelog as it reads today.
+    const waiting = (problem: string) => problem.includes('entries under "## [Unreleased]"')
+    if (workspace.version !== "0.0.0") expect(checkRelease(`v${workspace.version}`, workspace.version, changelog).problems.filter((problem) => !waiting(problem))).toEqual([])
     else expect(checkRelease("v0.0.0", "0.0.0", changelog, { dryRun: true }).notes).not.toBe("")
   })
 })

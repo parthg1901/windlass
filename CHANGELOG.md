@@ -6,6 +6,15 @@ All notable changes to Windlass are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **One sign-in for several machines.** `windlass login token` prints the access token of the saved ChatGPT sign-in
+  (a secret; the sign-in is refreshed first when it is due), and a `windlass` started with
+  `WINDLASS_ACCESS_TOKEN_FILE` naming a file with that token runs on it instead of a saved sign-in. This is for
+  processes that cannot share a data directory, such as one per sandbox, where a copied `auth.json` would sign the
+  other copies out at its first refresh: the one that holds the sign-in does all the refreshing. The file is hidden
+  from sandboxed commands like the saved sign-in, and the tokens in it are redacted from tool output.
+
 ## [0.1.1] - 2026-11-13
 
 ### Changed

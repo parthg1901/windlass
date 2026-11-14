@@ -64,7 +64,7 @@ const installFlags = [...readFileSync(join(ROOT, "scripts/install.sh"), "utf8").
 const buildFlags = [...readFileSync(join(ROOT, "scripts/build.ts"), "utf8").matchAll(/arg === "(--[a-z-]+)"/g)].map((match) => match[1]!)
 /** The options of the main command and of the `fork` and `replay` subcommands. */
 const helpFlags = [helpText(), forkUsage(), replayUsage()].flatMap((usage) => [...usage.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((match) => match[1]!))
-const loginFlags = ["--no-browser"]
+const loginFlags = ["--no-browser", "--json"]
 /** The options of `curl` and `shasum` in the commands that download a release and check it. */
 const downloadFlags = ["--remote-name-all", "--ignore-missing"]
 /** npm's option that leaves out the executable's package, which the pages warn about. */
@@ -87,7 +87,7 @@ describe("commands in the documentation", () => {
         const parsed = parseArgs(args)
         expect(parsed.kind, where).not.toBe("error")
         if (parsed.kind === "login") {
-          expect(["start", "finish", "status", "logout"], where).toContain(parsed.argv[0] ?? "start")
+          expect(["start", "finish", "status", "token", "logout"], where).toContain(parsed.argv[0] ?? "start")
           for (const arg of parsed.argv.slice(1)) expect(loginFlags, where).toContain(arg)
         }
         continue

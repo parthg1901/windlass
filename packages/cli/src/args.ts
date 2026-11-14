@@ -1,5 +1,5 @@
 /** Command-line arguments. Parsing is pure: it returns a value or a usage error, and never touches the process. */
-import { brand } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, brand } from "@windlass/core"
 import { ENGINE_KINDS, type EngineKind } from "./select-engine.ts"
 import { nearest } from "./text.ts"
 import { type ForkOptions, type ReplayOptions, parseSubcommand } from "./subcommands.ts"
@@ -38,7 +38,7 @@ export type Parsed =
   | { readonly kind: "list"; readonly what: "sessions" | "models"; readonly options: Options }
   /** `acp`: serve the Agent Client Protocol on stdin and stdout. */
   | { readonly kind: "acp" }
-  /** `login [start|finish|status|logout]`: the ChatGPT sign-in (`./login.ts` parses the rest). */
+  /** `login [start|finish|status|token|logout]`: the ChatGPT sign-in (`./login.ts` parses the rest). */
   | { readonly kind: "login"; readonly argv: readonly string[] }
   /** `tui [options]`: the full-screen terminal interface (packages/tui). */
   | { readonly kind: "tui"; readonly options: Options }
@@ -176,6 +176,7 @@ function usageRows(b: string): string {
     [`${b} login [start]`, ["sign in with ChatGPT: opens a browser when there is one,", "otherwise prints the address and asks for the page you", "ended on (pasted, not shown)"]],
     [`${b} login finish`, ["finish a sign-in started elsewhere from the pasted address"]],
     [`${b} login status`, ["who is signed in and until when (never the tokens)"]],
+    [`${b} login token [--json]`, ["print an access token of the saved sign-in (a secret) for", `another ${brand.name} that cannot share this data directory:`, `it reads the token from the file ${ACCESS_TOKEN_FILE_ENV}`, "names, and this one does all the refreshing"]],
     [`${b} login logout`, ["forget the saved sign-in on this machine"]],
     [`${b} tui [options]`, [`the full-screen terminal interface (${brand.envPrefix}TUI=1 makes it`, `what \`${b}\` with no prompt starts)`]],
     [`${b} fork [<session>]`, ["a new session with the conversation so far, to try another", "way without changing the original; --turn <n> forks after", `turn n (\`${b} fork --help\`)`]],

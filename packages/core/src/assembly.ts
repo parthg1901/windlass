@@ -1,7 +1,8 @@
 /**
  * The one place the real harness is put together: the data directory, a
  * store per session in it (`store/directory.ts`), the ChatGPT-plan Responses
- * provider with the saved sign-in, the standard tools, the configuration
+ * provider with the saved sign-in (or the access token another process hands
+ * in, `auth/handed-in.ts`), the standard tools, the configuration
  * files and the defaults (the default model). The command-line interface and
  * the ACP server both call `createHarness()` and add only what is theirs:
  * arguments and a terminal, or a protocol.
@@ -16,12 +17,13 @@
  */
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { AuthError, accessToken, dataDir as defaultDataDir } from "./auth/chatgpt.ts"
+import { AuthError, aboutHandedIn, accessToken as signInToken, dataDir as defaultDataDir, handedInRejected, handedInTokenFile } from "./auth/chatgpt.ts"
 import { brand } from "./brand.ts"
 import { loadConfig } from "./config/load.ts"
+import { environmentSecrets } from "./engine/approval.ts"
 import { type Engine, type EngineOptions, createEngine } from "./engine/engine.ts"
 import type { SessionSettings } from "./event/durable.ts"
-import { OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
+import { ModelListError, OpenAIResponsesProvider, listModels } from "./provider/openai-responses.ts"
 import type { Provider } from "./provider/provider.ts"
 import { type CommandSandbox, createCommandSandbox } from "./sandbox/command.ts"
 import { type SessionDirectory, openSessionDirectory } from "./store/directory.ts"
@@ -77,7 +79,7 @@ export interface HarnessOptions {
   readonly defaultEffort?: string | null
   /** One line of the engine's log, and notices about the data directory. Defaults to standard error, prefixed with the binary's name. */
   readonly log?: (line: string) => void
-  /** Instead of reading the saved sign-in. */
+  /** Instead of reading the saved sign-in (or the file one is handed in through). */
   readonly signIn?: () => Promise<SignInState>
   /** Instead of asking the provider for the account's models. */
   readonly models?: (signal?: AbortSignal) => Promise<readonly ModelEntry[]>
@@ -95,7 +97,7 @@ export interface Harness {
   readonly engine: Engine
   /** The session directory under the engine: for a tool that reads sessions (an exporter), never for writing around the engine. */
   readonly sessions: SessionDirectory
-  /** Whether a model call can be made: the saved ChatGPT sign-in exists and yields a token. Always signed in with a provider of the caller's. */
+  /** Whether a model call can be made: the saved ChatGPT sign-in, or the file one is handed in through, yields a token. Always signed in with a provider of the caller's. */
   readonly signIn: () => Promise<SignInState>
   /** The account's models, in the provider's order. Rejects with `ModelListError` when they cannot be listed. Empty with a provider of the caller's. */
   readonly listModels: (signal?: AbortSignal) => Promise<readonly ModelEntry[]>
@@ -143,6 +145,18 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   }
   let running: { readonly sessions: SessionDirectory; readonly engine: Engine } | null = null
   let closing: Promise<void> | null = null
+  // A handed-in access token is a secret this process reads from a file, not from its environment, and the file is
+  // replaced while it runs: every token read joins the values removed from tool output, a list the engine reads
+  // each time it redacts.
+  const secrets = options.provider === undefined && handedInTokenFile() !== null ? [...(options.engine?.approval?.secrets ?? environmentSecrets(process.env))] : null
+  const accessToken =
+    secrets === null
+      ? signInToken
+      : async () => {
+          const token = await signInToken()
+          if (!secrets.includes(token)) secrets.push(token)
+          return token
+        }
 
   const start = () => {
     if (closing !== null) throw new Error(`${brand.name} is shutting down`)
@@ -177,7 +191,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     const engine = createEngine({
       ...(options.provider === undefined
         ? {
-            // On a rejected sign-in the token is looked up once more (it is refreshed when it is due) before the step fails.
+            // On a rejected sign-in the token is looked up once more (it is refreshed when it is due; a handed-in one is
+            // read from its file again) before the step fails.
             refreshAuth: () =>
               accessToken().then(
                 () => true,
@@ -222,7 +237,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       dataDir,
       spillDir,
       // Safe by default: mode `auto` in the sandbox, nobody present until a client says so. `null` (tests) switches it off.
-      ...(options.engine?.approval === null ? { approval: null } : { approval: { ...options.engine?.approval, sandbox } }),
+      ...(options.engine?.approval === null ? { approval: null } : { approval: { ...options.engine?.approval, sandbox, ...(secrets === null ? {} : { secrets }) } }),
     })
     running = { sessions, engine }
     return running
@@ -254,7 +269,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     listModels: async (signal) => {
       if (options.models !== undefined) return options.models(signal)
       if (options.provider !== undefined) return []
-      const models = await listModels({ accessToken, ...(signal === undefined ? {} : { signal }) })
+      const models = await listModels({ accessToken, ...(signal === undefined ? {} : { signal }) }).catch((error: unknown) => {
+        // A handed-in token the provider rejected: the listing says so, and not to sign in here.
+        if (secrets === null || !(error instanceof ModelListError) || error.error.kind !== "auth" || aboutHandedIn(error.message)) throw error
+        throw new ModelListError({ ...error.error, message: handedInRejected(error.message) })
+      })
       return models.map((model) => ({
         id: model.slug,
         name: model.displayName,

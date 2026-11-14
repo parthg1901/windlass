@@ -6,7 +6,7 @@ Runs a shell command under an OS sandbox. `sandboxCommand(policy, command)` retu
 
 It stops a command from:
 - writing outside the writable roots and the temp directory, including through `..`, absolute paths, and symlinks (old ones or ones it creates);
-- reading or listing hidden paths: SSH, GPG, cloud and AI-tool credentials, browser profiles, and the harness's own data and config directories;
+- reading or listing hidden paths: SSH, GPG, cloud and AI-tool credentials, browser profiles, the harness's own data and config directories, and the file an access token is handed in through (`auth/handed-in.ts`), wherever it is;
 - using the network when it is `off`: TCP, UDP and DNS, including loopback to the host and abstract unix sockets;
 - receiving credential-looking environment variables;
 - on Linux, seeing or signalling host processes, and outliving a kill of its process group.
@@ -17,6 +17,7 @@ It does not stop:
 - reading any file that is not hidden: source, dotfiles, `/etc`;
 - anything at all on the network when it is `on`, which is unrestricted;
 - other filesystem unix sockets that are not on the hidden list (Linux);
+- reading a hidden file (not a hidden directory) that is replaced by a rename while the command runs (Linux): the file is covered by a mount, and the rename takes the mount away for sandboxes already running. A hidden directory stays hidden whatever is renamed inside it;
 - use of CPU, memory or disk (a private `/tmp` is RAM-backed tmpfs);
 - kernel exploits;
 - writes inside the workspace that run later outside the sandbox: `.git/hooks`, `package.json` scripts, editor task files.

@@ -1,7 +1,8 @@
 import { afterEach, expect, test, setDefaultTimeout } from "bun:test"
 import { join } from "node:path"
 import { methods } from "@agentclientprotocol/sdk"
-import { brand } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, FAILURE_TEXT, brand } from "@windlass/core"
+import { HAND_IN_ADVICE } from "@windlass/core/auth/chatgpt"
 import { E2E_TIMEOUT_MS, script } from "@windlass/core/testing"
 import { SIGN_IN_HINT } from "../src/server.ts"
 import { EXT, META } from "../src/extensions.ts"
@@ -125,6 +126,38 @@ test("a failed turn answers the prompt with an error that says why; signed out m
   const signedOut = harness.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "again" }] })
   await expect(signedOut).rejects.toMatchObject({ code: -32000 })
   expect(((await signedOut.catch((caught: unknown) => caught)) as { message: string }).message).toContain("Signed out")
+})
+
+test("a sign-in handed in from outside: auth-required says to hand in a new token, and never to sign in on this machine", async () => {
+  const saved = process.env[ACCESS_TOKEN_FILE_ENV]
+  // Never opened here: the state of the sign-in and the model's answers are given.
+  process.env[ACCESS_TOKEN_FILE_ENV] = "/run/handed-in/token"
+  try {
+    const unusable = `The file ${ACCESS_TOKEN_FILE_ENV} names does not exist (/run/handed-in/token). ${HAND_IN_ADVICE}`
+    const signedOut = await start({ signIn: async () => ({ signedIn: false, message: unusable }) })
+    const method = (signedOut.wire[0] as { result: { authMethods: { id: string; description: string }[] } }).result.authMethods[0]!
+    expect(method.id).toBe("chatgpt")
+    expect(method.description).toBe(`Uses the access token of a ChatGPT plan sign-in held elsewhere, handed in through ${ACCESS_TOKEN_FILE_ENV}. ${HAND_IN_ADVICE}`)
+    const refused = { code: -32000, message: `Authentication required: ${unusable}`, data: { methodId: "chatgpt", [META.capabilities]: { reason: "auth_required", message: unusable } } }
+    await expect(signedOut.connection.agent.request(methods.agent.session.new, { cwd: signedOut.workspace, mcpServers: [] })).rejects.toMatchObject(refused)
+    await expect(signedOut.connection.agent.request(methods.agent.authenticate, { methodId: "chatgpt" })).rejects.toMatchObject(refused)
+    await expect(signedOut.connection.agent.request(methods.agent.session.load, { sessionId: "ses_x", cwd: signedOut.workspace, mcpServers: [] })).rejects.toMatchObject(refused)
+
+    // A token the provider turns down in the middle of a session, still turned down when it is read again.
+    const rejected = await start({ responses: [[script.fail("auth", { message: "HTTP 401: Unauthorized", status: 401 })], [script.fail("auth", { message: "HTTP 401: Unauthorized", status: 401 })]], engine: { refreshAuth: async () => true } })
+    await expect(rejected.connection.agent.request(methods.agent.authenticate, { methodId: "chatgpt" })).resolves.toEqual({})
+    const sessionId = await rejected.newSession()
+    const prompt = rejected.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "go" }] })
+    await expect(prompt).rejects.toMatchObject({ code: -32000, message: `Authentication required: ${FAILURE_TEXT.handedInRejected}` })
+    for (const message of [unusable, FAILURE_TEXT.handedInRejected, method.description]) {
+      expect(message).toContain(ACCESS_TOKEN_FILE_ENV)
+      expect(message).not.toContain(SIGN_IN_HINT)
+      expect(message).not.toContain("sign in again")
+    }
+  } finally {
+    if (saved === undefined) delete process.env[ACCESS_TOKEN_FILE_ENV]
+    else process.env[ACCESS_TOKEN_FILE_ENV] = saved
+  }
 })
 
 test("a session another process works in is listed and refused, with the process named; once it is closed there it loads", async () => {

@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SCRIPT_ENV, scriptedProvider } from "@windlass/acp"
-import { brand } from "@windlass/core"
+import { ACCESS_TOKEN_FILE_ENV, brand } from "@windlass/core"
 import { parseArgs } from "../src/args.ts"
 import { FakeProvider } from "@windlass/core/testing"
 import { createAcpEngine } from "../src/acp-engine.ts"
@@ -35,13 +35,13 @@ function place(name: string) {
 }
 
 /** `responses: null`: no scripted model, so the server reads the sign-in of the throwaway data directory, which has none. */
-async function cli(at: ReturnType<typeof place>, responses: unknown[][] | null, args: readonly string[]) {
+async function cli(at: ReturnType<typeof place>, responses: unknown[][] | null, args: readonly string[], env: Record<string, string> = {}) {
   const proc = Bun.spawn(["bun", CLI, ...args], {
     cwd: at.workspace,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
-    env: { ...process.env, XDG_DATA_HOME: at.xdg, [SCRIPT_ENV]: responses === null ? "" : script(responses), NO_COLOR: "1" },
+    env: { ...process.env, XDG_DATA_HOME: at.xdg, [SCRIPT_ENV]: responses === null ? "" : script(responses), NO_COLOR: "1", ...env },
   })
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
   return { out, err, code }
@@ -169,6 +169,36 @@ describe("as a process", () => {
     }
     const prompt = await cli(at, null, ["-c", "and now?"])
     expect(prompt).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in; run \`${brand.binary} login\` to sign in with ChatGPT, then try again\n` })
+  })
+
+  test("an access token handed in that cannot be used: --models, a prompt and login status say to hand in a new one, never to sign in here", async () => {
+    const at = place("handed-in")
+    const file = join(root, "handed-in", "token")
+    const env = { [ACCESS_TOKEN_FILE_ENV]: file }
+    const handIn = `hand in a new token (the output of \`${brand.binary} login token\`, run where the sign-in is saved), then try again`
+    const missing = `the file ${ACCESS_TOKEN_FILE_ENV} names does not exist (${file})`
+    expect(await cli(at, null, ["--models"], env)).toEqual({ code: 1, out: "", err: `${brand.binary}: ${missing}, so the models cannot be listed (they come from your ChatGPT plan); ${handIn}\n` })
+    expect(await cli(at, null, ["hello"], env)).toEqual({ code: 1, out: "", err: `${brand.binary}: ${missing}; ${handIn}\n` })
+    // What calls no model still works.
+    expect((await cli(at, null, ["--list-sessions"], env)).code).toBe(0)
+    const status = await cli(at, null, ["login", "status"], env)
+    expect([status.code, status.err]).toEqual([1, ""])
+    expect(status.out).toStartWith(`not signed in: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} cannot be used (the saved sign-in is not used)\naccess token file: ${file}\n`)
+    expect(status.out).toEndWith("(handed_in_missing)\n")
+    // An expired token is said as that, with when it expired; a usable one is described without being shown.
+    writeFileSync(file, JSON.stringify({ accessToken: "handed-token-0001", expiresAt: Date.UTC(2026, 0, 2, 3, 4, 5) }))
+    expect((await cli(at, null, ["hello"], env)).err).toBe(`${brand.binary}: the access token handed in through ${ACCESS_TOKEN_FILE_ENV} expired at 2026-01-02T03:04:05.000Z (${file}); ${handIn}\n`)
+    writeFileSync(file, "handed-token-0001\n")
+    expect(await cli(at, null, ["login", "status"], env)).toEqual({
+      code: 0,
+      out: `signed in with the access token handed in through ${ACCESS_TOKEN_FILE_ENV} (the saved sign-in is not used)\naccess token file: ${file}\naccess token: the file states no expiry\n`,
+      err: "",
+    })
+    // This process holds no sign-in, so it has no token to hand on; without the variable, there is none saved here.
+    const refused = await cli(at, null, ["login", "token"], env)
+    expect([refused.code, refused.out]).toEqual([1, ""])
+    expect(refused.err).toContain(`handed in through ${ACCESS_TOKEN_FILE_ENV} and holds no sign-in`)
+    expect(await cli(at, null, ["login", "token", "--json"])).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in, so there is no token to hand on; run \`${brand.binary} login\`\n` })
   })
 
 

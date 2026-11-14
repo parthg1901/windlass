@@ -28,6 +28,15 @@ checkout, then finish the sign-in it prints). When you are not signed in, creati
 ACP's auth-required error (`-32000`) and a message that says this; the client's "authenticate" button only re-checks.
 Listing sessions, reading a session's log, resolving a session ID and forking need no sign-in.
 
+A server that cannot share the data directory the sign-in is saved in (one server per agent session, each in a
+sandbox on a machine of its own) runs on that sign-in all the same: start it with `WINDLASS_ACCESS_TOKEN_FILE`
+naming a file that holds an access token handed in by the `windlass` that holds the sign-in
+(`windlass login token --json` there; [user-guide.md](user-guide.md), "One sign-in for several machines"). The server
+reads the file at every model call and never refreshes anything: whoever started it replaces the file before the
+token expires. When the file gives no usable token, or the provider rejects the token and still rejects it after
+the file was read once more, the same auth-required error names the variable and says to hand in a new token,
+instead of how to sign in on that machine; `authenticate` reads the file again.
+
 Sessions are stored one file each, and a process holds only the sessions it is working in. While `windlass acp` runs, an
 `windlass` in another terminal works in its own sessions, and so does a second editor. A session is open in one place at a
 time: loading one that another process is working in fails with an error that names that process (`data` carries
@@ -47,7 +56,7 @@ every command the agent started is stopped, and the session resumes later where 
 | ACP | How Windlass does it |
 | --- | --- |
 | `initialize` | Protocol version 1. Capabilities: `loadSession`, embedded text context in prompts, `sessionCapabilities` `list`, `resume`, `close`, `delete`. One auth method, "Sign in with ChatGPT". |
-| `authenticate` | Checks the saved sign-in; succeeds if it is usable, otherwise answers auth-required with how to sign in. There is no in-client browser flow. |
+| `authenticate` | Checks the saved sign-in, or the access token handed in through `WINDLASS_ACCESS_TOKEN_FILE`; succeeds if it is usable, otherwise answers auth-required with how to sign in, or that a new token must be handed in. There is no in-client browser flow. |
 | `session/new` | A session in the client's `cwd` (an absolute directory). The response carries the config options below. `_meta["windlass"] = { model, effort }` starts it with those settings, checked against the account's models first (an unknown model is refused with `-32602` and the list of valid ones, an effort the model does not take with the ones it accepts). `agent` in the same object is the agent it starts as, by name (`"none"`: no agent; absent: the default of the user's configuration); a name that is no agent is refused with `-32602` and a sentence that suggests the near ones, and no session is created. `approval` (`ask`, `auto`, `full`), `unattended` (`deny`, `stop`), `attended` (default `true`) and `children` (default: as `attended`) in the same object say how tool calls are approved (see "Approval" below); they are read on `session/load` and `session/resume` too. |
 | `session/load` | Replays the whole stored conversation as `session/update`s (user messages, reasoning, text, tool calls with their final status), then reports the title (`session_info_update`), the context use (`usage_update`), and the session's state (the `_windlass/state` notification below), then answers. The `cwd` must be the session's own. |
 | `session/resume` | The same without the replay. On load and resume, `_meta["windlass"] = { model, effort }` switches the session to them (checked first, recorded as `settings.changed`), `agent` switches it to that agent (recorded as `agent.switched`; a refusal leaves the session closed), and `archived: true` opens an archived session too. |

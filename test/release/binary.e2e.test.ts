@@ -101,6 +101,35 @@ describe.skipIf(!built)(`the built executable (${host?.id ?? "none"})`, () => {
     expect(await run(["login", "status"])).toEqual({ code: 1, out: `not signed in; run \`${brand.binary} login\`\n`, err: "" })
   })
 
+  test("a sign-in handed in from outside: login status describes the file, and with no sign-in saved login token has nothing to hand on", async () => {
+    const file = join(home, "handed-in-token")
+    const env = { [`${brand.envPrefix}ACCESS_TOKEN_FILE`]: file }
+    const first = (usable: boolean) =>
+      usable
+        ? `signed in with the access token handed in through ${brand.envPrefix}ACCESS_TOKEN_FILE (the saved sign-in is not used)`
+        : `not signed in: the access token handed in through ${brand.envPrefix}ACCESS_TOKEN_FILE cannot be used (the saved sign-in is not used)`
+    const missing = await run(["login", "status"], { env })
+    expect([missing.code, missing.err]).toEqual([1, ""])
+    expect(missing.out).toStartWith(`${first(false)}\naccess token file: ${file}\n`)
+    expect(missing.out).toEndWith("(handed_in_missing)\n")
+    await Bun.write(file, `${JSON.stringify({ accessToken: "handed-token-0001", expiresAt: Date.now() + 90 * 60_000 })}\n`)
+    const usable = await run(["login", "status"], { env })
+    expect([usable.code, usable.err]).toEqual([0, ""])
+    expect(usable.out).toMatch(new RegExp(`^${first(true).replace(/[()]/g, "\\$&")}\naccess token file: ${file}\naccess token: valid for (89|90) more minutes; whoever handed it in replaces the file\n$`))
+    expect(usable.out).not.toContain("handed-token-0001")
+    // A prompt with a token that cannot be used says to hand in a new one, not to sign in here.
+    await Bun.write(file, "")
+    const prompt = await run(["hello"], { env })
+    expect([prompt.code, prompt.out]).toEqual([1, ""])
+    expect(prompt.err).toBe(`${brand.binary}: the file ${brand.envPrefix}ACCESS_TOKEN_FILE names is empty (${file}); hand in a new token (the output of \`${brand.binary} login token\`, run where the sign-in is saved), then try again\n`)
+    // Handing a token on: nothing is saved in this data directory, and a process on a handed-in token holds none.
+    expect(await run(["login", "token"])).toEqual({ code: 1, out: "", err: `${brand.binary}: not signed in, so there is no token to hand on; run \`${brand.binary} login\`\n` })
+    const refused = await run(["login", "token", "--json"], { env })
+    expect([refused.code, refused.out]).toEqual([1, ""])
+    expect(refused.err).toContain(`handed in through ${brand.envPrefix}ACCESS_TOKEN_FILE and holds no sign-in`)
+    expect((await run(["login", "--help"])).out).toContain(`${brand.binary} login token`)
+  })
+
   test("a command runs through the scripted model, in the sandbox when this machine has one", async () => {
     const script = join(home, "shell.json")
     await Bun.write(

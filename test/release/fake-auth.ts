@@ -2,7 +2,8 @@
  * A fake ChatGPT authorization server for the sign-in tests: the three
  * endpoints `packages/core/src/auth/chatgpt.ts` talks to, with the checks a
  * real one makes (PKCE, the redirect URI, the issued client ID) and an ID
- * token signed with a key it publishes. Nothing here reaches the network.
+ * token signed with a key it publishes. A refresh rotates the refresh token
+ * and refuses one already used. Nothing here reaches the network.
  */
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -17,6 +18,8 @@ export interface FakeAuth {
   readonly dir: string
   /** Tokens it handed out: they must never appear in the program's output. */
   readonly secrets: string[]
+  /** How many requests the token endpoint has had, and how many of them were refreshes it granted. */
+  requests(): { readonly token: number; readonly refreshes: number }
   /** What the browser would do: follow the authorize address and return where it was sent back to. */
   authorize(url: string, options?: { deny?: boolean }): Promise<string>
   stop(): void
@@ -28,6 +31,10 @@ export async function startFakeAuth(options: { scopes?: string } = {}): Promise<
   const codes = new Map<string, { challenge: string; nonce: string; redirectUri: string }>()
   const secrets: string[] = []
   let counter = 0
+  let tokenRequests = 0
+  let refreshes = 0
+  /** The one refresh token that is still good. */
+  let current: string | null = null
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -47,7 +54,17 @@ export async function startFakeAuth(options: { scopes?: string } = {}): Promise<
         return Response.redirect(back.href, 302)
       }
       if (url.pathname === "/token") {
+        tokenRequests += 1
         const form = new URLSearchParams(await request.text())
+        if (form.get("grant_type") === "refresh_token") {
+          if (current === null || form.get("refresh_token") !== current || form.get("client_id") !== ISSUED_CLIENT_ID)
+            return Response.json({ error: "invalid_grant", error_description: "the refresh token was already used or is not known" }, { status: 400 })
+          refreshes += 1
+          const accessToken = `access-${crypto.randomUUID()}`
+          current = `refresh-${crypto.randomUUID()}`
+          secrets.push(accessToken, current)
+          return Response.json({ access_token: accessToken, refresh_token: current, expires_in: 3600 })
+        }
         const grant = codes.get(form.get("code") ?? "")
         const challenge = Buffer.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(form.get("code_verifier") ?? "")))).toString("base64url")
         if (grant === undefined || grant.challenge !== challenge || grant.redirectUri !== form.get("redirect_uri") || form.get("client_id") !== ISSUED_CLIENT_ID)
@@ -58,6 +75,7 @@ export async function startFakeAuth(options: { scopes?: string } = {}): Promise<
         const accessToken = `access-${crypto.randomUUID()}`
         const refreshToken = `refresh-${crypto.randomUUID()}`
         secrets.push(accessToken, refreshToken, idToken)
+        current = refreshToken
         return Response.json({ access_token: accessToken, refresh_token: refreshToken, id_token: idToken, expires_in: 3600, scope: options.scopes ?? "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" })
       }
       if (url.pathname === "/jwks") return Response.json({ keys: [jwk] })
@@ -70,6 +88,7 @@ export async function startFakeAuth(options: { scopes?: string } = {}): Promise<
     config: { issuer, authorizeUrl: `${issuer}/authorize`, tokenUrl: `${issuer}/token`, jwksUrl: `${issuer}/jwks`, dataDir: () => dir },
     dir,
     secrets,
+    requests: () => ({ token: tokenRequests, refreshes }),
     authorize: async (address, { deny = false } = {}) => {
       const response = await fetch(deny ? `${address}&deny=1` : address, { redirect: "manual" })
       return response.headers.get("location")!
